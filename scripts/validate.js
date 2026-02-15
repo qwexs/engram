@@ -1,11 +1,11 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 // memory-system/scripts/validate.js
 // Check integrity of the memory system
-// Usage: bun skills/memory-system/scripts/validate.js [--fix] [--agent-id main]
+// Usage: node scripts/validate.js [--fix] [--agent-id main]
 
 import { parseArgs } from 'node:util';
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
 const { values: args } = parseArgs({
   options: {
@@ -21,7 +21,7 @@ if (args.help) {
 validate — Check memory system integrity
 
 Usage:
-  bun skills/memory-system/scripts/validate.js [options]
+  node scripts/validate.js [options]
 
 Options:
   --fix            Auto-fix issues where possible
@@ -35,16 +35,22 @@ Checks:
   4. No orphan entities (missing from index.md)
   5. ID uniqueness within each items.json
   6. No broken supersededBy references
+  7. BOM encoding detection and fix
+  8. Legacy format migration (bare array → v2 wrapper)
 `);
   process.exit(0);
 }
 
 const agentId = args['agent-id'];
 const WORKSPACE = process.cwd();
+const LIFE_DIR = join(WORKSPACE, 'life');
 const fix = args.fix;
 let errors = 0;
 let warnings = 0;
 let fixed = 0;
+
+const VALID_ABSTRACTION = ['episode', 'pattern', 'principle'];
+const VALID_STATUS = ['active', 'superseded', 'pending'];
 
 function error(msg) { console.error(`❌ ${msg}`); errors++; }
 function warn(msg) { console.warn(`⚠️  ${msg}`); warnings++; }
@@ -94,9 +100,8 @@ for (const file of requiredFiles) {
 }
 ok('Required files checked');
 
-// 3. items.json validation
+// 3. items.json validation (v2 format with BOM detection)
 console.log('\n--- Knowledge Graph (items.json) ---');
-const v2Fields = ['confidence', 'abstractionLevel', 'tags'];
 
 function findItemsJson(dir) {
   const results = [];
@@ -112,57 +117,145 @@ function findItemsJson(dir) {
   return results;
 }
 
-const itemsFiles = findItemsJson(join(WORKSPACE, 'life'));
+const itemsFiles = findItemsJson(LIFE_DIR);
 let totalFacts = 0;
 let v2Compliant = 0;
+let legacyMigrated = 0;
+let bomFixed = 0;
 
 for (const file of itemsFiles) {
-  const relPath = file.replace(WORKSPACE + (process.platform === 'win32' ? '\\' : '/'), '');
-  try {
-    const data = JSON.parse(readFileSync(file, 'utf-8'));
-    if (!Array.isArray(data)) {
-      error(`${relPath}: not an array`);
-      continue;
-    }
+  const relPath = relative(WORKSPACE, file);
+  
+  // Read raw bytes to detect BOM (0xEF 0xBB 0xBF)
+  let raw = readFileSync(file, 'utf-8');
+  let hadBom = false;
 
-    const ids = new Set();
-    for (const fact of data) {
-      totalFacts++;
-
-      // ID uniqueness
-      if (ids.has(fact.id)) {
-        error(`${relPath}: duplicate ID "${fact.id}"`);
-      }
-      ids.add(fact.id);
-
-      // v2 fields
-      let isV2 = true;
-      for (const field of v2Fields) {
-        if (fact[field] === undefined) {
-          isV2 = false;
-          if (fix) {
-            if (field === 'confidence') fact.confidence = 0.7;
-            if (field === 'abstractionLevel') fact.abstractionLevel = 'episode';
-            if (field === 'tags') fact.tags = [];
-          }
-        }
-      }
-      if (isV2) v2Compliant++;
-
-      // Broken supersededBy
-      if (fact.supersededBy && !data.some(f => f.id === fact.supersededBy)) {
-        warn(`${relPath}: broken supersededBy "${fact.supersededBy}" in fact "${fact.id}"`);
-      }
-    }
-
+  if (raw.charCodeAt(0) === 0xFEFF) {
+    hadBom = true;
+    warn(`${relPath}: BOM detected`);
     if (fix) {
-      writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+      raw = raw.slice(1);
+      bomFixed++;
+      fixMsg(`${relPath}: removed BOM`);
     }
+  }
+
+  // Parse JSON
+  let data;
+  try {
+    data = JSON.parse(raw);
   } catch (e) {
     error(`${relPath}: invalid JSON — ${e.message}`);
+    continue;
+  }
+
+  // Detect format: v2 {entityId, entityType, facts:[]} or legacy [{fact}]
+  let facts;
+  let isLegacy = false;
+  let needsRewrite = false;
+
+  if (Array.isArray(data)) {
+    // Legacy format: bare array of facts
+    isLegacy = true;
+    facts = data;
+    warn(`${relPath}: legacy format (bare array)`);
+    
+    if (fix) {
+      // Derive entityId from path: life/projects/foo/items.json -> projects/foo
+      const parts = relPath.replace(/\\items\.json$/, '').replace(/^life[\\\/]/, '').split(/[\\\/]/);
+      const entityId = parts.join('/');
+      const entityType = parts[0].replace(/s$/, ''); // projects->project, areas->area
+      
+      data = {
+        entityId,
+        entityType,
+        facts
+      };
+      
+      legacyMigrated++;
+      fixMsg(`${relPath}: migrated to v2 (entityId="${entityId}", entityType="${entityType}")`);
+      needsRewrite = true;
+    }
+  } else {
+    // v2 format validation
+    if (!data.entityId) {
+      error(`${relPath}: missing entityId`);
+    }
+    if (!data.entityType) {
+      error(`${relPath}: missing entityType`);
+    }
+    if (!Array.isArray(data.facts)) {
+      error(`${relPath}: missing or invalid facts array`);
+      continue;
+    }
+    facts = data.facts;
+    v2Compliant++;
+  }
+
+  // Validate each fact
+  const seenIds = new Set();
+  for (let i = 0; i < facts.length; i++) {
+    const f = facts[i];
+    const prefix = `${relPath}:facts[${i}]`;
+    totalFacts++;
+
+    // ID uniqueness
+    if (!f.id) {
+      error(`${prefix}: missing id`);
+    } else if (seenIds.has(f.id)) {
+      error(`${prefix}: duplicate id "${f.id}"`);
+    } else {
+      seenIds.add(f.id);
+    }
+
+    // Required fields
+    if (!f.text && !f.fact) {
+      error(`${prefix}: missing text/fact`);
+    }
+    if (!f.timestamp) {
+      error(`${prefix}: missing timestamp`);
+    }
+    if (!f.lastAccessed) {
+      error(`${prefix}: missing lastAccessed`);
+    }
+    if (f.accessCount === undefined) {
+      error(`${prefix}: missing accessCount`);
+    }
+
+    // Validate status
+    if (f.status && !VALID_STATUS.includes(f.status)) {
+      error(`${prefix}: invalid status "${f.status}" (must be: ${VALID_STATUS.join(', ')})`);
+    }
+
+    // Validate confidence (0.0-1.0)
+    if (f.confidence !== undefined) {
+      if (typeof f.confidence !== 'number' || f.confidence < 0 || f.confidence > 1) {
+        error(`${prefix}: confidence ${f.confidence} out of range (must be 0.0-1.0)`);
+      }
+    }
+
+    // Validate abstractionLevel
+    if (f.abstractionLevel && !VALID_ABSTRACTION.includes(f.abstractionLevel)) {
+      error(`${prefix}: invalid abstractionLevel "${f.abstractionLevel}" (must be: ${VALID_ABSTRACTION.join(', ')})`);
+    }
+
+    // Broken supersededBy reference
+    if (f.supersededBy && !facts.some(fact => fact.id === f.supersededBy)) {
+      warn(`${prefix}: broken supersededBy "${f.supersededBy}"`);
+    }
+  }
+
+  // Auto-fix: rewrite clean JSON if BOM, legacy format, or formatting issues
+  if (fix && (hadBom || isLegacy || needsRewrite)) {
+    const clean = JSON.stringify(data, null, 2) + '\n';
+    writeFileSync(file, clean, 'utf-8');
   }
 }
-ok(`${itemsFiles.length} items.json files, ${totalFacts} facts (${v2Compliant} v2-compliant)`);
+
+ok(`${itemsFiles.length} items.json files, ${totalFacts} facts`);
+if (v2Compliant > 0) ok(`${v2Compliant} files v2-compliant`);
+if (legacyMigrated > 0) fixMsg(`${legacyMigrated} files migrated from legacy format`);
+if (bomFixed > 0) fixMsg(`${bomFixed} BOM encodings fixed`);
 
 // 4. Domain validation
 console.log('\n--- Domains ---');

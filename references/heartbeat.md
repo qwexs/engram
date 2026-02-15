@@ -54,6 +54,13 @@ Scan recent daily notes for durable facts:
 - Preferences discovered
 - Important context
 
+**Extraction aggressiveness — err on the side of capturing more:**
+- Any decision, preference, or opinion expressed → extract
+- Any tool/workflow discovery → extract as pattern
+- Any person mentioned with context → extract or update existing
+- Any project status change, even minor → extract
+- If unsure whether to extract → extract with lower confidence (0.5-0.7)
+
 **How to extract:**
 1. Read today's + yesterday's daily notes
 2. For each durable fact:
@@ -65,6 +72,22 @@ Scan recent daily notes for durable facts:
 4. Update `life/index.md` if new entities created
 
 **Skip:** casual chat, transient requests, already-captured facts.
+
+### Step 2.5: KG Validation
+
+After any writes to items.json, validate the Knowledge Graph:
+
+```bash
+bun scripts/validate.js --fix
+```
+
+This catches:
+- Malformed JSON (parse errors from interrupted writes)
+- BOM encoding (Windows/PowerShell artifact)
+- Legacy format migration (bare array → v2 wrapper)
+- Schema violations (missing fields, invalid values)
+
+If unfixable errors found, log in daily note and alert user.
 
 ### Step 3: Memory Maintenance
 

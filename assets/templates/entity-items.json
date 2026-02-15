@@ -1,1 +1,5 @@
-[]
+{
+  "entityId": "{{ENTITY_ID}}",
+  "entityType": "{{ENTITY_TYPE}}",
+  "facts": []
+}

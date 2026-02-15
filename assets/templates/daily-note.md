@@ -1,1 +1,7 @@
 # {{DATE}}
+
+## Events
+
+## Decisions
+
+## Learnings

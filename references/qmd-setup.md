@@ -1,0 +1,84 @@
+# QMD Setup
+
+QMD provides hybrid search (BM25 + vector embeddings + rerank) for the memory system.
+
+## Installation
+
+Two variants available:
+
+### Local (GPU via Vulkan/CUDA)
+```bash
+npm i -g @nicepkg/qmd
+```
+- Uses local llama.cpp for embeddings
+- Requires GPU (Vulkan or CUDA)
+- Zero external API calls
+
+### Jina Fork (API-based, no GPU needed)
+```bash
+npm i -g @qwexs/qmd
+```
+- Uses Jina AI API for embeddings and reranking
+- No GPU required
+- Requires `JINA_API_KEY`
+
+## Environment Variables (Jina Fork)
+
+```bash
+QMD_LLM_PROVIDER=jina              # Enable Jina provider
+JINA_API_KEY=xxx                    # Required
+JINA_PROXY_URL=http://proxy:8080   # Optional proxy
+JINA_EMBED_MODEL=jina-embeddings-v3           # Default
+JINA_RERANK_MODEL=jina-reranker-v2-base-multilingual  # Default
+JINA_EMBED_DIMENSIONS=1024         # Default
+```
+
+## Collections
+
+The memory system uses these QMD collections:
+
+| Collection | Path | Mask | Purpose |
+|-----------|------|------|---------|
+| `openclaw-root` | workspace root | `*.md` | Root files (SOUL.md, AGENTS.md, etc.) |
+| `openclaw-memory-agent-{id}-main` | `memory/agent-{id}/main/` | `**/*.md` | Main session memory |
+| `openclaw-memory-agent-{id}-{platform}-{groupId}` | `memory/agent-{id}/{platform}-{groupId}/` | `**/*.md` | Group session memory |
+| `life` | `life/` | `**/*.md` | Knowledge Graph |
+
+### Adding a Collection
+
+```bash
+qmd collection add <path> --name <name> --mask "**/*.md"
+```
+
+### Listing Collections
+
+```bash
+qmd collection list
+```
+
+## Commands
+
+```bash
+# Hybrid search (BM25 + vectors + rerank)
+qmd query "search text" -c <collection>
+
+# Update BM25 index (CPU, instant) — run after any file changes
+qmd update
+
+# Update vector embeddings (GPU or Jina API)
+qmd embed
+
+# Add collection
+qmd collection add <path> --name <name> --mask "<pattern>"
+
+# List collections
+qmd collection list
+```
+
+## Strategy
+
+- Use `qmd query` with `-c` flag for session-isolated search
+- Run `qmd update` after writing new memory (instant, safe to run often)
+- Run `qmd embed` during heartbeats only (resource-intensive)
+- Top 2-3 results are usually sufficient
+- Read full files only when QMD results indicate need

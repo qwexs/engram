@@ -1,0 +1,16 @@
+{
+  "lastRun": null,
+  "weekNumber": null,
+  "year": null,
+  "executedAt": null,
+  "results": {
+    "entitiesProcessed": 0,
+    "totalFacts": 0,
+    "hotFacts": 0,
+    "warmFacts": 0,
+    "coldFacts": 0,
+    "summariesUpdated": 0,
+    "summariesAlreadyUpToDate": 0
+  },
+  "nextRun": null
+}

@@ -1,0 +1,10 @@
+{
+  "lastDailyNoteCreated": {
+    "{{SESSION_KEY}}": null
+  },
+  "lastChecks": {
+    "email": null,
+    "calendar": null,
+    "weather": null
+  }
+}

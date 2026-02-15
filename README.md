@@ -32,6 +32,9 @@ Deploys a three-layer memory architecture:
 - **Abstraction Ladder** — episode → pattern → principle (principles never decay)
 - **Three-Layer Rotation** — Archive (full) → Stub (auto-summary with line refs) → QMD index (zero data loss)
 - **Subagent Persistent Memory** — domain-based memory for cron subagents (decisions.md + status.md + changelog.md)
+- **Real-Time Extraction** — signal detection + inline fact extraction during conversations (no heartbeat delay)
+- **Content-Hash Dedup** — SHA-256 deduplication prevents duplicate facts
+- **Contradiction Detection** — QMD + Jaccard similarity finds conflicting facts before writing
 - **Heartbeat Automation** — extraction, weekly synthesis, domain supervisor scan, maintenance on autopilot
 - **QMD Hybrid Search** — BM25 + vector embeddings + rerank, 96% token reduction vs full-file loading
 - **Dual QMD Support** — local GPU (Vulkan) or cloud (Jina AI API, free tier)
@@ -93,6 +96,70 @@ Details: [references/subagent-memory.md](references/subagent-memory.md)
 | `add-domain.js` | Create subagent domain with persistent memory |
 | `validate.js` | Check integrity of memory structure (`--fix` to auto-repair) |
 | `migrate-v2.js` | Migrate facts to v2 schema (confidence, abstraction, tags) |
+| `memory-signal.js` | Signal detector — classifies messages as high/low/none (regex, no LLM) |
+| `memory-dedup.js` | Content-hash deduplication (SHA-256), `--seed` to index existing facts |
+| `memory-write.js` | Write facts to KG with auto-dedup, validation, QMD update |
+| `memory-contradict.js` | Find contradicting facts via QMD + Jaccard keyword similarity |
+
+## Real-Time Extraction
+
+Inspired by [openclaw-engram](https://github.com/joshuaswarren/openclaw-engram)'s signal detection approach. Instead of waiting for heartbeats (up to 30 min), extract high-signal facts **inline during conversations**.
+
+```
+Message arrives → Signal Scan (regex, <10ms) → Classify
+    │
+    ├── HIGH (preference, decision, correction, milestone, instruction, identity)
+    │       → Dedup check (SHA-256) → Contradiction check → Write to KG → QMD update
+    │
+    ├── LOW (context, work discussion)
+    │       → Record in daily note → Heartbeat extracts later
+    │
+    └── NONE (casual chat, greetings, reactions)
+            → Skip
+```
+
+### Signal Detection
+
+```bash
+bun scripts/memory-signal.js --text "Я предпочитаю TypeScript"
+# → { "signal": "high", "categories": ["preference"], "keywords": ["предпочитаю", "TypeScript"], "confidence": 0.88 }
+
+bun scripts/memory-signal.js --text "Привет, как дела?"
+# → { "signal": "none", ... }
+```
+
+Supports **Russian and English** patterns. Six high-signal categories: `correction`, `preference`, `decision`, `identity`, `instruction`, `milestone`.
+
+### Write with Auto-Dedup
+
+```bash
+bun scripts/memory-write.js \
+  --entity "areas/people/sergey" \
+  --fact "Prefers Bun over Node.js" \
+  --category preference \
+  --confidence 0.9 \
+  --abstraction pattern \
+  --tags "tools,runtime" \
+  --source "2026-02-16"
+```
+
+Automatically: checks content-hash → writes fact → validates KG → updates QMD index.
+
+### Contradiction Detection
+
+```bash
+bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey"
+# → { "conflicts": [{ "id": "sergey-042", "fact": "Prefers Bun over Node.js", "similarity": 0.45 }] }
+```
+
+Uses QMD search + Jaccard keyword overlap. No LLM calls — fast and free.
+
+### Seed Dedup Index
+
+```bash
+bun scripts/memory-dedup.js --seed
+# → Indexes all existing facts from life/ into workspace/memory-state/fact-hashes.json
+```
 
 ## Fact Schema v2
 

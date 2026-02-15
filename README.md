@@ -1,4 +1,4 @@
-# 🧠 Engram
+# 🧠 Engram OpenClaw
 
 **Etalon memory architecture for AI agents.**
 
@@ -59,29 +59,29 @@ bun scripts/add-session.js --platform telegram --id 1234567890
 
 ## Subagent Memory
 
-Persistent memory для субагентов с `cleanup: "delete"` через **домены**:
+Persistent memory for subagents with `cleanup: "delete"` via **domains**:
 
 ```
 memory/domains/{domain}/
-├── decisions.md    # Правила (read-only для субагента, PR-модель)
-├── status.md       # Текущее состояние (пишет субагент)
-├── changelog.md    # Append-only лог действий
-└── archives/       # Ротация changelog >1000 строк
+├── decisions.md    # Rules (read-only for subagent, PR model)
+├── status.md       # Current state (written by subagent)
+├── changelog.md    # Append-only action log
+└── archives/       # Changelog rotation when >1000 lines
 ```
 
-**Ключевые правила:**
-- Один домен = один активный субагент
-- Одна QMD коллекция `domains` на все домены
-- Субагент не пишет в daily notes или life/
-- PROPOSAL для изменения правил → review при heartbeat
-- **Domain Supervisor Scan** в heartbeat: PROPOSAL review, liveness check, changelog ротация, KG extraction
+**Key rules:**
+- One domain = one active subagent
+- One QMD collection `domains` for all domains
+- Subagent does not write to daily notes or life/
+- PROPOSAL for rule changes → review during heartbeat
+- **Domain Supervisor Scan** in heartbeat: PROPOSAL review, liveness check, changelog rotation, KG extraction
 
 ```bash
-# Создать домен
-bun scripts/add-domain.js --domain monitoring --description "Мониторинг"
+# Create a domain
+bun scripts/add-domain.js --domain monitoring --description "Monitoring"
 ```
 
-Подробнее: [references/subagent-memory.md](references/subagent-memory.md)
+Details: [references/subagent-memory.md](references/subagent-memory.md)
 
 ## Scripts
 

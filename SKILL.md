@@ -147,6 +147,7 @@ Add to your HEARTBEAT.md:
 1. Monday? → Weekly Synthesis
 2. Knowledge Graph Extraction (if notes changed)
 3. Memory Maintenance (every few days)
+3.5. Domain Supervisor Scan (if domains exist)
 4. QMD Index Update (qmd update + qmd embed)
 ```
 
@@ -175,6 +176,17 @@ During heartbeats, scan daily notes for durable facts:
 - Skip casual chat and transient requests
 
 For the complete heartbeat flow, see [references/heartbeat.md](references/heartbeat.md).
+
+### Domain Supervisor Scan
+
+If subagent domains exist (`memory/domains/`), heartbeat acts as supervisor:
+
+1. **PROPOSAL review** — `qmd query "PROPOSAL" -c domains` → auto-approve low-risk, alert user for high-risk
+2. **Liveness check** — read each domain's `status.md`, alert if missed >2x schedule
+3. **Changelog rotation** — rotate `changelog.md` >1000 lines to `archives/`
+4. **KG extraction** — extract significant facts from changelogs to Knowledge Graph
+
+For full details, see [references/heartbeat.md](references/heartbeat.md) and [references/subagent-memory.md](references/subagent-memory.md).
 
 ## Memory Decay
 

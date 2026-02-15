@@ -30,7 +30,7 @@ Deploys a three-layer memory architecture:
 - **Memory Decay** — Hot/Warm/Cold tiers with frequency resistance, like human forgetting
 - **Confidence Scoring** — 0.0–1.0 metacognition (low-confidence facts decay faster)
 - **Abstraction Ladder** — episode → pattern → principle (principles never decay)
-- **Heartbeat Automation** — extraction, weekly synthesis, maintenance on autopilot
+- **Heartbeat Automation** — extraction, weekly synthesis, domain supervisor scan, maintenance on autopilot
 - **QMD Hybrid Search** — BM25 + vector embeddings + rerank, 96% token reduction vs full-file loading
 - **Dual QMD Support** — local GPU (Vulkan) or cloud (Jina AI API, free tier)
 
@@ -72,6 +72,7 @@ memory/domains/{domain}/
 - Одна QMD коллекция `domains` на все домены
 - Субагент не пишет в daily notes или life/
 - PROPOSAL для изменения правил → review при heartbeat
+- **Domain Supervisor Scan** в heartbeat: PROPOSAL review, liveness check, changelog ротация, KG extraction
 
 ```bash
 # Создать домен

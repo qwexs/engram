@@ -7,6 +7,7 @@
 1. Weekly Synthesis (Mondays only)
 2. Knowledge Graph Extraction (if notes changed)
 3. Memory Maintenance (every few days)
+3.5. Domain Supervisor Scan (if domains exist)
 4. QMD Index Update
 ```
 
@@ -66,21 +67,44 @@ Periodically (every few days):
 3. Remove outdated info from MEMORY.md
 4. Check `life/index.md` freshness
 
-### Step 3.5: Domain Changelog Review (опционально)
+### Step 3.5: Domain Supervisor Scan
 
-Если используются домены субагентов (`memory/domains/`):
+Проверка субагентных доменов (`memory/domains/`). **Пропустить если директория не существует.**
 
-1. **PROPOSAL review**: `qmd query "PROPOSAL" -c domains`
-   - Найти предложения субагентов по изменению правил
-   - Оценить и обновить `decisions.md` при необходимости
+#### 3.5.1 PROPOSAL Review
 
-2. **Changelog ротация**: для каждого домена проверить `changelog.md`
-   - Если >1000 строк → переместить в `archives/changelog-YYYY-MM.md`
-   - Создать новый `changelog.md` с заголовком + ссылкой на archives
+```bash
+qmd query "PROPOSAL" -c domains
+```
 
-3. **KG extraction** (опционально): сканировать changelogs на дurable facts
-   - `qmd query "результат" -c domains` — найти значимые события
-   - Извлечь в Knowledge Graph (life/) если есть паттерны
+- Если найден PROPOSAL → оценить:
+  - **Low-risk** (добавить направление поиска, изменить формат) → обновить `decisions.md` автоматически
+  - **High-risk** (изменить пороги алертов, убрать проверки) → сообщить пользователю
+- После обработки: добавить запись в changelog что PROPOSAL принят/отклонён
+
+#### 3.5.2 Liveness Check
+
+Для каждого домена прочитать `status.md`:
+- Проверить **последний запуск** — если пропущено >2x от расписания → алерт
+- Проверить **результат** — если ошибка → алерт
+
+Расписания указываются в `decisions.md` каждого домена или в heartbeat-state.json.
+
+#### 3.5.3 Changelog Ротация
+
+Для каждого домена проверить `changelog.md`:
+- Если >1000 строк → переместить в `archives/changelog-YYYY-MM.md`
+- Создать новый `changelog.md` с заголовком + ссылкой на archives
+
+#### 3.5.4 KG Extraction (опционально)
+
+```bash
+qmd query "результат OR milestone OR решение" -c domains
+```
+
+- Извлечь значимые факты (milestone, pattern) в Knowledge Graph (`life/`)
+- Только если changelog изменился с прошлого scan
+- Пропускать рутинные записи ("проверка метрик, всё ОК")
 
 ### Step 4: QMD Index Update
 
@@ -105,7 +129,8 @@ Run ONCE per heartbeat to reduce GPU load.
     "email": null,
     "calendar": null,
     "weather": null
-  }
+  },
+  "lastDomainScan": null
 }
 ```
 

@@ -41,22 +41,7 @@ function keywordSimilarity(words1, words2) {
   return union.size > 0 ? intersection.length / union.size : 0;
 }
 
-// 1. Выполнить QMD query
-let qmdOutput = "";
-try {
-  const proc = Bun.spawn(["qmd", "query", factText, "-c", "life"], {
-    cwd: WORKSPACE,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  qmdOutput = await new Response(proc.stdout).text();
-  await proc.exited;
-} catch (e) {
-  console.error(`❌ Ошибка QMD: ${e.message}`);
-  process.exit(1);
-}
-
-// 2. Прочитать facts из entity
+// 1. Прочитать facts из entity
 const entityItemsPath = join(WORKSPACE, "life", entity, "items.json");
 let entityFacts = [];
 try {
@@ -66,7 +51,7 @@ try {
   // Entity не существует или пустой
 }
 
-// 3. Найти конфликты через keyword overlap
+// 2. Найти конфликты через keyword overlap
 const newKeywords = extractKeywords(factText);
 const conflicts = [];
 

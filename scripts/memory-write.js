@@ -3,7 +3,7 @@
 // Использование: bun scripts/memory-write.js --entity "areas/people/sergey" --fact "Факт" --category preference --confidence 0.9 --abstraction pattern --tags "tag1,tag2" --source "2026-02-15"
 
 import { join } from "path";
-import { checkDedup } from "./memory-dedup.js";
+import { isDuplicate, registerHash } from "./memory-dedup.js";
 
 const WORKSPACE = join(import.meta.dir, "..");
 
@@ -37,12 +37,13 @@ const entity = opts.entity;
 const entityDir = join(WORKSPACE, "life", entity);
 const itemsPath = join(entityDir, "items.json");
 
-// 1. Дедупликация
-const dedupResult = await checkDedup(opts.fact, entity);
+// 1. Дедупликация (read-only check, регистрация после записи)
+const dedupResult = await isDuplicate(opts.fact);
 if (dedupResult.duplicate) {
   console.log(JSON.stringify({ status: "skipped", reason: "Duplicate fact, skipping", existingEntity: dedupResult.existingEntity }));
   process.exit(0);
 }
+const factHash = dedupResult.hash;
 
 // 2. Проверить/создать entity
 const entityFile = Bun.file(itemsPath);
@@ -55,7 +56,9 @@ if (await entityFile.exists()) {
   const summaryPath = join(entityDir, "summary.md");
   const entityName = entity.split("/").pop();
   await Bun.write(summaryPath, `# ${entityName}\n\n_Created automatically._\n`);
-  data = { entityId: entity, entityType: entity.startsWith("projects/") ? "project" : "area", facts: [] };
+  const typeMap = { projects: "project", areas: "area", resources: "resource", archives: "archive" };
+  const entityType = typeMap[entity.split("/")[0]] || "area";
+  data = { entityId: entity, entityType, facts: [] };
   await Bun.write(itemsPath, JSON.stringify(data, null, 2));
 
   // Обновить life/index.md
@@ -77,14 +80,14 @@ if (await entityFile.exists()) {
 // 3. Определить ID
 const slug = entity.split("/").pop();
 const existingIds = data.facts.map(f => {
-  const match = f.id.match(/-(\d+)$/);
+  const match = f.id.match(/(\d+)$/);
   return match ? parseInt(match[1]) : 0;
 });
 const nextNum = (existingIds.length > 0 ? Math.max(...existingIds) : 0) + 1;
 const newId = `${slug}-${String(nextNum).padStart(3, "0")}`;
 
 // 4. Создать факт
-const today = new Date().toISOString().slice(0, 10);
+const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" });
 const newFact = {
   id: newId,
   fact: opts.fact,
@@ -105,9 +108,12 @@ const newFact = {
 data.facts.push(newFact);
 await Bun.write(itemsPath, JSON.stringify(data, null, 2));
 
+// 5.1 Зарегистрировать хэш после успешной записи
+await registerHash(factHash, entity);
+
 // 6. Валидация KG
 try {
-  const proc = Bun.spawn(["node", "scripts/validate-kg.js"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(["bun", "scripts/validate-kg.js"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
   await proc.exited;
 } catch {}
 

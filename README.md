@@ -98,8 +98,8 @@ Details: [references/subagent-memory.md](references/subagent-memory.md)
 | `migrate-v2.js` | Migrate facts to v2 schema (confidence, abstraction, tags) |
 | `memory-signal.js` | Signal detector — classifies messages as high/low/none (regex, no LLM) |
 | `memory-dedup.js` | Content-hash deduplication (SHA-256), `--seed` to index existing facts |
-| `memory-write.js` | Write facts to KG with auto-dedup, validation, QMD update |
-| `memory-contradict.js` | Find contradicting facts via QMD + Jaccard keyword similarity |
+| `memory-write.js` | Write facts to KG with safe dedup (check→write→register), validation, QMD update |
+| `memory-contradict.js` | Find contradicting facts within an entity via Jaccard keyword similarity |
 
 ## Real-Time Extraction
 
@@ -152,7 +152,7 @@ bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/se
 # → { "conflicts": [{ "id": "sergey-042", "fact": "Prefers Bun over Node.js", "similarity": 0.45 }] }
 ```
 
-Uses QMD search + Jaccard keyword overlap. No LLM calls — fast and free.
+Intra-entity Jaccard keyword overlap. No LLM calls, no QMD dependency — reads `items.json` directly. Cross-entity contradiction detection via QMD planned for Phase 2.
 
 ### Seed Dedup Index
 

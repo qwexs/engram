@@ -42,17 +42,28 @@ export async function saveHashes(hashes) {
   await Bun.write(HASH_FILE, JSON.stringify(hashes, null, 2));
 }
 
-// Проверить дубликат и добавить если новый
-export async function checkDedup(fact, entity) {
+// Проверить дубликат (read-only, не регистрирует хэш)
+export async function isDuplicate(fact) {
   const h = await hashFact(fact);
   const hashes = await loadHashes();
-
   if (hashes[h]) {
-    return { duplicate: true, existingEntity: hashes[h] };
+    return { duplicate: true, existingEntity: hashes[h], hash: h };
   }
+  return { duplicate: false, hash: h };
+}
 
-  hashes[h] = entity;
+// Зарегистрировать хэш после успешной записи факта
+export async function registerHash(hash, entity) {
+  const hashes = await loadHashes();
+  hashes[hash] = entity;
   await saveHashes(hashes);
+}
+
+// Обратная совместимость: check + register в одном вызове
+export async function checkDedup(fact, entity) {
+  const result = await isDuplicate(fact);
+  if (result.duplicate) return result;
+  await registerHash(result.hash, entity);
   return { duplicate: false };
 }
 
@@ -83,27 +94,29 @@ async function seed() {
   }
 
   await saveHashes(hashes);
-  console.log(JSON.stringify({ seeded: count, entities: Object.keys(new Set(Object.values(hashes))).length }));
+  console.log(JSON.stringify({ seeded: count, entities: new Set(Object.values(hashes)).size }));
 }
 
-// CLI
-const args = process.argv.slice(2);
+// CLI — только при прямом запуске (не при импорте)
+if (import.meta.main) {
+  const args = process.argv.slice(2);
 
-if (args.includes("--seed")) {
-  await seed();
-} else {
-  const factIdx = args.indexOf("--fact");
-  const entityIdx = args.indexOf("--entity");
+  if (args.includes("--seed")) {
+    await seed();
+  } else {
+    const factIdx = args.indexOf("--fact");
+    const entityIdx = args.indexOf("--entity");
 
-  if (factIdx === -1 || !args[factIdx + 1]) {
-    console.error("❌ Требуется --fact \"текст факта\"");
-    process.exit(1);
+    if (factIdx === -1 || !args[factIdx + 1]) {
+      console.error("❌ Требуется --fact \"текст факта\"");
+      process.exit(1);
+    }
+    if (entityIdx === -1 || !args[entityIdx + 1]) {
+      console.error("❌ Требуется --entity \"путь/к/сущности\"");
+      process.exit(1);
+    }
+
+    const result = await checkDedup(args[factIdx + 1], args[entityIdx + 1]);
+    console.log(JSON.stringify(result, null, 2));
   }
-  if (entityIdx === -1 || !args[entityIdx + 1]) {
-    console.error("❌ Требуется --entity \"путь/к/сущности\"");
-    process.exit(1);
-  }
-
-  const result = await checkDedup(args[factIdx + 1], args[entityIdx + 1]);
-  console.log(JSON.stringify(result, null, 2));
 }

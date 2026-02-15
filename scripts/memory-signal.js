@@ -38,7 +38,7 @@ const HIGH_PATTERNS = {
   instruction: [
     /запомни/i, /remember\b/i, /всегда делай/i, /никогда не/i,
     /имей в виду/i, /учти,?\s*что/i, /важно,?\s*что/i,
-    /always\b/i, /never\b/i, /keep in mind/i, /note that/i,
+    /always\s+(do|use|make|keep|remember|run|check)/i, /never\s+(do|use|make|delete|remove|run|share)/i, /keep in mind/i, /note that/i,
     /не забудь/i, /don't forget/i,
   ],
   milestone: [

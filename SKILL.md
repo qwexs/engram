@@ -75,7 +75,11 @@ For full architecture details, see [references/architecture.md](references/archi
 
 - Path: `memory/agent-{id}/{session}/YYYY-MM-DD.md`
 - Header: `# YYYY-MM-DD`
-- Rotation: >1000 lines → moved to `archives/YYYY-MM/` during heartbeat
+- **Three-Layer Rotation** (>1000 lines during heartbeat):
+  1. **Archive** — full file moved to `archives/YYYY-MM/` (nothing lost)
+  2. **Stub** — auto-summary (10-20 lines) with line refs to archive and KG links
+  3. **QMD index** — archive indexed for granular search via `qmd query`
+  - Run rotation AFTER KG Extraction to minimize stub duplication
 
 ### Knowledge Graph (PARA)
 
@@ -143,7 +147,7 @@ Add to your HEARTBEAT.md:
 ```
 ## Heartbeat Flow (every 30 minutes)
 
-0. Create today's daily note + rotation check
+0. Create today's daily note + Three-Layer Rotation check
 1. Monday? → Weekly Synthesis
 2. Knowledge Graph Extraction (if notes changed)
 3. Memory Maintenance (every few days)

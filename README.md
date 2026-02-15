@@ -30,6 +30,8 @@ Deploys a three-layer memory architecture:
 - **Memory Decay** — Hot/Warm/Cold tiers with frequency resistance, like human forgetting
 - **Confidence Scoring** — 0.0–1.0 metacognition (low-confidence facts decay faster)
 - **Abstraction Ladder** — episode → pattern → principle (principles never decay)
+- **Three-Layer Rotation** — Archive (full) → Stub (auto-summary with line refs) → QMD index (zero data loss)
+- **Subagent Persistent Memory** — domain-based memory for cron subagents (decisions.md + status.md + changelog.md)
 - **Heartbeat Automation** — extraction, weekly synthesis, domain supervisor scan, maintenance on autopilot
 - **QMD Hybrid Search** — BM25 + vector embeddings + rerank, 96% token reduction vs full-file loading
 - **Dual QMD Support** — local GPU (Vulkan) or cloud (Jina AI API, free tier)

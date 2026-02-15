@@ -3,7 +3,7 @@
 ## Flow (every 30 minutes)
 
 ```
-0. Daily Note Creation + Rotation
+0. Daily Note Creation + Three-Layer Rotation
 1. Weekly Synthesis (Mondays only)
 2. Knowledge Graph Extraction (if notes changed)
 3. Memory Maintenance (every few days)
@@ -16,9 +16,16 @@
 - Check `memory/heartbeat-state.json` → `lastDailyNoteCreated[session]`
 - If today's date differs, create `memory/agent-{id}/{session}/YYYY-MM-DD.md`
 - Update `lastDailyNoteCreated[session]` to today
-- **Rotation**: If any daily note >1000 lines:
-  - Move to `archives/YYYY-MM/YYYY-MM-DD.md`
-  - Replace with stub: `# YYYY-MM-DD\n\n(rotated, see archives/)`
+- **Three-Layer Rotation**: If any daily note >1000 lines:
+  1. **Archive** (full preservation): Move original to `archives/YYYY-MM/YYYY-MM-DD.md` — nothing is lost
+  2. **Stub with summary** (smart compaction): Replace with:
+     - Header: `# YYYY-MM-DD` + `(full version: archives/YYYY-MM/YYYY-MM-DD.md)`
+     - Auto-generated summary (10-20 lines): decisions, results, status changes, new entities
+     - Each item references archive line (`→ L42`) or KG entity (`→ life/projects/xxx`)
+     - Skip facts already in Knowledge Graph (no duplication)
+     - When in doubt, include (redundancy > loss)
+  3. **QMD index** (granular access): Archive indexed for detail retrieval via `qmd query`
+  - Run rotation AFTER KG Extraction to minimize stub duplication
 
 ### Step 1: Weekly Synthesis (Mondays)
 

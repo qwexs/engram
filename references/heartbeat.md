@@ -66,6 +66,22 @@ Periodically (every few days):
 3. Remove outdated info from MEMORY.md
 4. Check `life/index.md` freshness
 
+### Step 3.5: Domain Changelog Review (опционально)
+
+Если используются домены субагентов (`memory/domains/`):
+
+1. **PROPOSAL review**: `qmd query "PROPOSAL" -c domains`
+   - Найти предложения субагентов по изменению правил
+   - Оценить и обновить `decisions.md` при необходимости
+
+2. **Changelog ротация**: для каждого домена проверить `changelog.md`
+   - Если >1000 строк → переместить в `archives/changelog-YYYY-MM.md`
+   - Создать новый `changelog.md` с заголовком + ссылкой на archives
+
+3. **KG extraction** (опционально): сканировать changelogs на дurable facts
+   - `qmd query "результат" -c domains` — найти значимые события
+   - Извлечь в Knowledge Graph (life/) если есть паттерны
+
 ### Step 4: QMD Index Update
 
 At end of heartbeat:

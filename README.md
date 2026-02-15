@@ -55,6 +55,31 @@ bun scripts/add-session.js --platform telegram --id 1234567890
   - **Local** (GPU/CPU): `npm i -g @nicepkg/qmd`
   - **Jina Fork** (cloud, no GPU): `npm i -g @qwexs/qmd` ([source](https://github.com/qwexs/qmd))
 
+## Subagent Memory
+
+Persistent memory для субагентов с `cleanup: "delete"` через **домены**:
+
+```
+memory/domains/{domain}/
+├── decisions.md    # Правила (read-only для субагента, PR-модель)
+├── status.md       # Текущее состояние (пишет субагент)
+├── changelog.md    # Append-only лог действий
+└── archives/       # Ротация changelog >1000 строк
+```
+
+**Ключевые правила:**
+- Один домен = один активный субагент
+- Одна QMD коллекция `domains` на все домены
+- Субагент не пишет в daily notes или life/
+- PROPOSAL для изменения правил → review при heartbeat
+
+```bash
+# Создать домен
+bun scripts/add-domain.js --domain monitoring --description "Мониторинг"
+```
+
+Подробнее: [references/subagent-memory.md](references/subagent-memory.md)
+
 ## Scripts
 
 | Script | Purpose |
@@ -62,6 +87,7 @@ bun scripts/add-session.js --platform telegram --id 1234567890
 | `install-qmd.js` | Interactive QMD installer (local or Jina variant) |
 | `init.js` | Full initialization (dirs, templates, QMD collections) |
 | `add-session.js` | Add new session (Telegram group, Discord channel, etc.) |
+| `add-domain.js` | Create subagent domain with persistent memory |
 | `validate.js` | Check integrity of memory structure (`--fix` to auto-repair) |
 | `migrate-v2.js` | Migrate facts to v2 schema (confidence, abstraction, tags) |
 
@@ -111,6 +137,12 @@ workspace/
 │   ├── heartbeat-state.json           # Per-session tracking
 │   ├── weekly-synthesis-tracker.json  # Synthesis schedule
 │   ├── templates/group-knowledge/     # Templates for new groups
+│   ├── domains/                       # Subagent persistent memory
+│   │   └── {domain}/
+│   │       ├── decisions.md           # Rules (read-only for subagents)
+│   │       ├── status.md              # Current state (subagent writes)
+│   │       ├── changelog.md           # Append-only action log
+│   │       └── archives/              # Rotated changelogs
 │   └── agent-main/
 │       ├── main/                      # Personal session
 │       │   └── YYYY-MM-DD.md          # Daily notes

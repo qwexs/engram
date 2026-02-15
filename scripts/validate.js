@@ -164,7 +164,38 @@ for (const file of itemsFiles) {
 }
 ok(`${itemsFiles.length} items.json files, ${totalFacts} facts (${v2Compliant} v2-compliant)`);
 
-// 4. heartbeat-state.json sessions
+// 4. Domain validation
+console.log('\n--- Domains ---');
+const domainsDir = join(WORKSPACE, 'memory', 'domains');
+if (existsSync(domainsDir)) {
+  const domainEntries = readdirSync(domainsDir, { withFileTypes: true })
+    .filter(e => e.isDirectory());
+
+  if (domainEntries.length > 20) {
+    warn(`${domainEntries.length} доменов (рекомендуется ≤20)`);
+  }
+
+  const requiredDomainFiles = ['decisions.md', 'status.md', 'changelog.md'];
+  for (const entry of domainEntries) {
+    const domainPath = join(domainsDir, entry.name);
+    for (const reqFile of requiredDomainFiles) {
+      const filePath = join(domainPath, reqFile);
+      if (!existsSync(filePath)) {
+        if (fix) {
+          writeFileSync(filePath, `# ${reqFile.replace('.md', '')}: ${entry.name}\n`);
+          fixMsg(`Created domains/${entry.name}/${reqFile}`);
+        } else {
+          error(`Domain "${entry.name}" missing: ${reqFile}`);
+        }
+      }
+    }
+  }
+  ok(`${domainEntries.length} domain(s) checked`);
+} else {
+  ok('No domains directory (optional)');
+}
+
+// 5. heartbeat-state.json sessions
 console.log('\n--- Heartbeat State ---');
 const heartbeatPath = join(WORKSPACE, 'memory/heartbeat-state.json');
 if (existsSync(heartbeatPath)) {

@@ -214,6 +214,56 @@ Each fact in `items.json` includes:
 
 Full schema: [references/fact-schema.md](references/fact-schema.md)
 
+## Subagent Memory
+
+Паттерн для субагентов с `cleanup: "delete"` и долгосрочной памятью через домены.
+
+### Quick Start
+
+```bash
+# Создать домен
+bun skills/memory-system/scripts/add-domain.js --domain monitoring --description "Мониторинг сервера"
+
+# Настроить правила в decisions.md
+# Запустить субагент с промптом из templates/spawn-prompt.md
+```
+
+### Структура домена
+
+```
+memory/domains/{domain}/
+├── decisions.md    # Правила (read-only для субагента)
+├── status.md       # Текущее состояние (пишет субагент)
+├── changelog.md    # Append-only лог (пишет субагент)
+├── archives/       # Ротация changelog
+└── README.md
+```
+
+### Правила
+
+1. **Один домен = один активный субагент** в любой момент времени
+2. `decisions.md` — read-only для субагентов; изменения через PROPOSAL в changelog
+3. Субагент НЕ пишет в daily notes или life/
+4. QMD: одна коллекция `domains` на все домены
+5. Heartbeat: review PROPOSAL, ротация changelog, опционально KG extraction
+
+### Пример spawn
+
+```javascript
+sessions_spawn({
+  label: "monitoring-check",
+  model: "sonnet",
+  cleanup: "delete",
+  prompt: `## Контекст
+Ты субагент домена monitoring.
+Твоя memory: memory/domains/monitoring/
+Прочитай decisions.md, выполни задачу, обнови status.md и changelog.md.`
+})
+```
+
+Полный шаблон промпта: `templates/spawn-prompt.md`
+Подробная документация: [references/subagent-memory.md](references/subagent-memory.md)
+
 ## Scripts
 
 ### install-qmd.js — Install QMD search engine
@@ -243,6 +293,14 @@ bun skills/memory-system/scripts/add-session.js --platform telegram --id <groupI
 ```
 
 Creates session directory, copies group-knowledge templates, adds QMD collection, updates heartbeat-state.json.
+
+### add-domain.js — Create subagent domain
+
+```bash
+bun skills/memory-system/scripts/add-domain.js --domain <name> [--description "Описание"]
+```
+
+Creates `memory/domains/{domain}/` with decisions.md, status.md, changelog.md, README.md. Registers QMD collection `domains` (one for all domains). Warns if >20 domains.
 
 ### validate.js — Check integrity
 

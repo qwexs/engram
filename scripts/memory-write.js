@@ -61,6 +61,12 @@ for (const r of required) {
   }
 }
 
+const entity = opts.entity.replace(/\\/g, "/");
+const entityDir = join(WORKSPACE, "life", entity);
+const itemsPath = join(entityDir, "items.json");
+const TZ = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
+const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
+
 // 1. Дедупликация (read-only check, регистрация после записи)
 const dedupResult = await isDuplicate(opts.fact);
 if (dedupResult.duplicate) {
@@ -111,9 +117,6 @@ const nextNum = (existingIds.length > 0 ? Math.max(...existingIds) : 0) + 1;
 const newId = `${slug}-${String(nextNum).padStart(3, "0")}`;
 
 // 4. Создать факт
-// Timezone: из переменной окружения или Europe/Moscow по умолчанию
-const TZ = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
-const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
 const newFact = {
   id: newId,
   fact: opts.fact,

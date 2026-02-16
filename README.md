@@ -15,6 +15,8 @@ Engram is an [OpenClaw](https://github.com/openclaw/openclaw) Skill that sets up
 >
 > Real numbers from 10 days of production use (25 entities, 183 facts).
 > After 1 month: **60–100x** token savings. After 6 months: the naive approach is unbearable — Engram stays the same.
+>
+> **Compaction recovery:** Subagents fill 200k context and compact. Without Engram, recovery means re-reading lossy summaries — context is partially lost, and reconstruction is expensive. With Engram, durable facts are already persisted in KG during the session. After compaction, one QMD query restores working context in **~600 tokens** instead of replaying thousands of lines of conversation history.
 
 ## What it does
 

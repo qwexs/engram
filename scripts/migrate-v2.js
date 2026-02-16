@@ -1,7 +1,7 @@
-#!/usr/bin/env bun
-// memory-system/scripts/migrate-v2.js
+﻿#!/usr/bin/env bun
+// engram/scripts/migrate-v2.js
 // Migrate items.json files from v1 to v2 schema (add confidence, abstractionLevel, tags)
-// Usage: bun skills/memory-system/scripts/migrate-v2.js [--dry-run]
+// Usage: bun skills/engram/scripts/migrate-v2.js [--dry-run]
 
 import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
@@ -17,10 +17,10 @@ const { values: args } = parseArgs({
 
 if (args.help) {
   console.log(`
-migrate-v2 — Migrate items.json files to v2 schema
+migrate-v2 вЂ” Migrate items.json files to v2 schema
 
 Usage:
-  bun skills/memory-system/scripts/migrate-v2.js [options]
+  bun skills/engram/scripts/migrate-v2.js [options]
 
 Options:
   --dry-run    Show changes without writing
@@ -96,7 +96,7 @@ for (const file of files) {
         migratedFacts++;
         changed = true;
         if (dryRun) {
-          console.log(`  ${relPath} → ${fact.id}: +confidence=${fact.confidence}, +abstractionLevel=${fact.abstractionLevel}, +tags=[]`);
+          console.log(`  ${relPath} в†’ ${fact.id}: +confidence=${fact.confidence}, +abstractionLevel=${fact.abstractionLevel}, +tags=[]`);
         }
       }
     }
@@ -105,11 +105,11 @@ for (const file of files) {
       totalFiles++;
       if (!dryRun) {
         writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
-        console.log(`✅ ${relPath}: ${data.filter((_, i) => true).length} facts`);
+        console.log(`вњ… ${relPath}: ${data.filter((_, i) => true).length} facts`);
       }
     }
   } catch (e) {
-    console.error(`❌ ${relPath}: ${e.message}`);
+    console.error(`вќЊ ${relPath}: ${e.message}`);
   }
 }
 

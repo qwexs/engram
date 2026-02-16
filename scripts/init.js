@@ -1,7 +1,7 @@
-#!/usr/bin/env bun
-// memory-system/scripts/init.js
+﻿#!/usr/bin/env bun
+// engram/scripts/init.js
 // Initialize the complete memory system from scratch
-// Usage: bun skills/memory-system/scripts/init.js [--agent-id main] [--qmd-variant auto|local|jina] [--force] [--help]
+// Usage: bun skills/engram/scripts/init.js [--agent-id main] [--qmd-variant auto|local|jina] [--force] [--help]
 
 import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'node:fs';
@@ -20,10 +20,10 @@ const { values: args } = parseArgs({
 
 if (args.help) {
   console.log(`
-memory-system init — Initialize complete memory system
+engram init вЂ” Initialize complete memory system
 
 Usage:
-  bun skills/memory-system/scripts/init.js [options]
+  bun skills/engram/scripts/init.js [options]
 
 Options:
   --agent-id <id>       Agent identifier (default: main)
@@ -39,9 +39,9 @@ What it does:
   5. Runs initial QMD index
 
 Examples:
-  bun skills/memory-system/scripts/init.js
-  bun skills/memory-system/scripts/init.js --agent-id work --qmd-variant jina
-  bun skills/memory-system/scripts/init.js --force
+  bun skills/engram/scripts/init.js
+  bun skills/engram/scripts/init.js --agent-id work --qmd-variant jina
+  bun skills/engram/scripts/init.js --force
 `);
   process.exit(0);
 }
@@ -49,7 +49,7 @@ Examples:
 const agentId = args['agent-id'];
 const WORKSPACE = process.cwd();
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
-const SKILL_DIR = resolve(SCRIPT_DIR, '..');
+const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'assets', 'templates');
 
 // --- Detect QMD ---
@@ -79,7 +79,7 @@ if (!args.force) {
   if (existsSync(join(WORKSPACE, 'memory'))) conflicts.push('memory/');
   if (existsSync(join(WORKSPACE, 'life'))) conflicts.push('life/');
   if (conflicts.length > 0) {
-    console.error('❌ Existing directories found:');
+    console.error('вќЊ Existing directories found:');
     conflicts.forEach(c => console.error(`   - ${c}`));
     console.error('Use --force to merge (existing files will NOT be overwritten)');
     process.exit(1);
@@ -106,7 +106,7 @@ const dirs = [
 for (const dir of dirs) {
   mkdirSync(join(WORKSPACE, dir), { recursive: true });
 }
-console.log(`📁 Created ${dirs.length} directories`);
+console.log(`рџ“Ѓ Created ${dirs.length} directories`);
 
 // --- Copy templates ---
 function copyTemplate(templateName, destPath, replacements = {}) {
@@ -117,7 +117,7 @@ function copyTemplate(templateName, destPath, replacements = {}) {
   }
   const templatePath = join(TEMPLATES, templateName);
   if (!existsSync(templatePath)) {
-    console.error(`  ⚠️  Template not found: ${templateName}`);
+    console.error(`  вљ пёЏ  Template not found: ${templateName}`);
     return;
   }
   mkdirSync(dirname(dest), { recursive: true });
@@ -126,13 +126,13 @@ function copyTemplate(templateName, destPath, replacements = {}) {
     content = content.replaceAll(`{{${key}}}`, value);
   }
   writeFileSync(dest, content);
-  console.log(`  ✅ ${destPath}`);
+  console.log(`  вњ… ${destPath}`);
 }
 
 const today = new Date().toISOString().split('T')[0];
 const replacements = { AGENT_ID: agentId, DATE: today, SESSION_KEY: 'main' };
 
-console.log('\n📄 Copying templates...');
+console.log('\nрџ“„ Copying templates...');
 copyTemplate('MEMORY.md', 'MEMORY.md', replacements);
 copyTemplate('memory-readme.md', 'memory/README.md', replacements);
 copyTemplate('heartbeat-state.json', 'memory/heartbeat-state.json', replacements);
@@ -148,7 +148,7 @@ for (const tmpl of ['clients.md', 'contacts.md', 'decisions.md', 'resources.md']
 
 // --- QMD collections ---
 if (hasQmd) {
-  console.log('\n🔍 Setting up QMD collections...');
+  console.log('\nрџ”Ќ Setting up QMD collections...');
   const collections = [
     { path: '.', name: 'openclaw-root', mask: '*.md' },
     { path: `memory/agent-${agentId}/main`, name: `openclaw-memory-agent-${agentId}-main`, mask: '**/*.md' },
@@ -158,20 +158,20 @@ if (hasQmd) {
   for (const col of collections) {
     try {
       execSync(`qmd collection add "${join(WORKSPACE, col.path)}" --name ${col.name} --mask "${col.mask}"`, { stdio: 'pipe' });
-      console.log(`  ✅ ${col.name}`);
+      console.log(`  вњ… ${col.name}`);
     } catch {
-      console.log(`  ⚠️  ${col.name} (may already exist)`);
+      console.log(`  вљ пёЏ  ${col.name} (may already exist)`);
     }
   }
 
-  console.log('\n📊 Running QMD index...');
+  console.log('\nрџ“Љ Running QMD index...');
   try {
     execSync('qmd update', { stdio: 'inherit' });
   } catch {
-    console.warn('  ⚠️  qmd update failed — run manually');
+    console.warn('  вљ пёЏ  qmd update failed вЂ” run manually');
   }
 } else {
-  console.log('\n⚠️  QMD not found. Install:');
+  console.log('\nвљ пёЏ  QMD not found. Install:');
   console.log('  Local (GPU):  npm i -g @nicepkg/qmd');
   console.log('  Jina (API):   npm i -g @qwexs/qmd');
   console.log('  Memory structure created without search indexing.');
@@ -179,7 +179,7 @@ if (hasQmd) {
 
 // --- Summary ---
 console.log(`
-✅ Memory system initialized!
+вњ… Memory system initialized!
    Agent ID:        ${agentId}
    QMD variant:     ${qmdVariant}${hasQmd ? '' : ' (not installed)'}
    Main session:    memory/agent-${agentId}/main/
@@ -189,6 +189,6 @@ console.log(`
 Next steps:
   1. Add memory rules to AGENTS.md (see SKILL.md or references/architecture.md)
   2. Configure heartbeat (see references/heartbeat.md)
-  3. Add sessions: bun skills/memory-system/scripts/add-session.js --platform telegram --id <groupId>
+  3. Add sessions: bun skills/engram/scripts/add-session.js --platform telegram --id <groupId>
   4. Run: qmd embed (for vector search)
 `);

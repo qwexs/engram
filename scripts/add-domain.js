@@ -1,7 +1,7 @@
-#!/usr/bin/env bun
-// memory-system/scripts/add-domain.js
-// Создать новый домен для субагента с persistent memory
-// Usage: bun skills/memory-system/scripts/add-domain.js --domain monitoring [--description "Описание"]
+﻿#!/usr/bin/env bun
+// engram/scripts/add-domain.js
+// РЎРѕР·РґР°С‚СЊ РЅРѕРІС‹Р№ РґРѕРјРµРЅ РґР»СЏ СЃСѓР±Р°РіРµРЅС‚Р° СЃ persistent memory
+// Usage: bun skills/engram/scripts/add-domain.js --domain monitoring [--description "РћРїРёСЃР°РЅРёРµ"]
 
 import { parseArgs } from 'node:util';
 import { mkdirSync, readdirSync } from 'node:fs';
@@ -19,19 +19,19 @@ const { values: args } = parseArgs({
 
 if (args.help || !args.domain) {
   console.log(`
-add-domain — Создать домен для субагента с persistent memory
+add-domain вЂ” РЎРѕР·РґР°С‚СЊ РґРѕРјРµРЅ РґР»СЏ СЃСѓР±Р°РіРµРЅС‚Р° СЃ persistent memory
 
 Usage:
-  bun skills/memory-system/scripts/add-domain.js --domain <name> [options]
+  bun skills/engram/scripts/add-domain.js --domain <name> [options]
 
 Options:
-  --domain <name>         Имя домена (латиница, дефисы)
-  --description <text>    Описание домена
-  -h, --help              Показать справку
+  --domain <name>         РРјСЏ РґРѕРјРµРЅР° (Р»Р°С‚РёРЅРёС†Р°, РґРµС„РёСЃС‹)
+  --description <text>    РћРїРёСЃР°РЅРёРµ РґРѕРјРµРЅР°
+  -h, --help              РџРѕРєР°Р·Р°С‚СЊ СЃРїСЂР°РІРєСѓ
 
 Examples:
-  bun skills/memory-system/scripts/add-domain.js --domain monitoring
-  bun skills/memory-system/scripts/add-domain.js --domain monitoring --description "Мониторинг инфраструктуры"
+  bun skills/engram/scripts/add-domain.js --domain monitoring
+  bun skills/engram/scripts/add-domain.js --domain monitoring --description "РњРѕРЅРёС‚РѕСЂРёРЅРі РёРЅС„СЂР°СЃС‚СЂСѓРєС‚СѓСЂС‹"
 `);
   process.exit(args.help ? 0 : 1);
 }
@@ -40,38 +40,38 @@ const domain = args.domain;
 const description = args.description || domain;
 const WORKSPACE = process.cwd();
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
-const SKILL_DIR = resolve(SCRIPT_DIR, '..');
+const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'templates', 'domain');
 
-// Валидация имени домена
+// Р’Р°Р»РёРґР°С†РёСЏ РёРјРµРЅРё РґРѕРјРµРЅР°
 if (!/^[a-z][a-z0-9-]*$/.test(domain)) {
-  console.error('❌ Имя домена должно начинаться с буквы и содержать только a-z, 0-9, дефис');
+  console.error('вќЊ РРјСЏ РґРѕРјРµРЅР° РґРѕР»Р¶РЅРѕ РЅР°С‡РёРЅР°С‚СЊСЃСЏ СЃ Р±СѓРєРІС‹ Рё СЃРѕРґРµСЂР¶Р°С‚СЊ С‚РѕР»СЊРєРѕ a-z, 0-9, РґРµС„РёСЃ');
   process.exit(1);
 }
 
 const domainsDir = join(WORKSPACE, 'memory', 'domains');
 const domainDir = join(domainsDir, domain);
 
-// Проверка: домен уже существует
+// РџСЂРѕРІРµСЂРєР°: РґРѕРјРµРЅ СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓРµС‚
 if (await Bun.file(join(domainDir, 'README.md')).exists()) {
-  console.error(`❌ Домен уже существует: memory/domains/${domain}/`);
+  console.error(`вќЊ Р”РѕРјРµРЅ СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓРµС‚: memory/domains/${domain}/`);
   process.exit(1);
 }
 
-// Предупреждение при >20 доменах
+// РџСЂРµРґСѓРїСЂРµР¶РґРµРЅРёРµ РїСЂРё >20 РґРѕРјРµРЅР°С…
 try {
   const existing = readdirSync(domainsDir, { withFileTypes: true })
     .filter(e => e.isDirectory()).length;
   if (existing >= 20) {
-    console.warn(`⚠️  Уже ${existing} доменов. Рекомендуется не более 20.`);
+    console.warn(`вљ пёЏ  РЈР¶Рµ ${existing} РґРѕРјРµРЅРѕРІ. Р РµРєРѕРјРµРЅРґСѓРµС‚СЃСЏ РЅРµ Р±РѕР»РµРµ 20.`);
   }
-} catch { /* директории ещё нет */ }
+} catch { /* РґРёСЂРµРєС‚РѕСЂРёРё РµС‰С‘ РЅРµС‚ */ }
 
-// Создание директории
+// РЎРѕР·РґР°РЅРёРµ РґРёСЂРµРєС‚РѕСЂРёРё
 mkdirSync(join(domainDir, 'archives'), { recursive: true });
-console.log(`📁 Создан: memory/domains/${domain}/`);
+console.log(`рџ“Ѓ РЎРѕР·РґР°РЅ: memory/domains/${domain}/`);
 
-// Копирование шаблонов с подстановками
+// РљРѕРїРёСЂРѕРІР°РЅРёРµ С€Р°Р±Р»РѕРЅРѕРІ СЃ РїРѕРґСЃС‚Р°РЅРѕРІРєР°РјРё
 const today = new Date().toISOString().split('T')[0];
 const replacements = { DOMAIN: domain, DESCRIPTION: description, DATE: today };
 
@@ -80,7 +80,7 @@ for (const tmpl of templates) {
   const src = join(TEMPLATES, tmpl);
   const srcFile = Bun.file(src);
   if (!await srcFile.exists()) {
-    console.error(`❌ Шаблон не найден: templates/domain/${tmpl}`);
+    console.error(`вќЊ РЁР°Р±Р»РѕРЅ РЅРµ РЅР°Р№РґРµРЅ: templates/domain/${tmpl}`);
     process.exit(1);
   }
   let content = await srcFile.text();
@@ -88,10 +88,10 @@ for (const tmpl of templates) {
     content = content.replaceAll(`{{${key}}}`, value);
   }
   await Bun.write(join(domainDir, tmpl), content);
-  console.log(`  ✅ ${tmpl}`);
+  console.log(`  вњ… ${tmpl}`);
 }
 
-// Регистрация QMD коллекции domains (одна на все домены)
+// Р РµРіРёСЃС‚СЂР°С†РёСЏ QMD РєРѕР»Р»РµРєС†РёРё domains (РѕРґРЅР° РЅР° РІСЃРµ РґРѕРјРµРЅС‹)
 function qmdAvailable() {
   try {
     execSync('qmd --help', { stdio: 'pipe' });
@@ -103,33 +103,33 @@ function qmdAvailable() {
 
 if (qmdAvailable()) {
   try {
-    // Пробуем добавить коллекцию — если уже есть, будет ошибка (OK)
+    // РџСЂРѕР±СѓРµРј РґРѕР±Р°РІРёС‚СЊ РєРѕР»Р»РµРєС†РёСЋ вЂ” РµСЃР»Рё СѓР¶Рµ РµСЃС‚СЊ, Р±СѓРґРµС‚ РѕС€РёР±РєР° (OK)
     execSync(`qmd collection add "${join(WORKSPACE, 'memory', 'domains')}" --name domains --mask "**/*.md"`, { stdio: 'pipe' });
-    console.log('🔍 QMD коллекция `domains` создана');
+    console.log('рџ”Ќ QMD РєРѕР»Р»РµРєС†РёСЏ `domains` СЃРѕР·РґР°РЅР°');
   } catch {
-    console.log('🔍 QMD коллекция `domains` уже существует');
+    console.log('рџ”Ќ QMD РєРѕР»Р»РµРєС†РёСЏ `domains` СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓРµС‚');
   }
 
   try {
     execSync('qmd update', { stdio: 'pipe' });
-    console.log('📊 QMD индекс обновлён');
+    console.log('рџ“Љ QMD РёРЅРґРµРєСЃ РѕР±РЅРѕРІР»С‘РЅ');
   } catch {
-    console.warn('⚠️  qmd update не удался — запустите вручную');
+    console.warn('вљ пёЏ  qmd update РЅРµ СѓРґР°Р»СЃСЏ вЂ” Р·Р°РїСѓСЃС‚РёС‚Рµ РІСЂСѓС‡РЅСѓСЋ');
   }
 } else {
-  console.log('⚠️  QMD не найден. Добавьте коллекцию вручную:');
+  console.log('вљ пёЏ  QMD РЅРµ РЅР°Р№РґРµРЅ. Р”РѕР±Р°РІСЊС‚Рµ РєРѕР»Р»РµРєС†РёСЋ РІСЂСѓС‡РЅСѓСЋ:');
   console.log(`   qmd collection add "${join(WORKSPACE, 'memory', 'domains')}" --name domains --mask "**/*.md"`);
 }
 
 console.log(`
-✅ Домен создан!
-   Домен:        ${domain}
-   Описание:     ${description}
-   Путь:         memory/domains/${domain}/
-   QMD:          qmd query "запрос" -c domains
+вњ… Р”РѕРјРµРЅ СЃРѕР·РґР°РЅ!
+   Р”РѕРјРµРЅ:        ${domain}
+   РћРїРёСЃР°РЅРёРµ:     ${description}
+   РџСѓС‚СЊ:         memory/domains/${domain}/
+   QMD:          qmd query "Р·Р°РїСЂРѕСЃ" -c domains
 
-Использование:
-  1. Настройте правила в decisions.md
-  2. Запустите субагент с промптом из templates/spawn-prompt.md
-  3. Субагент обновит status.md и changelog.md
+РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ:
+  1. РќР°СЃС‚СЂРѕР№С‚Рµ РїСЂР°РІРёР»Р° РІ decisions.md
+  2. Р—Р°РїСѓСЃС‚РёС‚Рµ СЃСѓР±Р°РіРµРЅС‚ СЃ РїСЂРѕРјРїС‚РѕРј РёР· templates/spawn-prompt.md
+  3. РЎСѓР±Р°РіРµРЅС‚ РѕР±РЅРѕРІРёС‚ status.md Рё changelog.md
 `);

@@ -1,5 +1,5 @@
-#!/usr/bin/env node
-// memory-system/scripts/validate.js
+﻿#!/usr/bin/env node
+// engram/scripts/validate.js
 // Check integrity of the memory system
 // Usage: node scripts/validate.js [--fix] [--agent-id main]
 
@@ -18,7 +18,7 @@ const { values: args } = parseArgs({
 
 if (args.help) {
   console.log(`
-validate — Check memory system integrity
+validate вЂ” Check memory system integrity
 
 Usage:
   node scripts/validate.js [options]
@@ -36,7 +36,7 @@ Checks:
   5. ID uniqueness within each items.json
   6. No broken supersededBy references
   7. BOM encoding detection and fix
-  8. Legacy format migration (bare array → v2 wrapper)
+  8. Legacy format migration (bare array в†’ v2 wrapper)
 `);
   process.exit(0);
 }
@@ -52,10 +52,10 @@ let fixed = 0;
 const VALID_ABSTRACTION = ['episode', 'pattern', 'principle'];
 const VALID_STATUS = ['active', 'superseded', 'pending'];
 
-function error(msg) { console.error(`❌ ${msg}`); errors++; }
-function warn(msg) { console.warn(`⚠️  ${msg}`); warnings++; }
-function ok(msg) { console.log(`✅ ${msg}`); }
-function fixMsg(msg) { console.log(`🔧 ${msg}`); fixed++; }
+function error(msg) { console.error(`вќЊ ${msg}`); errors++; }
+function warn(msg) { console.warn(`вљ пёЏ  ${msg}`); warnings++; }
+function ok(msg) { console.log(`вњ… ${msg}`); }
+function fixMsg(msg) { console.log(`рџ”§ ${msg}`); fixed++; }
 
 // 1. Directory structure
 const requiredDirs = [
@@ -145,7 +145,7 @@ for (const file of itemsFiles) {
   try {
     data = JSON.parse(raw);
   } catch (e) {
-    error(`${relPath}: invalid JSON — ${e.message}`);
+    error(`${relPath}: invalid JSON вЂ” ${e.message}`);
     continue;
   }
 
@@ -265,7 +265,7 @@ if (existsSync(domainsDir)) {
     .filter(e => e.isDirectory());
 
   if (domainEntries.length > 20) {
-    warn(`${domainEntries.length} доменов (рекомендуется ≤20)`);
+    warn(`${domainEntries.length} РґРѕРјРµРЅРѕРІ (СЂРµРєРѕРјРµРЅРґСѓРµС‚СЃСЏ в‰¤20)`);
   }
 
   const requiredDomainFiles = ['decisions.md', 'status.md', 'changelog.md'];

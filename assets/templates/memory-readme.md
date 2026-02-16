@@ -1,4 +1,4 @@
-# Memory Structure - Session-Based Isolation
+﻿# Memory Structure - Session-Based Isolation
 
 This directory contains session-separated memory for OpenClaw agent.
 
@@ -11,11 +11,11 @@ agent:<agentId>:<sessionKey>
 ```
 
 **Examples:**
-- `agent:{{AGENT_ID}}:main` — Personal chat (main session)
-- `agent:{{AGENT_ID}}:telegram:group:-100XXXXXXXXXX` — Telegram group
-- `agent:{{AGENT_ID}}:discord:channel:XXXXXXXXXX` — Discord channel
+- `agent:{{AGENT_ID}}:main` вЂ” Personal chat (main session)
+- `agent:{{AGENT_ID}}:telegram:group:-100XXXXXXXXXX` вЂ” Telegram group
+- `agent:{{AGENT_ID}}:discord:channel:XXXXXXXXXX` вЂ” Discord channel
 
-### Session Key → File Path Mapping
+### Session Key в†’ File Path Mapping
 
 Session keys contain colons (`:`) which are problematic for file paths on Windows/macOS.
 
@@ -70,20 +70,20 @@ memory/
 ### Main Session (`agent:{{AGENT_ID}}:main`)
 - **Access**: Full access to MEMORY.md + life/ (Knowledge Graph)
 - **QMD Collection**: `openclaw-memory-agent-{{AGENT_ID}}-main`
-- **Privacy**: Highest — contains personal decisions, learnings, preferences
+- **Privacy**: Highest вЂ” contains personal decisions, learnings, preferences
 
 ### Group Sessions (`agent:{{AGENT_ID}}:{platform}-{id}`)
 - **Access**: NO access to MEMORY.md or other sessions
 - **QMD Collection**: `openclaw-memory-agent-{{AGENT_ID}}-{platform}-{id}`
-- **Privacy**: Group-isolated — only this group's context
+- **Privacy**: Group-isolated вЂ” only this group's context
 
 ## Rules
 
-1. **NEVER cross session boundaries** — personal ≠ groups ≠ channels
+1. **NEVER cross session boundaries** вЂ” personal в‰  groups в‰  channels
 2. **Each session has its own daily notes** (`YYYY-MM-DD.md`)
 3. **MEMORY.md is ONLY for main session** (root-level file, not per-session)
 4. **QMD search MUST use `-c` flag** to specify session collection
-5. **No references between sessions** — treat each as independent
+5. **No references between sessions** вЂ” treat each as independent
 
 ## QMD Collections
 
@@ -101,14 +101,14 @@ qmd query "topic" -c openclaw-memory-agent-{{AGENT_ID}}-{platform}-{id}
 
 Use the add-session script:
 ```bash
-bun skills/memory-system/scripts/add-session.js --platform telegram --id {groupId}
+bun skills/engram/scripts/add-session.js --platform telegram --id {groupId}
 ```
 
 Or manually:
 1. Create `memory/agent-{{AGENT_ID}}/{platform}-{id}/`
-2. Copy `memory/templates/group-knowledge/` → `knowledge/`
+2. Copy `memory/templates/group-knowledge/` в†’ `knowledge/`
 3. Add QMD collection
-4. Add session key to `memory/heartbeat-state.json` → `lastDailyNoteCreated`
+4. Add session key to `memory/heartbeat-state.json` в†’ `lastDailyNoteCreated`
 5. Run `qmd update`
 
 ## Daily Note Rotation

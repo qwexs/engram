@@ -72,7 +72,30 @@ bun scripts/add-session.js --platform telegram --id 1234567890
 - [Bun](https://bun.sh) runtime
 - QMD — installed via `scripts/install-qmd.js`:
   - **Local** (GPU/CPU): `npm i -g @nicepkg/qmd`
-  - **Jina Fork** (cloud, no GPU): `npm i -g @qwexs/qmd` ([source](https://github.com/qwexs/qmd))
+  - **Cloud** (no GPU required): `npm i -g @qwexs/qmd` ([source](https://github.com/qwexs/qmd))
+
+### QMD Provider Configuration
+
+By default, QMD runs models locally (~2GB GGUF download on first use). To use cloud APIs instead:
+
+```sh
+# OpenAI
+export QMD_LLM_PROVIDER=openai
+export OPENAI_API_KEY=sk-proj-xxx
+# Optional: export OPENAI_EMBED_MODEL=text-embedding-3-small
+# Optional: export OPENAI_GENERATE_MODEL=gpt-4o-mini
+# Optional: export OPENAI_BASE_URL=https://your-provider.com/v1
+
+# — or —
+
+# Jina AI
+export QMD_LLM_PROVIDER=jina
+export JINA_API_KEY=jina_xxxxxxxxxxxx
+# Optional: export JINA_EMBED_MODEL=jina-embeddings-v3
+# Optional: export JINA_RERANK_MODEL=jina-reranker-v2-base-multilingual
+```
+
+> Full environment variable reference: [qwexs/qmd README](https://github.com/qwexs/qmd#environment-variables)
 
 ## Subagent Memory
 

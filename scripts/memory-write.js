@@ -24,6 +24,34 @@ function parseArgs(argv) {
 
 const opts = parseArgs(process.argv);
 
+// 0. Access tracking mode: --access --entity <entity> --id <fact-id>
+if (opts.access) {
+  if (!opts.entity || !opts.id) {
+    console.error("❌ --access требует --entity и --id");
+    process.exit(1);
+  }
+  const entity = opts.entity.replace(/\\/g, "/");
+  const itemsPath = join(WORKSPACE, "life", entity, "items.json");
+  const TZ = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
+  try {
+    const data = await Bun.file(itemsPath).json();
+    const fact = data.facts.find(f => f.id === opts.id);
+    if (!fact) {
+      console.error(`❌ Факт ${opts.id} не найден в ${entity}`);
+      process.exit(1);
+    }
+    fact.accessCount = (fact.accessCount || 0) + 1;
+    fact.lastAccessed = today;
+    await Bun.write(itemsPath, JSON.stringify(data, null, 2));
+    console.log(JSON.stringify({ status: "accessed", id: opts.id, accessCount: fact.accessCount, lastAccessed: today }));
+  } catch (e) {
+    console.error(`❌ ${e.message}`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 // Валидация обязательных полей
 const required = ["entity", "fact", "category"];
 for (const r of required) {
@@ -32,10 +60,6 @@ for (const r of required) {
     process.exit(1);
   }
 }
-
-const entity = opts.entity.replace(/\\/g, "/"); // нормализация для Windows
-const entityDir = join(WORKSPACE, "life", entity);
-const itemsPath = join(entityDir, "items.json");
 
 // 1. Дедупликация (read-only check, регистрация после записи)
 const dedupResult = await isDuplicate(opts.fact);

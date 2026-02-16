@@ -4,6 +4,18 @@
 
 Engram is an [OpenClaw](https://github.com/openclaw/openclaw) Skill that sets up a production-ready memory system for AI agents — from scratch, in one command.
 
+> **Why Engram?** Naive memory = load everything every session. That's `O(days)` — it grows forever.
+> Engram flips this: summaries are `O(entities)`, QMD queries are `O(relevance)`. The longer you run, the more you save.
+>
+> | Approach | Tokens/session | Growth |
+> |----------|---------------|--------|
+> | Naive (all daily notes) | ~27k+ | Linear with time ↑ |
+> | Engram summaries | ~8k | Flat (entity count) |
+> | Engram QMD query | ~600 | Flat (top-K results) |
+>
+> Real numbers from 10 days of production use (25 entities, 183 facts).
+> After 1 month: **60–100x** token savings. After 6 months: the naive approach is unbearable — Engram stays the same.
+
 ## What it does
 
 Deploys a three-layer memory architecture:

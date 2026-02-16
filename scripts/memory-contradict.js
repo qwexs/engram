@@ -1,27 +1,41 @@
 #!/usr/bin/env bun
-// Детектор противоречий в фактах через QMD + keyword overlap
-// Использование: bun scripts/memory-contradict.js --fact "Prefers JavaScript" --entity "areas/people/sergey"
+// Детектор противоречий в фактах через keyword overlap
+// Intra-entity: bun scripts/memory-contradict.js --fact "Prefers JS" --entity "areas/people/sergey"
+// Cross-entity: bun scripts/memory-contradict.js --fact "Prefers JS" --entity "areas/people/sergey" --cross-entity
 
 import { join } from "path";
 
 const WORKSPACE = join(import.meta.dir, "..");
 
 // Парсинг аргументов
-const args = process.argv.slice(2);
-const factIdx = args.indexOf("--fact");
-const entityIdx = args.indexOf("--entity");
+function parseArgs(argv) {
+  const args = argv.slice(2);
+  const opts = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith("--") && args[i + 1] && !args[i + 1].startsWith("--")) {
+      opts[args[i].slice(2)] = args[i + 1];
+      i++;
+    } else if (args[i].startsWith("--")) {
+      opts[args[i].slice(2)] = true;
+    }
+  }
+  return opts;
+}
 
-if (factIdx === -1 || !args[factIdx + 1]) {
+const opts = parseArgs(process.argv);
+
+if (!opts.fact) {
   console.error("❌ Требуется --fact \"текст факта\"");
   process.exit(1);
 }
-if (entityIdx === -1 || !args[entityIdx + 1]) {
+if (!opts.entity) {
   console.error("❌ Требуется --entity \"путь/к/сущности\"");
   process.exit(1);
 }
 
-const factText = args[factIdx + 1];
-const entity = args[entityIdx + 1];
+const factText = opts.fact;
+const entity = opts.entity.replace(/\\/g, "/"); // нормализация для Windows
+const crossEntity = !!opts["cross-entity"];
 
 // Извлечь ключевые слова из текста
 function extractKeywords(text) {
@@ -32,7 +46,7 @@ function extractKeywords(text) {
     .filter(w => w.length > 3);
 }
 
-// Вычислить similarity по keyword overlap (Jaccard)
+// Jaccard similarity по keyword overlap
 function keywordSimilarity(words1, words2) {
   const set1 = new Set(words1);
   const set2 = new Set(words2);
@@ -41,38 +55,130 @@ function keywordSimilarity(words1, words2) {
   return union.size > 0 ? intersection.length / union.size : 0;
 }
 
-// 1. Прочитать facts из entity
-const entityItemsPath = join(WORKSPACE, "life", entity, "items.json");
-let entityFacts = [];
-try {
-  const data = await Bun.file(entityItemsPath).json();
-  entityFacts = (data.facts || []).filter(f => f.status === "active");
-} catch {
-  // Entity не существует или пустой
-}
-
-// 2. Найти конфликты через keyword overlap
-const newKeywords = extractKeywords(factText);
-const conflicts = [];
-
-for (const existingFact of entityFacts) {
-  const existingKeywords = extractKeywords(existingFact.fact);
-  const similarity = keywordSimilarity(newKeywords, existingKeywords);
-
-  // Порог: ≥0.3 similarity + хотя бы 2 общих слова
-  const commonWords = newKeywords.filter(w => existingKeywords.includes(w));
-  if (similarity >= 0.3 && commonWords.length >= 2) {
-    conflicts.push({
-      id: existingFact.id,
-      fact: existingFact.fact,
-      category: existingFact.category,
-      similarity: parseFloat(similarity.toFixed(2)),
-      commonKeywords: commonWords,
-    });
+// Загрузить факты из entity items.json
+async function loadEntityFacts(entityPath) {
+  const itemsPath = join(WORKSPACE, "life", entityPath, "items.json");
+  try {
+    const data = await Bun.file(itemsPath).json();
+    return (data.facts || [])
+      .filter(f => f.status === "active" && (f.fact || f.text))
+      .map(f => ({ ...f, fact: f.fact || f.text, entityPath }));
+  } catch {
+    return [];
   }
 }
 
-// Сортировать по similarity (desc)
-conflicts.sort((a, b) => b.similarity - a.similarity);
+// Найти конфликты через keyword overlap
+function findConflicts(newKeywords, facts) {
+  const conflicts = [];
+  for (const fact of facts) {
+    if (!fact.fact) continue; // пропустить факты без текста
+    const existingKeywords = extractKeywords(fact.fact);
+    const similarity = keywordSimilarity(newKeywords, existingKeywords);
+    const commonWords = newKeywords.filter(w => existingKeywords.includes(w));
 
-console.log(JSON.stringify({ conflicts }, null, 2));
+    if (similarity >= 0.3 && commonWords.length >= 2) {
+      conflicts.push({
+        id: fact.id,
+        entity: fact.entityPath,
+        fact: fact.fact,
+        category: fact.category,
+        similarity: parseFloat(similarity.toFixed(2)),
+        commonKeywords: commonWords,
+      });
+    }
+  }
+  return conflicts.sort((a, b) => b.similarity - a.similarity);
+}
+
+// Cross-entity: QMD discovery → read items.json → Jaccard
+async function discoverEntitiesViaQmd(queryText) {
+  try {
+    // qmd query (BM25 + vectors + rerank) для лучшего качества
+    const proc = Bun.spawn(["qmd", "query", queryText, "-c", "life"], {
+      cwd: WORKSPACE,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const output = await new Response(proc.stdout).text();
+    await proc.exited;
+
+    // Извлечь entity paths из QMD search output
+    // QMD может выводить пути в двух форматах:
+    //   Слэш: qmd://life/areas/people/sergey/summary.md:42
+    //   Дефис (flatten): qmd://life/areas-people-sergey-summary.md:42
+    const entityPaths = new Set();
+
+    // Слэш-формат
+    const slashRegex = /qmd:\/\/life\/((?:projects|areas|resources)\/[\w\-\/]+?)\/(?:summary\.md|items\.json)/gm;
+    for (const match of output.matchAll(slashRegex)) {
+      entityPaths.add(match[1]);
+    }
+
+    // Дефис-формат: построить маппинг из реальных entity paths на диске
+    if (entityPaths.size === 0) {
+      const { Glob } = await import("bun");
+      const glob = new Glob("**/items.json");
+      const lifeDir = join(WORKSPACE, "life");
+      const entityMap = new Map(); // "areas-people-sergey" → "areas/people/sergey"
+
+      for await (const path of glob.scan({ cwd: lifeDir })) {
+        const entityPath = path.replace(/[\/\\]items\.json$/, "").replace(/\\/g, "/");
+        const flatKey = entityPath.replace(/\//g, "-");
+        entityMap.set(flatKey, entityPath);
+      }
+
+      // Найти flatten paths в QMD output и восстановить
+      const dashRegex = /qmd:\/\/life\/([\w\-]+)-(?:summary|items)\.(?:md|json)/gm;
+      for (const match of output.matchAll(dashRegex)) {
+        const candidate = match[1];
+        const resolved = entityMap.get(candidate);
+        if (resolved) {
+          entityPaths.add(resolved.replace(/\\/g, "/"));
+        }
+      }
+    }
+
+    return [...entityPaths];
+  } catch (e) {
+    console.error(`❌ Ошибка QMD: ${e.message}`);
+    return [];
+  }
+}
+
+// === Main ===
+
+const newKeywords = extractKeywords(factText);
+
+// 1. Intra-entity (всегда)
+const localFacts = await loadEntityFacts(entity);
+const localConflicts = findConflicts(newKeywords, localFacts);
+
+// 2. Cross-entity (опционально)
+let crossConflicts = [];
+let discoveredPaths = [];
+if (crossEntity) {
+  discoveredPaths = await discoverEntitiesViaQmd(factText);
+
+  // Загрузить факты из найденных entities (кроме текущей)
+  const crossFacts = [];
+  for (const ep of discoveredPaths) {
+    if (ep !== entity) {
+      const facts = await loadEntityFacts(ep);
+      crossFacts.push(...facts);
+    }
+  }
+
+  crossConflicts = findConflicts(newKeywords, crossFacts);
+}
+
+// Вывод
+const result = {
+  conflicts: localConflicts,
+};
+if (crossEntity) {
+  result.crossEntityConflicts = crossConflicts;
+  result.entitiesSearched = discoveredPaths.length;
+}
+
+console.log(JSON.stringify(result, null, 2));

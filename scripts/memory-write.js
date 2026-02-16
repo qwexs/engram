@@ -33,7 +33,7 @@ for (const r of required) {
   }
 }
 
-const entity = opts.entity;
+const entity = opts.entity.replace(/\\/g, "/"); // нормализация для Windows
 const entityDir = join(WORKSPACE, "life", entity);
 const itemsPath = join(entityDir, "items.json");
 
@@ -87,7 +87,9 @@ const nextNum = (existingIds.length > 0 ? Math.max(...existingIds) : 0) + 1;
 const newId = `${slug}-${String(nextNum).padStart(3, "0")}`;
 
 // 4. Создать факт
-const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" });
+// Timezone: из переменной окружения или Europe/Moscow по умолчанию
+const TZ = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
+const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
 const newFact = {
   id: newId,
   fact: opts.fact,
@@ -104,24 +106,45 @@ const newFact = {
   accessCount: 1,
 };
 
-// 5. Записать
+// 5. Проверка противоречий (опционально)
+let contradictions = null;
+if (opts["check-contradictions"]) {
+  try {
+    const crossFlag = opts["cross-entity"] ? "--cross-entity" : "";
+    const cmdArgs = ["bun", "scripts/memory-contradict.js", "--fact", opts.fact, "--entity", entity];
+    if (crossFlag) cmdArgs.push(crossFlag);
+    const proc = Bun.spawn(cmdArgs, { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    contradictions = JSON.parse(out);
+  } catch {}
+}
+
+// 6. Записать
 data.facts.push(newFact);
 await Bun.write(itemsPath, JSON.stringify(data, null, 2));
 
-// 5.1 Зарегистрировать хэш после успешной записи
+// 6.1 Зарегистрировать хэш после успешной записи
 await registerHash(factHash, entity);
 
-// 6. Валидация KG
+// 7. Валидация KG
 try {
   const proc = Bun.spawn(["bun", "scripts/validate-kg.js"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
   await proc.exited;
 } catch {}
 
-// 7. QMD update
+// 8. QMD update
 try {
   const proc = Bun.spawn(["qmd", "update"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
   await proc.exited;
 } catch {}
 
-// 8. Вывод результата
-console.log(JSON.stringify({ status: "created", fact: newFact }));
+// 9. Вывод результата
+const result = { status: "created", fact: newFact };
+if (contradictions) {
+  const total = (contradictions.conflicts?.length || 0) + (contradictions.crossEntityConflicts?.length || 0);
+  if (total > 0) {
+    result.warnings = { contradictions };
+  }
+}
+console.log(JSON.stringify(result));

@@ -38,7 +38,6 @@ export async function loadHashes() {
 
 // Сохранить индекс хэшей
 export async function saveHashes(hashes) {
-  const dir = join(WORKSPACE, "workspace", "memory-state");
   await Bun.write(HASH_FILE, JSON.stringify(hashes, null, 2));
 }
 
@@ -79,7 +78,7 @@ async function seed() {
     try {
       const fullPath = join(lifeDir, path);
       const data = await Bun.file(fullPath).json();
-      const entityId = data.entityId || path.replace("/items.json", "");
+      const entityId = data.entityId || path.replace(/[\/\\]items\.json$/, "").replace(/\\/g, "/");
 
       for (const fact of (data.facts || [])) {
         if (fact.fact && fact.status !== "superseded") {

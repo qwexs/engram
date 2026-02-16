@@ -99,7 +99,7 @@ Details: [references/subagent-memory.md](references/subagent-memory.md)
 | `memory-signal.js` | Signal detector — classifies messages as high/low/none (regex, no LLM) |
 | `memory-dedup.js` | Content-hash deduplication (SHA-256), `--seed` to index existing facts |
 | `memory-write.js` | Write facts to KG with safe dedup (check→write→register), validation, QMD update |
-| `memory-contradict.js` | Find contradicting facts within an entity via Jaccard keyword similarity |
+| `memory-contradict.js` | Find contradicting facts via Jaccard similarity (intra-entity + `--cross-entity` via QMD) |
 
 ## Real-Time Extraction
 
@@ -152,13 +152,43 @@ bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/se
 # → { "conflicts": [{ "id": "sergey-042", "fact": "Prefers Bun over Node.js", "similarity": 0.45 }] }
 ```
 
-Intra-entity Jaccard keyword overlap. No LLM calls, no QMD dependency — reads `items.json` directly. Cross-entity contradiction detection via QMD planned for Phase 2.
+Intra-entity by default. With `--cross-entity` flag, uses QMD query (BM25 + vectors + rerank) to discover related entities across the entire knowledge graph, then runs Jaccard comparison on their facts.
+
+```bash
+# Cross-entity (searches all entities via QMD)
+bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey" --cross-entity
+# → { "conflicts": [...], "crossEntityConflicts": [{ entity: "projects/projectmix", ... }], "entitiesSearched": 4 }
+```
+
+Integrated into write pipeline (optional):
+```bash
+bun scripts/memory-write.js --entity "..." --fact "..." --category ... --check-contradictions
+bun scripts/memory-write.js --entity "..." --fact "..." --category ... --check-contradictions --cross-entity
+```
+Warnings appear in output if contradictions detected. Fact is still written — agent decides what to do.
 
 ### Seed Dedup Index
 
 ```bash
 bun scripts/memory-dedup.js --seed
 # → Indexes all existing facts from life/ into workspace/memory-state/fact-hashes.json
+```
+
+## Cross-Platform
+
+All scripts work on **Linux and Windows**:
+- Path normalization: backslash → forward slash everywhere
+- QMD flatten paths handled (Windows QMD outputs `areas-people-sergey-summary.md` instead of `areas/people/sergey/summary.md`)
+- Timezone configurable via `ENGRAM_TZ` or `TZ` env var (default: `Europe/Moscow`)
+
+```bash
+# Linux/macOS
+export TZ="America/New_York"
+bun scripts/memory-write.js --entity "areas/people/user" --fact "..." --category preference
+
+# Windows (PowerShell)
+$env:ENGRAM_TZ = "Asia/Tokyo"
+bun scripts/memory-write.js --entity "areas/people/user" --fact "..." --category preference
 ```
 
 ## Fact Schema v2

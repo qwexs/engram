@@ -91,6 +91,7 @@ const dirs = [
   'memory',
   `memory/agent-${agentId}`,
   `memory/agent-${agentId}/main`,
+  'memory/domains',
   'memory/templates/group-knowledge',
   'life',
   'life/projects',
@@ -140,6 +141,9 @@ copyTemplate('weekly-synthesis-tracker.json', 'memory/weekly-synthesis-tracker.j
 copyTemplate('life-readme.md', 'life/README.md', replacements);
 copyTemplate('index.md', 'life/index.md', replacements);
 copyTemplate('daily-note.md', `memory/agent-${agentId}/main/${today}.md`, { ...replacements, DATE: today });
+
+// Реестр доменов
+copyTemplate('domain/registry.json', 'memory/domains/registry.json', replacements);
 
 // Group knowledge templates
 for (const tmpl of ['clients.md', 'contacts.md', 'decisions.md', 'resources.md']) {

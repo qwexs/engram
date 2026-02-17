@@ -119,7 +119,21 @@ memory/domains/{domain}/
 ```bash
 # Create a domain
 bun scripts/add-domain.js --domain monitoring --description "Monitoring"
+
+# Create a dev-project domain linked to KG
+bun scripts/add-domain.js --domain engram --type dev-project --kg-entity projects/engram --description "Memory skill"
 ```
+
+### Project Domains
+
+Domains are registered in `memory/domains/registry.json` with type and optional KG link:
+
+| Type | Description | Subagent |
+|------|-------------|----------|
+| `dev-project` | Development project, linked to KG entity | On-demand |
+| `cron-task` | Periodic tasks | Scheduled via cron |
+
+Registry is created automatically by `init.js` and updated by `add-domain.js`.
 
 Details: [references/subagent-memory.md](references/subagent-memory.md)
 

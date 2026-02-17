@@ -17,7 +17,7 @@ const { values: args } = parseArgs({
 
 if (args.help) {
   console.log(`
-migrate-v2 вЂ” Migrate items.json files to v2 schema
+migrate-v2 — Migrate items.json files to v2 schema
 
 Usage:
   bun skills/engram/scripts/migrate-v2.js [options]
@@ -96,7 +96,7 @@ for (const file of files) {
         migratedFacts++;
         changed = true;
         if (dryRun) {
-          console.log(`  ${relPath} в†’ ${fact.id}: +confidence=${fact.confidence}, +abstractionLevel=${fact.abstractionLevel}, +tags=[]`);
+          console.log(`  ${relPath} → ${fact.id}: +confidence=${fact.confidence}, +abstractionLevel=${fact.abstractionLevel}, +tags=[]`);
         }
       }
     }
@@ -105,11 +105,11 @@ for (const file of files) {
       totalFiles++;
       if (!dryRun) {
         writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
-        console.log(`вњ… ${relPath}: ${data.filter((_, i) => true).length} facts`);
+        console.log(`✅ ${relPath}: ${data.filter((_, i) => true).length} facts`);
       }
     }
   } catch (e) {
-    console.error(`вќЊ ${relPath}: ${e.message}`);
+    console.error(`❌ ${relPath}: ${e.message}`);
   }
 }
 

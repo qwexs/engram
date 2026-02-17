@@ -42,19 +42,19 @@ bun skills/engram/scripts/migrate-v2.js --dry-run
 ## Architecture Overview
 
 ```
-в"Њв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"ђ
-в"'  Layer 3: MEMORY.md (Curated Wisdom)        в"'
-в"'  Long-term personal insights, decisions     в"'
-в"њв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"¤
-в"'  Layer 2: Knowledge Graph (life/)           в"'
-в"'  PARA entities with atomic facts            в"'
-в"њв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"¤
-в"'  Layer 1: Daily Notes (memory/)             в"'
-в"'  Raw session notes, per-session isolation   в"'
-в""в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"
+┌─────────────────────────────────────────────┐
+║  Layer 3: MEMORY.md (Curated Wisdom)        ║
+║  Long-term personal insights, decisions     ║
+├─────────────────────────────────────────────┤
+║  Layer 2: Knowledge Graph (life/)           ║
+║  PARA entities with atomic facts            ║
+├─────────────────────────────────────────────┤
+║  Layer 1: Daily Notes (memory/)             ║
+║  Raw session notes, per-session isolation   ║
+└─────────────────────────────────────────────┘
 ```
 
-**Data flows upward:** Daily notes в†' extracted to Knowledge Graph в†' distilled to MEMORY.md
+**Data flows upward:** Daily notes → extracted to Knowledge Graph → distilled to MEMORY.md
 
 For full architecture details, see [references/architecture.md](references/architecture.md).
 
@@ -89,9 +89,9 @@ For full architecture details, see [references/architecture.md](references/archi
 - Path: `memory/agent-{id}/{session}/YYYY-MM-DD.md`
 - Header: `# YYYY-MM-DD`
 - **Three-Layer Rotation** (>1000 lines during heartbeat):
-  1. **Archive** вЂ" full file moved to `archives/YYYY-MM/` (nothing lost)
-  2. **Stub** вЂ" auto-summary (10-20 lines) with line refs to archive and KG links
-  3. **QMD index** вЂ" archive indexed for granular search via `qmd query`
+  1. **Archive** — full file moved to `archives/YYYY-MM/` (nothing lost)
+  2. **Stub** — auto-summary (10-20 lines) with line refs to archive and KG links
+  3. **QMD index** — archive indexed for granular search via `qmd query`
   - Run rotation AFTER KG Extraction to minimize stub duplication
 
 ### Knowledge Graph (PARA)
@@ -100,18 +100,18 @@ Structured memory in `life/` using Projects/Areas/Resources/Archives:
 
 ```
 life/
-в"њв"Ђв"Ђ projects/<name>/     # Active work (summary.md + items.json)
-в"њв"Ђв"Ђ areas/people/<name>/ # People (summary.md + items.json)
-в"њв"Ђв"Ђ areas/groups/<name>/ # Groups
-в"њв"Ђв"Ђ resources/<topic>/   # Reference material
-в"њв"Ђв"Ђ archives/            # Inactive entities
-в""в"Ђв"Ђ index.md             # Master entity index
+├── projects/<name>/     # Active work (summary.md + items.json)
+├── areas/people/<name>/ # People (summary.md + items.json)
+├── areas/groups/<name>/ # Groups
+├── resources/<topic>/   # Reference material
+├── archives/            # Inactive entities
+└── index.md             # Master entity index
 ```
 
 **Tiered retrieval:**
-1. `qmd query "topic" -c life` вЂ" search first
-2. Read `summary.md` вЂ" quick context (~90% sufficient)
-3. Read `items.json` вЂ" only for granular detail
+1. `qmd query "topic" -c life` — search first
+2. Read `summary.md` — quick context (~90% sufficient)
+3. Read `items.json` — only for granular detail
 
 **Entity creation rules:**
 - Mentioned **3+ times** across conversations
@@ -161,7 +161,7 @@ Add to your HEARTBEAT.md:
 ## Heartbeat Flow (every 30 minutes)
 
 0. Create today's daily note + Three-Layer Rotation check
-1. Monday? в†' Weekly Synthesis
+1. Monday? → Weekly Synthesis
 2. Knowledge Graph Extraction (if notes changed)
 3. Memory Maintenance (every few days)
 3.5. Domain Supervisor Scan (if domains exist)
@@ -171,15 +171,15 @@ Add to your HEARTBEAT.md:
 ### Weekly Synthesis (Mondays)
 
 Rewrites `summary.md` with memory decay applied:
-- **Hot** (7 days) вЂ" prominent in summary
-- **Warm** (8-30 days) вЂ" lower priority
-- **Cold** (30+ days) вЂ" omitted from summary (stays in items.json)
+- **Hot** (7 days) — prominent in summary
+- **Warm** (8-30 days) — lower priority
+- **Cold** (30+ days) — omitted from summary (stays in items.json)
 
 Modifiers:
-- `confidence < 0.5` в†' Cold threshold is 14 days
-- `accessCount >= 10` в†' bumps Cold to Warm
-- `principle` (L3) в†' always in summary
-- `pattern` (L2) в†' in summary if Warm+
+- `confidence < 0.5` → Cold threshold is 14 days
+- `accessCount >= 10` → bumps Cold to Warm
+- `principle` (L3) → always in summary
+- `pattern` (L2) → in summary if Warm+
 
 For full decay rules, see [references/decay-rules.md](references/decay-rules.md).
 
@@ -198,10 +198,10 @@ For the complete heartbeat flow, see [references/heartbeat.md](references/heartb
 
 If subagent domains exist (`memory/domains/`), heartbeat acts as supervisor:
 
-1. **PROPOSAL review** вЂ" `qmd query "PROPOSAL" -c domains` в†' auto-approve low-risk, alert user for high-risk
-2. **Liveness check** вЂ" read each domain's `status.md`, alert if missed >2x schedule
-3. **Changelog rotation** вЂ" rotate `changelog.md` >1000 lines to `archives/`
-4. **KG extraction** вЂ" extract significant facts from changelogs to Knowledge Graph
+1. **PROPOSAL review** — `qmd query "PROPOSAL" -c domains` → auto-approve low-risk, alert user for high-risk
+2. **Liveness check** — read each domain's `status.md`, alert if missed >2x schedule
+3. **Changelog rotation** — rotate `changelog.md` >1000 lines to `archives/`
+4. **KG extraction** — extract significant facts from changelogs to Knowledge Graph
 
 For full details, see [references/heartbeat.md](references/heartbeat.md) and [references/subagent-memory.md](references/subagent-memory.md).
 
@@ -211,9 +211,9 @@ Facts decay based on recency, with modifiers for confidence, frequency, and abst
 
 | Tier | Recency | In summary? |
 |------|---------|-------------|
-| Hot | в‰¤7 days | вњ… Prominent |
-| Warm | 8-30 days | вњ… Lower priority |
-| Cold | 30+ days | вќЊ (searchable via QMD) |
+| Hot | ≤7 days | ✅ Prominent |
+| Warm | 8-30 days | ✅ Lower priority |
+| Cold | 30+ days | ❌ (searchable via QMD) |
 
 Full rules: [references/decay-rules.md](references/decay-rules.md)
 
@@ -370,19 +370,19 @@ sessions_spawn({
 
 ## Scripts
 
-### install-qmd.js вЂ" Install QMD search engine
+### install-qmd.js — Install QMD search engine
 
 ```bash
 bun skills/engram/scripts/install-qmd.js [--variant local|jina] [--jina-key <key>]
 ```
 
 Interactive installer for QMD. Two variants:
-- **local** вЂ" GPU/CPU embeddings via Vulkan/llama.cpp (recommended for desktop)
-- **jina** вЂ" Cloud embeddings via Jina AI API, free tier 1M tokens/month (recommended for Docker/VPS)
+- **local** — GPU/CPU embeddings via Vulkan/llama.cpp (recommended for desktop)
+- **jina** — Cloud embeddings via Jina AI API, free tier 1M tokens/month (recommended for Docker/VPS)
 
 Handles npm install, API key configuration, .env file creation, and verification.
 
-### init.js вЂ" Initialize memory system
+### init.js — Initialize memory system
 
 ```bash
 bun skills/engram/scripts/init.js [--agent-id main] [--qmd-variant auto|local|jina] [--force]
@@ -390,7 +390,7 @@ bun skills/engram/scripts/init.js [--agent-id main] [--qmd-variant auto|local|ji
 
 Creates complete directory structure, copies templates, sets up QMD collections, runs initial index. Use `--force` to merge with existing directories.
 
-### add-session.js вЂ" Add new session
+### add-session.js — Add new session
 
 ```bash
 bun skills/engram/scripts/add-session.js --platform telegram --id <groupId> [--agent-id main]
@@ -398,7 +398,7 @@ bun skills/engram/scripts/add-session.js --platform telegram --id <groupId> [--a
 
 Creates session directory, copies group-knowledge templates, adds QMD collection, updates heartbeat-state.json.
 
-### add-domain.js вЂ" Create subagent domain
+### add-domain.js — Create subagent domain
 
 ```bash
 bun skills/engram/scripts/add-domain.js --domain <name> [--description "РћРїРёСЃР°РЅРёРµ"]
@@ -406,7 +406,7 @@ bun skills/engram/scripts/add-domain.js --domain <name> [--description "РћРї
 
 Creates `memory/domains/{domain}/` with decisions.md, status.md, changelog.md, README.md. Registers QMD collection `domains` (one for all domains). Warns if >20 domains.
 
-### validate.js вЂ" Check integrity
+### validate.js — Check integrity
 
 ```bash
 bun skills/engram/scripts/validate.js [--fix] [--agent-id main]
@@ -414,7 +414,7 @@ bun skills/engram/scripts/validate.js [--fix] [--agent-id main]
 
 Checks directory structure, required files, items.json validity, v2 schema compliance, ID uniqueness, supersededBy references. Use `--fix` to auto-repair.
 
-### migrate-v2.js вЂ" Migrate to v2 schema
+### migrate-v2.js — Migrate to v2 schema
 
 ```bash
 bun skills/engram/scripts/migrate-v2.js [--dry-run]

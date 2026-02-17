@@ -20,7 +20,7 @@ const { values: args } = parseArgs({
 
 if (args.help) {
   console.log(`
-engram init вЂ” Initialize complete memory system
+engram init — Initialize complete memory system
 
 Usage:
   bun skills/engram/scripts/init.js [options]
@@ -79,7 +79,7 @@ if (!args.force) {
   if (existsSync(join(WORKSPACE, 'memory'))) conflicts.push('memory/');
   if (existsSync(join(WORKSPACE, 'life'))) conflicts.push('life/');
   if (conflicts.length > 0) {
-    console.error('вќЊ Existing directories found:');
+    console.error('❌ Existing directories found:');
     conflicts.forEach(c => console.error(`   - ${c}`));
     console.error('Use --force to merge (existing files will NOT be overwritten)');
     process.exit(1);
@@ -118,7 +118,7 @@ function copyTemplate(templateName, destPath, replacements = {}) {
   }
   const templatePath = join(TEMPLATES, templateName);
   if (!existsSync(templatePath)) {
-    console.error(`  вљ пёЏ  Template not found: ${templateName}`);
+    console.error(`  ⚠️  Template not found: ${templateName}`);
     return;
   }
   mkdirSync(dirname(dest), { recursive: true });
@@ -127,7 +127,7 @@ function copyTemplate(templateName, destPath, replacements = {}) {
     content = content.replaceAll(`{{${key}}}`, value);
   }
   writeFileSync(dest, content);
-  console.log(`  вњ… ${destPath}`);
+  console.log(`  ✅ ${destPath}`);
 }
 
 const today = new Date().toISOString().split('T')[0];
@@ -162,9 +162,9 @@ if (hasQmd) {
   for (const col of collections) {
     try {
       execSync(`qmd collection add "${join(WORKSPACE, col.path)}" --name ${col.name} --mask "${col.mask}"`, { stdio: 'pipe' });
-      console.log(`  вњ… ${col.name}`);
+      console.log(`  ✅ ${col.name}`);
     } catch {
-      console.log(`  вљ пёЏ  ${col.name} (may already exist)`);
+      console.log(`  ⚠️  ${col.name} (may already exist)`);
     }
   }
 
@@ -172,10 +172,10 @@ if (hasQmd) {
   try {
     execSync('qmd update', { stdio: 'inherit' });
   } catch {
-    console.warn('  вљ пёЏ  qmd update failed вЂ” run manually');
+    console.warn('  ⚠️  qmd update failed — run manually');
   }
 } else {
-  console.log('\nвљ пёЏ  QMD not found. Install:');
+  console.log('\n⚠️  QMD not found. Install:');
   console.log('  Local (GPU):  npm i -g @nicepkg/qmd');
   console.log('  Jina (API):   npm i -g @qwexs/qmd');
   console.log('  Memory structure created without search indexing.');
@@ -183,7 +183,7 @@ if (hasQmd) {
 
 // --- Summary ---
 console.log(`
-вњ… Memory system initialized!
+✅ Memory system initialized!
    Agent ID:        ${agentId}
    QMD variant:     ${qmdVariant}${hasQmd ? '' : ' (not installed)'}
    Main session:    memory/agent-${agentId}/main/

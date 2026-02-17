@@ -20,7 +20,7 @@ const { values: args } = parseArgs({
 
 if (args.help || !args.platform || !args.id) {
   console.log(`
-add-session вЂ” Add a new group/channel session to the memory system
+add-session — Add a new group/channel session to the memory system
 
 Usage:
   bun skills/engram/scripts/add-session.js --platform <platform> --id <id> [options]
@@ -50,7 +50,7 @@ const sessionPath = join(WORKSPACE, `memory/agent-${agentId}/${sessionKey}`);
 
 // Check if session already exists
 if (existsSync(sessionPath)) {
-  console.error(`вќЊ Session already exists: ${sessionPath}`);
+  console.error(`❌ Session already exists: ${sessionPath}`);
   process.exit(1);
 }
 
@@ -63,7 +63,7 @@ const knowledgeDest = join(sessionPath, 'knowledge');
 const knowledgeSrc = join(TEMPLATES, 'group-knowledge');
 if (existsSync(knowledgeSrc)) {
   cpSync(knowledgeSrc, knowledgeDest, { recursive: true });
-  console.log(`рџ“‹ Copied group-knowledge templates в†’ knowledge/`);
+  console.log(`рџ“‹ Copied group-knowledge templates → knowledge/`);
 }
 
 // 3. Create initial daily note
@@ -83,7 +83,7 @@ if (existsSync(heartbeatPath)) {
       console.log(`рџ”„ Updated heartbeat-state.json`);
     }
   } catch (e) {
-    console.warn(`вљ пёЏ  Could not update heartbeat-state.json: ${e.message}`);
+    console.warn(`⚠️  Could not update heartbeat-state.json: ${e.message}`);
   }
 }
 
@@ -95,13 +95,13 @@ try {
   execSync('qmd update', { stdio: 'pipe' });
   console.log(`рџ“Љ QMD index updated`);
 } catch {
-  console.log(`вљ пёЏ  QMD not available вЂ” add collection manually:`);
+  console.log(`⚠️  QMD not available — add collection manually:`);
   console.log(`   qmd collection add "${sessionPath}" --name ${collectionName} --mask "**/*.md"`);
 }
 
 // 6. Summary
 console.log(`
-вњ… Session added!
+✅ Session added!
    Session key:   agent:${agentId}:${sessionKey}
    Memory path:   memory/agent-${agentId}/${sessionKey}/
    QMD collection: ${collectionName}

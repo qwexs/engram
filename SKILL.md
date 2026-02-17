@@ -283,7 +283,7 @@ memory/domains/{domain}/
 - **KG entity** (`life/projects/{name}/`) — что бот знает о проекте (факты, summary)
 - **Domain** (`memory/domains/{name}/`) — контекст для субагента (decisions, status, changelog)
 
-Связка задаётся через `kgEntity` в реестре доменов (`memory/domains/registry.json`):
+Связка задаётся через реестр доменов (`memory/domains/registry.json`):
 
 ```json
 {
@@ -292,54 +292,80 @@ memory/domains/{domain}/
       "type": "dev-project",
       "kgEntity": "projects/engram",
       "description": "Memory architecture skill",
-      "subagentLabel": "engram"
+      "subagentLabel": "engram",
+      "spawnTemplate": "dev-project.md"
     },
     "monitoring": {
       "type": "cron-task",
-      "description": "Server monitoring"
+      "description": "Server monitoring",
+      "subagentLabel": "monitoring",
+      "spawnTemplate": "cron-task.md"
     }
   }
 }
 ```
 
+**Поля registry:**
+
+| Поле | Обязательно | Описание |
+|------|-------------|----------|
+| `type` | ✅ | `dev-project` или `cron-task` |
+| `description` | ✅ | Краткое описание |
+| `spawnTemplate` | ⚠️ рекомендуется | Файл из `templates/spawn-prompts/` |
+| `subagentLabel` | ⚠️ рекомендуется | Фиксированный label для sessions_spawn |
+| `kgEntity` | нет | Привязка к Knowledge Graph entity |
+
 **Типы доменов:**
 - `dev-project` — разработка, привязка к KG entity, субагент по запросу
 - `cron-task` — периодические задачи, субагент по расписанию
 
-**Workflow для dev-project:**
-1. Пользователь даёт задачу по проекту
-2. Главный бот находит домен через registry
-3. Читает контекст домена (decisions, status, changelog)
-4. Спавнит субагента с label из registry и `cleanup: "delete"`
-5. Передаёт в task: контекст домена + задачу
-6. Субагент сам определяет где работать (repo, API, скрипты — зависит от задачи)
-7. После завершения главный бот обновляет домен
+### Spawn Templates
 
-**Где работать** — не прописывается в домене. Бот определяет рабочую папку из своей памяти и контекста разговора. Проект может быть связан с кодом, API, документацией — workflow одинаковый.
+**Правило: всегда через шаблон.** Не писать промпт от руки — использовать `spawnTemplate` из registry. Это гарантирует что субагент получит Domain Lifecycle (пути к decisions, status, changelog).
+
+Шаблоны лежат в `templates/spawn-prompts/`:
+- `dev-project.md` — для разработки (decisions + status + changelog tail)
+- `cron-task.md` — для периодических задач (decisions + status)
+
+Шаблоны используют плейсхолдеры: `{{domain}}`, `{{task}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`.
+
+**Workflow:**
+1. Пользователь даёт задачу по проекту
+2. Главный бот находит домен через `registry.json`
+3. Загружает шаблон из `spawnTemplate`
+4. Подставляет контекст домена (decisions, status, changelog)
+5. Спавнит субагента с `subagentLabel` и `cleanup: "delete"`
+6. Субагент сам определяет где работать (repo, API, скрипты — зависит от задачи)
+7. После завершения главный бот обновляет домен (changelog, status)
+
+**Где работать** — не прописывается в домене. Бот определяет рабочую папку из своей памяти и контекста разговора.
 
 ### Пример spawn
 
 ```javascript
+// 1. Найти домен
+const registry = readFile("memory/domains/registry.json")
+const domain = registry.domains["engram"]
+
+// 2. Загрузить шаблон
+const template = readFile(`skills/engram/templates/spawn-prompts/${domain.spawnTemplate}`)
+
+// 3. Подставить контекст
+const task = template
+  .replace("{{domain}}", "engram")
+  .replace("{{task}}", userTask)
+  .replace("{{decisions}}", readFile("memory/domains/engram/decisions.md"))
+  .replace("{{status}}", readFile("memory/domains/engram/status.md"))
+  .replace("{{changelog_tail}}", last20lines("memory/domains/engram/changelog.md"))
+
+// 4. Spawn
 sessions_spawn({
-  label: "engram",        // фиксированный label из registry
-  cleanup: "delete",      // чистый контекст каждый раз
-  task: `## Контекст домена engram
-  
-### Decisions
-${decisions_md_content}
-
-### Status  
-${status_md_content}
-
-### Changelog (последние записи)
-${recent_changelog}
-
-## Задача
-${user_task}`
+  label: domain.subagentLabel,  // из registry
+  cleanup: "delete",
+  task: task
 })
 ```
 
-Полный шаблон промпта: `templates/spawn-prompt.md`
 Подробная документация: [references/subagent-memory.md](references/subagent-memory.md)
 
 ## Scripts

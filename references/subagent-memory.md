@@ -105,16 +105,31 @@ qmd query "мониторинг CPU" -c domains
       "type": "dev-project",
       "kgEntity": "projects/engram",
       "description": "Memory architecture skill",
+      "spawnTemplate": "dev-project.md",
+      "subagentLabel": "engram",
       "created": "2026-02-17"
     },
     "monitoring": {
       "type": "cron-task",
       "description": "Server monitoring",
+      "spawnTemplate": "cron-task.md",
+      "subagentLabel": "monitoring",
       "created": "2026-02-17"
     }
   }
 }
 ```
+
+### Registry поля
+
+| Поле | Обязательно | Описание |
+|------|-------------|----------|
+| `type` | ✅ | `dev-project` или `cron-task` |
+| `description` | ✅ | Краткое описание |
+| `spawnTemplate` | ⚠️ рекомендуется | Файл из `templates/spawn-prompts/` |
+| `subagentLabel` | ⚠️ рекомендуется | Фиксированный label для sessions_spawn |
+| `kgEntity` | нет | Привязка к Knowledge Graph entity |
+| `created` | нет | Дата создания |
 
 ### Типы доменов
 
@@ -133,11 +148,14 @@ qmd query "мониторинг CPU" -c domains
 
 1. Пользователь даёт задачу по проекту
 2. Главный бот находит домен через `registry.json`
-3. Читает контекст домена (decisions, status, changelog)
-4. Спавнит субагента с `cleanup: "delete"` и фиксированным label
-5. Передаёт в task: контекст домена + задачу
-6. Субагент сам определяет где работать (repo, API, скрипты — зависит от задачи)
-7. После завершения главный бот обновляет домен (changelog, status)
+3. **Если есть `spawnTemplate`** — загрузить шаблон из `templates/spawn-prompts/`
+4. Читает контекст домена (decisions, status, changelog)
+5. Спавнит субагента с `cleanup: "delete"` и фиксированным label
+6. Передаёт в task: шаблон + контекст домена + задачу
+7. Субагент сам определяет где работать (repo, API, скрипты — зависит от задачи)
+8. После завершения главный бот обновляет домен (changelog, status)
+
+**Правило: всегда через шаблон.** Не писать промпт от руки — использовать `spawnTemplate` из registry. Это гарантирует что субагент получит Domain Lifecycle (пути к decisions, status, changelog).
 
 ### Создание домена с привязкой к KG
 

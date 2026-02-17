@@ -142,6 +142,8 @@ copyTemplate('life-readme.md', 'life/README.md', replacements);
 copyTemplate('index.md', 'life/index.md', replacements);
 copyTemplate('daily-note.md', `memory/agent-${agentId}/main/${today}.md`, { ...replacements, DATE: today });
 
+copyTemplate('agents-snippet.md', 'engram-rules.md', replacements);
+
 // Реестр доменов
 copyTemplate('domain/registry.json', 'memory/domains/registry.json', replacements);
 
@@ -191,7 +193,7 @@ console.log(`
    Today's note:    memory/agent-${agentId}/main/${today}.md
 
 Next steps:
-  1. Add memory rules to AGENTS.md (see SKILL.md or references/architecture.md)
+  1. Add memory rules to AGENTS.md (copy from engram-rules.md or see SKILL.md)
   2. Configure heartbeat (see references/heartbeat.md)
   3. Add sessions: bun skills/engram/scripts/add-session.js --platform telegram --id <groupId>
   4. Run: qmd embed (for vector search)

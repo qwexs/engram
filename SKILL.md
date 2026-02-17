@@ -241,6 +241,8 @@ Each fact in `items.json` includes:
 
 **No-Deletion Rule:** Facts are NEVER deleted. Set `status: "superseded"` and link via `supersededBy`.
 
+**Write Pipeline Rule:** NEVER write `items.json` directly. Always use `bun scripts/memory-write.js`. Direct writes bypass dedup, validation, and hash registration, causing schema mismatches (e.g., `content` vs `fact`, `created` vs `timestamp`). This applies to heartbeats, inline extraction, and entity creation. No exceptions.
+
 Full schema: [references/fact-schema.md](references/fact-schema.md)
 
 ## Subagent Memory

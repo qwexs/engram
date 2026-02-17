@@ -75,6 +75,64 @@ if (dedupResult.duplicate) {
 }
 const factHash = dedupResult.hash;
 
+// 1.5. Семантическая проверка по множественным коллекциям (опционально)
+let semanticWarnings = [];
+if (opts["semantic-check"]) {
+  const searchCollections = opts["search-collections"]
+    ? opts["search-collections"].split(",").map(c => c.trim()).filter(Boolean)
+    : ["life"];
+
+  // Извлечение ключевых слов (аналогично memory-contradict.js)
+  function extractKeywords(text) {
+    return text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, "")
+      .split(/\s+/)
+      .filter(w => w.length > 3);
+  }
+
+  function jaccardSimilarity(words1, words2) {
+    const set1 = new Set(words1);
+    const set2 = new Set(words2);
+    const intersection = [...set1].filter(w => set2.has(w));
+    const union = new Set([...set1, ...set2]);
+    return union.size > 0 ? intersection.length / union.size : 0;
+  }
+
+  try {
+    // qmd search (BM25, без GPU)
+    const qmdArgs = ["qmd", "search", opts.fact];
+    for (const col of searchCollections) {
+      qmdArgs.push("-c", col);
+    }
+    const proc = Bun.spawn(qmdArgs, { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
+    const output = await new Response(proc.stdout).text();
+    await proc.exited;
+
+    // Парсинг вывода QMD: извлечь строки с контентом
+    // Формат: qmd://collection/path:line <TAB или пробелы> текст
+    const newKeywords = extractKeywords(opts.fact);
+    const lines = output.split("\n").filter(l => l.trim());
+    for (const line of lines) {
+      // Убрать префикс qmd://... если есть, взять текстовую часть
+      const textPart = line.replace(/^qmd:\/\/[^\s]+\s*/, "").trim();
+      if (!textPart || textPart.length < 5) continue;
+
+      const lineKeywords = extractKeywords(textPart);
+      const sim = jaccardSimilarity(newKeywords, lineKeywords);
+      if (sim >= 0.3) {
+        semanticWarnings.push({
+          similarText: textPart.slice(0, 200),
+          similarity: parseFloat(sim.toFixed(2)),
+          source: line.match(/^(qmd:\/\/[^\s]+)/)?.[1] || "unknown",
+        });
+      }
+    }
+  } catch (e) {
+    console.error(`⚠️ Semantic check ошибка: ${e.message}`);
+  }
+}
+
 // 2. Проверить/создать entity
 const entityFile = Bun.file(itemsPath);
 let data;
@@ -171,7 +229,12 @@ const result = { status: "created", fact: newFact };
 if (contradictions) {
   const total = (contradictions.conflicts?.length || 0) + (contradictions.crossEntityConflicts?.length || 0);
   if (total > 0) {
-    result.warnings = { contradictions };
+    result.warnings = result.warnings || {};
+    result.warnings.contradictions = contradictions;
   }
+}
+if (semanticWarnings.length > 0) {
+  result.warnings = result.warnings || {};
+  result.warnings.semanticSimilar = semanticWarnings;
 }
 console.log(JSON.stringify(result));

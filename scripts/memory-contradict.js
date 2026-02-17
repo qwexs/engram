@@ -36,6 +36,10 @@ if (!opts.entity) {
 const factText = opts.fact;
 const entity = opts.entity.replace(/\\/g, "/"); // нормализация для Windows
 const crossEntity = !!opts["cross-entity"];
+// Множественные коллекции для cross-entity поиска
+const collections = opts.collections
+  ? opts.collections.split(",").map(c => c.trim()).filter(Boolean)
+  : ["life"];
 
 // Извлечь ключевые слова из текста
 function extractKeywords(text) {
@@ -95,7 +99,12 @@ function findConflicts(newKeywords, facts) {
 async function discoverEntitiesViaQmd(queryText) {
   try {
     // qmd query (BM25 + vectors + rerank) для лучшего качества
-    const proc = Bun.spawn(["qmd", "query", queryText, "-c", "life"], {
+    // Формируем аргументы с множественными коллекциями
+    const qmdArgs = ["qmd", "query", queryText];
+    for (const col of collections) {
+      qmdArgs.push("-c", col);
+    }
+    const proc = Bun.spawn(qmdArgs, {
       cwd: WORKSPACE,
       stdout: "pipe",
       stderr: "pipe",

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bun
+#!/usr/bin/env bun
 // engram/scripts/add-session.js
 // Add a new session (telegram group, discord channel) to the memory system
 // Usage: bun skills/engram/scripts/add-session.js --platform telegram --id 3382546134 [--agent-id main]

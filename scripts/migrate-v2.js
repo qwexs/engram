@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bun
+#!/usr/bin/env bun
 // engram/scripts/migrate-v2.js
 // Migrate items.json files from v1 to v2 schema (add confidence, abstractionLevel, tags)
 // Usage: bun skills/engram/scripts/migrate-v2.js [--dry-run]

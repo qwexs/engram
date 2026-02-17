@@ -1,4 +1,4 @@
-﻿---
+---
 name: engram
 description: Etalon memory architecture with Knowledge Graph (PARA), session isolation, memory decay, and QMD hybrid search
 ---

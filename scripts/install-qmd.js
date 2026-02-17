@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bun
+#!/usr/bin/env bun
 // engram/scripts/install-qmd.js
 // Install QMD (local or Jina fork) with interactive variant selection
 // Usage: bun skills/engram/scripts/install-qmd.js [--variant local|jina] [--jina-key <key>] [--help]

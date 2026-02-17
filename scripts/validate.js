@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 // engram/scripts/validate.js
 // Check integrity of the memory system
 // Usage: node scripts/validate.js [--fix] [--agent-id main]

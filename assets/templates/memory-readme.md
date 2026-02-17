@@ -1,4 +1,4 @@
-﻿# Memory Structure - Session-Based Isolation
+# Memory Structure - Session-Based Isolation
 
 This directory contains session-separated memory for OpenClaw agent.
 

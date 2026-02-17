@@ -193,7 +193,7 @@ console.log(`
    Today's note:    memory/agent-${agentId}/main/${today}.md
 
 Next steps:
-  1. Add memory rules to AGENTS.md (copy from engram-rules.md or see SKILL.md)
+  1. Add memory rules to AGENTS.md (copy from engram-rules.md or see SKILL.md / references/architecture.md)
   2. Configure heartbeat (see references/heartbeat.md)
   3. Add sessions: bun skills/engram/scripts/add-session.js --platform telegram --id <groupId>
   4. Run: qmd embed (for vector search)

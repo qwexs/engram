@@ -403,6 +403,88 @@ sessions_spawn({
 
 Подробная документация: [references/subagent-memory.md](references/subagent-memory.md)
 
+## Real-Time Extraction
+
+Instead of waiting for heartbeats (up to 30 min), extract high-signal facts **inline during conversations**.
+
+```
+Message → Signal Scan (regex, <10ms) → Classify
+  ├── HIGH (preference, decision, correction, milestone, instruction, identity)
+  │     → Dedup (SHA-256) → Contradiction check → Write to KG → QMD update
+  ├── LOW (context, work) → Daily note → Heartbeat extracts later
+  └── NONE (casual) → Skip
+```
+
+### Signal Detection
+
+```bash
+bun scripts/memory-signal.js --text "Я предпочитаю TypeScript"
+# → { "signal": "high", "categories": ["preference"], "confidence": 0.88 }
+```
+
+Supports **Russian and English**. Six categories: `correction`, `preference`, `decision`, `identity`, `instruction`, `milestone`.
+
+### Write with Dedup + Contradiction Check
+
+```bash
+bun scripts/memory-write.js \
+  --entity "areas/people/sergey" \
+  --fact "Prefers Bun over Node.js" \
+  --category preference \
+  --confidence 0.9 \
+  --abstraction pattern \
+  --tags "tools,runtime" \
+  --source "2026-02-16"
+
+# With contradiction detection
+bun scripts/memory-write.js --entity "..." --fact "..." --category ... \
+  --check-contradictions --cross-entity
+
+# With semantic similarity check (BM25)
+bun scripts/memory-write.js --entity "..." --fact "..." --category ... \
+  --semantic-check --search-collections "life,openclaw-memory-agent-main-main"
+```
+
+Automatically: content-hash dedup → optional contradiction/semantic check → write fact → validate KG → update QMD.
+
+### Contradiction Detection
+
+```bash
+# Intra-entity (fast, no QMD)
+bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey"
+
+# Cross-entity (via QMD BM25, searches all entities)
+bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey" \
+  --cross-entity --collections "life,openclaw-memory-agent-main-main"
+```
+
+### Rules for Inline Extraction
+
+- Only in **main session** (group chats don't touch KG)
+- HIGH signal → extract immediately via `memory-write.js`
+- LOW signal → daily note only (heartbeat extracts later)
+- Do NOT write extraction watermarks during inline extraction (heartbeat only)
+- Dedup is automatic — duplicates from inline + heartbeat silently skipped
+
+## Agent Teams
+
+Domains provide the foundation for multi-level agent orchestration:
+
+```
+       Main Agent (personality, KG, strategy)
+      /         |          \
+    L1a        L1b         L1c       ← Orchestrators (persistent via domain files)
+     |          |         / | \
+    L2         L2       L2  L2  L2   ← Executors (ephemeral, cleanup: delete)
+```
+
+- **workflow.md** = L1 orchestrator's "skillset" (scripts, scope, sources)
+- **decisions.md** = L1's rules and constraints
+- **Fan-out**: Main spawns multiple L1/L2 in parallel for independent tasks
+- **Persistence**: domain files carry state across ephemeral sessions
+
+**Current limitation:** direct L2↔L2 communication not yet supported in OpenClaw ([#5813](https://github.com/openclaw/openclaw/issues/5813)). Workaround: file-based coordination via shared domain files.
+
 ## Scripts
 
 ### install-qmd.js — Install QMD search engine
@@ -456,3 +538,40 @@ bun skills/engram/scripts/migrate-v2.js [--dry-run]
 ```
 
 Adds missing v2 fields (confidence, abstractionLevel, tags) to all items.json files with sensible defaults.
+
+### memory-signal.js — Signal detection
+
+```bash
+bun scripts/memory-signal.js --text "I prefer TypeScript"
+```
+
+Classifies text as high/low/none signal. Regex-based, no LLM, <10ms. Returns categories, keywords, confidence.
+
+### memory-write.js — Unified write pipeline
+
+```bash
+bun scripts/memory-write.js --entity <path> --fact <text> --category <cat> \
+  [--confidence 0.9] [--abstraction pattern] [--tags "a,b"] [--source "2026-02-16"] \
+  [--entity-create] [--check-contradictions] [--cross-entity] \
+  [--semantic-check] [--search-collections "life,collection2"]
+```
+
+Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Use `--entity-create` to create new entities on the fly.
+
+### memory-dedup.js — Deduplication index
+
+```bash
+bun scripts/memory-dedup.js --seed    # Index all existing facts
+bun scripts/memory-dedup.js --check --hash <sha256>  # Check if exists
+```
+
+Manages `workspace/memory-state/fact-hashes.json`. Run `--seed` after initial setup or weekly synthesis.
+
+### memory-contradict.js — Contradiction detection
+
+```bash
+bun scripts/memory-contradict.js --fact <text> --entity <path> \
+  [--cross-entity] [--collections "life,other"]
+```
+
+Finds conflicting facts via Jaccard similarity. Intra-entity by default; `--cross-entity` discovers related entities via QMD BM25.

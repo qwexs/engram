@@ -142,7 +142,7 @@ Periodically (every few days):
 
 ### Step 3.5: Domain Supervisor Scan
 
-Проверка субагентных доменов (`memory/domains/`). **Пропустить если директория не существует.**
+Check subagent domains (`memory/domains/`). **Skip if the directory does not exist.**
 
 #### 3.5.1 PROPOSAL Review
 
@@ -150,35 +150,35 @@ Periodically (every few days):
 qmd query "PROPOSAL" -c domains
 ```
 
-- Если найден PROPOSAL → оценить:
-  - **Low-risk** (добавить направление поиска, изменить формат) → обновить `decisions.md` автоматически
-  - **High-risk** (изменить пороги алертов, убрать проверки) → сообщить пользователю
-- После обработки: добавить запись в changelog что PROPOSAL принят/отклонён
+- If a PROPOSAL is found → evaluate:
+  - **Low-risk** (add search direction, change format) → update `decisions.md` automatically
+  - **High-risk** (change alert thresholds, remove checks) → notify the user
+- After processing: add a changelog entry that the PROPOSAL was accepted/rejected
 
 #### 3.5.2 Liveness Check
 
-Для каждого домена прочитать `status.md`:
-- Если домен имеет `workflow.md` — проверить что указанные скрипты/пути корректны (опционально)
-- Проверить **последний запуск** — если пропущено >2x от расписания → алерт
-- Проверить **результат** — если ошибка → алерт
+For each domain, read `status.md`:
+- If the domain has `workflow.md` — optionally verify that listed scripts/paths are correct
+- Check **last run** — if missed >2x the schedule → alert
+- Check **result** — if error → alert
 
-Расписания указываются в `decisions.md` каждого домена или в heartbeat-state.json.
+Schedules are specified in each domain's `decisions.md` or in heartbeat-state.json.
 
-#### 3.5.3 Changelog Ротация
+#### 3.5.3 Changelog Rotation
 
-Для каждого домена проверить `changelog.md`:
-- Если >1000 строк → переместить в `archives/changelog-YYYY-MM.md`
-- Создать новый `changelog.md` с заголовком + ссылкой на archives
+For each domain, check `changelog.md`:
+- If >1000 lines → move to `archives/changelog-YYYY-MM.md`
+- Create a new `changelog.md` with header + link to archives
 
-#### 3.5.4 KG Extraction (опционально)
+#### 3.5.4 KG Extraction (optional)
 
 ```bash
-qmd query "результат OR milestone OR решение" -c domains
+qmd query "result OR milestone OR decision" -c domains
 ```
 
-- Извлечь значимые факты (milestone, pattern) в Knowledge Graph (`life/`)
-- Только если changelog изменился с прошлого scan
-- Пропускать рутинные записи ("проверка метрик, всё ОК")
+- Extract significant facts (milestone, pattern) into the Knowledge Graph (`life/`)
+- Only if changelog changed since the last scan
+- Skip routine entries ("metrics check, all OK")
 
 ### Step 4: QMD Index Update
 

@@ -1,124 +1,124 @@
 # Subagent Persistent Memory
 
-Паттерн для субагентов с `cleanup: "delete"` и долгосрочной памятью через файлы + QMD.
+Pattern for subagents with `cleanup: "delete"` and long-term memory via files + QMD.
 
-## Проблема
+## Problem
 
-Субагенты с `cleanup: "delete"` теряют контекст после завершения. Им нужна persistent memory, изолированная от основной session memory.
+Subagents with `cleanup: "delete"` lose context after completion. They need persistent memory, isolated from the main session memory.
 
-## Решение: Домены
+## Solution: Domains
 
-Каждая задача субагента привязана к **домену** — выделенной папке с собственными файлами:
+Each subagent task is tied to a **domain** — a dedicated folder with its own files:
 
 ```
 memory/domains/{domain}/
-├── decisions.md    # WHAT: правила, пороги (read-only для субагента)
-├── workflow.md     # HOW: скрипты, scope, инструменты (опционален)
-├── status.md       # Текущее состояние (обновляется субагентом)
-├── changelog.md    # Append-only лог действий
-├── archives/       # Ротация changelog >1000 строк
-└── README.md       # Описание домена
+├── decisions.md    # WHAT: rules, thresholds (read-only for subagent)
+├── workflow.md     # HOW: scripts, scope, tools (optional)
+├── status.md       # Current state (updated by subagent)
+├── changelog.md    # Append-only action log
+├── archives/       # Changelog rotation >1000 lines
+└── README.md       # Domain description
 ```
 
-## Архитектура
+## Architecture
 
-### Четыре файла — четыре роли
+### Four Files — Four Roles
 
-| Файл | Кто пишет | Режим | Назначение |
-|------|-----------|-------|-----------|
-| `decisions.md` | Main agent | Read-only для субагента | Правила, пороги, ограничения (ЧТО можно) |
-| `workflow.md` | Main agent | Read-only для субагента | Скрипты, API, scope, внешние источники (КАК работать) |
-| `status.md` | Субагент | Перезапись | Текущее состояние, метрики |
-| `changelog.md` | Субагент | Append-only | Лог всех действий |
+| File | Who writes | Mode | Purpose |
+|------|-----------|------|---------|
+| `decisions.md` | Main agent | Read-only for subagent | Rules, thresholds, constraints (WHAT is allowed) |
+| `workflow.md` | Main agent | Read-only for subagent | Scripts, API, scope, external sources (HOW to work) |
+| `status.md` | Subagent | Overwrite | Current state, metrics |
+| `changelog.md` | Subagent | Append-only | Log of all actions |
 
-### Разделение ответственности
+### Separation of Concerns
 
-| Файл | Отвечает за | Пример |
-|------|------------|--------|
-| `decisions.md` | ЧТО можно делать | "Не менять API endpoints без PROPOSAL" |
-| `workflow.md` | КАК домен работает | "Скрипт поиска: `node smart-search.js`, endpoint: https://..." |
-| Шаблон (spawn-prompt) | КАКУЮ задачу выполнить | "Собери вечерний дайджест" |
+| File | Responsible for | Example |
+|------|----------------|---------|
+| `decisions.md` | WHAT can be done | "Do not change API endpoints without a PROPOSAL" |
+| `workflow.md` | HOW the domain works | "Search script: `node smart-search.js`, endpoint: https://..." |
+| Template (spawn-prompt) | WHICH task to execute | "Build the evening digest" |
 
-**Цепочка контекста при запуске:** Шаблон → workflow.md → decisions.md → внешние источники (если указаны в workflow) → выполнение.
+**Context chain at launch:** Template → workflow.md → decisions.md → external sources (if specified in workflow) → execution.
 
-`workflow.md` **опционален** — рекомендуется для доменов с 2+ типами задач. Простые домены (одна задача) работают без него. Когда workflow.md присутствует, шаблоны остаются тонкими (~30-50 строк), а общая инфраструктура домена описана в одном месте.
+`workflow.md` **is optional** — recommended for domains with 2+ task types. Simple domains (single task) work without it. When workflow.md is present, templates stay thin (~30-50 lines), and the domain's shared infrastructure is described in one place.
 
-### QMD namespace
+### QMD Namespace
 
-Одна коллекция `domains` индексирует все домены (`memory/domains/**/*.md`). Не создавать отдельную коллекцию на каждый домен.
+One `domains` collection indexes all domains (`memory/domains/**/*.md`). Do not create a separate collection per domain.
 
 ```bash
-# Поиск по одной коллекции
-qmd query "мониторинг CPU" -c domains
+# Search within one collection
+qmd query "CPU monitoring" -c domains
 
-# Multi-collection поиск (домены + Knowledge Graph)
-qmd query "статус проекта" -c domains -c life
+# Multi-collection search (domains + Knowledge Graph)
+qmd query "project status" -c domains -c life
 
-# BM25-only fallback (без GPU)
-qmd search "мониторинг" -c domains
+# BM25-only fallback (no GPU)
+qmd search "monitoring" -c domains
 ```
 
-### PR-модель для decisions.md
+### PR Model for decisions.md
 
-Субагент **не может** редактировать `decisions.md`. Если нужно изменить правило:
+The subagent **cannot** edit `decisions.md`. If a rule change is needed:
 
-1. Субагент пишет PROPOSAL в `changelog.md`:
+1. The subagent writes a PROPOSAL in `changelog.md`:
    ```markdown
    ## 2026-02-15 14:30 — PROPOSAL
-   **Предложение**: поднять порог CPU алерта с 80% до 90%
-   **Причина**: ложные срабатывания при компиляции
+   **Proposal**: raise CPU alert threshold from 80% to 90%
+   **Reason**: false positives during compilation
    ```
 
-2. Main agent при heartbeat → review → обновляет `decisions.md`
+2. Main agent during heartbeat → review → updates `decisions.md`
 
-### Race condition
+### Race Condition
 
-**Правило: один домен = один активный субагент в любой момент времени.**
+**Rule: one domain = one active subagent at any given time.**
 
-Перед spawn проверь, что нет активного субагента для этого домена.
+Before spawn, verify that no active subagent exists for this domain.
 
-## Жизненный цикл субагента
+## Subagent Lifecycle
 
 ```
 1. spawn → cleanup: "delete"
-2. Прочитать workflow.md (контекст домена: скрипты, scope, инструменты)
-3. Прочитать decisions.md (правила)
-4. Прочитать status.md (предыдущее состояние)
-5. Выполнить работу
-6. Обновить status.md (новое состояние)
-7. Добавить запись в changelog.md
-8. Завершить → сессия удалена, файлы остаются
+2. Read workflow.md (domain context: scripts, scope, tools)
+3. Read decisions.md (rules)
+4. Read status.md (previous state)
+5. Execute work
+6. Update status.md (new state)
+7. Append entry to changelog.md
+8. Complete → session deleted, files remain
 ```
 
-## Связь с основной архитектурой
+## Integration with Main Architecture
 
-### Субагент НЕ пишет в:
+### Subagent does NOT write to:
 - Daily notes (`memory/agent-{id}/`)
 - Knowledge Graph (`life/`)
 - MEMORY.md
 
-### Heartbeat интеграция
+### Heartbeat Integration
 
-Опциональный шаг heartbeat:
-1. `qmd query "PROPOSAL" -c domains` — найти предложения
-2. Review changelogs → обновить decisions.md
-3. Ротация changelog >1000 строк → `archives/changelog-YYYY-MM.md`
-4. Опционально: извлечь факты из changelogs → Knowledge Graph
+Optional heartbeat step:
+1. `qmd query "PROPOSAL" -c domains` — find proposals
+2. Review changelogs → update decisions.md
+3. Rotate changelog >1000 lines → `archives/changelog-YYYY-MM.md`
+4. Optionally: extract facts from changelogs → Knowledge Graph
 
-### Changelog ротация
+### Changelog Rotation
 
-Когда `changelog.md` превышает 1000 строк:
-1. Heartbeat перемещает содержимое в `archives/changelog-YYYY-MM.md`
-2. Новый `changelog.md` начинается с заголовка + ссылки:
+When `changelog.md` exceeds 1000 lines:
+1. Heartbeat moves contents to `archives/changelog-YYYY-MM.md`
+2. New `changelog.md` starts with header + reference:
    ```markdown
-   # Журнал: {domain}
+   # Log: {domain}
 
-   > Предыдущие записи: см. `archives/`
+   > Previous entries: see `archives/`
    ```
 
 ## Project Domains
 
-Домены могут быть привязаны к проектам в Knowledge Graph (`life/projects/`). Реестр доменов хранится в `memory/domains/registry.json`:
+Domains can be linked to projects in the Knowledge Graph (`life/projects/`). The domain registry is stored in `memory/domains/registry.json`:
 
 ```json
 {
@@ -142,100 +142,100 @@ qmd search "мониторинг" -c domains
 }
 ```
 
-### Registry поля
+### Registry Fields
 
-| Поле | Обязательно | Описание |
-|------|-------------|----------|
-| `type` | ✅ | `dev-project` или `cron-task` |
-| `description` | ✅ | Краткое описание |
-| `spawnTemplate` | ⚠️ рекомендуется | Файл из `templates/spawn-prompts/` |
-| `subagentLabel` | ⚠️ рекомендуется | Фиксированный label для sessions_spawn |
-| `kgEntity` | нет | Привязка к Knowledge Graph entity |
-| `created` | нет | Дата создания |
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | ✅ | `dev-project` or `cron-task` |
+| `description` | ✅ | Brief description |
+| `spawnTemplate` | ⚠️ recommended | File from `templates/spawn-prompts/` |
+| `subagentLabel` | ⚠️ recommended | Fixed label for sessions_spawn |
+| `kgEntity` | no | Link to Knowledge Graph entity |
+| `created` | no | Creation date |
 
-### Типы доменов
+### Domain Types
 
-| Тип | Описание | Субагент |
-|-----|----------|----------|
-| `dev-project` | Разработка, привязка к KG entity | По запросу пользователя |
-| `cron-task` | Периодические задачи | По расписанию через cron |
+| Type | Description | Subagent |
+|------|-----------|----------|
+| `dev-project` | Development, linked to KG entity | On user request |
+| `cron-task` | Periodic tasks | On schedule via cron |
 
-### Связка с KG
+### KG Binding
 
-- **KG entity** (`life/projects/{name}/`) — что бот знает о проекте (факты, summary)
-- **Domain** (`memory/domains/{name}/`) — контекст для субагента (decisions, status, changelog)
-- Связка задаётся через поле `kgEntity` в registry.json
+- **KG entity** (`life/projects/{name}/`) — what the bot knows about the project (facts, summary)
+- **Domain** (`memory/domains/{name}/`) — context for the subagent (decisions, status, changelog)
+- Binding is set via the `kgEntity` field in registry.json
 
-### Workflow для dev-project
+### Workflow for dev-project
 
-1. Пользователь даёт задачу по проекту
-2. Главный бот находит домен через `registry.json`
-3. Загружает шаблон из `spawnTemplate`
-4. Читает контекст домена: **workflow.md** (если есть), decisions.md, status.md, changelog (tail)
-5. Подставляет плейсхолдеры: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`
-6. Спавнит субагента с `cleanup: "delete"` и фиксированным label
-7. Субагент сам определяет где работать
-8. После завершения главный бот обновляет домен
+1. User gives a project task
+2. Main bot finds the domain via `registry.json`
+3. Loads the template from `spawnTemplate`
+4. Reads domain context: **workflow.md** (if present), decisions.md, status.md, changelog (tail)
+5. Injects placeholders: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`
+6. Spawns subagent with `cleanup: "delete"` and a fixed label
+7. Subagent determines where to work
+8. After completion, main bot updates the domain
 
-**Правило: всегда через шаблон.** Не писать промпт от руки — использовать `spawnTemplate` из registry. Это гарантирует что субагент получит Domain Lifecycle (пути к decisions, status, changelog).
+**Rule: always use a template.** Don't write prompts manually — use `spawnTemplate` from the registry. This ensures the subagent receives the Domain Lifecycle (paths to decisions, status, changelog).
 
-### Создание домена с привязкой к KG
+### Creating a Domain with KG Binding
 
 ```bash
 bun skills/engram/scripts/add-domain.js --domain engram --type dev-project --kg-entity projects/engram --description "Memory architecture skill"
 ```
 
-## Создание домена
+## Creating a Domain
 
 ```bash
-bun skills/engram/scripts/add-domain.js --domain {domain} --description "Описание"
-bun skills/engram/scripts/add-domain.js --domain {domain} --type cron-task --description "Описание"
+bun skills/engram/scripts/add-domain.js --domain {domain} --description "Description"
+bun skills/engram/scripts/add-domain.js --domain {domain} --type cron-task --description "Description"
 ```
 
-## Пример: домен мониторинга
+## Example: Monitoring Domain
 
 ### decisions.md
 ```markdown
-# Правила: monitoring
+# Rules: monitoring
 
 ## CPU Alert
-**Условие**: CPU > 80% в течение 5 минут
-**Действие**: уведомить в Telegram
+**Condition**: CPU > 80% for 5 minutes
+**Action**: notify via Telegram
 
 ## Disk Alert
-**Условие**: свободное место < 10%
-**Действие**: уведомить + запустить cleanup
+**Condition**: free space < 10%
+**Action**: notify + run cleanup
 ```
 
 ### status.md
 ```markdown
-# Статус: monitoring
+# Status: monitoring
 
-## Текущее состояние
-- **Последний запуск**: 2026-02-15 14:30
-- **Результат**: ОК, все метрики в норме
-- **CPU**: 45% (avg за час)
-- **Disk**: 62% свободно
-- **Следующий запуск**: 2026-02-15 15:00
+## Current State
+- **Last run**: 2026-02-15 14:30
+- **Result**: OK, all metrics normal
+- **CPU**: 45% (1-hour avg)
+- **Disk**: 62% free
+- **Next run**: 2026-02-15 15:00
 ```
 
 ### changelog.md
 ```markdown
-# Журнал: monitoring
+# Log: monitoring
 
 ## 2026-02-15 14:30
-**Действие**: проверка метрик сервера
-**Результат**: всё в норме, CPU 45%, Disk 62%
+**Action**: server metrics check
+**Result**: all normal, CPU 45%, Disk 62%
 
 ## 2026-02-15 13:30
-**Действие**: проверка метрик сервера
-**Результат**: CPU spike 78% (компиляция), прошёл
+**Action**: server metrics check
+**Result**: CPU spike 78% (compilation), passed
 ```
 
-## Шаблоны spawn
+## Spawn Templates
 
-Готовые шаблоны в `templates/spawn-prompts/`:
-- `dev-project.md` — для разработки (workflow + decisions + status + changelog tail)
-- `cron-task.md` — для периодических задач (workflow + decisions + status)
+Ready-made templates in `templates/spawn-prompts/`:
+- `dev-project.md` — for development (workflow + decisions + status + changelog tail)
+- `cron-task.md` — for periodic tasks (workflow + decisions + status)
 
-Плейсхолдеры: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`.
+Placeholders: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`.

@@ -3,18 +3,18 @@ name: engram
 description: Etalon memory architecture with Knowledge Graph (PARA), session isolation, memory decay, and QMD hybrid search
 ---
 
-> ⚠️ **READ-ONLY SKILL**: Этот skill - reference implementation. Не редактируйте файлы напрямую.
-> При установке скопируйте скрипты в свою рабочую папку:
+> ⚠️ **READ-ONLY SKILL**: This skill is a reference implementation. Do not edit files directly.
+> When installing, copy scripts to your workspace folder:
 > ```bash
-> # Скрипты → workspace scripts/
+> # Scripts → workspace scripts/
 > cp skills/engram/scripts/*.js scripts/
 > ```
-> Шаблоны и assets остаются в skill-папке. Укажите путь к ней через env:
+> Templates and assets remain in the skill folder. Specify the path via env:
 > ```bash
-> export ENGRAM_SKILL_DIR=skills/engram  # или абсолютный путь
+> export ENGRAM_SKILL_DIR=skills/engram  # or absolute path
 > bun scripts/init.js
 > ```
-> Без `ENGRAM_SKILL_DIR` скрипты ищут assets относительно `../` от своего расположения.
+> Without `ENGRAM_SKILL_DIR`, scripts look for assets relative to `../` from their location.
 
 # Memory System
 
@@ -277,53 +277,53 @@ Full schema: [references/fact-schema.md](references/fact-schema.md)
 
 ## Subagent Memory
 
-Паттерн для субагентов с `cleanup: "delete"` и долгосрочной памятью через домены.
+Pattern for subagents with `cleanup: "delete"` and long-term memory via domains.
 
 ### Quick Start
 
 ```bash
-# Создать домен
-bun skills/engram/scripts/add-domain.js --domain monitoring --description "Мониторинг сервера"
+# Create a domain
+bun skills/engram/scripts/add-domain.js --domain monitoring --description "Server monitoring"
 
-# Настроить правила в decisions.md
-# Запустить субагент с промптом из templates/spawn-prompt.md
+# Configure rules in decisions.md
+# Launch subagent with prompt from templates/spawn-prompt.md
 ```
 
-### Структура домена
+### Domain Structure
 
 ```
 memory/domains/{domain}/
-├── decisions.md    # Правила (read-only для субагента)
-├── workflow.md     # КАК домен работает: скрипты, scope, инструменты (опционален)
-├── status.md       # Текущее состояние (пишет субагент)
-├── changelog.md    # Append-only лог (пишет субагент)
-├── archives/       # Ротация changelog
+├── decisions.md    # Rules (read-only for subagent)
+├── workflow.md     # HOW the domain works: scripts, scope, tools (optional)
+├── status.md       # Current state (written by subagent)
+├── changelog.md    # Append-only log (written by subagent)
+├── archives/       # Changelog rotation
 └── README.md
 ```
 
-**workflow.md** — опциональный файл, описывающий инфраструктуру домена (скрипты, API, scope задач, ссылки на wiki). Рекомендуется для доменов с 2+ типами задач. Простые домены (одна задача) могут обойтись без него.
+**workflow.md** — optional file describing the domain's infrastructure (scripts, API, task scope, wiki links). Recommended for domains with 2+ task types. Simple domains (single task) can work without it.
 
-Разделение ответственности:
-- **decisions.md** — ЧТО можно делать (правила, пороги, ограничения)
-- **workflow.md** — КАК домен работает (скрипты, API, scope, ссылки)
-- **Шаблон (spawn-prompt)** — КАКУЮ конкретную задачу выполнить
+Separation of concerns:
+- **decisions.md** — WHAT can be done (rules, thresholds, constraints)
+- **workflow.md** — HOW the domain works (scripts, API, scope, links)
+- **Template (spawn-prompt)** — WHICH specific task to execute
 
-### Правила
+### Rules
 
-1. **Один домен = один активный субагент** в любой момент времени
-2. `decisions.md` — read-only для субагентов; изменения через PROPOSAL в changelog
-3. Субагент НЕ пишет в daily notes или life/
-4. QMD: одна коллекция `domains` на все домены
-5. Heartbeat: review PROPOSAL, ротация changelog, опционально KG extraction
+1. **One domain = one active subagent** at any given time
+2. `decisions.md` — read-only for subagents; changes via PROPOSAL in changelog
+3. Subagent does NOT write to daily notes or life/
+4. QMD: one `domains` collection for all domains
+5. Heartbeat: review PROPOSAL, rotate changelog, optionally KG extraction
 
 ### Project Domains
 
-Домены могут быть привязаны к проектам в Knowledge Graph (`life/projects/`). Это даёт двустороннюю связку:
+Domains can be linked to projects in the Knowledge Graph (`life/projects/`). This provides a two-way binding:
 
-- **KG entity** (`life/projects/{name}/`) — что бот знает о проекте (факты, summary)
-- **Domain** (`memory/domains/{name}/`) — контекст для субагента (decisions, status, changelog)
+- **KG entity** (`life/projects/{name}/`) — what the bot knows about the project (facts, summary)
+- **Domain** (`memory/domains/{name}/`) — context for the subagent (decisions, status, changelog)
 
-Связка задаётся через реестр доменов (`memory/domains/registry.json`):
+The binding is defined via the domain registry (`memory/domains/registry.json`):
 
 ```json
 {
@@ -345,54 +345,54 @@ memory/domains/{domain}/
 }
 ```
 
-**Поля registry:**
+**Registry fields:**
 
-| Поле | Обязательно | Описание |
-|------|-------------|----------|
-| `type` | ✅ | `dev-project` или `cron-task` |
-| `description` | ✅ | Краткое описание |
-| `spawnTemplate` | ⚠️ рекомендуется | Файл из `templates/spawn-prompts/` |
-| `subagentLabel` | ⚠️ рекомендуется | Фиксированный label для sessions_spawn |
-| `kgEntity` | нет | Привязка к Knowledge Graph entity |
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | ✅ | `dev-project` or `cron-task` |
+| `description` | ✅ | Brief description |
+| `spawnTemplate` | ⚠️ recommended | File from `templates/spawn-prompts/` |
+| `subagentLabel` | ⚠️ recommended | Fixed label for sessions_spawn |
+| `kgEntity` | no | Link to Knowledge Graph entity |
 
-**Типы доменов:**
-- `dev-project` — разработка, привязка к KG entity, субагент по запросу
-- `cron-task` — периодические задачи, субагент по расписанию
+**Domain types:**
+- `dev-project` — development, linked to KG entity, subagent on demand
+- `cron-task` — periodic tasks, subagent on schedule
 
 ### Spawn Templates
 
-**Правило: всегда через шаблон.** Не писать промпт от руки — использовать `spawnTemplate` из registry. Это гарантирует что субагент получит Domain Lifecycle (пути к decisions, status, changelog).
+**Rule: always use a template.** Don't write prompts manually — use `spawnTemplate` from the registry. This ensures the subagent receives the Domain Lifecycle (paths to decisions, status, changelog).
 
-Шаблоны лежат в `templates/spawn-prompts/`:
-- `dev-project.md` — для разработки (decisions + status + changelog tail)
-- `cron-task.md` — для периодических задач (decisions + status)
+Templates are in `templates/spawn-prompts/`:
+- `dev-project.md` — for development (decisions + status + changelog tail)
+- `cron-task.md` — for periodic tasks (decisions + status)
 
-Шаблоны используют плейсхолдеры: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`.
+Templates use placeholders: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`.
 
-Цепочка контекста: Шаблон → workflow.md → decisions.md → wiki (если нужен) → выполнение.
+Context chain: Template → workflow.md → decisions.md → wiki (if needed) → execution.
 
 **Workflow:**
-1. Пользователь даёт задачу по проекту
-2. Главный бот находит домен через `registry.json`
-3. Загружает шаблон из `spawnTemplate`
-4. Подставляет контекст домена (decisions, status, changelog)
-5. Спавнит субагента с `subagentLabel` и `cleanup: "delete"`
-6. Субагент сам определяет где работать (repo, API, скрипты — зависит от задачи)
-7. После завершения главный бот обновляет домен (changelog, status)
+1. User gives a project task
+2. Main bot finds the domain via `registry.json`
+3. Loads the template from `spawnTemplate`
+4. Injects domain context (decisions, status, changelog)
+5. Spawns subagent with `subagentLabel` and `cleanup: "delete"`
+6. Subagent determines where to work (repo, API, scripts — depends on the task)
+7. After completion, main bot updates the domain (changelog, status)
 
-**Где работать** — не прописывается в домене. Бот определяет рабочую папку из своей памяти и контекста разговора.
+**Where to work** — not specified in the domain. The bot determines the working directory from its memory and conversation context.
 
-### Пример spawn
+### Spawn Example
 
 ```javascript
-// 1. Найти домен
+// 1. Find the domain
 const registry = readFile("memory/domains/registry.json")
 const domain = registry.domains["engram"]
 
-// 2. Загрузить шаблон
+// 2. Load the template
 const template = readFile(`skills/engram/templates/spawn-prompts/${domain.spawnTemplate}`)
 
-// 3. Подставить контекст
+// 3. Inject context
 const task = template
   .replace("{{domain}}", "engram")
   .replace("{{task}}", userTask)
@@ -403,13 +403,13 @@ const task = template
 
 // 4. Spawn
 sessions_spawn({
-  label: domain.subagentLabel,  // из registry
+  label: domain.subagentLabel,  // from registry
   cleanup: "delete",
   task: task
 })
 ```
 
-Подробная документация: [references/subagent-memory.md](references/subagent-memory.md)
+Detailed documentation: [references/subagent-memory.md](references/subagent-memory.md)
 
 ## Real-Time Extraction
 
@@ -507,7 +507,7 @@ Creates session directory, copies group-knowledge templates, adds QMD collection
 ### add-domain.js — Create subagent domain
 
 ```bash
-bun skills/engram/scripts/add-domain.js --domain <name> [--description "РћРїРёСЃР°РЅРёРµ"]
+bun skills/engram/scripts/add-domain.js --domain <name> [--description "Description"]
 ```
 
 Creates `memory/domains/{domain}/` with decisions.md, status.md, changelog.md, README.md. Registers QMD collection `domains` (one for all domains). Warns if >20 domains.

@@ -51,6 +51,7 @@ Deploys a three-layer memory architecture:
 - **Contradiction Detection** — QMD + Jaccard similarity finds conflicting facts before writing
 - **Heartbeat Automation** — extraction, weekly synthesis, domain supervisor scan, maintenance on autopilot
 - **QMD Hybrid Search** — BM25 + vector embeddings + rerank, 96% token reduction vs full-file loading
+- **Multi-Collection Search** — query across multiple collections in one call (`-c life -c memory`), BM25-only fallback when GPU is busy
 - **Dual QMD Support** — local GPU (Vulkan) or cloud (Jina AI API, free tier)
 
 ## Quick Start

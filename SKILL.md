@@ -158,6 +158,12 @@ For the atomic fact schema (v2), see [references/fact-schema.md](references/fact
 # Hybrid search (BM25 + vectors + rerank)
 qmd query "search text" -c <collection>
 
+# Multi-collection search (searches across multiple collections)
+qmd query "search text" -c life -c openclaw-memory-agent-main-main
+
+# BM25-only search (no GPU required, faster)
+qmd search "search text" -c <collection>
+
 # Update index after changes
 qmd update          # BM25 (instant)
 qmd embed           # Vectors (heartbeat only)
@@ -165,6 +171,8 @@ qmd embed           # Vectors (heartbeat only)
 
 **Strategy:**
 - Always use `-c` flag for session isolation
+- Multi-collection (`-c col1 -c col2`) for cross-cutting searches (e.g., KG + daily notes)
+- Use `qmd search` (BM25-only) when GPU is busy or unavailable
 - Top 2-3 results usually sufficient
 - Run `qmd update` after writing memory
 - Do NOT run `qmd embed` manually (heartbeat handles it)

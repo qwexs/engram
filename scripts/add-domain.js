@@ -88,7 +88,7 @@ console.log(`📁 Создан: memory/domains/${domain}/`);
 const today = new Date().toISOString().split('T')[0];
 const replacements = { DOMAIN: domain, DESCRIPTION: description, DATE: today };
 
-const templates = ['decisions.md', 'status.md', 'changelog.md', 'README.md'];
+const templates = ['decisions.md', 'status.md', 'changelog.md', 'README.md', 'workflow.md'];
 for (const tmpl of templates) {
   const src = join(TEMPLATES, tmpl);
   const srcFile = Bun.file(src);

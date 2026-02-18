@@ -5,7 +5,9 @@
 
 import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, dirname } from 'node:path';
+
+const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')).replace(/[\\\/]scripts$/, '');
 
 const { values: args } = parseArgs({
   options: {
@@ -283,6 +285,28 @@ if (existsSync(domainsDir)) {
       }
     }
   }
+  // Check: if spawn-prompts use {{workflow}} but workflow.md is missing → warning
+  const spawnPromptsDir = join(SKILL_DIR, 'templates', 'spawn-prompts');
+  const spawnPromptsUseWorkflow = new Set();
+  if (existsSync(spawnPromptsDir)) {
+    for (const f of readdirSync(spawnPromptsDir)) {
+      if (f.endsWith('.md')) {
+        const content = readFileSync(join(spawnPromptsDir, f), 'utf-8');
+        if (content.includes('{{workflow}}')) {
+          spawnPromptsUseWorkflow.add(f);
+        }
+      }
+    }
+  }
+  if (spawnPromptsUseWorkflow.size > 0) {
+    for (const entry of domainEntries) {
+      const workflowPath = join(domainsDir, entry.name, 'workflow.md');
+      if (!existsSync(workflowPath)) {
+        warn(`Domain "${entry.name}" has no workflow.md (used by spawn-prompts: ${[...spawnPromptsUseWorkflow].join(', ')})`);
+      }
+    }
+  }
+
   ok(`${domainEntries.length} domain(s) checked`);
 } else {
   ok('No domains directory (optional)');

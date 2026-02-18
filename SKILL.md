@@ -286,11 +286,19 @@ bun skills/engram/scripts/add-domain.js --domain monitoring --description "Мо�
 ```
 memory/domains/{domain}/
 ├── decisions.md    # Правила (read-only для субагента)
+├── workflow.md     # КАК домен работает: скрипты, scope, инструменты (опционален)
 ├── status.md       # Текущее состояние (пишет субагент)
 ├── changelog.md    # Append-only лог (пишет субагент)
 ├── archives/       # Ротация changelog
 └── README.md
 ```
+
+**workflow.md** — опциональный файл, описывающий инфраструктуру домена (скрипты, API, scope задач, ссылки на wiki). Рекомендуется для доменов с 2+ типами задач. Простые домены (одна задача) могут обойтись без него.
+
+Разделение ответственности:
+- **decisions.md** — ЧТО можно делать (правила, пороги, ограничения)
+- **workflow.md** — КАК домен работает (скрипты, API, scope, ссылки)
+- **Шаблон (spawn-prompt)** — КАКУЮ конкретную задачу выполнить
 
 ### Правила
 
@@ -351,7 +359,9 @@ memory/domains/{domain}/
 - `dev-project.md` — для разработки (decisions + status + changelog tail)
 - `cron-task.md` — для периодических задач (decisions + status)
 
-Шаблоны используют плейсхолдеры: `{{domain}}`, `{{task}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`.
+Шаблоны используют плейсхолдеры: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`.
+
+Цепочка контекста: Шаблон → workflow.md → decisions.md → wiki (если нужен) → выполнение.
 
 **Workflow:**
 1. Пользователь даёт задачу по проекту
@@ -378,6 +388,7 @@ const template = readFile(`skills/engram/templates/spawn-prompts/${domain.spawnT
 const task = template
   .replace("{{domain}}", "engram")
   .replace("{{task}}", userTask)
+  .replace("{{workflow}}", readFile("memory/domains/engram/workflow.md") ?? "")
   .replace("{{decisions}}", readFile("memory/domains/engram/decisions.md"))
   .replace("{{status}}", readFile("memory/domains/engram/status.md"))
   .replace("{{changelog_tail}}", last20lines("memory/domains/engram/changelog.md"))

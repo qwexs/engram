@@ -8,11 +8,15 @@
 
 Ты работаешь в рамках домена `{{domain}}`. Файлы домена:
 
+- **Workflow**: `memory/domains/{{domain}}/workflow.md` — как домен работает (скрипты, scope, инструменты)
 - **Правила**: `memory/domains/{{domain}}/decisions.md` — прочитай перед началом, НЕ редактируй
 - **Статус**: `memory/domains/{{domain}}/status.md` — обнови после завершения
 - **Журнал**: `memory/domains/{{domain}}/changelog.md` — добавь запись о выполненной работе (append-only)
 
 ## Контекст домена
+
+### workflow.md
+{{workflow}}
 
 ### decisions.md
 {{decisions}}
@@ -25,8 +29,9 @@
 
 ## Правила
 
-1. Прочитай decisions.md — это твои ограничения
-2. Выполни задачу
-3. Обнови status.md (перезапись — текущее состояние)
-4. Добавь запись в changelog.md (append в начало, формат: `## YYYY-MM-DD HH:MM — Заголовок`)
-5. Если нужно изменить правило из decisions.md — напиши PROPOSAL в changelog, НЕ редактируй decisions напрямую
+1. Прочитай workflow.md — это контекст домена (скрипты, scope, инструменты)
+2. Прочитай decisions.md — это твои ограничения
+3. Выполни задачу
+4. Обнови status.md (перезапись — текущее состояние)
+5. Добавь запись в changelog.md (append в начало, формат: `## YYYY-MM-DD HH:MM — Заголовок`)
+6. Если нужно изменить правило из decisions.md — напиши PROPOSAL в changelog, НЕ редактируй decisions напрямую

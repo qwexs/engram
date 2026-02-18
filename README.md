@@ -103,11 +103,24 @@ Persistent memory for subagents with `cleanup: "delete"` via **domains**:
 
 ```
 memory/domains/{domain}/
-├── decisions.md    # Rules (read-only for subagent, PR model)
+├── decisions.md    # WHAT: rules, thresholds, constraints (read-only for subagent)
+├── workflow.md     # HOW: scripts, APIs, scope, external sources (optional)
 ├── status.md       # Current state (written by subagent)
 ├── changelog.md    # Append-only action log
 └── archives/       # Changelog rotation when >1000 lines
 ```
+
+### Separation of Concerns
+
+| File | Responsibility | Who writes | Example |
+|------|---------------|------------|---------|
+| `decisions.md` | WHAT can be done | Main Agent | "Don't change API endpoints without PROPOSAL" |
+| `workflow.md` | HOW domain works | Main Agent | "Search script: `node smart-search.js`" |
+| Spawn template | WHICH task to run | Main Agent (per-spawn) | "Build the evening digest" |
+
+**Context chain on spawn:** Template → workflow.md → decisions.md → external sources (if any) → execute task.
+
+`workflow.md` is **optional** — recommended for domains with 2+ task types. Simple domains (single task) work fine without it. When present, templates stay thin (~30-50 lines) while shared domain infrastructure lives in one place.
 
 **Key rules:**
 - One domain = one active subagent
@@ -290,7 +303,8 @@ workspace/
 │   ├── templates/group-knowledge/     # Templates for new groups
 │   ├── domains/                       # Subagent persistent memory
 │   │   └── {domain}/
-│   │       ├── decisions.md           # Rules (read-only for subagents)
+│   │       ├── decisions.md           # WHAT: rules (read-only for subagents)
+│   │       ├── workflow.md            # HOW: scripts, scope, sources (optional)
 │   │       ├── status.md              # Current state (subagent writes)
 │   │       ├── changelog.md           # Append-only action log
 │   │       └── archives/              # Rotated changelogs
@@ -324,6 +338,32 @@ Built on 10 proven methodologies:
 8. **Confidence Scoring** — metacognitive certainty levels
 9. **Abstraction Ladder** — RAPTOR-inspired (episode → pattern → principle)
 10. **Tags** — flexible categorization for search
+
+## Agent Teams (Roadmap)
+
+Engram domains provide the foundation for multi-level agent orchestration:
+
+```
+         Main Agent (personality, KG, strategy)
+        /         |          \
+      L1a        L1b         L1c          ← Orchestrators (persistent via domain files)
+    engram     iboard    apriori-content
+       |         |        /    |    \
+      L2        L2      L2a  L2b  L2c    ← Executors (ephemeral, cleanup: delete)
+```
+
+**How it works today:**
+- **Main → L1**: spawn with template, L1 reads `workflow.md` (its "skillset") + `decisions.md` (its rules)
+- **L1 → L2**: L1 orchestrator can spawn ephemeral executors for subtasks
+- **Fan-out**: Main spawns multiple L1/L2 in parallel for independent tasks
+- **Persistence**: L1 agents are stateless sessions, but domain files (`status.md`, `changelog.md`) carry state across runs
+
+**What's next:**
+- **L2↔L2 mesh communication** — direct inter-agent coordination without routing through orchestrator (blocked by [openclaw#5813](https://github.com/openclaw/openclaw/issues/5813))
+- **Smart delegation** — Main classifies task complexity and chooses spawn mode (simple executor vs autonomous orchestrator)
+- **PROPOSAL mechanism** — L1 proposes rule changes, Main reviews during heartbeat
+
+See [agent-teams-architecture.md](https://github.com/qwexs/engram/blob/main/references/agent-teams-architecture.md) for the full design document.
 
 ## Inspiration
 

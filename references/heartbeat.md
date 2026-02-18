@@ -84,6 +84,8 @@ This tells the next heartbeat where extraction left off. Only new content (appen
 
 **Important:** Only heartbeat extraction writes watermarks. Inline (real-time) extraction does NOT — it writes facts via `memory-write.js` as usual, and heartbeat will see those lines after its last watermark. Dedup prevents duplicates.
 
+**Rotation edge case:** When a daily note is rotated (>1000 lines), the watermark moves to the archive with the original file. The new stub (10-20 lines) has no watermark — this is correct: the stub is parsed entirely on next heartbeat, which is cheap. No special handling needed.
+
 ### Step 2.5: KG Validation
 
 After any writes to items.json, validate the Knowledge Graph:

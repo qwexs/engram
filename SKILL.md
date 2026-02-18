@@ -211,6 +211,7 @@ During heartbeats, scan daily notes for durable facts:
 - Create new entities when creation rules are met
 - **After extraction**, append watermark: `<!-- extracted:L{lastLine}:{ISO timestamp} -->`
 - **Only heartbeat writes watermarks** — inline extraction does NOT (dedup handles overlap)
+- **After rotation**, watermark moves to archive with the original file; the stub has no watermark and is parsed entirely (cheap, 10-20 lines)
 - Skip casual chat and transient requests
 
 For the complete heartbeat flow, see [references/heartbeat.md](references/heartbeat.md).

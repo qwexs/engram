@@ -50,3 +50,4 @@ On next heartbeat, only lines **after** the last watermark are parsed. No waterm
 - **Inline (real-time) extraction** does NOT write watermarks — it uses `memory-write.js` as usual
 - Heartbeat sees new lines after its last watermark; dedup prevents duplicate facts from inline-extracted content
 - Multiple watermarks may exist in a file; always use the last one
+- After daily note rotation, watermark moves to archive; stub is parsed entirely (no special handling needed)

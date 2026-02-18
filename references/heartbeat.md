@@ -102,6 +102,36 @@ This catches:
 
 If unfixable errors found, log in daily note and alert user.
 
+### Step 2.6: Group Preferences Extraction
+
+Extract group interests/questions/pain-points from group daily notes into the group's KG entity. This feeds adaptive content pipelines.
+
+**For each active group session:**
+
+1. Read today's (and yesterday's) group daily note
+   - Use watermark check same as main KG extraction
+   - If no new content → skip
+2. Look for group-relevant signals:
+   - **interest** — topics members discuss or ask about
+   - **question** — specific questions asked by members
+   - **pain-point** — frustrations or problems expressed
+   - **feedback** — reactions to content (what liked / what ignored)
+3. Write via `memory-write.js`:
+   ```bash
+   bun scripts/memory-write.js \
+     --entity "areas/groups/{group-entity}" \
+     --fact "Members interested in topic X" \
+     --category interest \
+     --confidence 0.8 \
+     --abstraction pattern \
+     --tags "tag1,tag2" \
+     --source "YYYY-MM-DD"
+   ```
+4. Write extraction watermark in group daily note
+5. Update group entity's `summary.md`
+
+Memory decay handles relevance automatically — Hot topics appear in summary, Cold ones drop.
+
 ### Step 3: Memory Maintenance
 
 Periodically (every few days):
@@ -128,6 +158,7 @@ qmd query "PROPOSAL" -c domains
 #### 3.5.2 Liveness Check
 
 Для каждого домена прочитать `status.md`:
+- Если домен имеет `workflow.md` — проверить что указанные скрипты/пути корректны (опционально)
 - Проверить **последний запуск** — если пропущено >2x от расписания → алерт
 - Проверить **результат** — если ошибка → алерт
 
@@ -155,6 +186,7 @@ At end of heartbeat:
 ```bash
 qmd update    # BM25 index (instant)
 qmd embed     # Vector embeddings (GPU/Jina, ~1-2s)
+# Multi-collection searches available: qmd query "text" -c col1 -c col2
 ```
 
 Run ONCE per heartbeat to reduce GPU load.

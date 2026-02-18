@@ -83,6 +83,19 @@ summary.md (decay-aware summaries)
 
 **Extraction Watermark optimization:** Heartbeat extraction appends `<!-- extracted:L{N}:{timestamp} -->` to daily notes after processing. On next heartbeat, only lines after the last watermark are parsed. No watermark = parse entire file (backward compatible). This avoids re-processing already-extracted content while inline extraction (which does NOT write watermarks) remains unaffected — dedup handles overlap.
 
+### Real-Time Extraction
+
+In addition to heartbeat extraction, high-signal facts are extracted **inline during conversations** (no 30-min delay):
+
+```
+Message → Signal Scan (regex, <10ms) → HIGH/LOW/NONE
+  HIGH → Dedup → Write to KG → QMD update
+  LOW  → Daily note → Heartbeat extracts later
+  NONE → Skip
+```
+
+Inline extraction does NOT write watermarks — heartbeat handles that. Dedup (`memory-write.js`) prevents duplicates from both paths.
+
 ### Write Destinations
 
 | Type | Destination |
@@ -100,6 +113,12 @@ QMD provides hybrid search (BM25 + vectors + rerank) across all memory layers.
 # Search by collection
 qmd query "topic" -c openclaw-memory-agent-main-main
 qmd query "topic" -c life
+
+# Multi-collection search
+qmd query "topic" -c life -c openclaw-memory-agent-main-main
+
+# BM25-only search (no GPU required)
+qmd search "topic" -c life
 
 # Update index after changes
 qmd update          # BM25 (instant)
@@ -121,3 +140,4 @@ See [qmd-setup.md](qmd-setup.md) for installation and configuration.
 | Heartbeat Automation | Extraction → synthesis → maintenance cycle |
 | Confidence Scoring | 0.0-1.0 metacognition per fact |
 | Abstraction Ladder | episode → pattern → principle (RAPTOR-inspired) |
+| Tags | Free-form categorization for search and filtering |

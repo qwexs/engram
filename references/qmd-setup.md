@@ -33,6 +33,17 @@ JINA_RERANK_MODEL=jina-reranker-v2-base-multilingual  # Default
 JINA_EMBED_DIMENSIONS=1024         # Default
 ```
 
+## Environment Variables (OpenAI Provider)
+
+```bash
+QMD_LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-proj-xxx
+# Optional:
+OPENAI_EMBED_MODEL=text-embedding-3-small
+OPENAI_GENERATE_MODEL=gpt-4o-mini
+OPENAI_BASE_URL=https://your-provider.com/v1
+```
+
 ## Collections
 
 The memory system uses these QMD collections:
@@ -43,6 +54,7 @@ The memory system uses these QMD collections:
 | `openclaw-memory-agent-{id}-main` | `memory/agent-{id}/main/` | `**/*.md` | Main session memory |
 | `openclaw-memory-agent-{id}-{platform}-{groupId}` | `memory/agent-{id}/{platform}-{groupId}/` | `**/*.md` | Group session memory |
 | `life` | `life/` | `**/*.md` | Knowledge Graph |
+| `domains` | `memory/domains/` | `**/*.md` | Subagent domain files |
 
 ### Adding a Collection
 
@@ -61,6 +73,12 @@ qmd collection list
 ```bash
 # Hybrid search (BM25 + vectors + rerank)
 qmd query "search text" -c <collection>
+
+# Multi-collection search
+qmd query "search text" -c life -c openclaw-memory-agent-main-main
+
+# BM25-only search (no GPU, faster)
+qmd search "search text" -c <collection>
 
 # Update BM25 index (CPU, instant) — run after any file changes
 qmd update
@@ -82,3 +100,5 @@ qmd collection list
 - Run `qmd embed` during heartbeats only (resource-intensive)
 - Top 2-3 results are usually sufficient
 - Read full files only when QMD results indicate need
+- Use multi-collection (`-c col1 -c col2`) for cross-cutting searches (e.g., KG + daily notes)
+- Use `qmd search` (BM25-only) as fallback when GPU is busy or unavailable

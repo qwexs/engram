@@ -63,6 +63,7 @@ Scan recent daily notes for durable facts:
 
 **How to extract:**
 1. Read today's + yesterday's daily notes
+   - **Watermark check**: Look for `<!-- extracted:L{N}:{timestamp} -->` at the end of each note. If found, parse only lines **after** the last watermark. If no watermark exists, parse the entire file (backward compatible). Multiple watermarks may exist — always use the last one.
 2. For each durable fact:
    - Add to existing entity's `items.json` (or create new entity)
    - Set confidence using rubric
@@ -72,6 +73,16 @@ Scan recent daily notes for durable facts:
 4. Update `life/index.md` if new entities created
 
 **Skip:** casual chat, transient requests, already-captured facts.
+
+**After extraction, write a watermark** at the end of each processed daily note:
+```
+<!-- extracted:L{lastLine}:{ISO timestamp} -->
+```
+Example: `<!-- extracted:L47:2026-02-18T03:22:00Z -->`
+
+This tells the next heartbeat where extraction left off. Only new content (appended after the watermark) will be parsed next time. Dedup in `memory-write.js` provides a safety net against duplicate facts.
+
+**Important:** Only heartbeat extraction writes watermarks. Inline (real-time) extraction does NOT — it writes facts via `memory-write.js` as usual, and heartbeat will see those lines after its last watermark. Dedup prevents duplicates.
 
 ### Step 2.5: KG Validation
 

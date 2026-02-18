@@ -73,13 +73,15 @@ Curated personal wisdom distilled from daily notes during memory maintenance:
 
 ```
 Daily Notes (raw input)
-    ↓ heartbeat extraction
+    ↓ heartbeat extraction (watermark-based incremental parsing)
 Knowledge Graph (structured facts)
     ↓ memory maintenance
 MEMORY.md (curated wisdom)
     ↓ weekly synthesis
 summary.md (decay-aware summaries)
 ```
+
+**Extraction Watermark optimization:** Heartbeat extraction appends `<!-- extracted:L{N}:{timestamp} -->` to daily notes after processing. On next heartbeat, only lines after the last watermark are parsed. No watermark = parse entire file (backward compatible). This avoids re-processing already-extracted content while inline extraction (which does NOT write watermarks) remains unaffected — dedup handles overlap.
 
 ### Write Destinations
 

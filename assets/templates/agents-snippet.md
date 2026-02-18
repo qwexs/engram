@@ -32,3 +32,21 @@ At session start, create today's daily note if it doesn't exist:
 
 ### 6. Heartbeat Order
 During heartbeats, **always** run KG extraction **before** daily note rotation. Rotating first loses unextracted facts. Sequence: extract → rotate → embed.
+
+### 7. Fast/Full Init
+Detect init mode from the incoming message:
+- **Heartbeat prompt** → **Fast Init**: determine session → create daily note → read `heartbeat-state.json` → go to HEARTBEAT.md. Skip SOUL.md, USER.md, yesterday's notes, MEMORY.md, life/index.md, QMD queries (all either in project context or unnecessary for heartbeat).
+- **Everything else** → **Full Init**: read SOUL.md + USER.md → determine session → create daily note → read session memory → QMD query for context.
+
+### 8. Extraction Watermark
+Heartbeat KG extraction appends a watermark after processing each daily note:
+```
+<!-- extracted:L{lastLine}:{ISO timestamp} -->
+```
+On next heartbeat, only lines **after** the last watermark are parsed. No watermark = parse entire file (backward compatible).
+
+**Rules:**
+- Only **heartbeat extraction** writes watermarks
+- **Inline (real-time) extraction** does NOT write watermarks — it uses `memory-write.js` as usual
+- Heartbeat sees new lines after its last watermark; dedup prevents duplicate facts from inline-extracted content
+- Multiple watermarks may exist in a file; always use the last one

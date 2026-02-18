@@ -75,14 +75,32 @@ For full architecture details, see [references/architecture.md](references/archi
 - Group chats **CANNOT see** MEMORY.md or life/
 - Always specify `-c <collection>` in QMD queries
 
-### Every Session Startup
+### Every Session Startup (Fast/Full Init)
 
-1. Determine session (main, telegram group, discord channel, etc.)
-2. Create today's daily note if not exists: `memory/agent-{id}/{session}/YYYY-MM-DD.md`
-3. Read session memory:
+**First, detect init mode** based on the incoming message:
+- If the message matches the **heartbeat prompt** → **Fast Init**
+- Otherwise → **Full Init**
+
+#### Fast Init (Heartbeat)
+
+Heartbeats need speed, not full context. SOUL.md and USER.md are typically already in project context (OpenClaw loads them automatically).
+
+1. Determine session
+2. Create today's daily note if not exists
+3. Read `memory/heartbeat-state.json`
+4. Proceed to HEARTBEAT.md
+
+**Skipped:** SOUL.md, USER.md, yesterday's daily note, MEMORY.md, life/index.md, QMD query — none needed for heartbeat flow.
+
+#### Full Init (Interactive)
+
+1. Read SOUL.md, USER.md
+2. Determine session (main, telegram group, discord channel, etc.)
+3. Create today's daily note if not exists: `memory/agent-{id}/{session}/YYYY-MM-DD.md`
+4. Read session memory:
    - **Main**: today + yesterday daily notes + `MEMORY.md` + `life/index.md`
    - **Group**: today + yesterday daily notes only
-4. Use `qmd query "topic" -c <collection>` for deeper context
+5. Use `qmd query "topic" -c <collection>` for deeper context
 
 ### Daily Notes
 
@@ -186,10 +204,13 @@ For full decay rules, see [references/decay-rules.md](references/decay-rules.md)
 ### Knowledge Graph Extraction
 
 During heartbeats, scan daily notes for durable facts:
+- **Watermark-based incremental parsing**: Check for `<!-- extracted:L{N}:{timestamp} -->` at the end of each daily note. If found, only parse lines after the last watermark. No watermark = parse entire file (backward compatible).
 - Relationships, milestones, status changes, decisions, preferences
 - Write to entity `items.json` with confidence and abstraction level
 - Update `summary.md` for new Hot facts
 - Create new entities when creation rules are met
+- **After extraction**, append watermark: `<!-- extracted:L{lastLine}:{ISO timestamp} -->`
+- **Only heartbeat writes watermarks** — inline extraction does NOT (dedup handles overlap)
 - Skip casual chat and transient requests
 
 For the complete heartbeat flow, see [references/heartbeat.md](references/heartbeat.md).

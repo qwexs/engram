@@ -347,7 +347,7 @@ Engram domains provide the foundation for multi-level agent orchestration:
          Main Agent (personality, KG, strategy)
         /         |          \
       L1a        L1b         L1c          ← Orchestrators (persistent via domain files)
-    engram     iboard    apriori-content
+   dev-proj   monitoring   content
        |         |        /    |    \
       L2        L2      L2a  L2b  L2c    ← Executors (ephemeral, cleanup: delete)
 ```

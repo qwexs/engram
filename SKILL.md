@@ -474,25 +474,6 @@ bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/se
 - Do NOT write extraction watermarks during inline extraction (heartbeat only)
 - Dedup is automatic — duplicates from inline + heartbeat silently skipped
 
-## Agent Teams
-
-Domains provide the foundation for multi-level agent orchestration:
-
-```
-       Main Agent (personality, KG, strategy)
-      /         |          \
-    L1a        L1b         L1c       ← Orchestrators (persistent via domain files)
-     |          |         / | \
-    L2         L2       L2  L2  L2   ← Executors (ephemeral, cleanup: delete)
-```
-
-- **workflow.md** = L1 orchestrator's "skillset" (scripts, scope, sources)
-- **decisions.md** = L1's rules and constraints
-- **Fan-out**: Main spawns multiple L1/L2 in parallel for independent tasks
-- **Persistence**: domain files carry state across ephemeral sessions
-
-**Current limitation:** direct L2↔L2 communication not yet supported in OpenClaw ([#5813](https://github.com/openclaw/openclaw/issues/5813)). Workaround: file-based coordination via shared domain files.
-
 ## Scripts
 
 ### install-qmd.js — Install QMD search engine

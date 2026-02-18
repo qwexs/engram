@@ -185,42 +185,6 @@ qmd search "мониторинг" -c domains
 bun skills/engram/scripts/add-domain.js --domain engram --type dev-project --kg-entity projects/engram --description "Memory architecture skill"
 ```
 
-## Agent Teams
-
-Домены — фундамент многоуровневой агентной оркестрации:
-
-```
-       Main Agent (личность, KG, стратегия)
-      /         |          \
-    L1a        L1b         L1c       ← Оркестраторы (persistent через domain files)
-     |          |         / | \
-    L2         L2       L2  L2  L2   ← Исполнители (ephemeral, cleanup: delete)
-```
-
-### Уровни
-
-| Уровень | Сущность | Lifetime | Решения |
-|---------|----------|----------|---------|
-| Main | Основной агент | Persistent (через файлы) | Стратегические |
-| L1 | Оркестратор домена | Ephemeral session, persistent state через domain files | Операционные (в рамках decisions.md) |
-| L2 | Исполнитель | Ephemeral, cleanup: delete | Тактические (код, поиск) |
-
-### workflow.md как skill L1
-
-`workflow.md` — это "скиллсет" L1 оркестратора. При каждом spawn L1 читает workflow.md чтобы понять инфраструктуру своего домена: какие скрипты вызывать, где искать данные, куда доставлять результат.
-
-### Паттерны
-
-- **Fan-out**: Main спавнит несколько L1/L2 параллельно для независимых задач
-- **Pipeline**: Main → L1 (анализ) → Main → L1 (реализация) — domain files хранят промежуточное состояние
-- **L1 → L2**: L1 оркестратор спавнит L2 исполнителей для подзадач
-
-### Текущие ограничения
-
-- **Max depth: 2** (Main → L1 → L2)
-- L2↔L2 прямая коммуникация не поддерживается в OpenClaw ([#5813](https://github.com/openclaw/openclaw/issues/5813))
-- Workaround: файловая координация через shared domain files
-
 ## Создание домена
 
 ```bash

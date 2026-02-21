@@ -89,3 +89,12 @@ Direction: ops → life/ or ops → self. One-way only.
 | Writing agent identity into daily notes | Identity scattered across 50+ session files, inconsistent |
 
 When unsure: default to ops (memory/daily note). If it proves durable, promote later.
+
+### 12. Session-End Checklist
+
+Before ending a session, complete these steps:
+
+1. **Active Threads** — update `## Active Threads` in today's daily note with current work streams and their status
+2. **Key Observations** — if anything surprised you, caused friction, or revealed a pattern during this session, note it in `## Learnings`
+3. **Next** — update `## Next` in today's daily note with what should happen next (next session priorities, pending decisions)
+4. **QMD Update** — if you wrote to memory/ during this session, run `qmd update && qmd embed` to keep search index current

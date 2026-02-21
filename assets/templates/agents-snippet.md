@@ -51,3 +51,41 @@ On next heartbeat, only lines **after** the last watermark are parsed. No waterm
 - Heartbeat sees new lines after its last watermark; dedup prevents duplicate facts from inline-extracted content
 - Multiple watermarks may exist in a file; always use the last one
 - After daily note rotation, watermark moves to archive; stub is parsed entirely (no special handling needed)
+
+### 9. Three-Space Routing
+
+All content belongs to one of three spaces. Route by asking:
+
+Is this about the agent itself (identity, methodology, preferences)?
+├── YES, durable → self space: MEMORY.md, SOUL.md, AGENTS.md
+└── NO
+    Is this durable domain knowledge (facts, patterns, principles)?
+    ├── YES → notes space: life/ (via memory-write.js)
+    └── NO → ops space: memory/ (daily notes, domains, sessions)
+
+**Mapping:**
+- **self** = MEMORY.md, SOUL.md, AGENTS.md — identity, loaded at Full Init
+- **notes** = life/ — Knowledge Graph, queried via QMD
+- **ops** = memory/ — daily notes, domain statuses, session logs — rotated/archived
+
+### 10. Content Promotion
+
+Content moves from ops → notes/self. Never the reverse.
+
+- ops observation proves durable → promote to life/ via memory-write.js
+- session insight is personally significant → update MEMORY.md
+- life/ fact is NEVER moved back to memory/ (ops)
+- MEMORY.md content is NEVER demoted to daily notes
+
+Direction: ops → life/ or ops → self. One-way only.
+
+### 11. Space Mixing — What Breaks
+
+| Violation | Consequence |
+|-----------|-------------|
+| Writing ops data into life/ | QMD search returns session noise alongside durable facts |
+| Writing domain knowledge into MEMORY.md | Agent identity file grows unbounded, Full Init slows down |
+| Moving life/ facts back to memory/ | Facts lost on daily note rotation/archival |
+| Writing agent identity into daily notes | Identity scattered across 50+ session files, inconsistent |
+
+When unsure: default to ops (memory/daily note). If it proves durable, promote later.

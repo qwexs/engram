@@ -6,5 +6,13 @@
     "email": null,
     "calendar": null,
     "weather": null
-  }
+  },
+  "heartbeatInProgress": false,
+  "subagentExtraction": false,
+  "lastExtraction": {},
+  "lastDomainScan": null,
+  "lastWeeklySynthesis": null,
+  "pendingObservations": 0,
+  "pendingTensions": 0,
+  "subagentRuns": {}
 }

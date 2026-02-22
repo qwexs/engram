@@ -47,17 +47,15 @@ Read this document top to bottom and execute each phase sequentially.
 2. If any phase wrote to `life/` — run `qmd update`
 
 ## Phase 5: Report + Unlock
-1. Read current daily note. Check if `## Heartbeat Report` section already exists:
-   - **If exists** — replace the entire section (from `## Heartbeat Report` to the next `##` or end of file) with the new report
-   - **If not exists** — append the report at the end of the file
-   - Report format:
-     ```
-     ## Heartbeat Report
-     - **Extraction**: spawned (result pending) | ok (inline, N facts)
-     - **Synthesis**: spawned (result pending) | skipped (not Monday)
-     - **Domains**: spawned (result pending) | skipped (no registry)
-     - **Maintenance**: ok — validate-kg.js: N errors
-     ```
+1. Write/update report via script (handles create-or-replace, no identical-content errors):
+   ```bash
+   bun scripts/heartbeat-report.js \
+     --extraction "<spawned (result pending) | ok (inline, N facts)>" \
+     --synthesis  "<spawned (result pending) | skipped (not Monday)>" \
+     --domains    "<spawned (result pending) | skipped (no registry)>" \
+     --maintenance "ok — validate-kg.js: N errors, M files"
+   ```
+   Omit any flag to preserve its current value from the existing section.
 2. Set `heartbeatInProgress = false`, `heartbeatLockedAt = null`, write final state
 3. Return `HEARTBEAT_OK` — **always, regardless of pending subagents**
 
@@ -77,23 +75,31 @@ Triggered when a system message arrives with a completed subagent result.
    - Read `new_watermark` from Stats (e.g. `"L247"`)
    - Append `<!-- extracted:{new_watermark}:{ISO timestamp} -->` to daily note (**orchestrator is the ONLY watermark writer**)
    - Update `lastExtraction[session]` to now, record in `subagentRuns.hb-extract`
-3. If Status: error — set `subagentRuns.hb-extract.status` to failed, write warning to daily note
-4. Update heartbeat report line in daily note: replace "spawned (result pending)" with actual summary
-5. If non-empty Alerts — surface to user
+   - Update report: `bun scripts/heartbeat-report.js --extraction "ok (N facts, {new_watermark})"`
+3. If Status: error:
+   - Set `subagentRuns.hb-extract.status` to failed
+   - Update report: `bun scripts/heartbeat-report.js --extraction "error: <Summary>"`
+4. If non-empty Alerts — surface to user
 
 ### hb-synthesis handoff
 1. Parse handoff block
-2. If Status: ok — update `lastWeeklySynthesis` to today, record in `subagentRuns.hb-synthesis`
-3. If Status: error — record failed in `subagentRuns`
-4. Update heartbeat report line in daily note
-5. If non-empty Alerts — surface to user
+2. If Status: ok:
+   - Update `lastWeeklySynthesis` to today, record in `subagentRuns.hb-synthesis`
+   - Update report: `bun scripts/heartbeat-report.js --synthesis "ok — <Summary>"`
+3. If Status: error:
+   - Record failed in `subagentRuns`
+   - Update report: `bun scripts/heartbeat-report.js --synthesis "error: <Summary>"`
+4. If non-empty Alerts — surface to user
 
 ### hb-domains handoff
 1. Parse handoff block
-2. If Status: ok — update `lastDomainScan` to now, record in `subagentRuns.hb-domains`
-3. If Status: error — record failed in `subagentRuns`
-4. Update heartbeat report line in daily note
-5. If non-empty Alerts — surface to user
+2. If Status: ok:
+   - Update `lastDomainScan` to now, record in `subagentRuns.hb-domains`
+   - Update report: `bun scripts/heartbeat-report.js --domains "ok — <Summary>"`
+3. If Status: error:
+   - Record failed in `subagentRuns`
+   - Update report: `bun scripts/heartbeat-report.js --domains "error: <Summary>"`
+4. If non-empty Alerts — surface to user
 
 ---
 

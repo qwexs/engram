@@ -4,8 +4,11 @@ Read this document top to bottom and execute each phase sequentially.
 
 ## Phase 0: Fast Init
 1. Read `memory/heartbeat-state.json`
-2. If `heartbeatInProgress === true` — write to daily note: "heartbeat skipped — lock active", STOP
-3. Set `heartbeatInProgress = true`, write state immediately
+2. If `heartbeatInProgress === true`:
+   - If `heartbeatLockedAt` exists and age > 10 minutes: log "stale lock, auto-resetting", set `heartbeatInProgress = false`, continue
+   - If `heartbeatLockedAt` missing: treat as stale (same reset)
+   - Otherwise (age <= 10 min): write "heartbeat skipped — lock active", STOP
+3. Set `heartbeatInProgress = true` and `heartbeatLockedAt` = current ISO timestamp, write state
 4. Create daily note for current session if `lastDailyNoteCreated[session] != today`
    - Update `lastDailyNoteCreated[session]` to today, write state
 5. Determine what to run:
@@ -15,16 +18,19 @@ Read this document top to bottom and execute each phase sequentially.
    - Maintenance: always
 
 ## Phase 1: Extraction
+- **Watermark sanity check:** read daily note, count lines. If last watermark `L{N}` has N > total_lines, reset watermark to `L1` (log "watermark reset: L{N} > {total_lines} lines")
 - Read `subagentExtraction` from state
   - If `true`: spawn hb-extract subagent via `sessions_spawn`
-    - Prompt includes: daily note path, last watermark position
+    - Prompt includes: daily note path, validated watermark position
   - If `false`: run extraction inline
-    - Read daily note from last watermark (or L1 if none)
+    - Read daily note from validated watermark (or L1 if none)
     - Extract facts via `bun scripts/memory-write.js`
-    - Write watermark to daily note
     - Produce handoff block yourself (see Handoff Protocol below)
 - Parse handoff from subagent response (see Handoff Protocol)
-- If Status: ok — update `lastExtraction[session]` to now, record in `subagentRuns.hb-extract`
+- If Status: ok:
+  1. Read `new_watermark` from handoff Stats (e.g. "L247")
+  2. Append `<!-- extracted:{new_watermark}:{ISO timestamp} -->` to daily note (orchestrator is the ONLY watermark writer)
+  3. Update `lastExtraction[session]` to now, record in `subagentRuns.hb-extract`
 - If no handoff or Status: error — set `subagentRuns.hb-extract.status` to failed, write warning to daily note, do NOT update `lastExtraction`, CONTINUE
 
 ## Phase 2: Synthesis (Monday only)
@@ -49,7 +55,9 @@ Read this document top to bottom and execute each phase sequentially.
 1. Collect Summary line from each phase that ran (from parsed handoffs)
 2. Write report to daily note — for each phase, paste its Summary line:
    - `## Heartbeat Report` then one bullet per phase with status and summary
-3. Set `heartbeatInProgress = false`, write final state
+3. Set `heartbeatInProgress = false`, `heartbeatLockedAt = null`, write final state
+4. If any phase had non-empty Alerts: return the alert text as final response
+5. If no alerts: return `HEARTBEAT_OK` as final response (OpenClaw suppresses notification)
 
 ## Handoff Protocol
 

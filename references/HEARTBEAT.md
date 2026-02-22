@@ -1,6 +1,7 @@
 # Heartbeat Orchestrator
 
 Read this document top to bottom and execute each phase sequentially.
+**State mutations:** use `bun scripts/heartbeat-state.js --set <path> <value>` for all state writes (`true`/`false`/`null`/numbers/JSON all parsed correctly). Read via `--get-all`.
 
 > **ARCHITECTURE NOTE — Fire-and-Forget**
 > `sessions_spawn` is asynchronous: it returns immediately and auto-announces via system message.
@@ -13,12 +14,12 @@ Read this document top to bottom and execute each phase sequentially.
 ## Phase 0: Fast Init
 1. Read `memory/heartbeat-state.json`
 2. If `heartbeatInProgress === true`:
-   - If `heartbeatLockedAt` exists and age > 10 minutes: log "stale lock, auto-resetting", set `heartbeatInProgress = false`, continue
+   - If `heartbeatLockedAt` exists and age > 10 minutes: log "stale lock, auto-resetting", `--set heartbeatInProgress false`, continue
    - If `heartbeatLockedAt` missing: treat as stale (same reset)
    - Otherwise (age <= 10 min): write "heartbeat skipped — lock active", STOP
-3. Set `heartbeatInProgress = true` and `heartbeatLockedAt` = current ISO timestamp, write state
+3. Set lock: `--set heartbeatInProgress true` and `--set heartbeatLockedAt <ISO timestamp>`
 4. Create daily note for current session if `lastDailyNoteCreated[session] != today`
-   - Update `lastDailyNoteCreated[session]` to today, write state
+   - `--set lastDailyNoteCreated.<session> <today>`
 5. Determine what to run:
    - Extraction: always (watermark handles incremental)
    - Synthesis: if Monday AND `lastWeeklySynthesis` != this week Monday
@@ -32,7 +33,7 @@ Read this document top to bottom and execute each phase sequentially.
   - If `false`: run extraction inline
     - Read daily note from validated watermark (or L1 if none)
     - Extract facts via `bun scripts/memory-write.js`
-    - Append watermark and update `lastExtraction[session]` + `subagentRuns.hb-extract` in state immediately
+    - Append watermark to daily note; `--set lastExtraction.<session> <ISO>`, `--set subagentRuns.hb-extract.status ok`
 
 ## Phase 2: Synthesis (Monday only)
 - If NOT Monday OR `lastWeeklySynthesis` == this week Monday — skip
@@ -56,7 +57,11 @@ Read this document top to bottom and execute each phase sequentially.
      --maintenance "ok — validate-kg.js: N errors, M files"
    ```
    Omit any flag to preserve its current value from the existing section.
-2. Set `heartbeatInProgress = false`, `heartbeatLockedAt = null`, write final state
+2. Release lock:
+   ```bash
+   bun scripts/heartbeat-state.js --set heartbeatInProgress false
+   bun scripts/heartbeat-state.js --set heartbeatLockedAt null
+   ```
 3. Return `HEARTBEAT_OK` — **always, regardless of pending subagents**
 
 ---
@@ -74,30 +79,30 @@ Triggered when a system message arrives with a completed subagent result.
 2. If Status: ok:
    - Read `new_watermark` from Stats (e.g. `"L247"`)
    - Append `<!-- extracted:{new_watermark}:{ISO timestamp} -->` to daily note (**orchestrator is the ONLY watermark writer**)
-   - Update `lastExtraction[session]` to now, record in `subagentRuns.hb-extract`
+   - `--set lastExtraction.<session> <ISO>`, `--set subagentRuns.hb-extract.status ok`
    - Update report: `bun scripts/heartbeat-report.js --extraction "ok (N facts, {new_watermark})"`
 3. If Status: error:
-   - Set `subagentRuns.hb-extract.status` to failed
+   - `--set subagentRuns.hb-extract.status failed`
    - Update report: `bun scripts/heartbeat-report.js --extraction "error: <Summary>"`
 4. If non-empty Alerts — surface to user
 
 ### hb-synthesis handoff
 1. Parse handoff block
 2. If Status: ok:
-   - Update `lastWeeklySynthesis` to today, record in `subagentRuns.hb-synthesis`
+   - `--set lastWeeklySynthesis <today>`, `--set subagentRuns.hb-synthesis.status ok`
    - Update report: `bun scripts/heartbeat-report.js --synthesis "ok — <Summary>"`
 3. If Status: error:
-   - Record failed in `subagentRuns`
+   - `--set subagentRuns.hb-synthesis.status failed`
    - Update report: `bun scripts/heartbeat-report.js --synthesis "error: <Summary>"`
 4. If non-empty Alerts — surface to user
 
 ### hb-domains handoff
 1. Parse handoff block
 2. If Status: ok:
-   - Update `lastDomainScan` to now, record in `subagentRuns.hb-domains`
+   - `--set lastDomainScan <ISO>`, `--set subagentRuns.hb-domains.status ok`
    - Update report: `bun scripts/heartbeat-report.js --domains "ok — <Summary>"`
 3. If Status: error:
-   - Record failed in `subagentRuns`
+   - `--set subagentRuns.hb-domains.status failed`
    - Update report: `bun scripts/heartbeat-report.js --domains "error: <Summary>"`
 4. If non-empty Alerts — surface to user
 
@@ -119,6 +124,6 @@ Fields: Status (ok | error | partial), Summary (one line), Stats (JSON), Alerts 
 **Parsing:** Find the line starting with `=== HB-` and ending with `HANDOFF ===`. Find `=== END ===`. Parse each line between as `FieldName: value`.
 
 ## Error Handling
-- No handoff block found in system message — set `subagentRuns[phase].status` to failed, write warning to daily note
+- No handoff block found in system message — `--set subagentRuns.<phase>.status failed`, write warning to daily note
 - Status: error — record status and Summary in `subagentRuns`, do NOT update phase trackers (`lastExtraction`, `lastWeeklySynthesis`, `lastDomainScan`)
 - NEVER abort the entire heartbeat because one phase failed

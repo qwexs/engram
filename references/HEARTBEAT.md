@@ -47,14 +47,17 @@ Read this document top to bottom and execute each phase sequentially.
 2. If any phase wrote to `life/` — run `qmd update`
 
 ## Phase 5: Report + Unlock
-1. Write partial report to daily note with what was spawned/run inline:
-   ```
-   ## Heartbeat Report
-   - **Extraction**: spawned (result pending) | ok (inline, N facts)
-   - **Synthesis**: spawned (result pending) | skipped (not Monday)
-   - **Domains**: spawned (result pending) | skipped (no registry)
-   - **Maintenance**: ok — validate-kg.js: N errors
-   ```
+1. Read current daily note. Check if `## Heartbeat Report` section already exists:
+   - **If exists** — replace the entire section (from `## Heartbeat Report` to the next `##` or end of file) with the new report
+   - **If not exists** — append the report at the end of the file
+   - Report format:
+     ```
+     ## Heartbeat Report
+     - **Extraction**: spawned (result pending) | ok (inline, N facts)
+     - **Synthesis**: spawned (result pending) | skipped (not Monday)
+     - **Domains**: spawned (result pending) | skipped (no registry)
+     - **Maintenance**: ok — validate-kg.js: N errors
+     ```
 2. Set `heartbeatInProgress = false`, `heartbeatLockedAt = null`, write final state
 3. Return `HEARTBEAT_OK` — **always, regardless of pending subagents**
 

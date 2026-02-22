@@ -8,6 +8,7 @@
     "weather": null
   },
   "heartbeatInProgress": false,
+  "heartbeatLockedAt": null,
   "subagentExtraction": false,
   "lastExtraction": {},
   "lastDomainScan": null,

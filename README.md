@@ -49,7 +49,10 @@ Deploys a three-layer memory architecture:
 - **Real-Time Extraction** — signal detection + inline fact extraction during conversations (no heartbeat delay)
 - **Content-Hash Dedup** — SHA-256 deduplication prevents duplicate facts
 - **Contradiction Detection** — QMD + Jaccard similarity finds conflicting facts before writing
-- **Heartbeat Automation** — extraction, weekly synthesis, domain supervisor scan, maintenance on autopilot
+- **Heartbeat Orchestrator** — phased execution (Phase 0→5) with fault isolation: if one phase fails, others continue; concurrent-run protection via lock with stale-lock auto-reset (>10 min); structured handoff protocol (Status / Summary / Stats / Alerts) for subagent results; orchestrator is the sole watermark writer
+- **Three-Space Routing** — every piece of content belongs to one of three spaces: *self* (MEMORY.md, SOUL.md — identity), *notes* (life/ KG — durable facts), *ops* (daily notes — events); mixing spaces degrades QMD search quality and bloats init context
+- **Session-End Checklist** — at session close, record Active Threads + Learnings + Next in daily note + run `qmd update`; enables fast context recovery in ~600 tokens without replaying chat history
+- **Content Promotion** — one-way content flow only: ops → notes → self; facts are never demoted back; prevents transient data from polluting the Knowledge Graph
 - **QMD Hybrid Search** — BM25 + vector embeddings + rerank, 96% token reduction vs full-file loading
 - **Multi-Collection Search** — query across multiple collections in one call (`-c life -c memory`), BM25-only fallback when GPU is busy
 - **Dual QMD Support** — local GPU (Vulkan) or cloud (Jina AI API, free tier)

@@ -1,8 +1,8 @@
 # 🧠 Engram OpenClaw
 
-**Etalon memory architecture for AI agents.**
+**Agent infrastructure for memory, automation, and organization.**
 
-Engram is an [OpenClaw](https://github.com/openclaw/openclaw) Skill that sets up a production-ready memory system for AI agents — from scratch, in one command.
+Engram is an [OpenClaw](https://github.com/openclaw/openclaw) Skill — a complete infrastructure layer for AI agents. Not just a place to store facts, but a system that **automates** memory maintenance and **organizes** multi-agent work through persistent domains.
 
 > **Why Engram?** Naive memory = load everything every session. That's `O(days)` — it grows forever.
 > Engram flips this: summaries are `O(entities)`, QMD queries are `O(relevance)`. The longer you run, the more you save.
@@ -18,44 +18,234 @@ Engram is an [OpenClaw](https://github.com/openclaw/openclaw) Skill that sets up
 >
 > **Context-free agents:** Subagents don't depend on the context window at all. Cron-triggered agents start fresh every run — their knowledge lives in domain files and the Knowledge Graph, not in chat history. After compaction or restart, one QMD query restores working context in **~600 tokens** instead of replaying thousands of lines. The context window becomes a scratchpad, not a memory.
 
-## What it does
+---
 
-Deploys a three-layer memory architecture:
+## Three Pillars
+
+```
+┌──────────────────────────────────────────────────────┐
+│  🧠 MEMORY LAYER                                    │
+│  Three-layer storage: daily notes → KG → MEMORY.md  │
+│  QMD hybrid search (BM25 + vectors + rerank)         │
+├──────────────────────────────────────────────────────┤
+│  ⚡ HEARTBEAT LAYER                                  │
+│  Phased orchestrator with isolated subagents:        │
+│  extraction → synthesis → domain scan → maintenance  │
+├──────────────────────────────────────────────────────┤
+│  🏗️ DOMAIN LAYER                                    │
+│  Persistent memory for cron tasks and dev projects.  │
+│  Foundation for multi-agent team organization.       │
+└──────────────────────────────────────────────────────┘
+```
+
+---
+
+## Memory Layer
+
+### Three-Space Architecture
+
+Every piece of content belongs to one of three spaces — mixing them degrades search quality and bloats init context:
 
 ```
 ┌─────────────────────────────────────────────┐
-│  Layer 3: MEMORY.md (Curated Wisdom)        │
-│  Distilled long-term insights, principles   │
+│  self   MEMORY.md, SOUL.md                 │
+│         Curated identity, principles        │
 ├─────────────────────────────────────────────┤
-│  Layer 2: Knowledge Graph (life/)           │
-│  PARA entities with atomic facts v2         │
-│  confidence · abstraction · decay           │
+│  notes  life/ (Knowledge Graph)             │
+│         PARA entities, atomic facts v2      │
+│         confidence · abstraction · decay    │
 ├─────────────────────────────────────────────┤
-│  Layer 1: Daily Notes (memory/)             │
-│  Session-isolated raw events                │
+│  ops    memory/ (Daily Notes)               │
+│         Session-isolated raw events         │
 └─────────────────────────────────────────────┘
-         ↕ QMD hybrid search (BM25 + vectors + rerank)
+         ↕ QMD hybrid search
 ```
 
-## Key Features
+Content flows one-way only: **ops → notes → self**. Facts are never demoted back.
 
-- **PARA Knowledge Graph** — Projects, Areas, Resources, Archives with tiered retrieval (summary.md → items.json)
-- **Session Isolation** — each chat session is a memory silo (personal ≠ group ≠ channel)
-- **Memory Decay** — Hot/Warm/Cold tiers with frequency resistance, like human forgetting
-- **Confidence Scoring** — 0.0–1.0 metacognition (low-confidence facts decay faster)
-- **Abstraction Ladder** — episode → pattern → principle (principles never decay)
-- **Three-Layer Rotation** — Archive (full) → Stub (auto-summary with line refs) → QMD index (zero data loss)
-- **Subagent Persistent Memory** — domain-based memory for cron subagents (decisions.md + status.md + changelog.md)
-- **Real-Time Extraction** — signal detection + inline fact extraction during conversations (no heartbeat delay)
-- **Content-Hash Dedup** — SHA-256 deduplication prevents duplicate facts
-- **Contradiction Detection** — QMD + Jaccard similarity finds conflicting facts before writing
-- **Heartbeat Orchestrator** — phased execution (Phase 0→5) with fault isolation: if one phase fails, others continue; concurrent-run protection via lock with stale-lock auto-reset (>10 min); structured handoff protocol (Status / Summary / Stats / Alerts) for subagent results; orchestrator is the sole watermark writer
-- **Three-Space Routing** — every piece of content belongs to one of three spaces: *self* (MEMORY.md, SOUL.md — identity), *notes* (life/ KG — durable facts), *ops* (daily notes — events); mixing spaces degrades QMD search quality and bloats init context
-- **Session-End Checklist** — at session close, record Active Threads + Learnings + Next in daily note + run `qmd update`; enables fast context recovery in ~600 tokens without replaying chat history
-- **Content Promotion** — one-way content flow only: ops → notes → self; facts are never demoted back; prevents transient data from polluting the Knowledge Graph
-- **QMD Hybrid Search** — BM25 + vector embeddings + rerank, 96% token reduction vs full-file loading
-- **Multi-Collection Search** — query across multiple collections in one call (`-c life -c memory`), BM25-only fallback when GPU is busy
-- **Dual QMD Support** — local GPU (Vulkan) or cloud (Jina AI API, free tier)
+### Session Isolation
+
+Each chat session is a memory silo — personal sessions cannot access group memory and vice versa:
+
+```
+memory/agent-main/
+├── main/               # Personal session
+│   └── YYYY-MM-DD.md
+├── telegram-{id}/      # Telegram groups
+└── discord-{id}/       # Discord channels
+```
+
+### PARA Knowledge Graph
+
+Structured long-term knowledge in `life/` using Tiago Forte's PARA method, extended with atomic facts:
+
+```
+life/
+├── projects/     # Active projects
+├── areas/        # Ongoing areas (people, groups, tools)
+├── resources/    # Reference material
+└── archives/     # Inactive entities
+```
+
+Each entity has a `summary.md` (hot facts, loaded at session start) and `items.json` (full fact store, loaded on demand).
+
+### Fact Schema v2
+
+```json
+{
+  "id": "entity-001",
+  "fact": "Human-readable statement",
+  "category": "relationship|milestone|status|preference|context|decision|correction",
+  "confidence": 0.85,
+  "abstractionLevel": "episode|pattern|principle",
+  "tags": ["tag1", "tag2"],
+  "timestamp": "2026-02-08",
+  "status": "active|superseded"
+}
+```
+
+**No-Deletion Rule:** Facts are never deleted — only superseded with full history chain.
+
+### Memory Decay
+
+| Tier | Recency | In summary? | Notes |
+|------|---------|-------------|-------|
+| 🔴 Hot | ≤7 days | ✅ Prominent | Front-of-mind |
+| 🟡 Warm | 8-30 days | ✅ Lower priority | Available but secondary |
+| 🔵 Cold | 30+ days | ❌ | Searchable via QMD |
+
+**Modifiers:**
+- `confidence < 0.5` → Cold in 14 days instead of 30
+- `accessCount >= 10` → resists decay (Cold bumps to Warm)
+- `principle` (L3) → always in summary, ignores decay
+- `pattern` (L2) → in summary if Warm or better
+
+### Real-Time Extraction
+
+High-signal facts are extracted **inline during conversations**, not just at heartbeat:
+
+```
+Message arrives → Signal Scan (regex, <10ms) → Classify
+    │
+    ├── HIGH (preference, decision, correction, milestone, instruction, identity)
+    │       → Dedup check (SHA-256) → Contradiction check → Write to KG → QMD update
+    │
+    ├── LOW (context, work discussion)
+    │       → Record in daily note → Heartbeat extracts later
+    │
+    └── NONE (casual chat, greetings, reactions)
+            → Skip
+```
+
+```bash
+bun scripts/memory-signal.js --text "Я предпочитаю TypeScript"
+# → { "signal": "high", "categories": ["preference"], "confidence": 0.88 }
+
+bun scripts/memory-write.js \
+  --entity "areas/people/sergey" \
+  --fact "Prefers Bun over Node.js" \
+  --category preference \
+  --confidence 0.9 \
+  --abstraction pattern \
+  --source "2026-02-16" \
+  --semantic-check
+```
+
+`--semantic-check` catches near-duplicates (same fact, different wording) that content-hash dedup misses.
+
+---
+
+## Heartbeat Layer
+
+The heartbeat is a **phased orchestrator** running on a schedule (default: every 30 min). Each heavy phase runs in an isolated subagent — if one fails, others continue.
+
+### Phases
+
+```
+Phase 0: Fast Init
+  └── Read state, create daily note, decide what to run
+
+Phase 1: Extraction (subagent: hb-extract)
+  └── Read daily note from watermark → extract facts → write to KG
+
+Phase 2: Synthesis (subagent: hb-synthesis, Mondays only)
+  └── Weekly summary of all entities → update summary.md files
+
+Phase 3: Domain Scan (subagent: hb-domains)
+  └── Check domain status, liveness, PROPOSALs
+
+Phase 4: Maintenance (inline)
+  └── validate-kg.js --fix → qmd update
+
+Phase 5: Report + Unlock
+  └── Write heartbeat report → release lock → HEARTBEAT_OK
+```
+
+### Fault Isolation
+
+- Concurrent-run protection via lock with stale-lock auto-reset (>10 min)
+- If one phase fails, others continue
+- Watermark prevents re-processing already-extracted content
+- Orchestrator is the **sole watermark writer** — subagents must not write watermarks
+
+### Handoff Protocol
+
+Every subagent communicates results back via a structured block:
+
+```
+=== HB-EXTRACT HANDOFF ===
+Status: ok
+Summary: extracted 3 facts from 2026-02-24.md (L47->L89)
+Stats: {"facts_written": 3, "new_watermark": "L89"}
+Alerts: []
+=== END ===
+```
+
+Subagent templates live in `references/HB-EXTRACT.md`, `HB-SYNTHESIS.md`, `HB-DOMAINS.md` — loaded and filled by the orchestrator before spawning.
+
+---
+
+## Domain Layer
+
+Domains are **persistent memory units** for subagents. A subagent spawned with `cleanup: "delete"` loses all context when done — domains solve this.
+
+```
+memory/domains/{domain}/
+├── decisions.md    # WHAT: rules, thresholds, constraints (read-only for subagent)
+├── workflow.md     # HOW: scripts, APIs, scope, sources (optional)
+├── status.md       # Current state (written by subagent)
+├── changelog.md    # Append-only action log
+└── archives/       # Changelog rotation when >1000 lines
+```
+
+### Two Domain Types
+
+| Type | Description | Spawned |
+|------|-------------|---------|
+| `dev-project` | Development project, linked to KG entity | On-demand |
+| `cron-task` | Periodic background tasks | Via cron schedule |
+
+### Separation of Concerns
+
+| File | Responsibility | Who writes |
+|------|---------------|------------|
+| `decisions.md` | Rules, constraints | Main Agent |
+| `workflow.md` | Scripts, APIs, scope | Main Agent |
+| Spawn template | Task to execute | Main Agent (per-spawn) |
+| `status.md` | Current state | Subagent |
+| `changelog.md` | Action history | Subagent |
+
+**PROPOSAL mechanism:** When a subagent needs a rule change, it writes `PROPOSAL:` to `decisions.md` or `changelog.md`. The heartbeat domain scan surfaces it to the main agent for review.
+
+```bash
+# Create a cron-task domain
+bun scripts/add-domain.js --domain digest --description "Daily digest"
+
+# Create a dev-project domain linked to KG
+bun scripts/add-domain.js --domain engram --type dev-project --kg-entity projects/engram --description "Memory skill"
+```
+
+---
 
 ## Quick Start
 
@@ -86,73 +276,15 @@ By default, QMD runs models locally (~2GB GGUF download on first use). To use cl
 # OpenAI
 export QMD_LLM_PROVIDER=openai
 export OPENAI_API_KEY=sk-proj-xxx
-# Optional: export OPENAI_EMBED_MODEL=text-embedding-3-small
-# Optional: export OPENAI_GENERATE_MODEL=gpt-4o-mini
-# Optional: export OPENAI_BASE_URL=https://your-provider.com/v1
 
 # — or —
 
 # Jina AI
 export QMD_LLM_PROVIDER=jina
 export JINA_API_KEY=jina_xxxxxxxxxxxx
-# Optional: export JINA_EMBED_MODEL=jina-embeddings-v3
-# Optional: export JINA_RERANK_MODEL=jina-reranker-v2-base-multilingual
 ```
 
-> Full environment variable reference: [qwexs/qmd README](https://github.com/qwexs/qmd#environment-variables)
-
-## Subagent Memory
-
-Persistent memory for subagents with `cleanup: "delete"` via **domains**:
-
-```
-memory/domains/{domain}/
-├── decisions.md    # WHAT: rules, thresholds, constraints (read-only for subagent)
-├── workflow.md     # HOW: scripts, APIs, scope, external sources (optional)
-├── status.md       # Current state (written by subagent)
-├── changelog.md    # Append-only action log
-└── archives/       # Changelog rotation when >1000 lines
-```
-
-### Separation of Concerns
-
-| File | Responsibility | Who writes | Example |
-|------|---------------|------------|---------|
-| `decisions.md` | WHAT can be done | Main Agent | "Don't change API endpoints without PROPOSAL" |
-| `workflow.md` | HOW domain works | Main Agent | "Search script: `node smart-search.js`" |
-| Spawn template | WHICH task to run | Main Agent (per-spawn) | "Build the evening digest" |
-
-**Context chain on spawn:** Template → workflow.md → decisions.md → external sources (if any) → execute task.
-
-`workflow.md` is **optional** — recommended for domains with 2+ task types. Simple domains (single task) work fine without it. When present, templates stay thin (~30-50 lines) while shared domain infrastructure lives in one place.
-
-**Key rules:**
-- One domain = one active subagent
-- One QMD collection `domains` for all domains
-- Subagent does not write to daily notes or life/
-- PROPOSAL for rule changes → review during heartbeat
-- **Domain Supervisor Scan** in heartbeat: PROPOSAL review, liveness check, changelog rotation, KG extraction
-
-```bash
-# Create a domain
-bun scripts/add-domain.js --domain monitoring --description "Monitoring"
-
-# Create a dev-project domain linked to KG
-bun scripts/add-domain.js --domain engram --type dev-project --kg-entity projects/engram --description "Memory skill"
-```
-
-### Project Domains
-
-Domains are registered in `memory/domains/registry.json` with type and optional KG link:
-
-| Type | Description | Subagent |
-|------|-------------|----------|
-| `dev-project` | Development project, linked to KG entity | On-demand |
-| `cron-task` | Periodic tasks | Scheduled via cron |
-
-Registry is created automatically by `init.js` and updated by `add-domain.js`.
-
-Details: [references/subagent-memory.md](references/subagent-memory.md)
+> Full reference: [qwexs/qmd README](https://github.com/qwexs/qmd#environment-variables)
 
 ## Scripts
 
@@ -164,188 +296,25 @@ Details: [references/subagent-memory.md](references/subagent-memory.md)
 | `add-domain.js` | Create subagent domain with persistent memory |
 | `validate.js` | Check integrity of memory structure (`--fix` to auto-repair) |
 | `migrate-v2.js` | Migrate facts to v2 schema (confidence, abstraction, tags) |
-| `memory-signal.js` | Signal detector — classifies messages as high/low/none (regex, no LLM) |
+| `memory-signal.js` | Signal detector — classifies messages as high/low/none |
 | `memory-dedup.js` | Content-hash deduplication (SHA-256), `--seed` to index existing facts |
-| `memory-write.js` | Write facts to KG with safe dedup (check→write→register), validation, QMD update |
-| `memory-contradict.js` | Find contradicting facts via Jaccard similarity (intra-entity + `--cross-entity` via QMD) |
-
-## Real-Time Extraction
-
-Inspired by [openclaw-engram](https://github.com/joshuaswarren/openclaw-engram)'s signal detection approach. Instead of waiting for heartbeats (up to 30 min), extract high-signal facts **inline during conversations**.
-
-```
-Message arrives → Signal Scan (regex, <10ms) → Classify
-    │
-    ├── HIGH (preference, decision, correction, milestone, instruction, identity)
-    │       → Dedup check (SHA-256) → Contradiction check → Write to KG → QMD update
-    │
-    ├── LOW (context, work discussion)
-    │       → Record in daily note → Heartbeat extracts later
-    │
-    └── NONE (casual chat, greetings, reactions)
-            → Skip
-```
-
-### Signal Detection
-
-```bash
-bun scripts/memory-signal.js --text "Я предпочитаю TypeScript"
-# → { "signal": "high", "categories": ["preference"], "keywords": ["предпочитаю", "TypeScript"], "confidence": 0.88 }
-
-bun scripts/memory-signal.js --text "Привет, как дела?"
-# → { "signal": "none", ... }
-```
-
-Supports **Russian and English** patterns. Six high-signal categories: `correction`, `preference`, `decision`, `identity`, `instruction`, `milestone`.
-
-### Write with Auto-Dedup
-
-```bash
-bun scripts/memory-write.js \
-  --entity "areas/people/sergey" \
-  --fact "Prefers Bun over Node.js" \
-  --category preference \
-  --confidence 0.9 \
-  --abstraction pattern \
-  --tags "tools,runtime" \
-  --source "2026-02-16"
-```
-
-Automatically: checks content-hash → writes fact → validates KG → updates QMD index.
-
-### Contradiction Detection
-
-```bash
-bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey"
-# → { "conflicts": [{ "id": "sergey-042", "fact": "Prefers Bun over Node.js", "similarity": 0.45 }] }
-```
-
-Intra-entity by default. With `--cross-entity` flag, uses QMD query (BM25 + vectors + rerank) to discover related entities across the entire knowledge graph, then runs Jaccard comparison on their facts.
-
-```bash
-# Cross-entity (searches all entities via QMD)
-bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey" --cross-entity
-# → { "conflicts": [...], "crossEntityConflicts": [{ entity: "projects/projectmix", ... }], "entitiesSearched": 4 }
-```
-
-Integrated into write pipeline (optional):
-```bash
-bun scripts/memory-write.js --entity "..." --fact "..." --category ... --check-contradictions
-bun scripts/memory-write.js --entity "..." --fact "..." --category ... --check-contradictions --cross-entity
-```
-Warnings appear in output if contradictions detected. Fact is still written — agent decides what to do.
-
-### Seed Dedup Index
-
-```bash
-bun scripts/memory-dedup.js --seed
-# → Indexes all existing facts from life/ into workspace/memory-state/fact-hashes.json
-```
+| `memory-write.js` | Write facts to KG with safe dedup, validation, QMD update |
+| `memory-contradict.js` | Find contradicting facts (intra-entity + `--cross-entity` via QMD) |
 
 ## Cross-Platform
 
 All scripts work on **Linux and Windows**:
 - Path normalization: backslash → forward slash everywhere
-- QMD flatten paths handled (Windows QMD outputs `areas-people-sergey-summary.md` instead of `areas/people/sergey/summary.md`)
+- QMD flatten paths handled (Windows outputs `areas-people-sergey` instead of `areas/people/sergey`)
 - Timezone configurable via `ENGRAM_TZ` or `TZ` env var (default: `Europe/Moscow`)
 
-```bash
-# Linux/macOS
-export TZ="America/New_York"
-bun scripts/memory-write.js --entity "areas/people/user" --fact "..." --category preference
+---
 
-# Windows (PowerShell)
-$env:ENGRAM_TZ = "Asia/Tokyo"
-bun scripts/memory-write.js --entity "areas/people/user" --fact "..." --category preference
-```
+## Roadmap
 
-## Fact Schema v2
+### Agent Teams
 
-Each fact in the Knowledge Graph:
-
-```json
-{
-  "id": "entity-001",
-  "fact": "Human-readable statement",
-  "category": "relationship|milestone|status|preference|context",
-  "confidence": 0.85,
-  "abstractionLevel": "episode|pattern|principle",
-  "tags": ["tag1", "tag2"],
-  "timestamp": "2026-02-08",
-  "status": "active|superseded",
-  "relatedEntities": ["areas/people/someone"],
-  "lastAccessed": "2026-02-08",
-  "accessCount": 1
-}
-```
-
-**No-Deletion Rule:** Facts are never deleted — only superseded with full history chain.
-
-## Memory Decay
-
-| Tier | Recency | In summary? | Notes |
-|------|---------|-------------|-------|
-| 🔴 Hot | ≤7 days | ✅ Prominent | Front-of-mind |
-| 🟡 Warm | 8-30 days | ✅ Lower priority | Available but secondary |
-| 🔵 Cold | 30+ days | ❌ | Searchable via QMD |
-
-**Modifiers:**
-- `confidence < 0.5` → Cold in 14 days instead of 30
-- `accessCount >= 10` → resists decay (Cold bumps to Warm)
-- `principle` (L3) → always in summary, ignores decay
-- `pattern` (L2) → in summary if Warm or better
-
-## Architecture
-
-```
-workspace/
-├── MEMORY.md                          # Curated long-term memory
-├── HEARTBEAT.md                       # Automated maintenance flow
-├── memory/
-│   ├── heartbeat-state.json           # Per-session tracking
-│   ├── weekly-synthesis-tracker.json  # Synthesis schedule
-│   ├── templates/group-knowledge/     # Templates for new groups
-│   ├── domains/                       # Subagent persistent memory
-│   │   └── {domain}/
-│   │       ├── decisions.md           # WHAT: rules (read-only for subagents)
-│   │       ├── workflow.md            # HOW: scripts, scope, sources (optional)
-│   │       ├── status.md              # Current state (subagent writes)
-│   │       ├── changelog.md           # Append-only action log
-│   │       └── archives/              # Rotated changelogs
-│   └── agent-main/
-│       ├── main/                      # Personal session
-│       │   └── YYYY-MM-DD.md          # Daily notes
-│       ├── telegram-{id}/             # Telegram groups
-│       └── discord-{id}/              # Discord channels
-└── life/                              # Knowledge Graph (PARA)
-    ├── projects/
-    ├── areas/
-    │   ├── people/
-    │   ├── groups/
-    │   └── companies/
-    ├── resources/
-    ├── archives/
-    └── index.md                       # Master entity index
-```
-
-## Methodologies
-
-Built on 10 proven methodologies:
-
-1. **PARA Method** (Tiago Forte) — four-bucket entity organization
-2. **Tiered Retrieval** — summary first, details on demand
-3. **No-Deletion Rule** — full history via supersede chains
-4. **Memory Decay** — Hot/Warm/Cold with human-like forgetting
-5. **Session Isolation** — privacy-first memory silos
-6. **QMD Hybrid Search** — BM25 + vectors + rerank
-7. **Heartbeat Automation** — extraction → synthesis → maintenance
-8. **Confidence Scoring** — metacognitive certainty levels
-9. **Abstraction Ladder** — RAPTOR-inspired (episode → pattern → principle)
-10. **Tags** — flexible categorization for search
-
-## Agent Teams (Roadmap)
-
-Engram domains provide the foundation for multi-level agent orchestration:
+Domain layer provides the foundation for multi-agent orchestration:
 
 ```
          Main Agent (personality, KG, strategy)
@@ -356,18 +325,36 @@ Engram domains provide the foundation for multi-level agent orchestration:
       L2        L2      L2a  L2b  L2c    ← Executors (ephemeral, cleanup: delete)
 ```
 
-**How it works today:**
-- **Main → L1**: spawn with template, L1 reads `workflow.md` (its "skillset") + `decisions.md` (its rules)
-- **L1 → L2**: L1 orchestrator can spawn ephemeral executors for subtasks
-- **Fan-out**: Main spawns multiple L1/L2 in parallel for independent tasks
-- **Persistence**: L1 agents are stateless sessions, but domain files (`status.md`, `changelog.md`) carry state across runs
+Currently blocked by [openclaw#5813](https://github.com/openclaw/openclaw/issues/5813) (L2↔L2 mesh communication). Domain layer and PROPOSAL mechanism are already implemented and ready.
 
-**What's next:**
-- **L2↔L2 mesh communication** — direct inter-agent coordination without routing through orchestrator (blocked by [openclaw#5813](https://github.com/openclaw/openclaw/issues/5813))
-- **Smart delegation** — Main classifies task complexity and chooses spawn mode (simple executor vs autonomous orchestrator)
-- **PROPOSAL mechanism** — L1 proposes rule changes, Main reviews during heartbeat
+**What's needed for full agent teams:**
+- L2↔L2 direct inter-agent coordination without routing through orchestrator
+- Smart delegation: Main classifies task complexity → chooses spawn mode
+- Cross-domain awareness in heartbeat scan
 
-See [agent-teams-architecture.md](https://github.com/qwexs/engram/blob/main/references/agent-teams-architecture.md) for the full design document.
+### LLM Hook Extraction
+
+OpenClaw `llm_input`/`llm_output` hooks enable **automatic fact extraction from any LLM call** — without explicit agent instruction or signal detection. Every response becomes a potential source for the Knowledge Graph.
+
+Planned integration:
+- Hook fires on each LLM output → signal scan → high-signal facts extracted automatically
+- Zero overhead for the agent (no inline extraction steps)
+- Enables extraction from subagents and cron tasks transparently
+
+---
+
+## Methodologies
+
+1. **PARA Method** (Tiago Forte) — four-bucket entity organization
+2. **Tiered Retrieval** — summary first, details on demand
+3. **No-Deletion Rule** — full history via supersede chains
+4. **Memory Decay** — Hot/Warm/Cold with human-like forgetting
+5. **Session Isolation** — privacy-first memory silos
+6. **QMD Hybrid Search** — BM25 + vectors + rerank
+7. **Heartbeat Automation** — extraction → synthesis → domains → maintenance
+8. **Confidence Scoring** — metacognitive certainty levels
+9. **Abstraction Ladder** — RAPTOR-inspired (episode → pattern → principle)
+10. **Tags** — flexible categorization for search
 
 ## Inspiration
 
@@ -376,6 +363,7 @@ See [agent-teams-architecture.md](https://github.com/qwexs/engram/blob/main/refe
 - [A-MEM](https://arxiv.org/abs/2409.15335) (NeurIPS 2025) — Zettelkasten-style agentic memory
 - [openclaw/openclaw#13991](https://github.com/openclaw/openclaw/issues/13991) — Associative Hierarchical Memory
 - [Memory Supersystem v1.0](https://github.com/ktao732084-arch/openclaw_memory_supersystem-v1.0) — neuroscience-based approach
+- [openclaw-engram](https://github.com/joshuaswarren/openclaw-engram) — signal detection approach
 
 ## License
 

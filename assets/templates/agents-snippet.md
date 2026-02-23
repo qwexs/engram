@@ -30,6 +30,8 @@ At session start, create today's daily note if it doesn't exist:
 - Main: `memory/agent-{id}/main/YYYY-MM-DD.md`
 - Group: `memory/agent-{id}/{platform}-{groupId}/YYYY-MM-DD.md`
 
+After creating (or if file already exists), append `<!-- session:start:{ISO} -->` to mark session boundary.
+
 ### 6. Heartbeat Order
 During heartbeats, **always** run KG extraction **before** daily note rotation. Rotating first loses unextracted facts. Sequence: extract → rotate → embed.
 
@@ -53,6 +55,12 @@ On next heartbeat, only lines **after** the last watermark are parsed. No waterm
 - Heartbeat sees new lines after its last watermark; dedup prevents duplicate facts from inline-extracted content
 - Multiple watermarks may exist in a file; always use the last one
 - After daily note rotation, watermark moves to archive; stub is parsed entirely (no special handling needed)
+
+**Watermark Namespacing** — two types coexist in daily notes, use distinct prefixes to avoid conflicts:
+- `<!-- extracted:L{N}:{ISO} -->` — written by heartbeat orchestrator only (marks extraction point)
+- `<!-- session:start:{ISO} -->` / `<!-- session:end:{ISO} -->` — written by agent at session boundaries
+
+Extraction watermark is always the **last line** of the file. Session boundaries are **inline** in text.
 
 ### 9. Three-Space Routing
 

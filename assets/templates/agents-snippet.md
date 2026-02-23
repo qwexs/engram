@@ -38,6 +38,8 @@ Detect init mode from the incoming message:
 - **Heartbeat prompt** → **Fast Init**: determine session → create daily note → read `heartbeat-state.json` → go to HEARTBEAT.md. Skip SOUL.md, USER.md, yesterday's notes, MEMORY.md, life/index.md, QMD queries (all either in project context or unnecessary for heartbeat).
 - **Everything else** → **Full Init**: read SOUL.md + USER.md → determine session → create daily note → read session memory → QMD query for context.
 
+**⚠️ MANDATORY — no skipping, no shortcuts.** Full Init is not optional. Skipping it means losing active thread context. A new session without Full Init is a broken session.
+
 ### 8. Extraction Watermark
 Heartbeat KG extraction appends a watermark after processing each daily note:
 ```
@@ -92,12 +94,27 @@ When unsure: default to ops (memory/daily note). If it proves durable, promote l
 
 ### 12. Session-End Checklist
 
-Before ending a session, complete these steps:
+Before the session closes (or when you sense the conversation is wrapping up), write to today's daily note:
 
-1. **Active Threads** — update `## Active Threads` in today's daily note with current work streams and their status
-2. **Key Observations** — if anything surprised you, caused friction, or revealed a pattern during this session, note it in `## Learnings`
-3. **Next** — update `## Next` in today's daily note with what should happen next (next session priorities, pending decisions)
-4. **QMD Update** — if you wrote to memory/ during this session, run `qmd update && qmd embed` to keep search index current
+```markdown
+## Active Threads
+- <brief description of open task/topic> — status: <where it stands>
+
+## Learnings
+- <anything new learned this session>
+
+## Next
+- <what needs to happen next session>
+```
+
+Then run:
+```bash
+qmd update
+```
+
+**Why:** Enables fast context recovery (~600 tokens) at next Full Init — no need to replay chat history. Without this, the next session starts blind.
+
+**Rule:** If you discussed anything actionable, there must be at least one Active Thread entry. No empty checklists.
 
 ### 13. Inline (Real-Time) Extraction
 

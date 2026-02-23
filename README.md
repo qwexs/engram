@@ -364,6 +364,7 @@ Planned integration:
 - [openclaw/openclaw#13991](https://github.com/openclaw/openclaw/issues/13991) — Associative Hierarchical Memory
 - [Memory Supersystem v1.0](https://github.com/ktao732084-arch/openclaw_memory_supersystem-v1.0) — neuroscience-based approach
 - [openclaw-engram](https://github.com/joshuaswarren/openclaw-engram) — signal detection approach
+- [arscontexta](https://github.com/agenticnotetaking/arscontexta) — principles for structured agent context management
 
 ## License
 

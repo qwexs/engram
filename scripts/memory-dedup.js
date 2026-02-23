@@ -10,7 +10,7 @@ const HASH_FILE = join(WORKSPACE, "workspace", "memory-state", "fact-hashes.json
 
 // Нормализация текста для хэширования
 export function normalizeFact(text) {
-  return text
+  return String(text ?? '')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, "") // убрать пунктуацию
     .replace(/\s+/g, " ")              // collapse whitespace

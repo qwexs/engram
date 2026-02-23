@@ -84,7 +84,8 @@ Triggered when a system message arrives with a completed subagent result.
 1. Parse handoff block (see Handoff Protocol below)
 2. If Status: ok:
    - Read `new_watermark` from Stats (e.g. `"L247"`)
-   - Append `<!-- extracted:{new_watermark}:{ISO timestamp} -->` to daily note (**orchestrator is the ONLY watermark writer**)
+   - **Only append watermark if new_watermark > current watermark** (i.e. file grew). If `new_watermark == current_watermark`, skip append — no new content means no new watermark line needed.
+   - If appending: `<!-- extracted:{new_watermark}:{ISO timestamp} -->` to daily note (**orchestrator is the ONLY watermark writer**)
    - `--set lastExtraction.<session> <ISO>`, `--set subagentRuns.hb-extract.status ok`
    - Update report: `bun scripts/heartbeat-report.js --extraction "ok (N facts, {new_watermark})"`
 3. If Status: error:

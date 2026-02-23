@@ -29,7 +29,13 @@ Read this document top to bottom and execute each phase sequentially.
 ## Phase 1: Extraction
 - **Watermark sanity check:** read daily note, count lines. If last watermark `L{N}` has N > total_lines, reset watermark to `L1` (log "watermark reset: L{N} > {total_lines} lines")
 - Read `subagentExtraction` from state
-  - If `true`: spawn hb-extract subagent via `sessions_spawn` with daily note path and validated watermark position. **Do not wait — result arrives via system message.**
+  - If `true`: build task from `skills/engram/references/HB-EXTRACT.md`:
+    1. Read the file content
+    2. Replace `{{daily_note_path}}` with the absolute path to today's daily note
+    3. Replace `{{watermark}}` with the validated watermark (e.g. `L7`)
+    4. Replace `{{session}}` with the current session key (e.g. `main`)
+    5. Call `sessions_spawn(task=<filled template>, label="hb-extract", cleanup="keep")`
+    **Do not wait — result arrives via system message.**
   - If `false`: run extraction inline
     - Read daily note from validated watermark (or L1 if none)
     - Extract facts via `bun scripts/memory-write.js`

@@ -98,3 +98,40 @@ Before ending a session, complete these steps:
 2. **Key Observations** — if anything surprised you, caused friction, or revealed a pattern during this session, note it in `## Learnings`
 3. **Next** — update `## Next` in today's daily note with what should happen next (next session priorities, pending decisions)
 4. **QMD Update** — if you wrote to memory/ during this session, run `qmd update && qmd embed` to keep search index current
+
+### 13. Inline (Real-Time) Extraction
+
+Don't wait for heartbeat — extract HIGH-signal facts **during the conversation**.
+
+**Signal classification:**
+- **HIGH** (extract immediately): preference, decision, correction, milestone, identity, instruction
+- **LOW** (daily note only): context, transient work — heartbeat extracts later
+- **NONE** (skip): casual chat, small talk
+
+**Detection:**
+```bash
+bun scripts/memory-signal.js --text "I prefer Bun over Node"
+# → { "signal": "high", "categories": ["preference"], "confidence": 0.88 }
+```
+
+**Write pipeline (HIGH signal):**
+```bash
+bun scripts/memory-write.js \
+  --entity "areas/people/name" \
+  --fact "Prefers Bun over Node.js" \
+  --category preference \
+  --confidence 0.9 \
+  --abstraction pattern \
+  --tags "tools,runtime" \
+  --source "YYYY-MM-DD" \
+  --semantic-check \
+  --search-collections "life,openclaw-memory-agent-main-main"
+```
+
+`--semantic-check` runs BM25 similarity search before writing, catching near-duplicates that content-hash dedup would miss (e.g. "Prefers Bun" vs "Uses Bun as runtime"). Fact is still written — warnings appear in output for agent to review.
+
+**Rules:**
+- Main session only — group chats do NOT touch the Knowledge Graph
+- Do NOT write watermarks during inline extraction — heartbeat owns watermarks
+- Run `qmd update` after writing — keeps BM25 index current for next search
+- Over-extraction is worse than under-extraction — when unsure, use `confidence: 0.5-0.7` or skip to daily note

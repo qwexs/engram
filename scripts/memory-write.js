@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Запись фактов в Knowledge Graph с дедупликацией
-// Использование: bun scripts/memory-write.js --entity "areas/people/sergey" --fact "Факт" --category preference --confidence 0.9 --abstraction pattern --tags "tag1,tag2" --source "2026-02-15"
+// Использование: bun scripts/memory-write.js --entity "areas/people/sergey" --fact "Факт" --category preference --confidence 0.9 --abstraction pattern --tags "tag1,tag2" --source "2026-02-15" [--description "Почему этот факт важен (max 150 chars)"]
 
 import { join } from "path";
 import { isDuplicate, registerHash } from "./memory-dedup.js";
@@ -175,9 +175,14 @@ const nextNum = (existingIds.length > 0 ? Math.max(...existingIds) : 0) + 1;
 const newId = `${slug}-${String(nextNum).padStart(3, "0")}`;
 
 // 4. Создать факт
+const description = opts.description
+  ? String(opts.description).slice(0, 150).trim()
+  : undefined;
+
 const newFact = {
   id: newId,
   fact: opts.fact,
+  ...(description !== undefined && { description }),
   category: opts.category,
   confidence: parseFloat(opts.confidence || "0.8"),
   abstractionLevel: opts.abstraction || "episode",

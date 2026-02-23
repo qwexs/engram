@@ -52,6 +52,7 @@ Durable facts -- things worth remembering across sessions:
 bun scripts/memory-write.js \
   --entity "areas/people/sergey" \
   --fact "Predpochtitaet Bun vmesto Node.js" \
+  --description "Tool preference affecting project setup decisions" \
   --category preference \
   --confidence 0.9 \
   --abstraction pattern \
@@ -64,6 +65,7 @@ bun scripts/memory-write.js \
 
 **Required flags:** --entity, --fact, --category, --confidence, --source
 **Optional flags:** --abstraction (default: episode), --tags, --entity-create (creates entity dir if missing)
+**--description:** Why this fact matters / how to find it later (max 150 chars). Enables richer BM25 search with vocabulary different from the fact itself. Use it — it's the discovery-first gate.
 **Valid --category values:** relationship, milestone, status, preference, context, decision, correction
 **--source:** use the daily note date (YYYY-MM-DD)
 

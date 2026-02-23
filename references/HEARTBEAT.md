@@ -27,7 +27,7 @@ Read this document top to bottom and execute each phase sequentially.
    - Maintenance: always (inline, synchronous)
 
 ## Phase 1: Extraction
-- **Watermark sanity check:** read daily note, count lines. If last watermark `L{N}` has N > total_lines, reset watermark to `L1` (log "watermark reset: L{N} > {total_lines} lines")
+- **Watermark sanity check:** read daily note, count lines. If last watermark `L{N}` has N > total_lines + 5, reset watermark to `L1` (log "watermark reset: L{N} > {total_lines} lines"). The +5 buffer tolerates minor drift from heartbeat-report.js rewrites (±1-2 lines). Only reset on true corruption (watermark far past end of file).
 - Read `subagentExtraction` from state
   - If `true`: build task from `skills/engram/references/HB-EXTRACT.md`:
     1. Read the file content

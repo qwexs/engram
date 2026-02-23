@@ -57,7 +57,9 @@ bun scripts/memory-write.js \
   --abstraction pattern \
   --tags "tools,runtime" \
   --source "2026-02-22" \
-  --entity-create
+  --entity-create \
+  --semantic-check \
+  --search-collections "life"
 ```
 
 **Required flags:** --entity, --fact, --category, --confidence, --source
@@ -76,10 +78,11 @@ bun scripts/memory-write.js \
 1. Extract ALL durable facts from the daily note content after the watermark
 2. Use the exact --category values listed above (no variations)
 3. Use the confidence lookup table (no guessing)
-4. Do NOT write watermarks to the daily note -- the orchestrator handles this
-5. Do NOT update heartbeat-state.json -- the orchestrator handles this
-6. Do NOT read or write MEMORY.md, AGENTS.md, or any file outside the extraction task
-7. If no extractable facts found, still return the handoff block with facts_written: 0
+4. Always use `--semantic-check --search-collections "life"` when calling memory-write.js — this catches near-duplicates (same fact, different wording) that content-hash dedup misses. Critical when watermark resets to L1 and the file is re-processed.
+5. Do NOT write watermarks to the daily note -- the orchestrator handles this
+6. Do NOT update heartbeat-state.json -- the orchestrator handles this
+7. Do NOT read or write MEMORY.md, AGENTS.md, or any file outside the extraction task
+8. If no extractable facts found, still return the handoff block with facts_written: 0
 
 ## Handoff (MUST be your LAST output)
 

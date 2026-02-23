@@ -34,7 +34,7 @@ Read this document top to bottom and execute each phase sequentially.
     2. Replace `{{daily_note_path}}` with the absolute path to today's daily note
     3. Replace `{{watermark}}` with the validated watermark (e.g. `L7`)
     4. Replace `{{session}}` with the current session key (e.g. `main`)
-    5. Call `sessions_spawn(task=<filled template>, label="hb-extract", cleanup="keep")`
+    5. Call `sessions_spawn(task=<filled template>, label="hb-extract", cleanup="delete")`
     **Do not wait — result arrives via system message.**
   - If `false`: run extraction inline
     - Read daily note from validated watermark (or L1 if none)
@@ -47,7 +47,13 @@ Read this document top to bottom and execute each phase sequentially.
 
 ## Phase 3: Domains
 - If `memory/domains/registry.json` does not exist — skip
-- Spawn hb-domains subagent. **Do not wait — result arrives via system message.**
+- Build task from `skills/engram/references/HB-DOMAINS.md`:
+  1. Read the file content
+  2. Replace `{{registry_path}}` with the absolute path to `memory/domains/registry.json`
+  3. Replace `{{domains_root}}` with the absolute path to `memory/domains`
+  4. Replace `{{now_iso}}` with the current ISO timestamp
+  5. Call `sessions_spawn(task=<filled template>, label="hb-domains", cleanup="delete")`
+  **Do not wait — result arrives via system message.**
 
 ## Phase 4: Maintenance (inline, synchronous)
 1. Run `bun scripts/validate-kg.js --fix`

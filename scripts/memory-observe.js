@@ -126,6 +126,5 @@ await Bun.write(join(OBS_DIR, "index.json"), JSON.stringify(existing, null, 2));
 console.log(JSON.stringify({
   status: "created",
   id: obsId,
-  category,
-  status: "pending"
+  category
 }));

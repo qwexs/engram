@@ -35,7 +35,7 @@ if (!opts.fact1 || !opts.fact2) {
 
 async function validateFact(factId) {
   const globPattern = join(WORKSPACE, "life", "**", "items.json");
-  const files = await Bun.Glob(globPattern).dots(true).toArray();
+  const files = await new Bun.Glob(globPattern).dots(true).toArray();
   for (const file of files) {
     try {
       const data = await Bun.file(file).json();

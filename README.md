@@ -205,6 +205,53 @@ Subagent templates live in `references/HB-EXTRACT.md`, `HB-SYNTHESIS.md`, `HB-DO
 
 ---
 
+## Operational Learning Loop (OLL)
+
+**Self-observation layer** — system captures its own friction, surprises, and quality issues for review.
+
+```
+ops/
+├── observations/          # Operational observations
+│   ├── index.json        # Registry
+│   └── obs-0001.json    # {id, observation, category, status, timestamps}
+└── tensions/            # Contradictions between facts
+    ├── index.json        # Registry
+    └── tension-0001.json # {id, tension, factRefs, status, timestamps}
+```
+
+### Capturing Observations
+
+```bash
+bun scripts/memory-observe.js --observation "KG extraction missed facts" --category friction
+bun scripts/memory-observe.js --observation "Code quality improved" --category quality
+bun scripts/memory-observe.js --observation "Unexpected behavior" --category surprise
+```
+
+**Categories:** `friction` (slowdown), `surprise` (unexpected), `quality` (code/content issues)
+
+**Features:**
+- **Novelty check:** Jaccard similarity >0.7 with recent observations → rejected as duplicate
+- **Review loop:** pending → promoted to KG as patterns/principles, or archived
+
+### Capturing Tensions
+
+```bash
+bun scripts/memory-tension.js \
+  --tension "Two facts contradict each other" \
+  --fact1 "sergey-001" \
+  --fact2 "sergey-005"
+```
+
+### Threshold Alerts
+
+Heartbeat checks pending counts:
+- **>20 pending observations** → alert
+- **>5 pending tensions** → alert
+
+This enables **system-level feedback** — patterns of friction accumulate until reviewed.
+
+---
+
 ## Domain Layer
 
 Domains are **persistent memory units** for subagents. A subagent spawned with `cleanup: "delete"` loses all context when done — domains solve this.

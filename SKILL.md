@@ -247,6 +247,83 @@ Facts decay based on recency, with modifiers for confidence, frequency, and abst
 
 Full rules: [references/decay-rules.md](references/decay-rules.md)
 
+## Operational Learning Loop (OLL)
+
+System observes its own friction — what worked, what failed, what patterns emerged — and accumulates these observations for review.
+
+### Storage Structure
+
+```
+ops/
+├── observations/          # Operational observations
+│   ├── index.json         # Registry of all observations
+│   └── obs-0001.json      # Individual observation files
+└── tensions/              # Contradictions between facts
+    ├── index.json         # Registry of all tensions
+    └── tension-0001.json  # Individual tension files
+```
+
+### Capturing Observations
+
+```bash
+# Basic observation (friction, surprise, quality)
+bun scripts/memory-observe.js --observation "KG extraction missed facts about email" --category friction
+
+# With description
+bun scripts/memory-observe.js --observation "..." --category quality --description "Why this matters"
+
+# Extended category (requires --extended flag)
+bun scripts/memory-observe.js --observation "..." --category process --extended
+```
+
+**Categories:**
+- `friction` — something that slowed work down
+- `surprise` — unexpected outcome
+- `quality` — code/content quality issue
+- `process`, `methodology` — requires `--extended` flag
+
+### Capturing Tensions
+
+```bash
+bun scripts/memory-tension.js \
+  --tension "Two facts contradict each other" \
+  --fact1 "sergey-001" \
+  --fact2 "sergey-005" \
+  --description "Context about the contradiction"
+```
+
+### Threshold Alerts
+
+Heartbeat checks pending counts:
+- **>20 pending observations** → alert
+- **>5 pending tensions** → alert
+
+Alerts appear in daily note report.
+
+### Observation Schema
+
+```json
+{
+  "id": "obs-0001",
+  "observation": "KG extraction missed facts about email",
+  "category": "friction",
+  "description": "Why this matters",
+  "status": "pending",
+  "createdAt": "2026-02-25T12:00:00.000Z",
+  "promotedAt": null,
+  "archivedAt": null,
+  "accessCount": 0
+}
+```
+
+### Rules
+
+- **Novelty check:** Jaccard similarity >0.7 with recent observations → rejected as duplicate
+- **Review loop:** observations stay `pending` until reviewed → promoted to life/ or archived
+- **Content promotion:** durable observations → promoted to Knowledge Graph as patterns/principles
+
+For full OLL details, see [references/HEARTBEAT.md](references/HEARTBEAT.md) (Phase 5).
+
 ## Fact Schema v2
 
 Each fact in `items.json` includes:
@@ -564,3 +641,26 @@ bun scripts/memory-contradict.js --fact <text> --entity <path> \
 ```
 
 Finds conflicting facts via Jaccard similarity. Intra-entity by default; `--cross-entity` discovers related entities via QMD BM25.
+
+### memory-observe.js — Capture operational observations
+
+```bash
+bun scripts/memory-observe.js --observation "text" --category friction [--description "desc"] [--extended]
+```
+
+Captures observations about system friction, surprises, or quality issues. Includes novelty check (Jaccard similarity >0.7 rejects duplicates).
+
+### memory-tension.js — Capture contradictions
+
+```bash
+bun scripts/memory-tension.js --tension "text" --fact1 <id> --fact2 <id> [--description "desc"]
+```
+
+Captures tensions between two facts. Validates that both fact IDs exist in KG before creating tension.
+
+### heartbeat-state.js — State management
+
+```bash
+bun scripts/heartbeat-state.js --get-all
+bun scripts/heartbeat-state.js --set pendingObservations 5
+```

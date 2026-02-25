@@ -23,7 +23,7 @@ Read this document top to bottom and execute each phase sequentially.
 5. Determine what to run:
    - Extraction: always (watermark handles incremental)
    - Synthesis: if Monday AND `lastWeeklySynthesis` != this week Monday
-   - Domains: if `memory/domains/registry.json` exists
+   - Domains: if `domainsEnabled !== false` AND `memory/domains/registry.json` exists
    - Maintenance: always (inline, synchronous)
 
 ## Phase 1: Extraction
@@ -34,7 +34,7 @@ Read this document top to bottom and execute each phase sequentially.
     2. Replace `{{daily_note_path}}` with the absolute path to today's daily note
     3. Replace `{{watermark}}` with the validated watermark (e.g. `L7`)
     4. Replace `{{session}}` with the current session key (e.g. `main`)
-    5. Call `sessions_spawn(task=<filled template>, label="hb-extract", cleanup="delete")`
+    5. Call `sessions_spawn(task=<filled template>, label="hb-extract", model="sonnet-4-6", cleanup="delete")`
     **Do not wait — result arrives via system message.**
   - If `false`: run extraction inline
     - Read daily note from validated watermark (or L1 if none)
@@ -43,23 +43,32 @@ Read this document top to bottom and execute each phase sequentially.
 
 ## Phase 2: Synthesis (Monday only)
 - If NOT Monday OR `lastWeeklySynthesis` == this week Monday — skip
-- Spawn hb-synthesis subagent. **Do not wait — result arrives via system message.**
+- Spawn hb-synthesis subagent with `model="sonnet-4-6"`. **Do not wait — result arrives via system message.**
+- TODO: HB-SYNTHESIS.md template not yet implemented
 
 ## Phase 3: Domains
+- If `domainsEnabled === false` in heartbeat-state.json — skip
 - If `memory/domains/registry.json` does not exist — skip
 - Build task from `skills/engram/references/HB-DOMAINS.md`:
   1. Read the file content
   2. Replace `{{registry_path}}` with the absolute path to `memory/domains/registry.json`
   3. Replace `{{domains_root}}` with the absolute path to `memory/domains`
   4. Replace `{{now_iso}}` with the current ISO timestamp
-  5. Call `sessions_spawn(task=<filled template>, label="hb-domains", cleanup="delete")`
+  5. Call `sessions_spawn(task=<filled template>, label="hb-domains", model="haiku", cleanup="delete")`
   **Do not wait — result arrives via system message.**
 
 ## Phase 4: Maintenance (inline, synchronous)
 1. Run `bun scripts/validate-kg.js --fix`
 2. If any phase wrote to `life/` — run `qmd update`
 
-## Phase 5: Report + Unlock
+## Phase 5: OLL Check (inline, synchronous)
+1. Count pending observations: read `ops/observations/index.json`, count items where status === "pending"
+2. Count pending tensions: read `ops/tensions/index.json`, count items where status === "pending"
+3. If pending observations > 20 OR pending tensions > 5:
+   - Set alert: `OLL threshold exceeded: {count} observations, {count} tensions`
+   - Surface in Phase 6 report
+
+## Phase 6: Report + Unlock
 1. Write/update report via script (handles create-or-replace, no identical-content errors):
    ```bash
    bun scripts/heartbeat-report.js \
@@ -88,7 +97,12 @@ Triggered when a system message arrives with a completed subagent result.
 
 ### hb-extract handoff
 1. Parse handoff block (see Handoff Protocol below)
-2. If Status: ok:
+2. Parse `Observations` field (JSON array or empty/none)
+3. If Observations has items:
+   - For each obs in Observations: write to `ops/observations/` via `bun scripts/memory-observe.js --observation "<obs.observation>" --category <obs.category>`
+   - Count new observations written
+   - Update state: `bun scripts/heartbeat-state.js --set pendingObservations <new count>`
+4. If Status: ok:
    - Read `new_watermark` from Stats (e.g. `"L247"`)
    - **Only append watermark if new_watermark > current watermark** (i.e. file grew). If `new_watermark == current_watermark`, skip append — no new content means no new watermark line needed.
    - If appending: `<!-- extracted:{new_watermark}:{ISO timestamp} -->` to daily note (**orchestrator is the ONLY watermark writer**)
@@ -129,10 +143,11 @@ Every subagent must end its response with a handoff block:
 Status: ok
 Summary: extracted 3 facts from 2026-02-21.md (L209->L247)
 Stats: {"facts_written": 3, "new_watermark": "L247"}
+Observations: [{"id": "obs-0001", "observation": "KG extraction missed facts about email", "category": "friction"}, {"id": "obs-0002", "observation": "Watermark logic handles edge cases well", "category": "quality"}]
 Alerts: []
 === END ===
 ```
-Fields: Status (ok | error | partial), Summary (one line), Stats (JSON), Alerts (list)
+Fields: Status (ok | error | partial), Summary (one line), Stats (JSON), Observations (JSON array with id, observation, category), Alerts (list)
 
 **Parsing:** Find the line starting with `=== HB-` and ending with `HANDOFF ===`. Find `=== END ===`. Parse each line between as `FieldName: value`.
 

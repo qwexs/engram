@@ -129,8 +129,11 @@ Heartbeats need speed, not full context. SOUL.md and USER.md are typically alrea
 #### How to run
 
 ```bash
-qmd query "project name or topic" -c life
-qmd query "topic" -c openclaw-memory-agent-{id}-main   # session memory
+# Combined KG + session memory (recommended)
+qmd query "topic" -c life -c openclaw-memory-agent-{id}-main
+
+# KG only (when session memory not relevant)
+qmd query "topic" -c life
 ```
 
 Use the most specific term you can extract. If multiple entities are relevant, run separate queries.

@@ -100,7 +100,40 @@ Heartbeats need speed, not full context. SOUL.md and USER.md are typically alrea
 4. Read session memory:
    - **Main**: today + yesterday daily notes + `MEMORY.md` + `life/index.md`
    - **Group**: today + yesterday daily notes only
-5. Use `qmd query "topic" -c <collection>` for deeper context
+5. **Knowledge Graph** (main session only): run `qmd query "<topic of first user message>" -c life`
+   - Extract the main topic/entity from the user's first request and query it
+   - If message is a greeting or vague → defer to QMD Query Triggers below
+
+### QMD Query Triggers
+
+> Apply **during a session** (after Full Init). Run `qmd query` whenever a trigger fires.
+> Main session only — group chats do not have access to the Knowledge Graph (`life/`).
+
+#### 🔴 Mandatory Triggers (always run)
+
+| Trigger | Condition | Query |
+|---------|-----------|-------|
+| **First substantive request** | User's first non-greeting message in a session | `qmd query "<topic>" -c life` |
+| **Named entity appears** | Project, person, or system mentioned **for the first time** in this session | `qmd query "<entity name>" -c life` |
+| **Decision requested** | User asks for advice, recommendation, or "what should I do" | `qmd query "<topic>" -c life` + check `memory/domains/` if relevant |
+
+#### 🟡 Situational Triggers (use judgment)
+
+| Trigger | Condition |
+|---------|-----------|
+| **Topic shift** | Conversation moves to a clearly different domain (e.g. dev → infra → marketing) |
+| **Long session + new subject** | >20 messages in session and a new subject appears |
+| **"We did this before"** | Request that could have history in prior sessions/notes |
+| **Contradiction detected** | Something the user says conflicts with what you believe you know |
+
+#### How to run
+
+```bash
+qmd query "project name or topic" -c life
+qmd query "topic" -c openclaw-memory-agent-{id}-main   # session memory
+```
+
+Use the most specific term you can extract. If multiple entities are relevant, run separate queries.
 
 ### Daily Notes
 

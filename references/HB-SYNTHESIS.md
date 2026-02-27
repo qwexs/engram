@@ -10,83 +10,39 @@ Session: {{session}}
 
 ## Task
 
-Rewrite `summary.md` for all entities in the Knowledge Graph with memory decay applied.
+Run memory synthesis with decay applied using the deterministic script.
 
-### Algorithm
+### Step 1 — Rebuild summaries with decay
 
-For each entity directory in `{{life_root}}`:
-
-1. Read `items.json` — load all facts with `status: "active"`
-2. For each fact, calculate decay tier:
-
-```
-daysSinceAccess = today - fact.lastAccessed (in days)
-
-if fact.confidence < 0.5:
-    coldThreshold = 14
-else:
-    coldThreshold = 30
-
-if daysSinceAccess <= 7:       tier = "Hot"
-elif daysSinceAccess <= coldThreshold: tier = "Warm"
-else:                          tier = "Cold"
-
-# Frequency resistance
-if tier == "Cold" AND fact.accessCount >= 10:
-    tier = "Warm"
+```bash
+bun skills/engram/scripts/rebuild-summaries.js --apply-decay
 ```
 
-3. Apply abstraction inclusion rules:
+The script reads all `items.json` in `life/`, applies Hot/Warm/Cold decay classification,
+and rewrites `summary.md` for each entity using the decay format.
 
-| Abstraction | Hot | Warm | Cold |
-|-------------|-----|------|------|
-| principle   | ✅  | ✅   | ✅  |
-| pattern     | ✅  | ✅   | ❌  |
-| episode     | ✅  | ✅   | ❌  |
+Output is JSON: `{ updated, skipped, errors, hot, warm, coldExcluded }`.
 
-4. Sort included facts: Hot first, then Warm; within tier by `accessCount` desc
-5. Write new `summary.md`:
-   - Title: entity name
-   - Hot facts: prominent section
-   - Warm facts: secondary section
-   - Cold principles: always-included section (if any)
-   - Total fact count and last-updated timestamp at bottom
-6. Skip entities with 0 included facts (leave summary.md unchanged)
+### Step 2 — Re-index Knowledge Graph
 
-### Summary Format
-
-```markdown
-# {Entity Name}
-
-{2-3 sentence overview synthesizing the Hot facts}
-
-## Current (Hot)
-- Fact 1 (confidence: 0.9)
-- Fact 2 (confidence: 0.85)
-
-## Background (Warm)
-- Fact 3 (confidence: 0.7)
-
-## Enduring (Principles)
-- Fact 4 (confidence: 1.0, principle)
-
----
-*{N} active facts, {M} included in summary. Updated {ISO date}.*
+```bash
+qmd update
 ```
 
-Write naturally — not just bullet lists. The overview paragraph should synthesize,
-not enumerate. Keep it concise: max 30 lines per entity.
+Re-indexes all updated `summary.md` files so QMD queries reflect the new summaries.
+
+### Step 3 — Report
+
+Read the JSON output from Step 1 and fill in the Handoff block below.
 
 ## Rules
 
-1. Only rewrite `summary.md` — do NOT modify `items.json`
-2. Do NOT update `lastAccessed` or `accessCount` — that's the reader's job
-3. If `items.json` doesn't exist or is empty — skip entity silently
-4. If ALL facts are Cold (and no principles) — leave `summary.md` unchanged
-5. Preserve any `<!-- ... -->` comments at the end of existing summary.md
-6. After all entities processed — run `qmd update` to re-index summaries
-7. Do NOT update heartbeat-state.json — the orchestrator handles this
-8. Do NOT read or write MEMORY.md, AGENTS.md, or any file outside this task
+1. Run both commands in sequence — do NOT skip `qmd update`
+2. Do NOT modify `items.json` — script is read-only on facts
+3. Do NOT update `lastAccessed` or `accessCount`
+4. Do NOT update `heartbeat-state.json` — the orchestrator handles this
+5. Do NOT read or write `MEMORY.md`, `AGENTS.md`, or any file outside this task
+6. If the script exits with code 1 — report the error in Alerts, do not retry
 
 ## Handoff (MUST be your LAST output)
 
@@ -96,7 +52,7 @@ Your response MUST end with this block. Fill in the values:
 === HB-SYNTHESIS HANDOFF ===
 Status: {ok | error}
 Summary: {one line, e.g. "synthesized 12 entities, 8 updated, 4 unchanged"}
-Stats: {"entities_total": N, "entities_updated": N, "entities_unchanged": N, "facts_included": N, "facts_cold_excluded": N}
+Stats: {"entities_total": N, "entities_updated": N, "entities_unchanged": N, "facts_hot": N, "facts_warm": N, "facts_cold_excluded": N}
 Observations: []
 Alerts: {[] or ["alert text"]}
 === END ===

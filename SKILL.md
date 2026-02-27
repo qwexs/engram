@@ -100,7 +100,43 @@ Heartbeats need speed, not full context. SOUL.md and USER.md are typically alrea
 4. Read session memory:
    - **Main**: today + yesterday daily notes + `MEMORY.md` + `life/index.md`
    - **Group**: today + yesterday daily notes only
-5. Use `qmd query "topic" -c <collection>` for deeper context
+5. **Knowledge Graph** (main session only): run `qmd query "<topic of first user message>" -c life`
+   - Extract the main topic/entity from the user's first request and query it
+   - If message is a greeting or vague → defer to QMD Query Triggers below
+
+### QMD Query Triggers
+
+> Apply **during a session** (after Full Init). Run `qmd query` whenever a trigger fires.
+> Main session only — group chats do not have access to the Knowledge Graph (`life/`).
+
+#### 🔴 Mandatory Triggers (always run)
+
+| Trigger | Condition | Query |
+|---------|-----------|-------|
+| **First substantive request** | User's first non-greeting message in a session | `qmd query "<topic>" -c life` |
+| **Named entity appears** | Project, person, or system mentioned **for the first time** in this session | `qmd query "<entity name>" -c life` |
+| **Decision requested** | User asks for advice, recommendation, or "what should I do" | `qmd query "<topic>" -c life` + check `memory/domains/` if relevant |
+
+#### 🟡 Situational Triggers (use judgment)
+
+| Trigger | Condition |
+|---------|-----------|
+| **Topic shift** | Conversation moves to a clearly different domain (e.g. dev → infra → marketing) |
+| **Long session + new subject** | >20 messages in session and a new subject appears |
+| **"We did this before"** | Request that could have history in prior sessions/notes |
+| **Contradiction detected** | Something the user says conflicts with what you believe you know |
+
+#### How to run
+
+```bash
+# Combined KG + session memory (recommended)
+qmd query "topic" -c life -c openclaw-memory-agent-{id}-main
+
+# KG only (when session memory not relevant)
+qmd query "topic" -c life
+```
+
+Use the most specific term you can extract. If multiple entities are relevant, run separate queries.
 
 ### Daily Notes
 
@@ -246,6 +282,83 @@ Facts decay based on recency, with modifiers for confidence, frequency, and abst
 | Cold | 30+ days | ❌ (searchable via QMD) |
 
 Full rules: [references/decay-rules.md](references/decay-rules.md)
+
+## Operational Learning Loop (OLL)
+
+System observes its own friction — what worked, what failed, what patterns emerged — and accumulates these observations for review.
+
+### Storage Structure
+
+```
+ops/
+├── observations/          # Operational observations
+│   ├── index.json         # Registry of all observations
+│   └── obs-0001.json      # Individual observation files
+└── tensions/              # Contradictions between facts
+    ├── index.json         # Registry of all tensions
+    └── tension-0001.json  # Individual tension files
+```
+
+### Capturing Observations
+
+```bash
+# Basic observation (friction, surprise, quality)
+bun scripts/memory-observe.js --observation "KG extraction missed facts about email" --category friction
+
+# With description
+bun scripts/memory-observe.js --observation "..." --category quality --description "Why this matters"
+
+# Extended category (requires --extended flag)
+bun scripts/memory-observe.js --observation "..." --category process --extended
+```
+
+**Categories:**
+- `friction` — something that slowed work down
+- `surprise` — unexpected outcome
+- `quality` — code/content quality issue
+- `process`, `methodology` — requires `--extended` flag
+
+### Capturing Tensions
+
+```bash
+bun scripts/memory-tension.js \
+  --tension "Two facts contradict each other" \
+  --fact1 "sergey-001" \
+  --fact2 "sergey-005" \
+  --description "Context about the contradiction"
+```
+
+### Threshold Alerts
+
+Heartbeat checks pending counts:
+- **>20 pending observations** → alert
+- **>5 pending tensions** → alert
+
+Alerts appear in daily note report.
+
+### Observation Schema
+
+```json
+{
+  "id": "obs-0001",
+  "observation": "KG extraction missed facts about email",
+  "category": "friction",
+  "description": "Why this matters",
+  "status": "pending",
+  "createdAt": "2026-02-25T12:00:00.000Z",
+  "promotedAt": null,
+  "archivedAt": null,
+  "accessCount": 0
+}
+```
+
+### Rules
+
+- **Novelty check:** Jaccard similarity >0.7 with recent observations → rejected as duplicate
+- **Review loop:** observations stay `pending` until reviewed → promoted to life/ or archived
+- **Content promotion:** durable observations → promoted to Knowledge Graph as patterns/principles
+
+For full OLL details, see [references/HEARTBEAT.md](references/HEARTBEAT.md) (Phase 5).
 
 ## Fact Schema v2
 
@@ -474,6 +587,36 @@ bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/se
 - Do NOT write extraction watermarks during inline extraction (heartbeat only)
 - Dedup is automatic — duplicates from inline + heartbeat silently skipped
 
+## Session Recording
+
+Daily notes capture session activity. Without explicit recording, notes remain empty despite active work.
+
+### Trigger Rules
+
+Record to daily note when:
+- **Topic completed** — a task/discussion block finishes (every 5-10 messages)
+- **Decision made** — any explicit decision → `--section decisions`
+- **Topic shift** — conversation moves to a new subject
+- **Significant result** — something was built, fixed, or discovered
+
+### Recording Script
+
+```bash
+bun skills/engram/scripts/daily-note-append.js \
+  --session main --section events --text "Fixed 44 semantic duplicates in KG"
+
+bun skills/engram/scripts/daily-note-append.js \
+  --session main --section decisions --text "Jaccard ≥ 0.5 now blocks writes (was warning-only)"
+```
+
+### Rules
+
+- Keep entries brief (1-2 lines each)
+- Record facts, not feelings ("Fixed X" not "Had a great session")
+- Operational events → `events`, explicit choices → `decisions`, insights → `learnings`
+- Do NOT wait for session end — record as you go
+- Session-End Checklist (AGENTS.md) handles `threads` and `next` sections
+
 ## Scripts
 
 ### install-qmd.js — Install QMD search engine
@@ -539,13 +682,18 @@ Classifies text as high/low/none signal. Regex-based, no LLM, <10ms. Returns cat
 ### memory-write.js — Unified write pipeline
 
 ```bash
+# Write a fact
 bun scripts/memory-write.js --entity <path> --fact <text> --category <cat> \
   [--confidence 0.9] [--abstraction pattern] [--tags "a,b"] [--source "2026-02-16"] \
+  [--description "Why this fact matters (max 150 chars)"] \
   [--entity-create] [--check-contradictions] [--cross-entity] \
   [--semantic-check] [--search-collections "life,collection2"]
+
+# Track access (updates lastAccessed + accessCount for decay)
+bun scripts/memory-write.js --access --entity <path> --id <fact-id>
 ```
 
-Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Use `--entity-create` to create new entities on the fly.
+Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Use `--entity-create` to create new entities on the fly. Use `--access` mode to bump a fact's recency (important for decay tiers).
 
 ### memory-dedup.js — Deduplication index
 
@@ -579,7 +727,32 @@ Captures observations about system friction, surprises, or quality issues. Inclu
 bun scripts/memory-tension.js --tension "text" --fact1 <id> --fact2 <id> [--description "desc"]
 ```
 
-Captures tensions between two facts. Validates that both fact IDs exist in KG before creating tension.
+Captures tensions between two facts. Validates that both fact IDs exist in KG before creating tension. Includes Jaccard novelty check (>0.7 similarity → skips duplicate).
+
+### daily-note-append.js — Record session activity to daily note
+
+```bash
+bun skills/engram/scripts/daily-note-append.js \
+  --session main --agent-id main --section events --text "Fixed 44 semantic duplicates in KG"
+```
+
+Atomically appends a bullet entry to a named section of today's daily note. Creates the note from template if it doesn't exist. Sections: `events`, `decisions`, `learnings`, `threads`, `next`. Never overwrites existing content, never touches watermarks or Heartbeat Report.
+
+### rebuild-summaries.js — Rebuild summary.md from items.json
+
+```bash
+bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity areas/people/sergey] [--apply-decay]
+```
+
+Deterministically regenerates `summary.md` for all entities in `life/` from their `items.json`. No LLM involved.
+
+**Without `--apply-decay`**: groups active facts by category, lists top 5 by confidence, shows counts per category and superseded stats. Outputs `{ "updated": N, "skipped": N, "errors": N }`.
+
+**With `--apply-decay`**: applies Memory Decay tiers (Hot/Warm/Cold) based on `lastAccessed`/`createdAt`/`source` date. Summary format changes to tiered sections: `## Current (Hot)`, `## Background (Warm)`, `## Enduring (Principles)`. Cold facts (except principles) are excluded from summary but remain in items.json. Outputs `{ "updated": N, "skipped": N, "errors": N, "hot": N, "warm": N, "coldExcluded": N }`.
+
+Decay algorithm: see `references/decay-rules.md`. Used by `HB-SYNTHESIS.md` subagent during Monday heartbeat.
+
+Use `--dry-run` to preview diffs without writing. Use `--entity` to process one entity.
 
 ### rotate-notes.js — Three-Layer Rotation
 

@@ -1,37 +1,15 @@
-# Субагент: {{domain}}
+# Domain: {{domain}}
 
-## Задача
-
-{{task}}
-
-## Domain Lifecycle
-
-Ты работаешь в рамках домена `{{domain}}`. Файлы домена:
-
-- **Workflow**: `memory/domains/{{domain}}/workflow.md` — как домен работает (скрипты, scope, инструменты)
-- **Правила**: `memory/domains/{{domain}}/decisions.md` — прочитай перед началом, НЕ редактируй
-- **Статус**: `memory/domains/{{domain}}/status.md` — обнови после завершения
-- **Журнал**: `memory/domains/{{domain}}/changelog.md` — добавь запись о выполненной работе (append-only)
-
-## Контекст домена
-
-### workflow.md
-{{workflow}}
-
-### decisions.md
+## Правила (read-only)
 {{decisions}}
 
-### status.md
-{{status}}
+## Инфраструктура
+{{workflow}}
 
-### changelog (последние записи)
-{{changelog_tail}}
+## Задача
+{{task}}
 
-## Правила
-
-1. Прочитай workflow.md — это контекст домена (скрипты, scope, инструменты)
-2. Прочитай decisions.md — это твои ограничения
-3. Выполни задачу
-4. Обнови status.md (перезапись — текущее состояние)
-5. Добавь запись в changelog.md (append в начало, формат: `## YYYY-MM-DD HH:MM — Заголовок`)
-6. Если нужно изменить правило из decisions.md — напиши PROPOSAL в changelog, НЕ редактируй decisions напрямую
+## После завершения
+1. Обнови `memory/domains/{{domain}}/status.md` — текущее состояние проекта (перезапись)
+2. Добавь запись в `memory/domains/{{domain}}/changelog.md` — что сделано (append в начало, формат: `## YYYY-MM-DD HH:MM — Заголовок`)
+3. Если правило из раздела "Правила" мешает — напиши PROPOSAL в changelog, НЕ редактируй decisions.md

@@ -14,8 +14,8 @@ Each subagent task is tied to a **domain** — a dedicated folder with its own f
 memory/domains/{domain}/
 ├── decisions.md    # WHAT: rules, thresholds (read-only for subagent)
 ├── workflow.md     # HOW: scripts, scope, tools (optional)
-├── status.md       # Current state (updated by subagent)
-├── changelog.md    # Append-only action log
+├── status.md       # Current state (written by subagent, read by main agent)
+├── changelog.md    # Append-only action log (written by subagent, read by main agent)
 ├── archives/       # Changelog rotation >1000 lines
 └── README.md       # Domain description
 ```
@@ -24,12 +24,12 @@ memory/domains/{domain}/
 
 ### Four Files — Four Roles
 
-| File | Who writes | Mode | Purpose |
-|------|-----------|------|---------|
-| `decisions.md` | Main agent | Read-only for subagent | Rules, thresholds, constraints (WHAT is allowed) |
-| `workflow.md` | Main agent | Read-only for subagent | Scripts, API, scope, external sources (HOW to work) |
-| `status.md` | Subagent | Overwrite | Current state, metrics |
-| `changelog.md` | Subagent | Append-only | Log of all actions |
+| File | Who writes | Who reads | Mode | Purpose |
+|------|-----------|-----------|------|---------|
+| `decisions.md` | Main agent | Subagent (via prompt) | Read-only for subagent | Rules, thresholds, constraints (WHAT is allowed) |
+| `workflow.md` | Main agent | Subagent (via prompt) | Read-only for subagent | Scripts, API, scope, external sources (HOW to work) |
+| `status.md` | Subagent | Main agent | Overwrite | Current state, metrics |
+| `changelog.md` | Subagent | Main agent | Append-only | Log of all actions |
 
 ### Separation of Concerns
 
@@ -77,18 +77,33 @@ The subagent **cannot** edit `decisions.md`. If a rule change is needed:
 
 Before spawn, verify that no active subagent exists for this domain.
 
+## Main Agent Pre-Spawn Workflow
+
+Before spawning a subagent, the main agent:
+
+1. Reads `memory/domains/{domain}/status.md` — understands current project state
+2. Reads `memory/domains/{domain}/changelog.md` (tail) — sees what was done recently
+3. Formulates the exact task based on this context + user request
+4. Reads `decisions.md` + `workflow.md` — includes them verbatim in the subagent prompt
+5. Assembles the prompt: decisions + workflow + task + "after completion" instructions
+6. Spawns with `sessions_spawn(task: <prompt>, label: <subagentLabel>)`
+
+**Key principle:** The main agent interprets status/changelog to formulate a precise task. The subagent receives only decisions (rules), workflow (tools), and the task itself. No script needed — the agent's judgment in formulating the task IS the value.
+
 ## Subagent Lifecycle
 
 ```
 1. spawn → cleanup: "delete"
-2. Read workflow.md (domain context: scripts, scope, tools)
-3. Read decisions.md (rules)
-4. Read status.md (previous state)
-5. Execute work
-6. Update status.md (new state)
-7. Append entry to changelog.md
-8. Complete → session deleted, files remain
+2. Read workflow.md (domain context: scripts, scope, tools)  ← provided in prompt
+3. Read decisions.md (rules)  ← provided in prompt
+4. Execute work
+5. Update status.md (new state)
+6. Append entry to changelog.md
+7. Complete → session deleted, files remain
 ```
+
+> **Note:** The subagent does NOT read `status.md` or `changelog.md` at startup.
+> The main agent reads these before spawning and injects the relevant context into the task description.
 
 ## Integration with Main Architecture
 
@@ -169,15 +184,14 @@ Domains can be linked to projects in the Knowledge Graph (`life/projects/`). The
 ### Workflow for dev-project
 
 1. User gives a project task
-2. Main bot finds the domain via `registry.json`
-3. Loads the template from `spawnTemplate`
-4. Reads domain context: **workflow.md** (if present), decisions.md, status.md, changelog (tail)
-5. Injects placeholders: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`
-6. Spawns subagent with `cleanup: "delete"` and a fixed label
-7. Subagent determines where to work
-8. After completion, main bot updates the domain
+2. Main agent finds domain in `registry.json`
+3. Main agent reads `status.md` + `changelog.md` tail → understands current state
+4. Main agent formulates exact task based on context
+5. Main agent reads `decisions.md` + `workflow.md` → includes verbatim in prompt
+6. Spawns subagent with `cleanup: "delete"` and a fixed `subagentLabel`
+7. Subagent executes, then updates `status.md` + `changelog.md`
 
-**Rule: always use a template.** Don't write prompts manually — use `spawnTemplate` from the registry. This ensures the subagent receives the Domain Lifecycle (paths to decisions, status, changelog).
+**Rule: always read the domain before spawn.** The main agent's judgment in interpreting status/changelog and formulating a precise task is the core value of this workflow.
 
 ### Creating a Domain with KG Binding
 
@@ -223,19 +237,22 @@ bun skills/engram/scripts/add-domain.js --domain {domain} --type cron-task --des
 ```markdown
 # Log: monitoring
 
-## 2026-02-15 14:30
+## 2026-02-15 14:30 — Плановая проверка
 **Action**: server metrics check
 **Result**: all normal, CPU 45%, Disk 62%
 
-## 2026-02-15 13:30
+## 2026-02-15 13:30 — Плановая проверка
 **Action**: server metrics check
 **Result**: CPU spike 78% (compilation), passed
 ```
 
 ## Spawn Templates
 
-Ready-made templates in `templates/spawn-prompts/`:
-- `dev-project.md` — for development (workflow + decisions + status + changelog tail)
-- `cron-task.md` — for periodic tasks (workflow + decisions + status)
+Ready-made templates in `skills/engram/templates/spawn-prompts/`:
+- `dev-project.md` — for development projects
+- `cron-task.md` — for periodic tasks
 
-Placeholders: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`.
+Both use the same minimal placeholders: `{{decisions}}`, `{{workflow}}`, `{{task}}`, `{{domain}}`.
+
+> `{{status}}` and `{{changelog_tail}}` are **removed** from templates. The main agent reads these files
+> before spawning and incorporates relevant context directly into the `--task` text when needed.

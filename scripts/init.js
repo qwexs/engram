@@ -20,7 +20,7 @@ const { values: args } = parseArgs({
 
 if (args.help) {
   console.log(`
-engram init — Initialize complete memory system
+engram init - Initialize complete memory system
 
 Usage:
   bun skills/engram/scripts/init.js [options]
@@ -107,7 +107,38 @@ const dirs = [
 for (const dir of dirs) {
   mkdirSync(join(WORKSPACE, dir), { recursive: true });
 }
-console.log(`рџ“Ѓ Created ${dirs.length} directories`);
+console.log(`рџ"Ѓ Created ${dirs.length} directories`);
+
+// --- OLL (Operational Learning Loop) directories ---
+const ollDirs = [
+  'ops',
+  'ops/observations',
+  'ops/tensions',
+];
+
+for (const dir of ollDirs) {
+  mkdirSync(join(WORKSPACE, dir), { recursive: true });
+}
+
+// Создать index.json если не существует
+const obsIndex = join(WORKSPACE, 'ops', 'observations', 'index.json');
+if (!existsSync(obsIndex)) {
+  writeFileSync(obsIndex, JSON.stringify({ observations: [], lastId: 0 }, null, 2));
+}
+const tensionsIndex = join(WORKSPACE, 'ops', 'tensions', 'index.json');
+if (!existsSync(tensionsIndex)) {
+  writeFileSync(tensionsIndex, JSON.stringify({ tensions: [], lastId: 0 }, null, 2));
+}
+
+// .gitkeep для пустых директорий
+const gitkeepPaths = [
+  join(WORKSPACE, 'ops', 'observations', '.gitkeep'),
+  join(WORKSPACE, 'ops', 'tensions', '.gitkeep'),
+];
+for (const gk of gitkeepPaths) {
+  if (!existsSync(gk)) writeFileSync(gk, '');
+}
+console.log(`рџ"Ё OLL directories created (ops/observations/, ops/tensions/)`);
 
 // --- Copy templates ---
 function copyTemplate(templateName, destPath, replacements = {}) {
@@ -133,7 +164,7 @@ function copyTemplate(templateName, destPath, replacements = {}) {
 const today = new Date().toISOString().split('T')[0];
 const replacements = { AGENT_ID: agentId, DATE: today, SESSION_KEY: 'main' };
 
-console.log('\nрџ“„ Copying templates...');
+console.log('\nрџ"" Copying templates...');
 copyTemplate('MEMORY.md', 'MEMORY.md', replacements);
 copyTemplate('memory-readme.md', 'memory/README.md', replacements);
 copyTemplate('heartbeat-state.json', 'memory/heartbeat-state.json', replacements);
@@ -154,7 +185,7 @@ for (const tmpl of ['clients.md', 'contacts.md', 'decisions.md', 'resources.md']
 
 // --- QMD collections ---
 if (hasQmd) {
-  console.log('\nрџ”Ќ Setting up QMD collections...');
+  console.log('\nрџ"Ќ Setting up QMD collections...');
   const collections = [
     { path: '.', name: 'openclaw-root', mask: '*.md' },
     { path: `memory/agent-${agentId}/main`, name: `openclaw-memory-agent-${agentId}-main`, mask: '**/*.md' },
@@ -170,11 +201,11 @@ if (hasQmd) {
     }
   }
 
-  console.log('\nрџ“Љ Running QMD index...');
+  console.log('\nрџ"Љ Running QMD index...');
   try {
     execSync('qmd update', { stdio: 'inherit' });
   } catch {
-    console.warn('  ⚠️  qmd update failed — run manually');
+    console.warn('  ⚠️  qmd update failed - run manually');
   }
 } else {
   console.log('\n⚠️  QMD not found. Install:');

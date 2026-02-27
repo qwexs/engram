@@ -72,6 +72,8 @@ Curated personal wisdom distilled from daily notes during memory maintenance:
 ## Data Flow
 
 ```
+Session Activity
+    ↓ daily-note-append.js (during session, explicit recording)
 Daily Notes (raw input)
     ↓ heartbeat extraction (watermark-based incremental parsing)
 Knowledge Graph (structured facts)
@@ -80,6 +82,8 @@ MEMORY.md (curated wisdom)
     ↓ weekly synthesis
 summary.md (decay-aware summaries)
 ```
+
+**Session Recording:** During active sessions, use `daily-note-append.js` to write events, decisions, and learnings directly to the daily note. Without explicit recording, notes remain empty despite active work. See `## Session Recording` in SKILL.md.
 
 **Extraction Watermark optimization:** Heartbeat extraction appends `<!-- extracted:L{N}:{timestamp} -->` to daily notes after processing. On next heartbeat, only lines after the last watermark are parsed. No watermark = parse entire file (backward compatible). This avoids re-processing already-extracted content while inline extraction (which does NOT write watermarks) remains unaffected — dedup handles overlap.
 

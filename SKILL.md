@@ -587,6 +587,36 @@ bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/se
 - Do NOT write extraction watermarks during inline extraction (heartbeat only)
 - Dedup is automatic — duplicates from inline + heartbeat silently skipped
 
+## Session Recording
+
+Daily notes capture session activity. Without explicit recording, notes remain empty despite active work.
+
+### Trigger Rules
+
+Record to daily note when:
+- **Topic completed** — a task/discussion block finishes (every 5-10 messages)
+- **Decision made** — any explicit decision → `--section decisions`
+- **Topic shift** — conversation moves to a new subject
+- **Significant result** — something was built, fixed, or discovered
+
+### Recording Script
+
+```bash
+bun skills/engram/scripts/daily-note-append.js \
+  --session main --section events --text "Fixed 44 semantic duplicates in KG"
+
+bun skills/engram/scripts/daily-note-append.js \
+  --session main --section decisions --text "Jaccard ≥ 0.5 now blocks writes (was warning-only)"
+```
+
+### Rules
+
+- Keep entries brief (1-2 lines each)
+- Record facts, not feelings ("Fixed X" not "Had a great session")
+- Operational events → `events`, explicit choices → `decisions`, insights → `learnings`
+- Do NOT wait for session end — record as you go
+- Session-End Checklist (AGENTS.md) handles `threads` and `next` sections
+
 ## Scripts
 
 ### install-qmd.js — Install QMD search engine
@@ -652,13 +682,18 @@ Classifies text as high/low/none signal. Regex-based, no LLM, <10ms. Returns cat
 ### memory-write.js — Unified write pipeline
 
 ```bash
+# Write a fact
 bun scripts/memory-write.js --entity <path> --fact <text> --category <cat> \
   [--confidence 0.9] [--abstraction pattern] [--tags "a,b"] [--source "2026-02-16"] \
+  [--description "Why this fact matters (max 150 chars)"] \
   [--entity-create] [--check-contradictions] [--cross-entity] \
   [--semantic-check] [--search-collections "life,collection2"]
+
+# Track access (updates lastAccessed + accessCount for decay)
+bun scripts/memory-write.js --access --entity <path> --id <fact-id>
 ```
 
-Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Use `--entity-create` to create new entities on the fly.
+Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Use `--entity-create` to create new entities on the fly. Use `--access` mode to bump a fact's recency (important for decay tiers).
 
 ### memory-dedup.js — Deduplication index
 
@@ -692,7 +727,32 @@ Captures observations about system friction, surprises, or quality issues. Inclu
 bun scripts/memory-tension.js --tension "text" --fact1 <id> --fact2 <id> [--description "desc"]
 ```
 
-Captures tensions between two facts. Validates that both fact IDs exist in KG before creating tension.
+Captures tensions between two facts. Validates that both fact IDs exist in KG before creating tension. Includes Jaccard novelty check (>0.7 similarity → skips duplicate).
+
+### daily-note-append.js — Record session activity to daily note
+
+```bash
+bun skills/engram/scripts/daily-note-append.js \
+  --session main --agent-id main --section events --text "Fixed 44 semantic duplicates in KG"
+```
+
+Atomically appends a bullet entry to a named section of today's daily note. Creates the note from template if it doesn't exist. Sections: `events`, `decisions`, `learnings`, `threads`, `next`. Never overwrites existing content, never touches watermarks or Heartbeat Report.
+
+### rebuild-summaries.js — Rebuild summary.md from items.json
+
+```bash
+bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity areas/people/sergey] [--apply-decay]
+```
+
+Deterministically regenerates `summary.md` for all entities in `life/` from their `items.json`. No LLM involved.
+
+**Without `--apply-decay`**: groups active facts by category, lists top 5 by confidence, shows counts per category and superseded stats. Outputs `{ "updated": N, "skipped": N, "errors": N }`.
+
+**With `--apply-decay`**: applies Memory Decay tiers (Hot/Warm/Cold) based on `lastAccessed`/`createdAt`/`source` date. Summary format changes to tiered sections: `## Current (Hot)`, `## Background (Warm)`, `## Enduring (Principles)`. Cold facts (except principles) are excluded from summary but remain in items.json. Outputs `{ "updated": N, "skipped": N, "errors": N, "hot": N, "warm": N, "coldExcluded": N }`.
+
+Decay algorithm: see `references/decay-rules.md`. Used by `HB-SYNTHESIS.md` subagent during Monday heartbeat.
+
+Use `--dry-run` to preview diffs without writing. Use `--entity` to process one entity.
 
 ### rotate-notes.js — Three-Layer Rotation
 

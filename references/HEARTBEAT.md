@@ -84,40 +84,21 @@ Triggered when a system message arrives with a completed subagent result.
 
 **Detect:** incoming system message contains `=== HB-` and `HANDOFF ===` block.
 
-**Execute:**
+**Execute — one command:**
 
-### hb-extract handoff
-1. Parse handoff block (see Handoff Protocol below)
-2. If Status: ok:
-   - Read `new_watermark` from Stats (e.g. `"L247"`)
-   - **Only append watermark if new_watermark > current watermark** (i.e. file grew). If `new_watermark == current_watermark`, skip append — no new content means no new watermark line needed.
-   - If appending: `<!-- extracted:{new_watermark}:{ISO timestamp} -->` to daily note (**orchestrator is the ONLY watermark writer**)
-   - `--set lastExtraction.<session> <ISO>`, `--set subagentRuns.hb-extract.status ok`
-   - Update report: `bun scripts/heartbeat-report.js --extraction "ok (N facts, {new_watermark})"`
-3. If Status: error:
-   - `--set subagentRuns.hb-extract.status failed`
-   - Update report: `bun scripts/heartbeat-report.js --extraction "error: <Summary>"`
-4. If non-empty Alerts — surface to user
+1. Extract the full handoff block (from `=== HB-* HANDOFF ===` through `=== END ===`) from the system message
+2. Pipe it to the script:
+   ```bash
+   printf '%s' "<handoff block>" | bun scripts/process-handoff.js --session <session> --date <YYYY-MM-DD>
+   ```
+3. Check exit code:
+   - **0** — processed OK, nothing else needed
+   - **1** — script error; log the output to daily note
+   - **2** — alerts present; read `[ALERT]` lines from stdout and surface to user
+4. Return `HEARTBEAT_OK` (or alert text if exit 2)
 
-### hb-synthesis handoff
-1. Parse handoff block
-2. If Status: ok:
-   - `--set lastWeeklySynthesis <today>`, `--set subagentRuns.hb-synthesis.status ok`
-   - Update report: `bun scripts/heartbeat-report.js --synthesis "ok — <Summary>"`
-3. If Status: error:
-   - `--set subagentRuns.hb-synthesis.status failed`
-   - Update report: `bun scripts/heartbeat-report.js --synthesis "error: <Summary>"`
-4. If non-empty Alerts — surface to user
-
-### hb-domains handoff
-1. Parse handoff block
-2. If Status: ok:
-   - `--set lastDomainScan <ISO>`, `--set subagentRuns.hb-domains.status ok`
-   - Update report: `bun scripts/heartbeat-report.js --domains "ok — <Summary>"`
-3. If Status: error:
-   - `--set subagentRuns.hb-domains.status failed`
-   - Update report: `bun scripts/heartbeat-report.js --domains "error: <Summary>"`
-4. If non-empty Alerts — surface to user
+> **That's it.** All state updates, watermark writes, observation processing, and report updates
+> are handled by `process-handoff.js` automatically. No manual parsing required.
 
 ---
 
@@ -134,9 +115,7 @@ Alerts: []
 ```
 Fields: Status (ok | error | partial), Summary (one line), Stats (JSON), Alerts (list)
 
-**Parsing:** Find the line starting with `=== HB-` and ending with `HANDOFF ===`. Find `=== END ===`. Parse each line between as `FieldName: value`.
-
 ## Error Handling
-- No handoff block found in system message — `--set subagentRuns.<phase>.status failed`, write warning to daily note
-- Status: error — record status and Summary in `subagentRuns`, do NOT update phase trackers (`lastExtraction`, `lastWeeklySynthesis`, `lastDomainScan`)
+- `process-handoff.js` exit 1 — log output to daily note, continue
+- Status: error — script sets `status: failed`, does NOT update phase trackers
 - NEVER abort the entire heartbeat because one phase failed

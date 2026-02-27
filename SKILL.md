@@ -290,7 +290,7 @@ System observes its own friction — what worked, what failed, what patterns eme
 ### Storage Structure
 
 ```
-ops/
+workspace/ops/
 ├── observations/          # Operational observations
 │   ├── index.json         # Registry of all observations
 │   └── obs-0001.json      # Individual observation files
@@ -303,13 +303,13 @@ ops/
 
 ```bash
 # Basic observation (friction, surprise, quality)
-bun scripts/memory-observe.js --observation "KG extraction missed facts about email" --category friction
+bun skills/engram/scripts/memory-observe.js --observation "KG extraction missed facts about email" --category friction
 
 # With description
-bun scripts/memory-observe.js --observation "..." --category quality --description "Why this matters"
+bun skills/engram/scripts/memory-observe.js --observation "..." --category quality --description "Why this matters"
 
 # Extended category (requires --extended flag)
-bun scripts/memory-observe.js --observation "..." --category process --extended
+bun skills/engram/scripts/memory-observe.js --observation "..." --category process --extended
 ```
 
 **Categories:**
@@ -321,7 +321,7 @@ bun scripts/memory-observe.js --observation "..." --category process --extended
 ### Capturing Tensions
 
 ```bash
-bun scripts/memory-tension.js \
+bun skills/engram/scripts/memory-tension.js \
   --tension "Two facts contradict each other" \
   --fact1 "sergey-001" \
   --fact2 "sergey-005" \
@@ -384,7 +384,7 @@ Each fact in `items.json` includes:
 
 **No-Deletion Rule:** Facts are NEVER deleted. Set `status: "superseded"` and link via `supersededBy`.
 
-**Write Pipeline Rule:** NEVER write `items.json` directly. Always use `bun scripts/memory-write.js`. Direct writes bypass dedup, validation, and hash registration, causing schema mismatches (e.g., `content` vs `fact`, `created` vs `timestamp`). This applies to heartbeats, inline extraction, and entity creation. No exceptions.
+**Write Pipeline Rule:** NEVER write `items.json` directly. Always use `bun skills/engram/scripts/memory-write.js`. Direct writes bypass dedup, validation, and hash registration, causing schema mismatches (e.g., `content` vs `fact`, `created` vs `timestamp`). This applies to heartbeats, inline extraction, and entity creation. No exceptions.
 
 Full schema: [references/fact-schema.md](references/fact-schema.md)
 
@@ -674,7 +674,7 @@ Adds missing v2 fields (confidence, abstractionLevel, tags) to all items.json fi
 ### memory-signal.js — Signal detection
 
 ```bash
-bun scripts/memory-signal.js --text "I prefer TypeScript"
+bun skills/engram/scripts/memory-signal.js --text "I prefer TypeScript"
 ```
 
 Classifies text as high/low/none signal. Regex-based, no LLM, <10ms. Returns categories, keywords, confidence.
@@ -683,14 +683,14 @@ Classifies text as high/low/none signal. Regex-based, no LLM, <10ms. Returns cat
 
 ```bash
 # Write a fact
-bun scripts/memory-write.js --entity <path> --fact <text> --category <cat> \
+bun skills/engram/scripts/memory-write.js --entity <path> --fact <text> --category <cat> \
   [--confidence 0.9] [--abstraction pattern] [--tags "a,b"] [--source "2026-02-16"] \
   [--description "Why this fact matters (max 150 chars)"] \
   [--entity-create] [--check-contradictions] [--cross-entity] \
   [--semantic-check] [--search-collections "life,collection2"]
 
 # Track access (updates lastAccessed + accessCount for decay)
-bun scripts/memory-write.js --access --entity <path> --id <fact-id>
+bun skills/engram/scripts/memory-write.js --access --entity <path> --id <fact-id>
 ```
 
 Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Use `--entity-create` to create new entities on the fly. Use `--access` mode to bump a fact's recency (important for decay tiers).
@@ -698,8 +698,8 @@ Single entry point for all KG writes. Handles dedup, validation, QMD update, opt
 ### memory-dedup.js — Deduplication index
 
 ```bash
-bun scripts/memory-dedup.js --seed    # Index all existing facts
-bun scripts/memory-dedup.js --check --hash <sha256>  # Check if exists
+bun skills/engram/scripts/memory-dedup.js --seed    # Index all existing facts
+bun skills/engram/scripts/memory-dedup.js --check --hash <sha256>  # Check if exists
 ```
 
 Manages `workspace/memory-state/fact-hashes.json`. Run `--seed` after initial setup or weekly synthesis.
@@ -707,7 +707,7 @@ Manages `workspace/memory-state/fact-hashes.json`. Run `--seed` after initial se
 ### memory-contradict.js — Contradiction detection
 
 ```bash
-bun scripts/memory-contradict.js --fact <text> --entity <path> \
+bun skills/engram/scripts/memory-contradict.js --fact <text> --entity <path> \
   [--cross-entity] [--collections "life,other"]
 ```
 
@@ -716,7 +716,7 @@ Finds conflicting facts via Jaccard similarity. Intra-entity by default; `--cros
 ### memory-observe.js — Capture operational observations
 
 ```bash
-bun scripts/memory-observe.js --observation "text" --category friction [--description "desc"] [--extended]
+bun skills/engram/scripts/memory-observe.js --observation "text" --category friction [--description "desc"] [--extended] [--dry-run]
 ```
 
 Captures observations about system friction, surprises, or quality issues. Includes novelty check (Jaccard similarity >0.7 rejects duplicates).
@@ -724,7 +724,7 @@ Captures observations about system friction, surprises, or quality issues. Inclu
 ### memory-tension.js — Capture contradictions
 
 ```bash
-bun scripts/memory-tension.js --tension "text" --fact1 <id> --fact2 <id> [--description "desc"]
+bun skills/engram/scripts/memory-tension.js --tension "text" --fact1 <id> --fact2 <id> [--description "desc"] [--dry-run]
 ```
 
 Captures tensions between two facts. Validates that both fact IDs exist in KG before creating tension. Includes Jaccard novelty check (>0.7 similarity → skips duplicate).
@@ -757,10 +757,10 @@ Use `--dry-run` to preview diffs without writing. Use `--entity` to process one 
 ### rotate-notes.js — Three-Layer Rotation
 
 ```bash
-bun scripts/rotate-notes.js --check --session main              # Check if daily note needs rotation
-bun scripts/rotate-notes.js --check-domains                      # Check all domain changelogs
-bun scripts/rotate-notes.js --rotate --file <path> --type daily  # Rotate daily note (>1000 lines)
-bun scripts/rotate-notes.js --rotate --file <path> --type changelog  # Rotate changelog
+bun skills/engram/scripts/rotate-notes.js --check --session main              # Check if daily note needs rotation
+bun skills/engram/scripts/rotate-notes.js --check-domains                      # Check all domain changelogs
+bun skills/engram/scripts/rotate-notes.js --rotate --file <path> --type daily  # Rotate daily note (>1000 lines)
+bun skills/engram/scripts/rotate-notes.js --rotate --file <path> --type changelog  # Rotate changelog
 # exit 0: nothing to rotate / done | exit 10: needs rotation (--check mode)
 ```
 
@@ -769,8 +769,8 @@ Handles Three-Layer Rotation for daily notes (archive + stub + QMD index) and si
 ### heartbeat-state.js — State management
 
 ```bash
-bun scripts/heartbeat-state.js --get-all
-bun scripts/heartbeat-state.js --set pendingObservations 5
+bun skills/engram/scripts/heartbeat-state.js --get-all
+bun skills/engram/scripts/heartbeat-state.js --set pendingObservations 5
 ```
 
 Atomic read/write of `memory/heartbeat-state.json`. All heartbeat phase trackers (`lastExtraction`, `lastDomainScan`, `subagentRuns`, etc.) must be updated via this script — never edit the JSON directly.
@@ -778,7 +778,7 @@ Atomic read/write of `memory/heartbeat-state.json`. All heartbeat phase trackers
 ### heartbeat-report.js — Daily note report section
 
 ```bash
-bun scripts/heartbeat-report.js --session main --date 2026-02-27 \
+bun skills/engram/scripts/heartbeat-report.js --session main --date 2026-02-27 \
   --extraction "spawned (result pending)" \
   --synthesis  "skipped (not Monday)" \
   --domains    "spawned (result pending)" \
@@ -790,7 +790,7 @@ Creates or updates `## Heartbeat Report` section in a daily note. Called by hear
 ### process-handoff.js — HB subagent handoff processor
 
 ```bash
-printf '%s' "<handoff block>" | bun scripts/process-handoff.js --session main --date 2026-02-27
+printf '%s' "<handoff block>" | bun skills/engram/scripts/process-handoff.js --session main --date 2026-02-27
 # exit 0: ok | exit 1: error | exit 2: alerts present ([ALERT] lines in stdout)
 ```
 

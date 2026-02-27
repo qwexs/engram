@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
 // Запись операционных наблюдений в OLL
-// Использование: bun scripts/memory-observe.js --observation "текст наблюдения" --category friction [--description "описание"]
+// Использование: bun skills/engram/scripts/memory-observe.js --observation "текст" --category friction [--description "..."] [--dry-run]
 
 import { join } from "path";
+import { extractKeywords, jaccardSimilarity } from "./utils.js";
 
-const WORKSPACE = join(import.meta.dir, "..");
-const OBS_DIR = join(WORKSPACE, "ops", "observations");
+// Скрипт в skills/engram/scripts/ — workspace на 3 уровня выше
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const OBS_DIR = join(WORKSPACE, "workspace", "ops", "observations");
 
 const VALID_CATEGORIES = ["friction", "surprise", "quality"];
 const VALID_EXTENDED = ["process", "methodology"];
@@ -49,22 +51,7 @@ const TZ = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
 const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
 const now = new Date().toISOString();
 
-function extractKeywords(text) {
-  return text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, "")
-    .split(/\s+/)
-    .filter(w => w.length > 3);
-}
-
-function jaccardSimilarity(words1, words2) {
-  const set1 = new Set(words1);
-  const set2 = new Set(words2);
-  const intersection = [...set1].filter(w => set2.has(w));
-  const union = new Set([...set1, ...set2]);
-  return union.size > 0 ? intersection.length / union.size : 0;
-}
-
+// Создать директорию если нет (даже в dry-run — проверяем состояние)
 await Bun.write(join(OBS_DIR, ".gitkeep"), "");
 
 let existing;
@@ -76,6 +63,7 @@ try {
   existing = { observations: [], lastId: 0 };
 }
 
+// --- Novelty check (выполняется и в --dry-run) ---
 if (existing.observations.length > 0) {
   const newKeywords = extractKeywords(observation);
   let maxSimilarity = 0;
@@ -95,6 +83,7 @@ if (existing.observations.length > 0) {
   }
   
   if (maxSimilarity > 0.7) {
+    // Дубликат — показываем skipped независимо от --dry-run
     console.log(JSON.stringify({ status: "skipped", reason: "Duplicate observation", similarId: similarObsId, similarity: maxSimilarity }));
     process.exit(0);
   }
@@ -116,6 +105,22 @@ const newObservation = {
   accessCount: 0,
 };
 
+// --- Dry-run: вывести что было бы записано и выйти ---
+if (opts["dry-run"]) {
+  console.log(JSON.stringify({
+    status: "dry-run",
+    id: obsId,
+    category,
+    would_write: {
+      observation_file: join(OBS_DIR, `${obsId}.json`),
+      observation_data: newObservation,
+      index_file: join(OBS_DIR, "index.json"),
+    },
+  }, null, 2));
+  process.exit(0);
+}
+
+// --- Запись ---
 const obsPath = join(OBS_DIR, `${obsId}.json`);
 await Bun.write(obsPath, JSON.stringify(newObservation, null, 2));
 

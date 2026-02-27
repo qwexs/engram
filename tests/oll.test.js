@@ -1,19 +1,24 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
 import { existsSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs";
+import { extractKeywords, jaccardSimilarity } from "../scripts/utils.js";
 
 const SCRIPTS_DIR = join(import.meta.dir, "..", "scripts");
-const OBS_DIR = join(import.meta.dir, "..", "ops", "observations");
-const TENSION_DIR = join(import.meta.dir, "..", "ops", "tensions");
-const LIFE_DIR = join(import.meta.dir, "..", "life");
+
+// Workspace root — на 3 уровня выше tests/
+const WORKSPACE_ROOT = join(import.meta.dir, "..", "..", "..");
+
+// Новые пути: workspace/ops/ (не в submodule)
+const OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
+const TENSION_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "tensions");
+
+// KG: жизнь в корне workspace
+const LIFE_DIR = join(WORKSPACE_ROOT, "life");
 
 describe("memory-observe.js - extractKeywords utility", () => {
   test("extracts keywords from text (word length > 3)", () => {
     const text = "This is a very interesting observation about the system workflow";
-    const result = text.toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, "")
-      .split(/\s+/)
-      .filter(w => w.length > 3);
+    const result = extractKeywords(text);
     expect(result).toContain("very");
     expect(result).toContain("interesting");
     expect(result).toContain("observation");
@@ -22,32 +27,18 @@ describe("memory-observe.js - extractKeywords utility", () => {
 
   test("filters out short words (length <= 3)", () => {
     const text = "The cat and dog ran fast";
-    const result = text.toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, "")
-      .split(/\s+/)
-      .filter(w => w.length > 3);
+    const result = extractKeywords(text);
     expect(result).toEqual(["fast"]);
   });
 
   test("handles unicode characters", () => {
     const text = "работает система наблюдения эффективно";
-    const result = text.toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, "")
-      .split(/\s+/)
-      .filter(w => w.length > 3);
+    const result = extractKeywords(text);
     expect(result).toEqual(["работает", "система", "наблюдения", "эффективно"]);
   });
 });
 
 describe("memory-observe.js - jaccardSimilarity utility", () => {
-  const jaccardSimilarity = (words1, words2) => {
-    const set1 = new Set(words1);
-    const set2 = new Set(words2);
-    const intersection = [...set1].filter(w => set2.has(w));
-    const union = new Set([...set1, ...set2]);
-    return union.size > 0 ? intersection.length / union.size : 0;
-  };
-
   test("returns 1 for identical sets", () => {
     const set1 = ["word", "test", "data"];
     const set2 = ["word", "test", "data"];
@@ -76,8 +67,11 @@ describe("memory-observe.js - jaccardSimilarity utility", () => {
 
 describe("memory-observe.js - CLI integration", () => {
   beforeEach(() => {
-    if (existsSync(join(OBS_DIR, "index.json"))) {
-      rmSync(join(OBS_DIR, "index.json"));
+    // Очищаем весь индекс и все файлы наблюдений перед каждым тестом
+    if (!existsSync(OBS_DIR)) return;
+    const { readdirSync } = require("fs");
+    for (const f of readdirSync(OBS_DIR)) {
+      if (f.endsWith(".json")) rmSync(join(OBS_DIR, f), { force: true });
     }
   });
 
@@ -180,6 +174,25 @@ describe("memory-observe.js - CLI integration", () => {
     const result = JSON.parse(stdout);
     expect(result.status).toBe("created");
     expect(result.category).toBe("surprise");
+  });
+
+  test("--dry-run outputs JSON without writing", async () => {
+    const proc = Bun.spawn([
+      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
+      "--observation", "dry run test observation text",
+      "--category", "quality",
+      "--dry-run"
+    ], {
+      stderr: "pipe",
+      stdout: "pipe"
+    });
+    const stdout = await new Response(proc.stdout).text();
+    const result = JSON.parse(stdout);
+    expect(result.status).toBe("dry-run");
+    expect(result.id).toMatch(/^obs-\d{4}$/);
+    expect(result.would_write).toBeDefined();
+    // Файл не должен быть создан
+    expect(existsSync(join(OBS_DIR, `${result.id}.json`))).toBe(false);
   });
 });
 

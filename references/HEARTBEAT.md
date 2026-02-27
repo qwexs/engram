@@ -113,8 +113,8 @@ If the heartbeat model is too weak for summarization, defer to next interactive 
 
 ## Phase 5: OLL Check (inline, synchronous)
 
-1. Count pending observations: read `ops/observations/index.json`, count items where status === "pending"
-2. Count pending tensions: read `ops/tensions/index.json`, count items where status === "pending"
+1. Count pending observations: read `workspace/ops/observations/index.json`, count items where status === "pending"
+2. Count pending tensions: read `workspace/ops/tensions/index.json`, count items where status === "pending"
 3. If pending observations > 20 OR pending tensions > 5:
    - Set alert: `OLL threshold exceeded: {count} observations, {count} tensions`
    - Surface in Phase 6 report

@@ -700,3 +700,26 @@ Captures tensions between two facts. Validates that both fact IDs exist in KG be
 bun scripts/heartbeat-state.js --get-all
 bun scripts/heartbeat-state.js --set pendingObservations 5
 ```
+
+Atomic read/write of `memory/heartbeat-state.json`. All heartbeat phase trackers (`lastExtraction`, `lastDomainScan`, `subagentRuns`, etc.) must be updated via this script — never edit the JSON directly.
+
+### heartbeat-report.js — Daily note report section
+
+```bash
+bun scripts/heartbeat-report.js --session main --date 2026-02-27 \
+  --extraction "spawned (result pending)" \
+  --synthesis  "skipped (not Monday)" \
+  --domains    "spawned (result pending)" \
+  --maintenance "ok — validate-kg.js: 0 errors"
+```
+
+Creates or updates `## Heartbeat Report` section in a daily note. Called by heartbeat orchestrator in Phase 6 (initial write) and by `process-handoff.js` (status update after subagent handoff). Omit any flag to preserve its current value.
+
+### process-handoff.js — HB subagent handoff processor
+
+```bash
+printf '%s' "<handoff block>" | bun scripts/process-handoff.js --session main --date 2026-02-27
+# exit 0: ok | exit 1: error | exit 2: alerts present ([ALERT] lines in stdout)
+```
+
+Processes `=== HB-* HANDOFF ===` blocks from subagent results. Handles HB-EXTRACT (watermark advance, lastExtraction, facts count), HB-DOMAINS (lastDomainScan), HB-SYNTHESIS (lastWeeklySynthesis). Updates heartbeat-state.json, advances watermark in daily note, and calls heartbeat-report.js automatically. Called by the heartbeat orchestrator Handoff Handler — do not call manually.

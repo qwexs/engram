@@ -694,6 +694,18 @@ bun scripts/memory-tension.js --tension "text" --fact1 <id> --fact2 <id> [--desc
 
 Captures tensions between two facts. Validates that both fact IDs exist in KG before creating tension.
 
+### rotate-notes.js — Three-Layer Rotation
+
+```bash
+bun scripts/rotate-notes.js --check --session main              # Check if daily note needs rotation
+bun scripts/rotate-notes.js --check-domains                      # Check all domain changelogs
+bun scripts/rotate-notes.js --rotate --file <path> --type daily  # Rotate daily note (>1000 lines)
+bun scripts/rotate-notes.js --rotate --file <path> --type changelog  # Rotate changelog
+# exit 0: nothing to rotate / done | exit 10: needs rotation (--check mode)
+```
+
+Handles Three-Layer Rotation for daily notes (archive + stub + QMD index) and simple rotation for domain changelogs. Called by heartbeat Phase 0.5. Daily note stubs contain a `<!-- STUB: ... -->` marker for the agent to fill with a summary later.
+
 ### heartbeat-state.js — State management
 
 ```bash

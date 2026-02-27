@@ -12,6 +12,7 @@ Read this document top to bottom and execute each phase sequentially.
 ---
 
 ## Phase 0: Fast Init
+
 1. Read `memory/heartbeat-state.json`
 2. If `heartbeatInProgress === true`:
    - If `heartbeatLockedAt` exists and age > 10 minutes: log "stale lock, auto-resetting", `--set heartbeatInProgress false`, continue
@@ -21,12 +22,34 @@ Read this document top to bottom and execute each phase sequentially.
 4. Create daily note for current session if `lastDailyNoteCreated[session] != today`
    - `--set lastDailyNoteCreated.<session> <today>`
 5. Determine what to run:
+   - Rotation: always check (script determines if needed)
    - Extraction: always (watermark handles incremental)
    - Synthesis: if Monday AND `lastWeeklySynthesis` != this week Monday
    - Domains: if `domainsEnabled !== false` AND `memory/domains/registry.json` exists
    - Maintenance: always (inline, synchronous)
 
+## Phase 0.5: Rotation Check (inline, synchronous)
+
+Run BEFORE extraction — rotation must happen first so extraction works on the stub.
+
+1. Check daily note size:
+   ```bash
+   bun scripts/rotate-notes.js --check --session <session>
+   ```
+2. If exit code 10 (needs rotation):
+   a. Run extraction FIRST on the full file (Phase 1 inline or via subagent)
+   b. Then rotate:
+      ```bash
+      bun scripts/rotate-notes.js --rotate --file <path> --type daily
+      ```
+   c. The stub contains a `<!-- STUB: ... -->` marker — record `needsStubSummary: true` for Phase 1.5
+   d. Run `qmd update` to index the archive
+3. If exit code 0 — continue to Phase 1
+
+**Order matters:** Extract → Rotate → Index. Extracting from the stub would lose content.
+
 ## Phase 1: Extraction
+
 - **Watermark sanity check:** read daily note, count lines. If last watermark `L{N}` has N > total_lines + 5, reset watermark to `L1` (log "watermark reset: L{N} > {total_lines} lines"). The +5 buffer tolerates minor drift from heartbeat-report.js rewrites (±1-2 lines). Only reset on true corruption (watermark far past end of file).
 - Read `subagentExtraction` from state
   - If `true`: build task from `skills/engram/references/HB-EXTRACT.md`:
@@ -41,12 +64,36 @@ Read this document top to bottom and execute each phase sequentially.
     - Extract facts via `bun scripts/memory-write.js`
     - Append watermark to daily note; `--set lastExtraction.<session> <ISO>`, `--set subagentRuns.hb-extract.status ok`
 
+## Phase 1.5: Stub Summary (if rotation happened)
+
+Only runs if Phase 0.5 created a stub with `<!-- STUB: ... -->` marker.
+
+This requires **cognitive work** (summarization) — the agent reads the archive and writes a 10-20 line summary into the stub. If running as haiku, spawn a subagent:
+
+1. Read the archive file path from the stub's `<!-- Archive: ... -->` comment
+2. Read the archive content
+3. Write a 10-20 line summary covering:
+   - Key events and decisions
+   - Active threads at end of the day
+   - Links to relevant KG entities
+4. Replace the `<!-- STUB: ... -->` line with the summary
+5. Run `qmd update` to re-index the stub
+
+If the heartbeat model is too weak for summarization, defer to next interactive session.
+
 ## Phase 2: Synthesis (Monday only)
+
 - If NOT Monday OR `lastWeeklySynthesis` == this week Monday — skip
-- Spawn hb-synthesis subagent with `model="sonnet-4-6"`. **Do not wait — result arrives via system message.**
-- TODO: HB-SYNTHESIS.md template not yet implemented
+- Build task from `skills/engram/references/HB-SYNTHESIS.md`:
+  1. Read the file content
+  2. Replace `{{life_root}}` with the absolute path to `life/`
+  3. Replace `{{now_iso}}` with the current ISO timestamp
+  4. Replace `{{session}}` with the current session key
+  5. Call `sessions_spawn(task=<filled template>, label="hb-synthesis", model="sonnet-4-6", cleanup="delete")`
+  **Do not wait — result arrives via system message.**
 
 ## Phase 3: Domains
+
 - If `domainsEnabled === false` in heartbeat-state.json — skip
 - If `memory/domains/registry.json` does not exist — skip
 - Build task from `skills/engram/references/HB-DOMAINS.md`:
@@ -58,10 +105,14 @@ Read this document top to bottom and execute each phase sequentially.
   **Do not wait — result arrives via system message.**
 
 ## Phase 4: Maintenance (inline, synchronous)
+
 1. Run `bun scripts/validate-kg.js --fix`
-2. If any phase wrote to `life/` — run `qmd update`
+2. Run `qmd update` (BM25 index — always, instant)
+3. Run `qmd embed` (vector embeddings — updates since last run)
+4. If any phase wrote to `life/` — already covered by steps 2-3
 
 ## Phase 5: OLL Check (inline, synchronous)
+
 1. Count pending observations: read `ops/observations/index.json`, count items where status === "pending"
 2. Count pending tensions: read `ops/tensions/index.json`, count items where status === "pending"
 3. If pending observations > 20 OR pending tensions > 5:
@@ -69,13 +120,14 @@ Read this document top to bottom and execute each phase sequentially.
    - Surface in Phase 6 report
 
 ## Phase 6: Report + Unlock
+
 1. Write/update report via script (handles create-or-replace, no identical-content errors):
    ```bash
    bun scripts/heartbeat-report.js \
      --extraction "<spawned (result pending) | ok (inline, N facts)>" \
      --synthesis  "<spawned (result pending) | skipped (not Monday)>" \
      --domains    "<spawned (result pending) | skipped (no registry)>" \
-     --maintenance "ok — validate-kg.js: N errors, M files"
+     --maintenance "ok — validate-kg.js: N errors, M files; qmd update+embed done"
    ```
    Omit any flag to preserve its current value from the existing section.
 2. Release lock:
@@ -126,6 +178,9 @@ Alerts: []
 Fields: Status (ok | error | partial), Summary (one line), Stats (JSON), Observations (JSON array with id, observation, category), Alerts (list)
 
 ## Error Handling
+
 - `process-handoff.js` exit 1 — log output to daily note, continue
 - Status: error — script sets `status: failed`, does NOT update phase trackers
 - NEVER abort the entire heartbeat because one phase failed
+- Rotation failure — log to daily note, continue without rotation
+- `qmd embed` failure (GPU OOM) — log warning, continue (BM25 via `qmd update` still works)

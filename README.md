@@ -1,4 +1,4 @@
-# 🧠 Engram OpenClaw
+# 🧠 Engram OpenClaw (beta)
 
 **Agent infrastructure for memory, automation, and organization.**
 

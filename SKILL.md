@@ -598,14 +598,12 @@ bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/se
 
 ## Session Recording
 
-Daily notes capture session activity. Three-level protection ensures notes are never empty:
+Daily notes capture session activity. Two-level protection:
 
 ```
 Level 1: Agent inline (primary)     — best quality, during session
          ↓ forgot?
 Level 2: Compaction memoryFlush     — safety net before context compression
-         ↓ no compaction?
-Level 3: Heartbeat hb-extract       — reads message-log as fallback
 ```
 
 ### Level 1: Agent Inline (Primary)
@@ -626,13 +624,17 @@ bun skills/engram/scripts/daily-note-append.js \
 
 ### Level 2: Compaction memoryFlush
 
-Configured in OpenClaw (`agents.defaults.compaction.memoryFlush`). Before context compression, the agent receives a prompt to write lasting notes to memory files. No additional setup needed.
+Configured in OpenClaw (`agents.defaults.compaction.memoryFlush`). Before context compression, the agent receives a prompt to write lasting notes to memory files. Configure with a specific instruction:
 
-### Level 3: Heartbeat Fallback (message-log)
-
-If daily note sections are empty during heartbeat, `hb-extract` reads `workspace/message-log/{today}.jsonl` (collected by `engram-message-log` hook), generates a session summary via `daily-note-append.js`, then extracts facts from it. Fully automatic — no agent discipline required.
-
-**How it works:** message-log hook logs all incoming messages → heartbeat detects empty daily note → hb-extract reads log → writes summary → extracts facts. See `references/HEARTBEAT.md` Phase 1 and `references/HB-EXTRACT.md`.
+```json
+{
+  "memoryFlush": {
+    "enabled": true,
+    "prompt": "Write session events/decisions/learnings to today's daily note via: bun scripts/daily-note-append.js --session main --section <section> --text '<text>'. Then reply NO_REPLY.",
+    "systemPrompt": "Session nearing compaction. Record substantive work to daily note now."
+  }
+}
+```
 
 ### Rules
 

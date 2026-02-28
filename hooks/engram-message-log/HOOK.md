@@ -13,8 +13,11 @@ metadata:
 
 # engram-message-log
 
-Logs all incoming messages to `workspace/message-log/YYYY-MM-DD.jsonl`.
+Logs incoming messages to `workspace/message-log/YYYY-MM-DD.jsonl` for pattern-detect analysis.
 
-Fields: ts, from, channel, conversationId, messageId, senderName, content (full text).
+Fields: ts, from, channel, conversationId, messageId, senderName, content (truncated to 500 chars).
 
-Full text is stored for pattern-detect.js analysis. After testing, will switch to preview-only mode.
+Limits:
+- Content truncated to 500 chars per message
+- File capped at 10 MB/day (stops writing when exceeded)
+- Auto-deletes logs older than 7 days

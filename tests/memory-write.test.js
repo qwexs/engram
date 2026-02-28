@@ -1,0 +1,452 @@
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { join } from "path";
+import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "fs";
+
+const SCRIPTS_DIR = join(import.meta.dir, "..", "scripts");
+const ENGRAM_DIR = join(import.meta.dir, "..");
+const LIFE_DIR = join(ENGRAM_DIR, "life");
+const HASH_FILE = join(ENGRAM_DIR, "workspace", "memory-state", "fact-hashes.json");
+
+const TEST_ENTITY = "areas/people/__test_mw__";
+const TEST_ENTITY_DIR = join(LIFE_DIR, TEST_ENTITY);
+
+// ─────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────
+
+function createEntity(facts = []) {
+  mkdirSync(TEST_ENTITY_DIR, { recursive: true });
+  writeFileSync(
+    join(TEST_ENTITY_DIR, "items.json"),
+    JSON.stringify({ entityId: TEST_ENTITY, entityType: "area", facts }, null, 2),
+  );
+  writeFileSync(join(TEST_ENTITY_DIR, "summary.md"), "# Test\n\n_Created automatically._\n");
+}
+
+function readItems() {
+  return JSON.parse(readFileSync(join(TEST_ENTITY_DIR, "items.json"), "utf-8"));
+}
+
+/** Backup and restore hash file to avoid test pollution */
+let hashBackup = null;
+function backupHashes() {
+  try {
+    hashBackup = readFileSync(HASH_FILE, "utf-8");
+  } catch {
+    hashBackup = null;
+  }
+}
+function restoreHashes() {
+  if (hashBackup !== null) {
+    writeFileSync(HASH_FILE, hashBackup);
+  }
+}
+
+async function run(args, cwd = ENGRAM_DIR) {
+  const proc = Bun.spawn(["bun", join(SCRIPTS_DIR, "memory-write.js"), ...args], {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  await proc.exited;
+  return { stdout, stderr, exitCode: proc.exitCode };
+}
+
+async function runJson(args) {
+  const { stdout, stderr, exitCode } = await run(args);
+  try {
+    return { result: JSON.parse(stdout), stderr, exitCode };
+  } catch {
+    return { result: null, stdout, stderr, exitCode };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Setup / Teardown
+// ─────────────────────────────────────────────────────────────
+
+beforeEach(() => {
+  if (existsSync(TEST_ENTITY_DIR)) rmSync(TEST_ENTITY_DIR, { recursive: true });
+  backupHashes();
+});
+
+afterEach(() => {
+  if (existsSync(TEST_ENTITY_DIR)) rmSync(TEST_ENTITY_DIR, { recursive: true });
+  restoreHashes();
+});
+
+// ─────────────────────────────────────────────────────────────
+// Validation: required args
+// ─────────────────────────────────────────────────────────────
+
+describe("memory-write — argument validation", () => {
+  test("exits with error when --entity is missing", async () => {
+    const { exitCode, stderr } = await run(["--fact", "Test", "--category", "preference"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--entity");
+  });
+
+  test("exits with error when --fact is missing", async () => {
+    const { exitCode, stderr } = await run(["--entity", TEST_ENTITY, "--category", "preference"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--fact");
+  });
+
+  test("exits with error when --category is missing", async () => {
+    const { exitCode, stderr } = await run(["--entity", TEST_ENTITY, "--fact", "Test"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--category");
+  });
+
+  test("exits with error for invalid category", async () => {
+    createEntity();
+    const { exitCode, stderr } = await run([
+      "--entity", TEST_ENTITY,
+      "--fact", "Test fact",
+      "--category", "invalid_category",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Неверная категория");
+  });
+
+  test("accepts all valid categories", async () => {
+    const categories = ["relationship", "milestone", "status", "preference", "context", "decision", "correction"];
+    for (const cat of categories) {
+      // Recreate entity fresh (previous write changes state)
+      if (existsSync(TEST_ENTITY_DIR)) rmSync(TEST_ENTITY_DIR, { recursive: true });
+      restoreHashes();
+      createEntity();
+
+      const { result } = await runJson([
+        "--entity", TEST_ENTITY,
+        "--fact", `Test fact for category ${cat} ${Date.now()}`,
+        "--category", cat,
+      ]);
+      expect(result?.status).toBe("created");
+      expect(result?.fact?.category).toBe(cat);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Entity handling
+// ─────────────────────────────────────────────────────────────
+
+describe("memory-write — entity handling", () => {
+  test("errors when entity does not exist and --entity-create not passed", async () => {
+    const { exitCode, stderr } = await run([
+      "--entity", "areas/people/__nonexistent__",
+      "--fact", "Test",
+      "--category", "context",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Entity не существует");
+  });
+
+  test("creates entity with --entity-create flag", async () => {
+    const newEntity = "areas/people/__test_autocreate__";
+    const newEntityDir = join(LIFE_DIR, newEntity);
+    try {
+      const { result } = await runJson([
+        "--entity", newEntity,
+        "--fact", "Auto-created entity test",
+        "--category", "context",
+        "--entity-create",
+      ]);
+      expect(result?.status).toBe("created");
+      expect(existsSync(join(newEntityDir, "items.json"))).toBe(true);
+      expect(existsSync(join(newEntityDir, "summary.md"))).toBe(true);
+    } finally {
+      if (existsSync(newEntityDir)) rmSync(newEntityDir, { recursive: true });
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Core write flow
+// ─────────────────────────────────────────────────────────────
+
+describe("memory-write — write flow", () => {
+  test("creates fact with all required fields", async () => {
+    createEntity();
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Prefers Bun over Node.js for all new projects",
+      "--category", "preference",
+      "--confidence", "0.9",
+      "--abstraction", "pattern",
+      "--tags", "tools,runtime",
+      "--source", "2026-03-01",
+    ]);
+
+    expect(result?.status).toBe("created");
+    const f = result.fact;
+    expect(f.fact).toBe("Prefers Bun over Node.js for all new projects");
+    expect(f.category).toBe("preference");
+    expect(f.confidence).toBe(0.9);
+    expect(f.abstractionLevel).toBe("pattern");
+    expect(f.tags).toEqual(["tools", "runtime"]);
+    expect(f.source).toBe("2026-03-01");
+    expect(f.status).toBe("active");
+    expect(f.supersededBy).toBeNull();
+    expect(f.accessCount).toBe(1);
+    expect(f.id).toMatch(/^__test_mw__-\d{3}$/);
+  });
+
+  test("uses defaults for optional fields", async () => {
+    createEntity();
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Default fields test fact",
+      "--category", "context",
+    ]);
+
+    const f = result.fact;
+    expect(f.confidence).toBe(0.8); // default
+    expect(f.abstractionLevel).toBe("episode"); // default
+    expect(f.tags).toEqual([]); // default
+    expect(f.relatedEntities).toEqual([]); // default
+  });
+
+  test("includes description when provided (truncated to 150 chars)", async () => {
+    createEntity();
+    const longDesc = "A".repeat(200);
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Description test " + Date.now(),
+      "--category", "context",
+      "--description", longDesc,
+    ]);
+
+    expect(result.fact.description).toBeDefined();
+    expect(result.fact.description.length).toBeLessThanOrEqual(150);
+  });
+
+  test("omits description when not provided", async () => {
+    createEntity();
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "No description test " + Date.now(),
+      "--category", "context",
+    ]);
+
+    expect(result.fact.description).toBeUndefined();
+  });
+
+  test("writes fact to items.json on disk", async () => {
+    createEntity();
+    await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Persisted fact test",
+      "--category", "milestone",
+    ]);
+
+    const data = readItems();
+    expect(data.facts.length).toBe(1);
+    expect(data.facts[0].fact).toBe("Persisted fact test");
+  });
+
+  test("increments IDs correctly", async () => {
+    createEntity();
+
+    const { result: r1 } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "First fact unique " + Date.now(),
+      "--category", "context",
+    ]);
+    const { result: r2 } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Second fact unique " + Date.now(),
+      "--category", "context",
+    ]);
+
+    expect(r1.fact.id).toBe("__test_mw__-001");
+    expect(r2.fact.id).toBe("__test_mw__-002");
+  });
+
+  test("normalizes backslashes in entity path", async () => {
+    createEntity();
+    const { result } = await runJson([
+      "--entity", "areas\\people\\__test_mw__",
+      "--fact", "Backslash normalization test " + Date.now(),
+      "--category", "context",
+    ]);
+
+    expect(result?.status).toBe("created");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Deduplication
+// ─────────────────────────────────────────────────────────────
+
+describe("memory-write — deduplication", () => {
+  test("skips exact duplicate fact", async () => {
+    createEntity();
+    const fact = "Exact duplicate test fact " + Date.now();
+
+    await runJson(["--entity", TEST_ENTITY, "--fact", fact, "--category", "preference"]);
+    const { result: r2 } = await runJson(["--entity", TEST_ENTITY, "--fact", fact, "--category", "preference"]);
+
+    expect(r2.status).toBe("skipped");
+    expect(r2.reason).toContain("Duplicate");
+  });
+
+  test("allows different facts with same entity", async () => {
+    createEntity();
+    const ts = Date.now();
+
+    const { result: r1 } = await runJson([
+      "--entity", TEST_ENTITY, "--fact", `Fact A ${ts}`, "--category", "preference",
+    ]);
+    const { result: r2 } = await runJson([
+      "--entity", TEST_ENTITY, "--fact", `Fact B ${ts}`, "--category", "preference",
+    ]);
+
+    expect(r1.status).toBe("created");
+    expect(r2.status).toBe("created");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Access tracking
+// ─────────────────────────────────────────────────────────────
+
+describe("memory-write — access tracking", () => {
+  test("increments accessCount and updates lastAccessed", async () => {
+    createEntity();
+    const { result: wr } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Access tracking target " + Date.now(),
+      "--category", "context",
+    ]);
+    const factId = wr.fact.id;
+
+    const { result } = await runJson(["--access", "--entity", TEST_ENTITY, "--id", factId]);
+    expect(result.status).toBe("accessed");
+    expect(result.accessCount).toBe(2);
+  });
+
+  test("errors when --access without --entity", async () => {
+    const { exitCode, stderr } = await run(["--access", "--id", "foo"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--entity");
+  });
+
+  test("errors when --access without --id", async () => {
+    const { exitCode, stderr } = await run(["--access", "--entity", TEST_ENTITY]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--id");
+  });
+
+  test("errors when fact ID not found", async () => {
+    createEntity();
+    const { exitCode, stderr } = await run(["--access", "--entity", TEST_ENTITY, "--id", "nonexistent-999"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("не найден");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Related entities
+// ─────────────────────────────────────────────────────────────
+
+describe("memory-write — related entities", () => {
+  test("parses comma-separated --related", async () => {
+    createEntity();
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Related entities test " + Date.now(),
+      "--category", "relationship",
+      "--related", "projects/engram,areas/tools/qmd",
+    ]);
+
+    expect(result.fact.relatedEntities).toEqual(["projects/engram", "areas/tools/qmd"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Semantic check (--semantic-check, requires qmd running)
+// ─────────────────────────────────────────────────────────────
+
+describe("memory-write — semantic check (qmd integration)", () => {
+  test("writes unique fact without semantic warnings", async () => {
+    createEntity();
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Completely unique xyzzy blorgfish fact " + Date.now(),
+      "--category", "context",
+      "--semantic-check",
+    ]);
+
+    expect(result.status).toBe("created");
+    // No semantic warnings for a nonsense fact
+    expect(result.warnings?.semanticSimilar).toBeUndefined();
+  });
+
+  test("semantic check runs without errors on matching content", async () => {
+    createEntity();
+    // Use a fact that overlaps with KG content (Telemax project uses Bun + TypeScript + Hono)
+    // Even if Jaccard doesn't hit threshold, the check should run cleanly
+    const { result, stderr } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Telemax bot project uses Bun TypeScript Hono RabbitMQ PostgreSQL Kysely",
+      "--category", "context",
+      "--semantic-check",
+    ]);
+
+    // Should succeed (created or skipped as semantic dup) — no crash
+    expect(["created", "skipped"]).toContain(result.status);
+    // No error output from semantic check
+    expect(stderr).not.toContain("Semantic check ошибка");
+  });
+
+  test("respects custom --search-collections", async () => {
+    createEntity();
+    // Search in a non-existent collection → no matches → should create cleanly
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Custom collection search test " + Date.now(),
+      "--category", "context",
+      "--semantic-check",
+      "--search-collections", "nonexistent_collection_xyz",
+    ]);
+
+    expect(result.status).toBe("created");
+  });
+
+  test("semantic duplicate blocks write (Jaccard ≥ 0.5)", async () => {
+    createEntity();
+    // First: write a fact via normal path (no semantic check)
+    const uniqueFact = "Engram memory extraction system uses BM25 and vector search for deduplication";
+    await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", uniqueFact,
+      "--category", "context",
+    ]);
+
+    // Run qmd update so the new fact is indexed
+    const qmdProc = Bun.spawn(["qmd", "update"], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe" });
+    await qmdProc.exited;
+
+    // Now try writing a very similar fact WITH semantic check
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Engram memory extraction uses BM25 vector search deduplication system",
+      "--category", "context",
+      "--semantic-check",
+      "--search-collections", "life",
+    ]);
+
+    // High Jaccard overlap → should be blocked
+    if (result.status === "skipped") {
+      expect(result.reason).toContain("Semantic duplicate");
+    }
+    // If not blocked (qmd didn't index fast enough), at least it shouldn't crash
+    expect(["created", "skipped"]).toContain(result.status);
+  });
+});

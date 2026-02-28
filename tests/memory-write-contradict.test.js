@@ -333,7 +333,7 @@ describe("memory-write — CLI integration", () => {
     const proc = Bun.spawn([
       "bun", join(SCRIPTS_DIR, "memory-write.js"),
       "--entity", TEST_ENTITY,
-      "--fact", "Prefers TypeScript over JavaScript for all new projects",
+      "--fact", "Prefers TypeScript over JavaScript for all new projects " + Date.now(),
       "--category", "preference",
       "--confidence", "0.9",
       "--abstraction", "pattern",
@@ -343,13 +343,13 @@ describe("memory-write — CLI integration", () => {
     await proc.exited;
     const result = JSON.parse(out);
     expect(result.status).toBe("created");
-    expect(result.fact.fact).toBe("Prefers TypeScript over JavaScript for all new projects");
+    expect(result.fact.fact).toContain("Prefers TypeScript over JavaScript for all new projects");
     expect(result.fact.category).toBe("preference");
     expect(result.fact.confidence).toBe(0.9);
   });
 
   test("skips duplicate fact on second write", async () => {
-    const factText = "Always uses Bun instead of NodeJS for new projects";
+    const factText = "Always uses Bun instead of NodeJS for new projects " + Date.now();
     const args = [
       "bun", join(SCRIPTS_DIR, "memory-write.js"),
       "--entity", TEST_ENTITY,
@@ -385,7 +385,7 @@ describe("memory-write — CLI integration", () => {
     const writeProc = Bun.spawn([
       "bun", join(SCRIPTS_DIR, "memory-write.js"),
       "--entity", TEST_ENTITY,
-      "--fact", "Fact for access tracking test",
+      "--fact", "Fact for access tracking test " + Date.now(),
       "--category", "context",
     ], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe" });
     const writeOut = await new Response(writeProc.stdout).text();

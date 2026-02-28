@@ -300,8 +300,10 @@ bun scripts/add-domain.js --domain engram --type dev-project --kg-entity project
 # 1. Install QMD search engine
 bun scripts/install-qmd.js
 
-# 2. Initialize memory system
+# 2. Initialize memory system (also installs hooks to workspace hooks/)
 bun scripts/init.js
+# Hooks are installed to workspace hooks/ directory
+# Restart Gateway to activate: openclaw gateway restart
 
 # 3. Add a group session (optional)
 bun scripts/add-session.js --platform telegram --id 1234567890

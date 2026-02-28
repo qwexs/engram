@@ -214,6 +214,35 @@ if (hasQmd) {
   console.log('  Memory structure created without search indexing.');
 }
 
+// --- Install hooks ---
+console.log('\n🪝 Installing OpenClaw hooks...');
+const hooksSourceDir = join(SKILL_DIR, 'hooks');
+const hooksDestDir = join(WORKSPACE, 'hooks');
+let hooksInstalled = 0;
+let hooksSkipped = 0;
+
+if (existsSync(hooksSourceDir)) {
+  mkdirSync(hooksDestDir, { recursive: true });
+  const hookNames = readdirSync(hooksSourceDir, { withFileTypes: true })
+    .filter(e => e.isDirectory() && e.name.startsWith('engram-'))
+    .map(e => e.name);
+
+  for (const hookName of hookNames) {
+    const destHookDir = join(hooksDestDir, hookName);
+    if (existsSync(destHookDir)) {
+      console.log(`  SKIP hooks/${hookName} (exists — not overwriting user changes)`);
+      hooksSkipped++;
+    } else {
+      cpSync(join(hooksSourceDir, hookName), destHookDir, { recursive: true });
+      console.log(`  ✅ hooks/${hookName}`);
+      hooksInstalled++;
+    }
+  }
+  console.log(`  Installed: ${hooksInstalled}, skipped: ${hooksSkipped}`);
+} else {
+  console.log('  ⚠️  hooks/ directory not found in skill — skipping');
+}
+
 // --- Summary ---
 console.log(`
 ✅ Memory system initialized!
@@ -228,4 +257,6 @@ Next steps:
   2. Configure heartbeat (see references/heartbeat.md)
   3. Add sessions: bun skills/engram/scripts/add-session.js --platform telegram --id <groupId>
   4. Run: qmd embed (for vector search)
+
+⚠️  Restart Gateway to activate hooks: openclaw gateway restart
 `);

@@ -35,7 +35,9 @@ const handler = async (event: any) => {
   if (!workspaceDir) return;
 
   const agentId = event.context?.agentId || "main";
-  const sessionKey = event.context?.sessionId || "main";
+  // sessionId may come as "agent:main:main" — extract session segment
+  const rawSession = event.context?.sessionId || "main";
+  const sessionKey = rawSession.includes(":") ? rawSession.split(":").slice(2).join("-") || "main" : rawSession;
 
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
   const notePath = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey, `${today}.md`);

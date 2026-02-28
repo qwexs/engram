@@ -8,14 +8,30 @@ Daily note: {{daily_note_path}}
 Watermark: {{watermark}}
 Session: {{session}}
 
+## Message Log Context (may be empty)
+
+{{message_log_context}}
+
 ## Task
 
-1. Read the daily note file at the path above
-2. Start reading from line {{watermark}} (e.g., L47 means start at line 47). If L1, read the entire file.
-3. For each durable fact found, write it via memory-write.js (see CLI Reference below)
-4. Count facts written and facts skipped (dedup)
-5. Note the last line number you processed
-6. Return the handoff block at the end (MUST be your last output)
+1. **If Message Log Context above is NOT empty** (daily note was empty, fallback activated):
+   a. Analyze the message log for key events, decisions, and learnings
+   b. Write a concise session summary to the daily note using `daily-note-append.js`:
+      ```bash
+      bun scripts/daily-note-append.js --session {{session}} --section events --text "..."
+      bun scripts/daily-note-append.js --session {{session}} --section decisions --text "..."
+      bun scripts/daily-note-append.js --session {{session}} --section learnings --text "..."
+      ```
+   c. Keep entries brief (1-2 lines each), facts not feelings
+   d. Only record substantive work — skip greetings, casual chat, status checks
+   e. Then proceed to step 2 below (extract from what you just wrote + any existing content)
+
+2. Read the daily note file at the path above
+3. Start reading from line {{watermark}} (e.g., L47 means start at line 47). If L1, read the entire file.
+4. For each durable fact found, write it via memory-write.js (see CLI Reference below)
+5. Count facts written and facts skipped (dedup)
+6. Note the last line number you processed
+7. Return the handoff block at the end (MUST be your last output)
 
 ## What to Extract
 

@@ -598,17 +598,23 @@ bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/se
 
 ## Session Recording
 
-Daily notes capture session activity. Without explicit recording, notes remain empty despite active work.
+Daily notes capture session activity. Three-level protection ensures notes are never empty:
 
-### Trigger Rules
+```
+Level 1: Agent inline (primary)     — best quality, during session
+         ↓ forgot?
+Level 2: Compaction memoryFlush     — safety net before context compression
+         ↓ no compaction?
+Level 3: Heartbeat hb-extract       — reads message-log as fallback
+```
+
+### Level 1: Agent Inline (Primary)
 
 Record to daily note when:
 - **Topic completed** — a task/discussion block finishes (every 5-10 messages)
 - **Decision made** — any explicit decision → `--section decisions`
 - **Topic shift** — conversation moves to a new subject
 - **Significant result** — something was built, fixed, or discovered
-
-### Recording Script
 
 ```bash
 bun skills/engram/scripts/daily-note-append.js \
@@ -617,6 +623,16 @@ bun skills/engram/scripts/daily-note-append.js \
 bun skills/engram/scripts/daily-note-append.js \
   --session main --section decisions --text "Jaccard ≥ 0.5 now blocks writes (was warning-only)"
 ```
+
+### Level 2: Compaction memoryFlush
+
+Configured in OpenClaw (`agents.defaults.compaction.memoryFlush`). Before context compression, the agent receives a prompt to write lasting notes to memory files. No additional setup needed.
+
+### Level 3: Heartbeat Fallback (message-log)
+
+If daily note sections are empty during heartbeat, `hb-extract` reads `workspace/message-log/{today}.jsonl` (collected by `engram-message-log` hook), generates a session summary via `daily-note-append.js`, then extracts facts from it. Fully automatic — no agent discipline required.
+
+**How it works:** message-log hook logs all incoming messages → heartbeat detects empty daily note → hb-extract reads log → writes summary → extracts facts. See `references/HEARTBEAT.md` Phase 1 and `references/HB-EXTRACT.md`.
 
 ### Rules
 

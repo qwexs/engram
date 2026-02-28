@@ -100,7 +100,7 @@ async function discoverEntitiesViaQmd(queryText) {
   try {
     // qmd query (BM25 + vectors + rerank) для лучшего качества
     // Формируем аргументы с множественными коллекциями
-    const qmdArgs = ["qmd", "query", queryText];
+    const qmdArgs = ["qmd", "query", queryText, "--json"];
     for (const col of collections) {
       qmdArgs.push("-c", col);
     }
@@ -112,39 +112,22 @@ async function discoverEntitiesViaQmd(queryText) {
     const output = await new Response(proc.stdout).text();
     await proc.exited;
 
-    // Извлечь entity paths из QMD search output
-    // QMD может выводить пути в двух форматах:
-    //   Слэш: qmd://life/areas/people/sergey/summary.md:42
-    //   Дефис (flatten): qmd://life/areas-people-sergey-summary.md:42
+    // Извлечь entity paths из JSON вывода QMD
+    // Формат: [{ file: "qmd://life/areas/people/sergey/summary.md", ... }]
     const entityPaths = new Set();
-
-    // Слэш-формат
-    const slashRegex = /qmd:\/\/life\/((?:projects|areas|resources)\/[\w\-\/]+?)\/(?:summary\.md|items\.json)/gm;
-    for (const match of output.matchAll(slashRegex)) {
-      entityPaths.add(match[1]);
+    let results = [];
+    try {
+      results = JSON.parse(output);
+    } catch {
+      // fallback: пустой результат
     }
 
-    // Дефис-формат: построить маппинг из реальных entity paths на диске
-    if (entityPaths.size === 0) {
-      const { Glob } = await import("bun");
-      const glob = new Glob("**/items.json");
-      const lifeDir = join(WORKSPACE, "life");
-      const entityMap = new Map(); // "areas-people-sergey" → "areas/people/sergey"
-
-      for await (const path of glob.scan({ cwd: lifeDir })) {
-        const entityPath = path.replace(/[\/\\]items\.json$/, "").replace(/\\/g, "/");
-        const flatKey = entityPath.replace(/\//g, "-");
-        entityMap.set(flatKey, entityPath);
-      }
-
-      // Найти flatten paths в QMD output и восстановить
-      const dashRegex = /qmd:\/\/life\/([\w\-]+)-(?:summary|items)\.(?:md|json)/gm;
-      for (const match of output.matchAll(dashRegex)) {
-        const candidate = match[1];
-        const resolved = entityMap.get(candidate);
-        if (resolved) {
-          entityPaths.add(resolved.replace(/\\/g, "/"));
-        }
+    for (const r of results) {
+      if (!r.file) continue;
+      // qmd://life/areas/people/sergey/summary.md → areas/people/sergey
+      const match = r.file.match(/qmd:\/\/life\/((?:projects|areas|resources)\/[\w\-\/]+?)\/summary\.md/);
+      if (match) {
+        entityPaths.add(match[1]);
       }
     }
 

@@ -100,8 +100,8 @@ if (opts["semantic-check"]) {
   }
 
   try {
-    // qmd search (BM25, без GPU)
-    const qmdArgs = ["qmd", "search", opts.fact];
+    // qmd search (BM25, без GPU) с JSON выводом
+    const qmdArgs = ["qmd", "search", opts.fact, "--json"];
     for (const col of searchCollections) {
       qmdArgs.push("-c", col);
     }
@@ -109,13 +109,17 @@ if (opts["semantic-check"]) {
     const output = await new Response(proc.stdout).text();
     await proc.exited;
 
-    // Парсинг вывода QMD: извлечь строки с контентом
-    // Формат: qmd://collection/path:line <TAB или пробелы> текст
+    // Парсинг JSON вывода QMD
+    // Формат: [{ file, score, snippet, ... }]
     const newKeywords = extractKeywords(opts.fact);
-    const lines = output.split("\n").filter(l => l.trim());
-    for (const line of lines) {
-      // Убрать префикс qmd://... если есть, взять текстовую часть
-      const textPart = line.replace(/^qmd:\/\/[^\s]+\s*/, "").trim();
+    let results = [];
+    try {
+      results = JSON.parse(output);
+    } catch {
+      // fallback: пустой результат
+    }
+    for (const r of results) {
+      const textPart = (r.snippet || r.body || "").replace(/```[\s\S]*?```/g, "").trim();
       if (!textPart || textPart.length < 5) continue;
 
       const lineKeywords = extractKeywords(textPart);
@@ -124,7 +128,7 @@ if (opts["semantic-check"]) {
         semanticWarnings.push({
           similarText: textPart.slice(0, 200),
           similarity: parseFloat(sim.toFixed(2)),
-          source: line.match(/^(qmd:\/\/[^\s]+)/)?.[1] || "unknown",
+          source: r.file || "unknown",
         });
       }
     }

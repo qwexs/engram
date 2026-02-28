@@ -1,4 +1,4 @@
-import { existsSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -62,6 +62,15 @@ const handler = async (event: any) => {
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(notePath, TEMPLATE(today));
     console.log(`[engram-session-start] Created daily note ${notePath}`);
+  }
+
+  // Skip if last non-empty line is already a session:start (avoid duplicates on gateway restart)
+  const content = existsSync(notePath) ? readFileSync(notePath, "utf-8") : "";
+  const lines = content.trimEnd().split("\n");
+  const lastLine = lines[lines.length - 1]?.trim() || "";
+  if (lastLine.startsWith("<!-- session:start:")) {
+    console.log(`[engram-session-start] Skipped (last line already session:start)`);
+    return;
   }
 
   const iso = localISO(TZ);

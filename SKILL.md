@@ -85,22 +85,31 @@ For full architecture details, see [references/architecture.md](references/archi
 
 Heartbeats need speed, not full context. SOUL.md and USER.md are typically already in project context (OpenClaw loads them automatically).
 
+> **Automated by hooks** (do NOT repeat manually):
+> - Daily note creation → `engram-daily-note` (gateway:startup)
+> - `<!-- session:start -->` marker → `engram-session-start` (agent:bootstrap)
+> - QMD index refresh → `engram-bootstrap-qmd` (agent:bootstrap)
+
 1. Determine session
-2. Create today's daily note if not exists
-3. Read `memory/heartbeat-state.json`
-4. Proceed to HEARTBEAT.md
+2. Read `memory/heartbeat-state.json`
+3. Proceed to HEARTBEAT.md
 
 **Skipped:** SOUL.md, USER.md, yesterday's daily note, MEMORY.md, life/index.md, QMD query — none needed for heartbeat flow.
 
 #### Full Init (Interactive)
 
-1. Read SOUL.md, USER.md
-2. Determine session (main, telegram group, discord channel, etc.)
-3. Create today's daily note if not exists: `memory/agent-{id}/{session}/YYYY-MM-DD.md`
-4. Read session memory:
+> **Automated by hooks** (do NOT repeat manually):
+> - SOUL.md / USER.md → injected via OpenClaw project context
+> - Daily note creation → `engram-daily-note` (gateway:startup)
+> - `<!-- session:start -->` marker → `engram-session-start` (agent:bootstrap)
+> - `<!-- session:end -->` marker → `engram-session-end` (command:new/reset)
+> - QMD index refresh → `engram-bootstrap-qmd` (agent:bootstrap)
+
+1. Determine session (main, telegram group, discord channel, etc.)
+2. Read session memory:
    - **Main**: today + yesterday daily notes + `MEMORY.md` + `life/index.md`
    - **Group**: today + yesterday daily notes only
-5. **Knowledge Graph** (main session only): run `qmd query "<topic of first user message>" -c life`
+3. **Knowledge Graph** (main session only): run `qmd query "<topic of first user message>" -c life`
    - Extract the main topic/entity from the user's first request and query it
    - If message is a greeting or vague → defer to QMD Query Triggers below
 
@@ -222,7 +231,7 @@ Add to your HEARTBEAT.md:
 ```
 ## Heartbeat Flow (every 30 minutes)
 
-0. Create today's daily note + Three-Layer Rotation check
+0. Three-Layer Rotation check (daily note creation → handled by engram-daily-note hook)
 1. Monday? → Weekly Synthesis
 2. Knowledge Graph Extraction (if notes changed)
 3. Memory Maintenance (every few days)
@@ -795,3 +804,46 @@ printf '%s' "<handoff block>" | bun skills/engram/scripts/process-handoff.js --s
 ```
 
 Processes `=== HB-* HANDOFF ===` blocks from subagent results. Handles HB-EXTRACT (watermark advance, lastExtraction, facts count), HB-DOMAINS (lastDomainScan), HB-SYNTHESIS (lastWeeklySynthesis). Updates heartbeat-state.json, advances watermark in daily note, and calls heartbeat-report.js automatically. Called by the heartbeat orchestrator Handoff Handler — do not call manually.
+
+## OpenClaw Hooks
+
+Engram ships 5 OpenClaw hooks that automate mechanical session tasks. Hooks run automatically — agents do NOT need to repeat these steps manually.
+
+| Hook | Event | What it does |
+|------|-------|--------------|
+| `engram-daily-note` | `gateway:startup` | Creates today's daily note for all sessions |
+| `engram-session-start` | `agent:bootstrap` | Appends `<!-- session:start:{ISO} -->` to daily note |
+| `engram-session-end` | `command:new`, `command:reset` | Appends `<!-- session:end:{ISO} -->` to daily note |
+| `engram-bootstrap-qmd` | `agent:bootstrap` | Runs `qmd update` (15s timeout, silent skip if unavailable) |
+| `engram-message-log` | `message:received` | Logs messages to `workspace/message-log/YYYY-MM-DD.jsonl` |
+
+### Execution order on `/new`
+
+1. `engram-session-end` fires on `command:new` → writes `<!-- session:end -->`
+2. New agent session starts → `agent:bootstrap` fires
+3. `engram-session-start` → writes `<!-- session:start -->`
+4. `engram-bootstrap-qmd` → refreshes QMD index
+
+### Installation
+
+Hooks are installed automatically by `scripts/init.js` (copies `skills/engram/hooks/engram-*` → `hooks/engram-*` in workspace root, only if not already present).
+
+**Manual installation:**
+```bash
+# Copy hooks to workspace
+cp -r skills/engram/hooks/engram-* hooks/
+
+# Restart Gateway to activate
+openclaw gateway restart
+```
+
+Hook source files are in `skills/engram/hooks/`. The workspace `hooks/` directory contains the live copies — do not edit skill source directly.
+
+### Configuration
+
+Hooks use `ENGRAM_TZ` (or `TZ`) environment variable for timezone. Default: `UTC`.
+
+```bash
+# Set in OpenClaw config (env.vars) or shell:
+export ENGRAM_TZ="Europe/Moscow"   # or America/New_York, Asia/Tokyo, etc.
+```

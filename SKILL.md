@@ -267,7 +267,7 @@ During heartbeats, scan daily notes for durable facts:
 - **After rotation**, watermark moves to archive with the original file; the stub has no watermark and is parsed entirely (cheap, 10-20 lines)
 - Skip casual chat and transient requests
 
-For the complete heartbeat flow, see [references/heartbeat.md](references/heartbeat.md).
+For the complete heartbeat flow, see [references/HEARTBEAT.md](references/HEARTBEAT.md).
 
 ### Domain Supervisor Scan
 
@@ -278,7 +278,7 @@ If subagent domains exist (`memory/domains/`), heartbeat acts as supervisor:
 3. **Changelog rotation** — rotate `changelog.md` >1000 lines to `archives/`
 4. **KG extraction** — extract significant facts from changelogs to Knowledge Graph
 
-For full details, see [references/heartbeat.md](references/heartbeat.md) and [references/subagent-memory.md](references/subagent-memory.md).
+For full details, see [references/HEARTBEAT.md](references/HEARTBEAT.md) and [references/subagent-memory.md](references/subagent-memory.md).
 
 ## Memory Decay
 
@@ -377,7 +377,7 @@ Each fact in `items.json` includes:
 {
   "id": "<entity>-NNN",
   "fact": "Human-readable statement",
-  "category": "relationship|milestone|status|preference|context",
+  "category": "relationship|milestone|status|preference|context|decision|correction",
   "confidence": 0.85,
   "abstractionLevel": "episode|pattern|principle",
   "tags": ["tag1"],
@@ -504,32 +504,19 @@ Context chain: Template → workflow.md → decisions.md → wiki (if needed) �
 
 **Where to work** — not specified in the domain. The bot determines the working directory from its memory and conversation context.
 
-### Spawn Example
+### Spawn Workflow
 
-```javascript
-// 1. Find the domain
-const registry = readFile("memory/domains/registry.json")
-const domain = registry.domains["engram"]
+The main agent (not a script) handles spawning:
 
-// 2. Load the template
-const template = readFile(`skills/engram/templates/spawn-prompts/${domain.spawnTemplate}`)
+1. Find domain in `registry.json` → get `spawnTemplate`, `subagentLabel`
+2. Read `status.md` + `changelog.md` (tail) → understand current state
+3. Formulate exact task based on user request + domain context
+4. Read `decisions.md` + `workflow.md` → include verbatim in prompt
+5. Load template from `templates/spawn-prompts/{spawnTemplate}`
+6. Replace `{{domain}}`, `{{decisions}}`, `{{workflow}}`, `{{task}}`
+7. Spawn with `sessions_spawn(label: subagentLabel, cleanup: "delete", task: <prompt>)`
 
-// 3. Inject context
-const task = template
-  .replace("{{domain}}", "engram")
-  .replace("{{task}}", userTask)
-  .replace("{{workflow}}", readFile("memory/domains/engram/workflow.md") ?? "")
-  .replace("{{decisions}}", readFile("memory/domains/engram/decisions.md"))
-  .replace("{{status}}", readFile("memory/domains/engram/status.md"))
-  .replace("{{changelog_tail}}", last20lines("memory/domains/engram/changelog.md"))
-
-// 4. Spawn
-sessions_spawn({
-  label: domain.subagentLabel,  // from registry
-  cleanup: "delete",
-  task: task
-})
-```
+**Key principle:** the agent's judgment in interpreting status/changelog and formulating a precise task IS the value. Templates provide structure, not automation.
 
 Detailed documentation: [references/subagent-memory.md](references/subagent-memory.md)
 

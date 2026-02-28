@@ -61,6 +61,12 @@ for (const r of required) {
   }
 }
 
+const VALID_CATEGORIES = ["relationship", "milestone", "status", "preference", "context", "decision", "correction"];
+if (!VALID_CATEGORIES.includes(opts.category)) {
+  console.error(`❌ Неверная категория "${opts.category}". Допустимые: ${VALID_CATEGORIES.join(", ")}`);
+  process.exit(1);
+}
+
 const entity = opts.entity.replace(/\\/g, "/");
 const entityDir = join(WORKSPACE, "life", entity);
 const itemsPath = join(entityDir, "items.json");
@@ -100,8 +106,8 @@ if (opts["semantic-check"]) {
   }
 
   try {
-    // qmd search (BM25, без GPU) с JSON выводом
-    const qmdArgs = ["qmd", "search", opts.fact, "--json"];
+    // qmd search (BM25, без GPU)
+    const qmdArgs = ["qmd", "search", opts.fact];
     for (const col of searchCollections) {
       qmdArgs.push("-c", col);
     }
@@ -109,26 +115,31 @@ if (opts["semantic-check"]) {
     const output = await new Response(proc.stdout).text();
     await proc.exited;
 
-    // Парсинг JSON вывода QMD
-    // Формат: [{ file, score, snippet, ... }]
+    // Парсинг вывода QMD: извлечь строки с контентом
+    // Формат: qmd://collection/path:line <TAB или пробелы> текст
     const newKeywords = extractKeywords(opts.fact);
-    let results = [];
-    try {
-      results = JSON.parse(output);
-    } catch {
-      // fallback: пустой результат
-    }
-    for (const r of results) {
-      const textPart = (r.snippet || r.body || "").replace(/```[\s\S]*?```/g, "").trim();
+    const lines = output.split("\n").filter(l => l.trim());
+    for (const line of lines) {
+      // Убрать префикс qmd://... если есть, взять текстовую часть
+      const textPart = line.replace(/^qmd:\/\/[^\s]+\s*/, "").trim();
       if (!textPart || textPart.length < 5) continue;
 
       const lineKeywords = extractKeywords(textPart);
       const sim = jaccardSimilarity(newKeywords, lineKeywords);
-      if (sim >= 0.3) {
+      if (sim >= 0.5) {
+        // Block semantic duplicates (high similarity)
+        console.log(JSON.stringify({
+          status: "skipped",
+          reason: "Semantic duplicate (Jaccard " + sim.toFixed(2) + ")",
+          similarText: textPart.slice(0, 200),
+          source: line.match(/^(qmd:\/\/[^\s]+)/)?.[1] || "unknown",
+        }));
+        process.exit(0);
+      } else if (sim >= 0.3) {
         semanticWarnings.push({
           similarText: textPart.slice(0, 200),
           similarity: parseFloat(sim.toFixed(2)),
-          source: r.file || "unknown",
+          source: line.match(/^(qmd:\/\/[^\s]+)/)?.[1] || "unknown",
         });
       }
     }

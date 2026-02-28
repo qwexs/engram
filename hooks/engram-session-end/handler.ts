@@ -1,4 +1,5 @@
 import { existsSync, appendFileSync, readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { join } from "node:path";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -53,6 +54,14 @@ const handler = async (event: any) => {
   const iso = localISO(TZ);
   appendFileSync(notePath, `\n<!-- session:end:${iso} -->\n`);
   console.log(`[engram-session-end] Wrote session:end to ${notePath}`);
+
+  // Update BM25 index so next session starts with fresh search
+  try {
+    execSync("qmd update", { cwd: workspaceDir, timeout: 15000, stdio: "pipe" });
+    console.log(`[engram-session-end] qmd update done`);
+  } catch {
+    console.log(`[engram-session-end] qmd update skipped (unavailable)`);
+  }
 };
 
 export default handler;

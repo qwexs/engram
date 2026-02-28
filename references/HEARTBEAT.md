@@ -51,13 +51,21 @@ Run BEFORE extraction — rotation must happen first so extraction works on the 
 ## Phase 1: Extraction
 
 - **Watermark sanity check:** read daily note, count lines. If last watermark `L{N}` has N > total_lines + 5, reset watermark to `L1` (log "watermark reset: L{N} > {total_lines} lines"). The +5 buffer tolerates minor drift from heartbeat-report.js rewrites (±1-2 lines). Only reset on true corruption (watermark far past end of file).
+- **Message-log fallback:** check if daily note sections (Events, Decisions, Learnings) are empty (no bullet entries). If ALL are empty AND `workspace/message-log/{today}.jsonl` exists:
+  1. Read messages from JSONL since the last `<!-- session:start -->` timestamp in the daily note
+  2. Filter to the current session's conversationId only
+  3. Truncate to last 50 messages (keep recent, skip noise)
+  4. Pass as `{{message_log_context}}` to HB-EXTRACT template (see below)
+  5. hb-extract will FIRST write a session summary to the daily note, THEN extract facts from it
+  - If daily note has content → `{{message_log_context}}` is empty string (no fallback needed)
 - Read `subagentExtraction` from state
   - If `true`: build task from `skills/engram/references/HB-EXTRACT.md`:
     1. Read the file content
     2. Replace `{{daily_note_path}}` with the absolute path to today's daily note
     3. Replace `{{watermark}}` with the validated watermark (e.g. `L7`)
     4. Replace `{{session}}` with the current session key (e.g. `main`)
-    5. Call `sessions_spawn(task=<filled template>, label="hb-extract", model="sonnet-4-6", cleanup="delete")`
+    5. Replace `{{message_log_context}}` with the message-log content (or empty string)
+    6. Call `sessions_spawn(task=<filled template>, label="hb-extract", model="sonnet-4-6", cleanup="delete")`
     **Do not wait — result arrives via system message.**
   - If `false`: run extraction inline
     - Read daily note from validated watermark (or L1 if none)

@@ -64,6 +64,8 @@ Each fact in `items.json` follows this structure:
 - **status** — Current state (job title, project phase, etc.)
 - **preference** — Likes, dislikes, working style
 - **context** — Background information, descriptive facts
+- **decision** — Explicit decisions made (architectural, process, tooling)
+- **correction** — Updates to previous facts (supersedes old info)
 
 ## No-Deletion Rule
 

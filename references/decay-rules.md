@@ -32,7 +32,7 @@ Executed during Monday heartbeat:
 2. Sort: Hot > Warm > Cold; within tier by `accessCount` desc
 3. Write included facts into `summary.md`
 4. Omit Cold episodes (they remain in items.json, searchable via QMD)
-5. Update `weekly-synthesis-tracker.json`
+5. Update `heartbeat-state.json` → `lastWeeklySynthesis`
 
 ## Tier Calculation
 

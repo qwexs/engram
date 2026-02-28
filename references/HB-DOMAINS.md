@@ -32,7 +32,7 @@ For each `cron-task` domain:
 For each `dev-project` domain:
 1. Read `{{domains_root}}/{name}/status.md`
 2. Note open/in-progress items
-3. Read `{{domains_root}}/{name}/decisions.md` (last 20 lines)
+3. Read `{{domains_root}}/{name}/changelog.md` (last 20 lines)
 4. Check for `PROPOSAL` keyword — if found, add to Alerts
 5. Record observation with `{id, observation, category: "friction|quality|surprise"}`
 

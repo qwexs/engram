@@ -95,6 +95,7 @@ Your response MUST end with this block. Fill in the values:
 Status: {ok | error}
 Summary: {one line, e.g. "extracted 3 facts from 2026-02-22.md (L47->L89)"}
 Stats: {"facts_written": N, "facts_skipped_dedup": N, "new_watermark": "L{last_line_processed}"}
+Observations: {[] or [{"id": "obs-NNNN", "observation": "text", "category": "friction|surprise|quality"}]}
 Alerts: {[] or ["alert text"]}
 === END ===
 ```

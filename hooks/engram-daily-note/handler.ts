@@ -39,6 +39,7 @@ const handler = async (event: any) => {
 
     for (const session of sessions) {
       if (!session.isDirectory()) continue;
+      if (session.name.startsWith("subagent-")) continue;
 
       const notePath = join(agentDir, session.name, `${today}.md`);
       if (existsSync(notePath)) continue;

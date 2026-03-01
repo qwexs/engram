@@ -53,6 +53,9 @@ const handler = async (event: any) => {
   const rawKey = event.context?.sessionKey || "main";
   const sessionKey = rawKey.includes(":") ? rawKey.split(":").slice(2).join("-") || "main" : rawKey;
 
+  // Skip subagent sessions — they don't need daily notes
+  if (sessionKey.startsWith("subagent-")) return;
+
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
   const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey);
   const notePath = join(sessionDir, `${today}.md`);

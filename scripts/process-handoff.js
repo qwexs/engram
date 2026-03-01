@@ -59,14 +59,17 @@ const status = parseField(blockBody, "Status") ?? "error";
 const summary = parseField(blockBody, "Summary") ?? "";
 const statsRaw = parseField(blockBody, "Stats") ?? "{}";
 const obsRaw = parseField(blockBody, "Observations") ?? "[]";
+const tensionsRaw = parseField(blockBody, "Tensions") ?? "[]";
 const alertsRaw = parseField(blockBody, "Alerts") ?? "[]";
 
 let stats = {};
 let observations = [];
+let tensions = [];
 let alerts = [];
 
 try { stats = JSON.parse(statsRaw); } catch { stats = {}; }
 try { observations = JSON.parse(obsRaw); } catch { observations = []; }
+try { tensions = JSON.parse(tensionsRaw); } catch { tensions = []; }
 try { alerts = JSON.parse(alertsRaw); } catch { alerts = []; }
 
 const now = new Date().toISOString();
@@ -106,6 +109,19 @@ function parseWatermarkNum(wm) {
   if (!wm) return 0;
   const m = String(wm).match(/L?(\d+)/);
   return m ? parseInt(m[1], 10) : 0;
+}
+
+// --- Process tensions ---
+function processTensions(tens) {
+  if (!Array.isArray(tens) || !tens.length) return 0;
+  let written = 0;
+  for (const t of tens) {
+    if (!t.tension || !t.fact1 || !t.fact2) continue;
+    const escaped = t.tension.replace(/"/g, '\\"');
+    const ok = run(`bun scripts/memory-tension.js --tension "${escaped}" --fact1 ${t.fact1} --fact2 ${t.fact2}`);
+    if (ok) written++;
+  }
+  return written;
 }
 
 // --- Process observations ---
@@ -163,6 +179,12 @@ function handleExtract() {
     console.log(`[hb-extract] Wrote ${obsWritten} observations`);
   }
 
+  // Process tensions
+  const tensWritten = processTensions(tensions);
+  if (tensWritten > 0) {
+    console.log(`[hb-extract] Wrote ${tensWritten} tensions`);
+  }
+
   console.log(`[hb-extract] ✅ ${summary}`);
 }
 
@@ -183,6 +205,9 @@ function handleDomains() {
 
   const obsWritten = processObservations(observations);
   if (obsWritten > 0) console.log(`[hb-domains] Wrote ${obsWritten} observations`);
+
+  const tensWritten = processTensions(tensions);
+  if (tensWritten > 0) console.log(`[hb-domains] Wrote ${tensWritten} tensions`);
 
   console.log(`[hb-domains] ✅ ${summary}`);
 }

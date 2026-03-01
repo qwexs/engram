@@ -85,6 +85,7 @@ bun scripts/memory-write.js \
 6. Do NOT update heartbeat-state.json -- the orchestrator handles this
 7. Do NOT read or write MEMORY.md, AGENTS.md, or any file outside the extraction task
 8. If no extractable facts found, still return the handoff block with facts_written: 0
+9. When writing a fact that contradicts an existing fact (memory-write.js reports contradictions in warnings), include the contradiction as a Tension in the handoff block
 
 ## Handoff (MUST be your LAST output)
 
@@ -96,6 +97,7 @@ Status: {ok | error}
 Summary: {one line, e.g. "extracted 3 facts from 2026-02-22.md (L47->L89)"}
 Stats: {"facts_written": N, "facts_skipped_dedup": N, "new_watermark": "L{last_line_processed}"}
 Observations: {[] or [{"id": "obs-NNNN", "observation": "text", "category": "friction|surprise|quality"}]}
+Tensions: {[] or [{"tension": "Contradicts existing fact", "fact1": "new-fact-id", "fact2": "existing-fact-id"}]}
 Alerts: {[] or ["alert text"]}
 === END ===
 ```

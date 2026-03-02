@@ -6,13 +6,25 @@
     "weather": null
   },
   "heartbeatInProgress": false,
-  "heartbeatLockedAt": null,
+  "heartbeatLockedAt": false,
   "subagentExtraction": false,
   "extractionModel": "minimax",
-  "lastExtraction": {},
-  "lastDomainScan": null,
-  "lastWeeklySynthesis": null,
+  "lastExtraction": {
+    "main": "2026-03-02T00:16:54.296Z"
+  },
+  "lastDomainScan": "2026-03-02T00:16:56.821Z",
+  "lastWeeklySynthesis": "2026-03-02",
   "pendingObservations": 0,
   "pendingTensions": 0,
-  "subagentRuns": {}
+  "subagentRuns": {
+    "hb-extract": {
+      "status": "failed"
+    },
+    "hb-domains": {
+      "status": "ok"
+    },
+    "hb-synthesis": {
+      "status": "failed"
+    }
+  }
 }

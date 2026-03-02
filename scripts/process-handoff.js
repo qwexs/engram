@@ -22,7 +22,8 @@ import { readFileSync, appendFileSync, existsSync } from "fs";
 import { execSync } from "child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const WORKSPACE = join(__dirname, "..");
+// scripts/ → engram/ → skills/ → workspace root
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(__dirname, "..", "..", "..");
 
 // --- Arg parsing ---
 const argv = process.argv.slice(2);
@@ -76,9 +77,13 @@ const now = new Date().toISOString();
 const isOk = status.toLowerCase() === "ok";
 
 // --- Helpers ---
+const SCRIPTS = join(__dirname);
+
 function run(cmd) {
   try {
-    execSync(cmd, { cwd: WORKSPACE, stdio: ["pipe", "pipe", "pipe"] });
+    // Replace "bun scripts/" with absolute path to engram scripts
+    const resolved = cmd.replace(/^bun scripts\//, `bun ${SCRIPTS}/`);
+    execSync(resolved, { cwd: WORKSPACE, stdio: ["pipe", "pipe", "pipe"] });
     return true;
   } catch (e) {
     console.error(`[process-handoff] Command failed: ${cmd}\n  ${e.message}`);

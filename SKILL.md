@@ -94,7 +94,7 @@ Heartbeats need speed, not full context. SOUL.md and USER.md are typically alrea
 2. Read `memory/heartbeat-state.json`
 3. Proceed to HEARTBEAT.md
 
-**Skipped:** SOUL.md, USER.md, yesterday's daily note, MEMORY.md, life/index.md, QMD query — none needed for heartbeat flow.
+**Skipped:** SOUL.md, USER.md, yesterday's daily note, MEMORY.md, QMD query — none needed for heartbeat flow.
 
 #### Full Init (Interactive)
 
@@ -107,11 +107,12 @@ Heartbeats need speed, not full context. SOUL.md and USER.md are typically alrea
 
 1. Determine session (main, telegram group, discord channel, etc.)
 2. Read session memory:
-   - **Main**: today + yesterday daily notes + `MEMORY.md` + `life/index.md`
-   - **Group**: today + yesterday daily notes only
-3. **Knowledge Graph** (main session only): run `qmd query "<topic of first user message>" -c life`
+   - **Main**: today's daily note (full) + yesterday's daily note (tail from `## Active Threads` onwards, or last 80 lines if marker absent)
+   - **Group**: today + yesterday daily notes only (same tail rule for yesterday)
+3. **Knowledge Graph** (main session only): run `qmd query "<topic of first user message>" -c life` **once, on the first substantive user message** — not on every message, not during startup before the user speaks
    - Extract the main topic/entity from the user's first request and query it
    - If message is a greeting or vague → defer to QMD Query Triggers below
+   - ⚠️ This step fires exactly once per session; subsequent queries follow QMD Query Triggers rules
 
 ### QMD Query Triggers
 

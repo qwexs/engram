@@ -5,7 +5,7 @@
 
 import { join } from "path";
 
-const WORKSPACE = join(import.meta.dir, "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
 
 // Парсинг аргументов
 function parseArgs(argv) {

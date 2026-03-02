@@ -25,7 +25,7 @@ import { join, dirname, basename } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, copyFileSync } from "fs";
 import { execSync } from "child_process";
 
-const WORKSPACE = join(import.meta.dir, "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
 const LINE_THRESHOLD = 1000;
 
 // --- Arg parsing ---

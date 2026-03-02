@@ -54,8 +54,9 @@ const opts = parseArgs(process.argv);
 
 const WORKSPACE =
   opts.workspace ||
+  process.env.ENGRAM_WORKSPACE ||
   process.env.CLAWD_WORKSPACE ||
-  join(__dirname, "..");
+  join(__dirname, "..", "..", "..");
 
 const STATE_FILE = join(WORKSPACE, "memory", "heartbeat-state.json");
 

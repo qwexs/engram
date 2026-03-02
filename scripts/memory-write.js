@@ -5,7 +5,7 @@
 import { join } from "path";
 import { isDuplicate, registerHash } from "./memory-dedup.js";
 
-const WORKSPACE = join(import.meta.dir, "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
 
 // Парсинг аргументов
 function parseArgs(argv) {
@@ -221,7 +221,7 @@ let contradictions = null;
 if (opts["check-contradictions"]) {
   try {
     const crossFlag = opts["cross-entity"] ? "--cross-entity" : "";
-    const cmdArgs = ["bun", "scripts/memory-contradict.js", "--fact", opts.fact, "--entity", entity];
+    const cmdArgs = ["bun", join(import.meta.dir, "memory-contradict.js"), "--fact", opts.fact, "--entity", entity];
     if (crossFlag) cmdArgs.push(crossFlag);
     const proc = Bun.spawn(cmdArgs, { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
     const out = await new Response(proc.stdout).text();
@@ -239,7 +239,7 @@ await registerHash(factHash, entity);
 
 // 7. Валидация KG
 try {
-  const proc = Bun.spawn(["bun", "scripts/validate-kg.js"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(["bun", join(import.meta.dir, "validate.js")], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
   await proc.exited;
 } catch {}
 

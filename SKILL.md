@@ -12,7 +12,7 @@ description: Etalon memory architecture with Knowledge Graph (PARA), session iso
 > Templates and assets remain in the skill folder. Specify the path via env:
 > ```bash
 > export ENGRAM_SKILL_DIR=skills/engram  # or absolute path
-> bun scripts/init.js
+> bun skills/engram/scripts/init.js
 > ```
 > Without `ENGRAM_SKILL_DIR`, scripts look for assets relative to `../` from their location.
 
@@ -535,7 +535,7 @@ Message → Signal Scan (regex, <10ms) → Classify
 ### Signal Detection
 
 ```bash
-bun scripts/memory-signal.js --text "Я предпочитаю TypeScript"
+bun skills/engram/scripts/memory-signal.js --text "Я предпочитаю TypeScript"
 # → { "signal": "high", "categories": ["preference"], "confidence": 0.88 }
 ```
 
@@ -544,7 +544,7 @@ Supports **Russian and English**. Six categories: `correction`, `preference`, `d
 ### Write with Dedup + Contradiction Check
 
 ```bash
-bun scripts/memory-write.js \
+bun skills/engram/scripts/memory-write.js \
   --entity "areas/people/sergey" \
   --fact "Prefers Bun over Node.js" \
   --category preference \
@@ -554,11 +554,11 @@ bun scripts/memory-write.js \
   --source "2026-02-16"
 
 # With contradiction detection
-bun scripts/memory-write.js --entity "..." --fact "..." --category ... \
+bun skills/engram/scripts/memory-write.js --entity "..." --fact "..." --category ... \
   --check-contradictions --cross-entity
 
 # With semantic similarity check (BM25)
-bun scripts/memory-write.js --entity "..." --fact "..." --category ... \
+bun skills/engram/scripts/memory-write.js --entity "..." --fact "..." --category ... \
   --semantic-check --search-collections "life,openclaw-memory-agent-main-main"
 ```
 
@@ -568,10 +568,10 @@ Automatically: content-hash dedup → optional contradiction/semantic check → 
 
 ```bash
 # Intra-entity (fast, no QMD)
-bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey"
+bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey"
 
 # Cross-entity (via QMD BM25, searches all entities)
-bun scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey" \
+bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey" \
   --cross-entity --collections "life,openclaw-memory-agent-main-main"
 ```
 
@@ -617,7 +617,7 @@ Configured in OpenClaw (`agents.defaults.compaction.memoryFlush`). Before contex
 {
   "memoryFlush": {
     "enabled": true,
-    "prompt": "Write session events/decisions/learnings to today's daily note via: bun scripts/daily-note-append.js --session main --section <section> --text '<text>'. Then reply NO_REPLY.",
+    "prompt": "Write session events/decisions/learnings to today's daily note via: bun skills/engram/scripts/daily-note-append.js --session main --section <section> --text '<text>'. Then reply NO_REPLY.",
     "systemPrompt": "Session nearing compaction. Record substantive work to daily note now."
   }
 }

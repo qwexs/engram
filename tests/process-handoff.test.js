@@ -7,7 +7,7 @@ const WORKSPACE_ROOT = join(import.meta.dir, "..", "..", "..");
 const OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
 const TENSION_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "tensions");
 const MEMORY_DIR = join(WORKSPACE_ROOT, "memory", "agent-main", "main");
-const STATE_PATH = join(import.meta.dir, "..", "memory", "heartbeat-state.json");
+const STATE_PATH = join(WORKSPACE_ROOT, "memory", "heartbeat-state.json");
 
 const TEST_DATE = "2026-03-02";
 

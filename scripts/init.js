@@ -168,7 +168,44 @@ copyTemplate('life-readme.md', 'life/README.md', replacements);
 copyTemplate('index.md', 'life/index.md', replacements);
 copyTemplate('daily-note.md', `memory/agent-${agentId}/main/${today}.md`, { ...replacements, DATE: today });
 
-copyTemplate('agents-snippet.md', 'engram-rules.md', replacements);
+// --- Inject engram rules into AGENTS.md ---
+{
+  const snippetPath = join(TEMPLATES, 'agents-snippet.md');
+  const agentsPath = join(WORKSPACE, 'AGENTS.md');
+  const START_MARKER = '<!-- engram:rules:start -->';
+  const END_MARKER = '<!-- engram:rules:end -->';
+
+  if (existsSync(snippetPath)) {
+    let snippet = readFileSync(snippetPath, 'utf-8');
+    for (const [key, value] of Object.entries(replacements)) {
+      snippet = snippet.replaceAll(`{{${key}}}`, value);
+    }
+
+    if (existsSync(agentsPath)) {
+      let agents = readFileSync(agentsPath, 'utf-8');
+      const startIdx = agents.indexOf(START_MARKER);
+      const endIdx = agents.indexOf(END_MARKER);
+
+      if (startIdx !== -1 && endIdx !== -1) {
+        // Replace existing block
+        agents = agents.slice(0, startIdx) + snippet + agents.slice(endIdx + END_MARKER.length);
+        writeFileSync(agentsPath, agents);
+        console.log('  ✅ AGENTS.md — engram rules updated (replaced existing block)');
+      } else {
+        // Append to end
+        agents = agents.trimEnd() + '\n\n' + snippet + '\n';
+        writeFileSync(agentsPath, agents);
+        console.log('  ✅ AGENTS.md — engram rules appended');
+      }
+    } else {
+      // Create AGENTS.md with snippet
+      writeFileSync(agentsPath, snippet + '\n');
+      console.log('  ✅ AGENTS.md — created with engram rules');
+    }
+  } else {
+    console.error('  ⚠️  agents-snippet.md template not found');
+  }
+}
 
 // Реестр доменов
 copyTemplate('domain/registry.json', 'memory/domains/registry.json', replacements);
@@ -248,8 +285,8 @@ console.log(`
    Today's note:    memory/agent-${agentId}/main/${today}.md
 
 Next steps:
-  1. Add memory rules to AGENTS.md (copy from engram-rules.md or see SKILL.md / references/architecture.md)
-  2. Configure heartbeat (see references/heartbeat.md)
+  1. Review engram rules in AGENTS.md (auto-injected by init)
+  2. Configure heartbeat (see references/HEARTBEAT.md)
   3. Add sessions: bun skills/engram/scripts/add-session.js --platform telegram --id <groupId>
   4. Run: qmd embed (for vector search)
 

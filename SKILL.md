@@ -1,6 +1,6 @@
 ---
 name: engram
-description: Etalon memory architecture with Knowledge Graph (PARA), session isolation, memory decay, and QMD hybrid search
+description: Etalon memory architecture with Knowledge Graph, session isolation, memory decay, and QMD hybrid search
 ---
 
 > ⚠️ **READ-ONLY SKILL**: This skill is a reference implementation. Do not edit files directly.
@@ -47,7 +47,7 @@ bun skills/engram/scripts/migrate-v2.js --dry-run
 ║  Long-term personal insights, decisions     ║
 ├─────────────────────────────────────────────┤
 ║  Layer 2: Knowledge Graph (life/)           ║
-║  PARA entities with atomic facts            ║
+║  KG entities with atomic facts              ║
 ├─────────────────────────────────────────────┤
 ║  Layer 1: Daily Notes (memory/)             ║
 ║  Raw session notes, per-session isolation   ║
@@ -157,18 +157,16 @@ Use the most specific term you can extract. If multiple entities are relevant, r
   3. **QMD index** — archive indexed for granular search via `qmd query`
   - Run rotation AFTER KG Extraction to minimize stub duplication
 
-### Knowledge Graph (PARA)
+### Knowledge Graph
 
-Structured memory in `life/` using Projects/Areas/Resources/Archives:
+Structured memory in `life/` using a flat three-folder structure (people/projects/archives):
 
 ```
 life/
-├── projects/<name>/     # Active work (summary.md + items.json)
-├── areas/people/<name>/ # People (summary.md + items.json)
-├── areas/groups/<name>/ # Groups
-├── resources/<topic>/   # Reference material
-├── archives/            # Inactive entities
-└── index.md             # Master entity index
+├── people/<name>/    # People (summary.md + items.json)
+├── projects/<name>/  # Active work, tools, groups, AI agents (summary.md + items.json)
+├── archives/<name>/  # Inactive entities
+└── index.md          # Master entity index
 ```
 
 **Tiered retrieval:**
@@ -545,7 +543,7 @@ Supports **Russian and English**. Six categories: `correction`, `preference`, `d
 
 ```bash
 bun skills/engram/scripts/memory-write.js \
-  --entity "areas/people/sergey" \
+  --entity "people/sergey" \
   --fact "Prefers Bun over Node.js" \
   --category preference \
   --confidence 0.9 \
@@ -568,10 +566,10 @@ Automatically: content-hash dedup → optional contradiction/semantic check → 
 
 ```bash
 # Intra-entity (fast, no QMD)
-bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey"
+bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "people/sergey"
 
 # Cross-entity (via QMD BM25, searches all entities)
-bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "areas/people/sergey" \
+bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "people/sergey" \
   --cross-entity --collections "life,openclaw-memory-agent-main-main"
 ```
 
@@ -755,7 +753,7 @@ Atomically appends a bullet entry to a named section of today's daily note. Crea
 ### rebuild-summaries.js — Rebuild summary.md from items.json
 
 ```bash
-bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity areas/people/sergey] [--apply-decay]
+bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity people/sergey] [--apply-decay]
 ```
 
 Deterministically regenerates `summary.md` for all entities in `life/` from their `items.json`. No LLM involved.

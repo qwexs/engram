@@ -12,7 +12,7 @@ The memory system uses three layers, each serving a different purpose:
 ├─────────────────────────────────────────────┤
 │  Layer 2: Knowledge Graph (life/)           │
 │  Structured entities with atomic facts      │
-│  PARA method, tiered retrieval              │
+│  Flat three-folder structure (people/projects/archives), tiered retrieval  │
 │  Main session only                          │
 ├─────────────────────────────────────────────┤
 │  Layer 1: Daily Notes (memory/)             │
@@ -30,14 +30,13 @@ Raw session notes stored per-session in `memory/agent-{id}/{session}/YYYY-MM-DD.
 - Indexed by QMD for search
 - Each session is fully isolated (see Session Isolation)
 
-### Layer 2: Knowledge Graph (PARA)
+### Layer 2: Knowledge Graph
 
-Structured long-term memory in `life/` using the PARA method:
+Structured long-term memory in `life/` using the flat three-folder structure (people/projects/archives):
 
-- **Projects** — Active work with goals/deadlines
-- **Areas** — Ongoing responsibilities (people, companies, groups)
-- **Resources** — Reference material
-- **Archives** — Inactive items
+- **people/** — People entities
+- **projects/** — Active work: tools, groups, AI agents, projects
+- **archives/** — Inactive items
 
 Each entity has:
 - `summary.md` — Quick context (load first, ~90% of queries)
@@ -135,7 +134,7 @@ See [qmd-setup.md](qmd-setup.md) for installation and configuration.
 
 | Method | Purpose |
 |--------|---------|
-| PARA | Entity organization (Projects/Areas/Resources/Archives) |
+| Three-folder KG | Entity organization (people/projects/archives) |
 | Tiered Retrieval | summary.md first, items.json on demand |
 | No-Deletion Rule | Facts are superseded, never deleted |
 | Memory Decay | Hot/Warm/Cold tiers based on recency |

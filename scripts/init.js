@@ -33,7 +33,7 @@ Options:
 
 What it does:
   1. Creates memory/ directory structure (session isolation)
-  2. Creates life/ directory structure (Knowledge Graph, PARA)
+  2. Creates life/ directory structure (Knowledge Graph)
   3. Copies template files (MEMORY.md, heartbeat-state.json, etc.)
   4. Sets up QMD collections for search
   5. Runs initial QMD index
@@ -94,13 +94,8 @@ const dirs = [
   'memory/domains',
   'memory/templates/group-knowledge',
   'life',
+  'life/people',
   'life/projects',
-  'life/areas',
-  'life/areas/people',
-  'life/areas/groups',
-  'life/areas/companies',
-  'life/areas/ai-agents',
-  'life/resources',
   'life/archives',
 ];
 

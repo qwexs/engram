@@ -119,7 +119,7 @@ Extract group interests/questions/pain-points from group daily notes into the gr
 3. Write via `memory-write.js`:
    ```bash
    bun scripts/memory-write.js \
-     --entity "areas/groups/{group-entity}" \
+     --entity "projects/{group-entity}" \
      --fact "Members interested in topic X" \
      --category interest \
      --confidence 0.8 \

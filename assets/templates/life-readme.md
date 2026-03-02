@@ -1,6 +1,6 @@
-# Knowledge Graph (PARA)
+# Knowledge Graph
 
-Structured memory layer based on Tiago Forte's PARA method, extended with atomic facts, memory decay, and automated extraction.
+Structured memory layer based on Tiago Forte's flat three-folder structure (people/projects/archives), extended with atomic facts, memory decay, and automated extraction.
 
 ## Structure
 
@@ -10,15 +10,8 @@ life/
 │   └── <name>/
 │       ├── summary.md
 │       └── items.json
-├── areas/             # Ongoing responsibilities (no end date)
-│   ├── people/<name>/
-│   │   ├── summary.md
-│   │   └── items.json
-│   └── companies/<name>/
-│       ├── summary.md
-│       └── items.json
-├── resources/         # Topics of interest, reference material
-│   └── <topic>/
+├── people/            # People (summary.md + items.json per person)
+│   └── <name>/
 │       ├── summary.md
 │       └── items.json
 ├── archives/          # Inactive items from the other three
@@ -26,14 +19,13 @@ life/
 └── README.md          # This file
 ```
 
-## PARA Buckets
+## Three Folders
 
-- **Projects** — Active work with a goal or deadline. When done, moves to Archives.
-- **Areas** — Ongoing responsibilities with no end date. People, companies, roles.
-- **Resources** — Reference material and topics of interest. Not actively worked on.
-- **Archives** — Inactive items from any of the above. Nothing gets deleted.
+- **People** — Individuals the agent interacts with or knows about.
+- **Projects** — Everything active: projects, tools, infrastructure, groups, services. If it's not a person and not archived, it's here.
+- **Archives** — Inactive items. Nothing gets deleted, just moved here.
 
-Every entity fits in exactly one bucket. Entities flow between them over time.
+Simple routing: person → `people/`, archived → `archives/`, everything else → `projects/`.
 
 ## Tiered Retrieval
 

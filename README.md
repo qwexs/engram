@@ -52,7 +52,7 @@ Every piece of content belongs to one of three spaces — mixing them degrades s
 │         Curated identity, principles        │
 ├─────────────────────────────────────────────┤
 │  notes  life/ (Knowledge Graph)             │
-│         PARA entities, atomic facts v2      │
+│         KG entities, atomic facts v2      │
 │         confidence · abstraction · decay    │
 ├─────────────────────────────────────────────┤
 │  ops    memory/ (Daily Notes)               │
@@ -75,15 +75,14 @@ memory/agent-main/
 └── discord-{id}/       # Discord channels
 ```
 
-### PARA Knowledge Graph
+### Knowledge Graph
 
-Structured long-term knowledge in `life/` using Tiago Forte's PARA method, extended with atomic facts:
+Structured long-term knowledge in `life/` using Tiago Forte's flat three-folder structure (people/projects/archives), extended with atomic facts:
 
 ```
 life/
-├── projects/     # Active projects
-├── areas/        # Ongoing areas (people, groups, tools)
-├── resources/    # Reference material
+├── people/       # People
+├── projects/     # Active projects, tools, groups, AI agents
 └── archives/     # Inactive entities
 ```
 
@@ -142,7 +141,7 @@ bun skills/engram/scripts/memory-signal.js --text "Я предпочитаю Typ
 # → { "signal": "high", "categories": ["preference"], "confidence": 0.88 }
 
 bun skills/engram/scripts/memory-write.js \
-  --entity "areas/people/sergey" \
+  --entity "people/sergey" \
   --fact "Prefers Bun over Node.js" \
   --category preference \
   --confidence 0.9 \
@@ -354,7 +353,7 @@ export JINA_API_KEY=jina_xxxxxxxxxxxx
 
 All scripts work on **Linux and Windows**:
 - Path normalization: backslash → forward slash everywhere
-- QMD flatten paths handled (Windows outputs `areas-people-sergey` instead of `areas/people/sergey`)
+- QMD flatten paths handled (Windows outputs `areas-people-sergey` instead of `people/sergey`)
 - Timezone configurable via `ENGRAM_TZ` or `TZ` env var (default: `Europe/Moscow`)
 
 ---
@@ -394,7 +393,7 @@ Planned integration:
 
 ## Methodologies
 
-1. **PARA Method** (Tiago Forte) — four-bucket entity organization
+1. **flat three-folder structure (people/projects/archives)** (Tiago Forte) — four-bucket entity organization
 2. **Tiered Retrieval** — summary first, details on demand
 3. **No-Deletion Rule** — full history via supersede chains
 4. **Memory Decay** — Hot/Warm/Cold with human-like forgetting

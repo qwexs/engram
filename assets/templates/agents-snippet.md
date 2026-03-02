@@ -142,7 +142,7 @@ bun scripts/memory-signal.js --text "I prefer Bun over Node"
 **Write pipeline (HIGH signal):**
 ```bash
 bun scripts/memory-write.js \
-  --entity "areas/people/name" \
+  --entity "people/name" \
   --fact "Prefers Bun over Node.js" \
   --category preference \
   --confidence 0.9 \

@@ -80,7 +80,7 @@ Extract HIGH-signal facts during conversation (don't wait for heartbeat):
 
 ```bash
 bun scripts/memory-write.js \
-  --entity "areas/people/sergey" \
+  --entity "people/sergey" \
   --fact "Prefers Bun over Node.js" \
   --description "Runtime preference affecting all new projects" \
   --category preference \
@@ -116,7 +116,7 @@ Facts decay over time (Hot → Warm → Cold). Decay is applied weekly by `hb-sy
 
 **Access tracking** — when you read/use a fact from KG, bump its recency:
 ```bash
-bun scripts/memory-write.js --access --entity "areas/people/sergey" --id <fact-id>
+bun scripts/memory-write.js --access --entity "people/sergey" --id <fact-id>
 ```
 This updates `lastAccessed` and `accessCount`, preventing useful facts from decaying to Cold.
 

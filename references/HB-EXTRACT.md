@@ -50,7 +50,7 @@ Durable facts -- things worth remembering across sessions:
 
 ```bash
 bun scripts/memory-write.js \
-  --entity "areas/people/sergey" \
+  --entity "people/sergey" \
   --fact "Predpochtitaet Bun vmesto Node.js" \
   --description "Tool preference affecting project setup decisions" \
   --category preference \
@@ -70,9 +70,9 @@ bun scripts/memory-write.js \
 **--source:** use the daily note date (YYYY-MM-DD)
 
 **Entity routing:** determine the entity path from fact content:
-- People: `areas/people/{name}`
+- People: `people/{name}`
 - Projects: `projects/{name}`
-- Tools/tech: `areas/tools/{name}`
+- Tools/tech: `projects/{name}`
 - If entity doesn't exist, use `--entity-create`
 
 ## Rules

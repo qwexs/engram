@@ -16,7 +16,7 @@
 
 import { join } from "path";
 
-const WORKSPACE = import.meta.dir.replace(/[/\\]scripts$/, "");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
 
 // --- Arg parsing ---
 const args = process.argv.slice(2);

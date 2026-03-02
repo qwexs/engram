@@ -138,10 +138,10 @@ Message arrives → Signal Scan (regex, <10ms) → Classify
 ```
 
 ```bash
-bun scripts/memory-signal.js --text "Я предпочитаю TypeScript"
+bun skills/engram/scripts/memory-signal.js --text "Я предпочитаю TypeScript"
 # → { "signal": "high", "categories": ["preference"], "confidence": 0.88 }
 
-bun scripts/memory-write.js \
+bun skills/engram/scripts/memory-write.js \
   --entity "areas/people/sergey" \
   --fact "Prefers Bun over Node.js" \
   --category preference \
@@ -222,9 +222,9 @@ ops/
 ### Capturing Observations
 
 ```bash
-bun scripts/memory-observe.js --observation "KG extraction missed facts" --category friction
-bun scripts/memory-observe.js --observation "Code quality improved" --category quality
-bun scripts/memory-observe.js --observation "Unexpected behavior" --category surprise
+bun skills/engram/scripts/memory-observe.js --observation "KG extraction missed facts" --category friction
+bun skills/engram/scripts/memory-observe.js --observation "Code quality improved" --category quality
+bun skills/engram/scripts/memory-observe.js --observation "Unexpected behavior" --category surprise
 ```
 
 **Categories:** `friction` (slowdown), `surprise` (unexpected), `quality` (code/content issues)
@@ -236,7 +236,7 @@ bun scripts/memory-observe.js --observation "Unexpected behavior" --category sur
 ### Capturing Tensions
 
 ```bash
-bun scripts/memory-tension.js \
+bun skills/engram/scripts/memory-tension.js \
   --tension "Two facts contradict each other" \
   --fact1 "sergey-001" \
   --fact2 "sergey-005"
@@ -286,10 +286,10 @@ memory/domains/{domain}/
 
 ```bash
 # Create a cron-task domain
-bun scripts/add-domain.js --domain digest --description "Daily digest"
+bun skills/engram/scripts/add-domain.js --domain digest --description "Daily digest"
 
 # Create a dev-project domain linked to KG
-bun scripts/add-domain.js --domain engram --type dev-project --kg-entity projects/engram --description "Memory skill"
+bun skills/engram/scripts/add-domain.js --domain engram --type dev-project --kg-entity projects/engram --description "Memory skill"
 ```
 
 ---
@@ -298,15 +298,15 @@ bun scripts/add-domain.js --domain engram --type dev-project --kg-entity project
 
 ```bash
 # 1. Install QMD search engine
-bun scripts/install-qmd.js
+bun skills/engram/scripts/install-qmd.js
 
 # 2. Initialize memory system (also installs hooks to workspace hooks/)
-bun scripts/init.js
+bun skills/engram/scripts/init.js
 # Hooks are installed to workspace hooks/ directory
 # Restart Gateway to activate: openclaw gateway restart
 
 # 3. Add a group session (optional)
-bun scripts/add-session.js --platform telegram --id 1234567890
+bun skills/engram/scripts/add-session.js --platform telegram --id 1234567890
 ```
 
 ## Requirements

@@ -18,6 +18,17 @@
 | `status.md` | Субагент | Главный агент | Текущее состояние проекта |
 | `changelog.md` | Субагент | Главный агент | История действий (append-only) |
 
+## Spawn Label Rules
+
+Before every `sessions_spawn`:
+
+1. **Heartbeat pattern** (`hb-*`) → spawn directly, no domain check
+2. **Otherwise** → check `memory/domains/registry.json`:
+   - Label exists as `subagentLabel` → follow Pre-Spawn Checklist below
+   - Label NOT in registry → decide:
+     - **One-off task** (research, quick fix) → spawn without label or with descriptive label
+     - **Iterative project** (will need context across sessions) → run `bun skills/engram/scripts/add-domain.js` first, then spawn with the new domain label
+
 ## Pre-Spawn Checklist (ОБЯЗАТЕЛЬНЫЙ)
 
 Перед каждым `sessions_spawn` для проектной задачи:

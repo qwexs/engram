@@ -120,8 +120,11 @@ bun scripts/memory-write.js \
   --abstraction pattern \
   --tags "tools,runtime" \
   --source "YYYY-MM-DD" \
-  --semantic-check
+  --semantic-check \
+  --check-contradictions
 ```
+
+**`--check-contradictions`**: add for categories `preference`, `decision`, `correction`. Auto-creates tensions when Jaccard ≥0.5 + ≥3 common keywords. Skip for `milestone`, `status` (time-bounded facts rarely contradict).
 
 Rules: main session only, don't over-extract, when unsure → `confidence: 0.5-0.7` or skip to daily note.
 

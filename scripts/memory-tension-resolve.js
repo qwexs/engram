@@ -45,24 +45,25 @@ if (!(await file.exists())) {
 
 const tension = await file.json();
 
-if (tension.status === "resolved") {
+if (tension.status === "resolved" || tension.status === "dissolved") {
   console.log(JSON.stringify({
-    status: "already_resolved",
+    status: `already_${tension.status}`,
     id: opts.id,
     resolvedAt: tension.resolvedAt,
   }));
   process.exit(0);
 }
 
-// Резолюция
-tension.status = "resolved";
+// Резолюция или растворение (dissolved = противоречия нет, факты совместимы)
+const finalStatus = opts.dissolved ? "dissolved" : "resolved";
+tension.status = finalStatus;
 tension.resolvedAt = new Date().toISOString();
 tension.resolution = opts.resolution.trim().slice(0, 500);
 
 await Bun.write(tensionPath, JSON.stringify(tension, null, 2));
 
 console.log(JSON.stringify({
-  status: "resolved",
+  status: finalStatus,
   id: opts.id,
   resolution: tension.resolution,
 }));

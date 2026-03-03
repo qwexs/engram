@@ -237,6 +237,37 @@ await Bun.write(itemsPath, JSON.stringify(data, null, 2));
 // 6.1 Зарегистрировать хэш после успешной записи
 await registerHash(factHash, entity);
 
+// 6.2 Авто-создать tensions из высококонфидентных противоречий
+// Условие: --check-contradictions передан + Jaccard ≥0.5 + ≥3 общих ключевых слова
+const autoTensions = [];
+if (contradictions && opts["check-contradictions"]) {
+  const highConf = (contradictions.conflicts || []).filter(
+    c => c.similarity >= 0.5 && (c.commonKeywords || []).length >= 3
+  );
+  for (const conflict of highConf) {
+    const tensionText = `Possible contradiction: new fact vs existing "${conflict.fact.slice(0, 100)}"`;
+    const desc = `Auto-detected (Jaccard ${conflict.similarity.toFixed(2)}, ${(conflict.commonKeywords || []).length} common words)`;
+    try {
+      const tArgs = [
+        "bun", join(import.meta.dir, "memory-tension.js"),
+        "--tension", tensionText,
+        "--fact1", newFact.id,
+        "--fact2", conflict.id,
+        "--type", "factual",
+        "--confidence", String(conflict.similarity),
+        "--description", desc,
+      ];
+      const tp = Bun.spawn(tArgs, { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
+      const tout = await new Response(tp.stdout).text();
+      await tp.exited;
+      try {
+        const tres = JSON.parse(tout);
+        if (tres.status === "created") autoTensions.push(tres.id);
+      } catch {}
+    } catch {}
+  }
+}
+
 // 7. Валидация KG
 try {
   const proc = Bun.spawn(["bun", join(import.meta.dir, "validate.js")], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
@@ -251,6 +282,9 @@ try {
 
 // 9. Вывод результата
 const result = { status: "created", fact: newFact };
+if (autoTensions.length > 0) {
+  result.tensions = autoTensions;
+}
 if (contradictions) {
   const total = (contradictions.conflicts?.length || 0) + (contradictions.crossEntityConflicts?.length || 0);
   if (total > 0) {

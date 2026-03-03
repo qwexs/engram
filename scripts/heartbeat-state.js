@@ -33,6 +33,11 @@ const DEFAULT_STATE = {
   lastWeeklySynthesis: null,
   pendingObservations: 0,
   pendingTensions: 0,
+  rethinkInProgress: false,
+  rethinkStartedAt: null,
+  lastRethink: null,
+  lastRethinkScore: null,
+  rethinkCount: 0,
   subagentRuns: {},
 };
 

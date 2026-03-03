@@ -12,7 +12,7 @@ Now: {{now_iso}}
 
 1. Read `{{registry_path}}` to get the list of domains
 2. For each domain, perform the appropriate check (see below)
-3. Collect observations as JSON objects: `{id, observation, category}` where category is friction/surprise/quality
+3. Collect flags as strings: `"CANDIDATE_OBS: brief description"` for friction/surprise noticed
 4. Return the handoff block at the end (MUST be your last output)
 
 ## Domain Check Rules
@@ -43,7 +43,7 @@ When a PROPOSAL is found in `changelog.md`:
 2. Assess risk:
    - **Low risk**: cosmetic changes, threshold tweaks, adding logging, documentation updates
    - **High risk**: new API endpoints, permission changes, data deletion, external service changes, architecture changes
-3. Low-risk: add to Observations with `category: "quality"` and note "auto-approvable"
+3. Low-risk: add to Flags with note "CANDIDATE_OBS: PROPOSAL auto-approvable — {brief}"
 4. High-risk: add to **Alerts** — requires human decision
 5. Include the PROPOSAL text in the alert for context
 
@@ -51,18 +51,19 @@ When a PROPOSAL is found in `changelog.md`:
 
 For each domain:
 1. Count lines in `changelog.md`
-2. If >1000 lines: run `bun scripts/rotate-notes.js --rotate --file <path> --type changelog`
-3. Record rotation in Observations
+2. If >1000 lines: run `bun skills/engram/scripts/rotate-notes.js --rotate --file <path> --type changelog`
+3. Record rotation in Flags
 
 ## Rules
 
 1. Read only `status.md`, `decisions.md`, `changelog.md` for each domain — do NOT read other files
-2. If a file doesn't exist — add observation with category "friction", continue
+2. If a file doesn't exist — add flag: "CANDIDATE_OBS: {domain} missing {file} — friction"
 3. Disabled cron-tasks are NOT alerts (they're intentionally paused)
-4. Low-risk PROPOSALs are observations; high-risk PROPOSALs are alerts
-5. Observations must be JSON objects: `{id, observation, category}` where category is friction/surprise/quality
-6. Changelog rotation (>1000 lines) via `rotate-notes.js` — the ONLY write operation allowed
-7. Do NOT update heartbeat-state.json — the orchestrator handles this
+4. Low-risk PROPOSALs are flags; high-risk PROPOSALs are alerts
+5. Flags are strings: "CANDIDATE_OBS: brief description of friction/surprise noticed"
+6. Do NOT write domain status reports as flags — only genuine friction or surprises
+7. Changelog rotation (>1000 lines) via `rotate-notes.js` — the ONLY write operation allowed
+8. Do NOT update heartbeat-state.json — the orchestrator handles this
 
 ## Handoff (MUST be your LAST output)
 
@@ -73,7 +74,7 @@ Your response MUST end with this block. Fill in the values:
 Status: {ok | error}
 Summary: {one line, e.g. "checked 8 domains (4 dev-project, 4 cron-task), 0 alerts"}
 Stats: {"checked": N, "dev_project": N, "cron_task": N, "alerts": N, "proposals": N}
-Observations: [{id: "obs-0001", observation: "domain: liveness check passed", category: "quality"}, {id: "obs-0002", observation: "domain: proposal found in decisions.md", category: "friction"}]
+Flags: {[] or ["CANDIDATE_OBS: domain X missing status.md — possible friction"]}
 Alerts: {[] or ["domain: alert text"]}
 === END ===
 ```

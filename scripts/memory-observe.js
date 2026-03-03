@@ -9,8 +9,7 @@ import { extractKeywords, jaccardSimilarity } from "./utils.js";
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
 const OBS_DIR = join(WORKSPACE, "workspace", "ops", "observations");
 
-const VALID_CATEGORIES = ["friction", "surprise", "quality"];
-const VALID_EXTENDED = ["process", "methodology"];
+const VALID_CATEGORIES = ["friction", "surprise", "pattern"];
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -35,13 +34,8 @@ if (!opts.observation) {
 
 const category = opts.category?.toLowerCase() || "friction";
 
-if (!VALID_CATEGORIES.includes(category) && !VALID_EXTENDED.includes(category)) {
-  console.error(`❌ Категория должна быть: ${VALID_CATEGORIES.join(", ")} или ${VALID_EXTENDED.join(", ")} (с --extended)`);
-  process.exit(1);
-}
-
-if (VALID_EXTENDED.includes(category) && !opts.extended) {
-  console.error(`❌ Категория ${category} требует флага --extended`);
+if (!VALID_CATEGORIES.includes(category)) {
+  console.error(`❌ Категория должна быть: ${VALID_CATEGORIES.join(", ")}`);
   process.exit(1);
 }
 

@@ -309,64 +309,117 @@ workspace/ops/
 
 ### Capturing Observations
 
+Only the agent writes observations — subagents return `Flags:` in handoffs for the agent to review.
+
 ```bash
-# Basic observation (friction, surprise, quality)
+# Friction, surprise, or pattern (inline during session)
 bun skills/engram/scripts/memory-observe.js --observation "KG extraction missed facts about email" --category friction
-
-# With description
-bun skills/engram/scripts/memory-observe.js --observation "..." --category quality --description "Why this matters"
-
-# Extended category (requires --extended flag)
-bun skills/engram/scripts/memory-observe.js --observation "..." --category process --extended
+bun skills/engram/scripts/memory-observe.js --observation "..." --category surprise --description "Why this matters"
 ```
 
-**Categories:**
-- `friction` — something that slowed work down
-- `surprise` — unexpected outcome
-- `quality` — code/content quality issue
-- `process`, `methodology` — requires `--extended` flag
+**Categories:** `friction` (weight ×3), `surprise` (weight ×2), `pattern` (weight ×1)
 
 ### Capturing Tensions
 
+Tensions are auto-created when `memory-write.js --check-contradictions` finds Jaccard ≥0.5 + ≥3 common keywords. Manual creation:
+
 ```bash
 bun skills/engram/scripts/memory-tension.js \
-  --tension "Two facts contradict each other" \
-  --fact1 "sergey-001" \
-  --fact2 "sergey-005" \
+  --tension "Fact A contradicts fact B" \
+  --fact1 "sergey-001" --fact2 "sergey-005" \
+  --type factual \
+  --confidence 0.8 \
   --description "Context about the contradiction"
 ```
 
-### Threshold Alerts
+**Types:** `factual` (default), `temporal`, `priority`
 
-Heartbeat checks pending counts:
-- **>20 pending observations** → alert
-- **>5 pending tensions** → alert
+### Promoting or Archiving Observations
 
-Alerts appear in daily note report.
+```bash
+# Promote obs → KG fact (with backlink)
+bun skills/engram/scripts/memory-promote.js \
+  --obs-id obs-0002 --entity "projects/engram" \
+  --fact "Extraction finds no facts in heartbeat-only daily notes" \
+  --category context --confidence 0.8 --abstraction pattern \
+  --tags "extraction,heartbeat" [--dry-run]
 
-### Observation Schema
+# Archive (noise, status report, resolved friction)
+bun skills/engram/scripts/memory-promote.js --archive \
+  --obs-id obs-0003 --reason "domain status report, not friction"
+```
 
+**Backlink:** promoted KG fact gets `source: obs-id`; obs file gets `kgFactId`.
+
+### OLL Rethink Trigger (Heartbeat Phase 5)
+
+Phase 5 computes weighted score and spawns `hb-rethink` when triggered:
+
+| Condition | Threshold |
+|-----------|-----------|
+| Weighted score (f×3 + s×2 + p×1) | ≥ 15 |
+| Pending tensions | ≥ 3 |
+| Days since last rethink | ≥ 14 |
+
+`hb-rethink` (sonnet-4-6) reviews observations + tensions, identifies patterns, generates proposals, and returns a `HB-RETHINK HANDOFF` block. `process-handoff.js` auto-executes low-risk actions (archive noise, promote facts) and surfaces an ALERT.
+
+### Resolving Tensions
+
+```bash
+# Resolved: one fact supersedes the other
+bun skills/engram/scripts/memory-tension-resolve.js \
+  --id tension-0001 --resolution "fact-abc superseded by fact-xyz"
+
+# Dissolved: not actually contradictory
+bun skills/engram/scripts/memory-tension-resolve.js \
+  --id tension-0001 --dissolved \
+  --resolution "facts are scope-dependent (work vs personal context)"
+```
+
+### Schemas
+
+**Observation:**
 ```json
 {
   "id": "obs-0001",
   "observation": "KG extraction missed facts about email",
   "category": "friction",
-  "description": "Why this matters",
-  "status": "pending",
+  "status": "pending | promoted | implemented | archived",
   "createdAt": "2026-02-25T12:00:00.000Z",
   "promotedAt": null,
   "archivedAt": null,
+  "kgFactId": null,
   "accessCount": 0
 }
 ```
 
-### Rules
+**Tension:**
+```json
+{
+  "id": "tension-0001",
+  "tension": "Possible contradiction: ...",
+  "type": "factual | temporal | priority",
+  "confidence": 0.72,
+  "fact1": "sergey-001",
+  "fact1Text": "Prefers Bun over Node.js",
+  "fact2": "sergey-005",
+  "fact2Text": "Uses Node.js for all projects",
+  "description": "Auto-detected (Jaccard 0.72, 4 common words)",
+  "status": "pending | resolved | dissolved",
+  "createdAt": "2026-03-03T15:00:00.000Z"
+}
+```
 
-- **Novelty check:** Jaccard similarity >0.7 with recent observations → rejected as duplicate
-- **Review loop:** observations stay `pending` until reviewed → promoted to life/ or archived
-- **Content promotion:** durable observations → promoted to Knowledge Graph as patterns/principles
+**index.json stats:**
+```json
+{
+  "observations": ["obs-0001", ...],
+  "lastId": 10,
+  "stats": { "total": 10, "pending": 1, "promoted": 2, "implemented": 1, "archived": 6 }
+}
+```
 
-For full OLL details, see [references/HEARTBEAT.md](references/HEARTBEAT.md) (Phase 5).
+For full OLL details, see [references/HEARTBEAT.md](references/HEARTBEAT.md) (Phase 5) and [references/HB-RETHINK.md](references/HB-RETHINK.md).
 
 ## Fact Schema v2
 
@@ -729,18 +782,43 @@ Finds conflicting facts via Jaccard similarity. Intra-entity by default; `--cros
 ### memory-observe.js — Capture operational observations
 
 ```bash
-bun skills/engram/scripts/memory-observe.js --observation "text" --category friction [--description "desc"] [--extended] [--dry-run]
+bun skills/engram/scripts/memory-observe.js --observation "text" --category friction [--description "desc"] [--dry-run]
 ```
 
-Captures observations about system friction, surprises, or quality issues. Includes novelty check (Jaccard similarity >0.7 rejects duplicates).
+Captures observations about system friction, surprises, or patterns. Categories: `friction`, `surprise`, `pattern`. Includes novelty check (Jaccard >0.7 rejects duplicates). Only the agent writes observations directly — subagents return `Flags:` in handoffs.
 
 ### memory-tension.js — Capture contradictions
 
 ```bash
-bun skills/engram/scripts/memory-tension.js --tension "text" --fact1 <id> --fact2 <id> [--description "desc"] [--dry-run]
+bun skills/engram/scripts/memory-tension.js \
+  --tension "text" --fact1 <id> --fact2 <id> \
+  [--type factual|temporal|priority] [--confidence 0.8] [--description "desc"] [--dry-run]
 ```
 
-Captures tensions between two facts. Validates that both fact IDs exist in KG before creating tension. Includes Jaccard novelty check (>0.7 similarity → skips duplicate).
+Captures tensions between two KG facts. Validates both IDs exist in KG. Stores `fact1Text`/`fact2Text` from KG for hb-rethink review. Auto-created by `memory-write.js --check-contradictions` when Jaccard ≥0.5 + ≥3 common keywords. Novelty check (>0.7 → skip duplicate).
+
+### memory-tension-resolve.js — Resolve or dissolve tensions
+
+```bash
+bun skills/engram/scripts/memory-tension-resolve.js --id tension-0001 --resolution "text"
+bun skills/engram/scripts/memory-tension-resolve.js --id tension-0001 --dissolved --resolution "text"
+```
+
+Marks tension as `resolved` (contradiction fixed) or `dissolved` (not actually contradictory). Idempotent if already closed.
+
+### memory-promote.js — Promote observation to KG or archive it
+
+```bash
+# Promote obs → KG fact (with backlink: obs.kgFactId ← fact.source = obs-id)
+bun skills/engram/scripts/memory-promote.js \
+  --obs-id obs-0002 --entity "projects/engram" --fact "text" \
+  --category context --confidence 0.8 [--abstraction pattern] [--tags "..."] [--dry-run]
+
+# Archive observation
+bun skills/engram/scripts/memory-promote.js --archive --obs-id obs-0003 --reason "noise"
+```
+
+Updates `index.json stats` (total/pending/promoted/implemented/archived) after every status change.
 
 ### daily-note-append.js — Record session activity to daily note
 

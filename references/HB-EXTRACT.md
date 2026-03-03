@@ -49,7 +49,7 @@ Durable facts -- things worth remembering across sessions:
 ## memory-write.js CLI Reference
 
 ```bash
-bun scripts/memory-write.js \
+bun skills/engram/scripts/memory-write.js \
   --entity "people/sergey" \
   --fact "Predpochtitaet Bun vmesto Node.js" \
   --description "Tool preference affecting project setup decisions" \
@@ -68,6 +68,7 @@ bun scripts/memory-write.js \
 **--description:** Why this fact matters / how to find it later (max 150 chars). Enables richer BM25 search with vocabulary different from the fact itself. Use it — it's the discovery-first gate.
 **Valid --category values:** relationship, milestone, status, preference, context, decision, correction
 **--source:** use the daily note date (YYYY-MM-DD)
+**--check-contradictions:** Add this flag for contradiction-prone categories: `preference`, `decision`, `correction`, `tool`. Automatically creates tensions when Jaccard ≥0.5 AND ≥3 common keywords. Skip for `milestone`, `event`, `status` (time-bounded facts rarely contradict).
 
 **Entity routing:** determine the entity path from fact content:
 - People: `people/{name}`
@@ -85,7 +86,7 @@ bun scripts/memory-write.js \
 6. Do NOT update heartbeat-state.json -- the orchestrator handles this
 7. Do NOT read or write MEMORY.md, AGENTS.md, or any file outside the extraction task
 8. If no extractable facts found, still return the handoff block with facts_written: 0
-9. When writing a fact that contradicts an existing fact (memory-write.js reports contradictions in warnings), include the contradiction as a Tension in the handoff block
+9. For contradiction-prone categories (`preference`, `decision`, `correction`), add `--check-contradictions` to the memory-write.js call. When memory-write.js returns `result.tensions[]` (auto-created tensions), include them in the handoff Tensions field. When memory-write.js reports contradictions in `result.warnings.contradictions` but tensions were not auto-created (similarity 0.3–0.5), you may still include a Tension manually if the contradiction is clear.
 
 ## Handoff (MUST be your LAST output)
 
@@ -96,7 +97,7 @@ Your response MUST end with this block. Fill in the values:
 Status: {ok | error}
 Summary: {one line, e.g. "extracted 3 facts from 2026-02-22.md (L47->L89)"}
 Stats: {"facts_written": N, "facts_skipped_dedup": N, "new_watermark": "L{last_line_processed}"}
-Observations: {[] or [{"id": "obs-NNNN", "observation": "text", "category": "friction|surprise|quality"}]}
+Flags: {[] or ["CANDIDATE_OBS: brief description of friction/surprise noticed"]}
 Tensions: {[] or [{"tension": "Contradicts existing fact", "fact1": "new-fact-id", "fact2": "existing-fact-id"}]}
 Alerts: {[] or ["alert text"]}
 === END ===

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -79,6 +79,30 @@ const handler = async (event: any) => {
   const iso = localISO(TZ);
   appendFileSync(notePath, `<!-- session:start:${iso} -->\n`);
   console.log(`[engram-session-start] Wrote session:start to ${notePath}`);
+
+  // Move handoff .md files from memory/ root to memory/domains/{session}/YYYY-MM-DD/
+  try {
+    const memoryDir = join(workspaceDir, "memory");
+    const domainsDir = join(memoryDir, "domains");
+    const files = readdirSync(memoryDir).filter(f => f.endsWith(".md") && /^\d{4}-\d{2}-\d{2}/.test(f));
+    for (const file of files) {
+      const dateMatch = file.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (!dateMatch) continue;
+      const date = dateMatch[1];
+      let sess = "main";
+      try {
+        const content = readFileSync(join(memoryDir, file), "utf-8").slice(0, 500);
+        const m = content.match(/Session Key.*?agent:[\w-]+:([\w-]+)/);
+        if (m) sess = m[1];
+      } catch {}
+      const destDir = join(domainsDir, sess, date);
+      mkdirSync(destDir, { recursive: true });
+      renameSync(join(memoryDir, file), join(destDir, file));
+      console.log(`[engram-session-start] Moved ${file} -> domains/${sess}/${date}/`);
+    }
+  } catch (e) {
+    console.error(`[engram-session-start] Handoff move error:`, e);
+  }
 };
 
 export default handler;

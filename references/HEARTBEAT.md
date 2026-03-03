@@ -1,7 +1,7 @@
 # Heartbeat Orchestrator
 
 Read this document top to bottom and execute each phase sequentially.
-**State mutations:** use `bun scripts/heartbeat-state.js --set <path> <value>` for all state writes (`true`/`false`/`null`/numbers/JSON all parsed correctly). Read via `--get-all`.
+**State mutations:** use `bun skills/engram/scripts/heartbeat-state.js --set <path> <value>` for all state writes (`true`/`false`/`null`/numbers/JSON all parsed correctly). Read via `--get-all`.
 
 > **ARCHITECTURE NOTE — Fire-and-Forget**
 > `sessions_spawn` is asynchronous: it returns immediately and auto-announces via system message.
@@ -34,13 +34,13 @@ Run BEFORE extraction — rotation must happen first so extraction works on the 
 
 1. Check daily note size:
    ```bash
-   bun scripts/rotate-notes.js --check --session <session>
+   bun skills/engram/scripts/rotate-notes.js --check --session <session>
    ```
 2. If exit code 10 (needs rotation):
    a. Run extraction FIRST on the full file (Phase 1 inline or via subagent)
    b. Then rotate:
       ```bash
-      bun scripts/rotate-notes.js --rotate --file <path> --type daily
+      bun skills/engram/scripts/rotate-notes.js --rotate --file <path> --type daily
       ```
    c. The stub contains a `<!-- STUB: ... -->` marker — record `needsStubSummary: true` for Phase 1.5
    d. Run `qmd update` to index the archive
@@ -61,7 +61,7 @@ Run BEFORE extraction — rotation must happen first so extraction works on the 
     **Do not wait — result arrives via system message.**
   - If `false`: run extraction inline
     - Read daily note from validated watermark (or L1 if none)
-    - Extract facts via `bun scripts/memory-write.js`
+    - Extract facts via `bun skills/engram/scripts/memory-write.js`
     - Append watermark to daily note; `--set lastExtraction.<session> <ISO>`, `--set subagentRuns.hb-extract.status ok`
 
 ## Phase 1.5: Stub Summary (if rotation happened)
@@ -106,34 +106,69 @@ If the heartbeat model is too weak for summarization, defer to next interactive 
 
 ## Phase 4: Maintenance (inline, synchronous)
 
-1. Run `bun scripts/validate-kg.js --fix`
+1. Run `bun skills/engram/scripts/validate.js --fix`
 2. Run `qmd update` (BM25 index — always, instant)
 3. Run `qmd embed` (vector embeddings — updates since last run)
 4. If any phase wrote to `life/` — already covered by steps 2-3
 
 ## Phase 5: OLL Check (inline, synchronous)
 
-1. Count pending observations: read `workspace/ops/observations/index.json`, count items where status === "pending"
-2. Count pending tensions: read `workspace/ops/tensions/index.json`, count items where status === "pending"
-3. If pending observations > 20 OR pending tensions > 5:
-   - Set alert: `OLL threshold exceeded: {count} observations, {count} tensions`
-   - Surface in Phase 6 report
+1. Load `workspace/ops/observations/index.json` — collect pending obs IDs, read each file, count by category:
+   - `friction_count` = pending obs where category === "friction"
+   - `surprise_count` = pending obs where category === "surprise"
+   - `pattern_count` = pending obs where category === "pattern" or "quality"
+
+2. Load `workspace/ops/tensions/index.json` — count where status === "pending":
+   - `tension_count` = pending tensions
+
+3. Compute weighted score:
+   ```
+   weighted = friction_count * 3 + surprise_count * 2 + pattern_count * 1
+   ```
+
+4. Check time floor — read `heartbeat-state.json`:
+   - `daysSinceRethink` = days since `lastRethink` (or 999 if never)
+
+5. Check trigger conditions (any one):
+   - `weighted >= 15`
+   - `tension_count >= 3`
+   - `daysSinceRethink >= 14`
+
+6. If trigger AND `rethinkInProgress !== true`:
+   - Spawn hb-rethink subagent:
+     ```
+     sessions_spawn(task: HB-RETHINK.md with injected context, label: "hb-rethink", model: "sonnet-4-6", cleanup: "delete")
+     ```
+   - Set state:
+     ```bash
+     bun skills/engram/scripts/heartbeat-state.js --set rethinkInProgress true
+     bun skills/engram/scripts/heartbeat-state.js --set rethinkStartedAt <ISO>
+     ```
+   - Surface in Phase 6 report: `"OLL rethink spawned (score: {weighted}, tensions: {tension_count})"`
+
+7. If NOT triggered OR `rethinkInProgress === true`:
+   - Surface counts in Phase 6 report: `"OLL: {weighted} score ({friction_count}f/{surprise_count}s/{pattern_count}p), {tension_count} tensions — below threshold"`
+   - If `rethinkInProgress === true` AND age > 2h → auto-reset stale lock:
+     ```bash
+     bun skills/engram/scripts/heartbeat-state.js --set rethinkInProgress false
+     bun skills/engram/scripts/heartbeat-state.js --set rethinkStartedAt null
+     ```
 
 ## Phase 6: Report + Unlock
 
 1. Write/update report via script (handles create-or-replace, no identical-content errors):
    ```bash
-   bun scripts/heartbeat-report.js \
+   bun skills/engram/scripts/heartbeat-report.js \
      --extraction "<spawned (result pending) | ok (inline, N facts)>" \
      --synthesis  "<spawned (result pending) | skipped (not Monday)>" \
      --domains    "<spawned (result pending) | skipped (no registry)>" \
-     --maintenance "ok — validate-kg.js: N errors, M files; qmd update+embed done"
+     --maintenance "ok — validate: N errors, M warnings; qmd update+embed done"
    ```
    Omit any flag to preserve its current value from the existing section.
 2. Release lock:
    ```bash
-   bun scripts/heartbeat-state.js --set heartbeatInProgress false
-   bun scripts/heartbeat-state.js --set heartbeatLockedAt null
+   bun skills/engram/scripts/heartbeat-state.js --set heartbeatInProgress false
+   bun skills/engram/scripts/heartbeat-state.js --set heartbeatLockedAt null
    ```
 3. Return `HEARTBEAT_OK` — **always, regardless of pending subagents**
 
@@ -150,7 +185,7 @@ Triggered when a system message arrives with a completed subagent result.
 1. Extract the full handoff block (from `=== HB-* HANDOFF ===` through `=== END ===`) from the system message
 2. Pipe it to the script:
    ```bash
-   printf '%s' "<handoff block>" | bun scripts/process-handoff.js --session <session> --date <YYYY-MM-DD>
+   printf '%s' "<handoff block>" | bun skills/engram/scripts/process-handoff.js --session <session> --date <YYYY-MM-DD>
    ```
 3. Check exit code:
    - **0** — processed OK, nothing else needed
@@ -171,11 +206,11 @@ Every subagent must end its response with a handoff block:
 Status: ok
 Summary: extracted 3 facts from 2026-02-21.md (L209->L247)
 Stats: {"facts_written": 3, "new_watermark": "L247"}
-Observations: [{"id": "obs-0001", "observation": "KG extraction missed facts about email", "category": "friction"}, {"id": "obs-0002", "observation": "Watermark logic handles edge cases well", "category": "quality"}]
+Flags: ["CANDIDATE_OBS: brief description of friction/surprise noticed"]
 Alerts: []
 === END ===
 ```
-Fields: Status (ok | error | partial), Summary (one line), Stats (JSON), Observations (JSON array with id, observation, category), Alerts (list)
+Fields: Status (ok | error | partial), Summary (one line), Stats (JSON), Flags (string array — CANDIDATE_OBS only for real friction/surprise), Tensions (JSON array), Alerts (list)
 
 ## Error Handling
 

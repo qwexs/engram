@@ -113,3 +113,5 @@ Tensions-Resolved: [{"id": "tension-id", "resolution": "fact-abc superseded by f
 4. `Tensions-Resolved` — only tensions you can confidently resolve/dissolve; leave ambiguous ones out
 5. `Alerts` — always include at least one ALERT (report ready notification)
 6. If no observations or tensions to review, still complete the task with empty analysis
+
+

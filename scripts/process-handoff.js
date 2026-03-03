@@ -373,4 +373,6 @@ if (Array.isArray(alerts) && alerts.length > 0) {
   process.exit(2); // exit 2 = alerts present
 }
 
+// Explicit signal: no alerts, caller MUST reply NO_REPLY
+console.log("[SILENT] Handoff processed — no user-facing output required");
 process.exit(0);

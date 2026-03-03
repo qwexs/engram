@@ -187,13 +187,19 @@ Triggered when a system message arrives with a completed subagent result.
    ```bash
    printf '%s' "<handoff block>" | bun skills/engram/scripts/process-handoff.js --session <session> --date <YYYY-MM-DD>
    ```
-3. Check exit code:
-   - **0** — processed OK, nothing else needed
-   - **1** — script error; log the output to daily note
-   - **2** — alerts present; read `[ALERT]` lines from stdout and surface to user
-4. Return `HEARTBEAT_OK` (or alert text if exit 2)
+3. Check exit code and stdout:
+   - **0** + `[SILENT]` in output → **respond NO_REPLY** (nothing to surface)
+   - **1** — script error; log the output to daily note → **respond NO_REPLY**
+   - **2** + `[ALERT]` lines in output → surface ONLY the `[ALERT]` lines to user
 
-> **That's it.** All state updates, watermark writes, observation processing, and report updates
+> **🔴 CRITICAL RULE — NO CHAT LEAKAGE:**
+> After processing a handoff, you MUST respond `NO_REPLY` unless `process-handoff.js`
+> exits with code 2 AND stdout contains `[ALERT]` lines. This is non-negotiable.
+> Do NOT summarize, narrate, or acknowledge the handoff result in chat.
+> Do NOT forward subagent output, stats, or completion status to the user.
+> The `[SILENT]` marker in stdout is your explicit signal: stay quiet.
+
+> All state updates, watermark writes, observation processing, and report updates
 > are handled by `process-handoff.js` automatically. No manual parsing required.
 
 ---

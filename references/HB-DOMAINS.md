@@ -82,3 +82,5 @@ Flags: {[] or ["CANDIDATE_OBS: domain X missing status.md — possible friction"
 Alerts: {[] or ["domain: alert text"]}
 === END ===
 ```
+
+

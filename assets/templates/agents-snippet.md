@@ -85,14 +85,23 @@ When unsure: default to ops (memory/daily note). If it proves durable, promote l
 
 ### 11. Session-End Checklist
 
-Before session closes, write to today's daily note:
-- `## Active Threads` — open tasks with status
-- `## Learnings` — new insights
-- `## Next` — priorities for next session
+Before session closes:
+
+1. **OLL Review** — scan the session for friction/surprise/pattern moments:
+   - Did a tool/process fail and you recovered unexpectedly? → `memory-observe.js --category friction`
+   - Did something unexpected happen? → `memory-observe.js --category surprise`
+   - Did the same issue come up again? → `memory-observe.js --category pattern`
+   - Nothing notable? → skip (don't force observations)
+   - **Max 1-3 observations per session.** Scarcity enforces quality.
+
+2. **Daily note summary** — write to today's daily note:
+   - `## Active Threads` — open tasks with status
+   - `## Learnings` — new insights
+   - `## Next` — priorities for next session
+
+3. Run `qmd update`.
 
 > `<!-- session:end -->` marker is written automatically by the `engram-session-end` hook on `/new` or `/reset`.
-
-Then run `qmd update`.
 
 ### 12. Inline (Real-Time) Extraction
 
@@ -152,4 +161,31 @@ This updates `lastAccessed` and `accessCount`, preventing useful facts from deca
 - **Hot** (≤7 days) → prominent in summary
 - **Warm** (8-30 days) → secondary in summary
 - **Cold** (30+ days) → excluded from summary (principles always included)
+
+### 15. OLL — Inline Observation Capture
+
+Observations are the agent's self-reflection on friction, surprises, and recurring patterns.
+**Only the agent writes observations** — subagents flag candidates, agent decides.
+
+**Three categories:** `friction` (something slowed/blocked), `surprise` (expected X got Y), `pattern` (same issue recurring).
+
+**Write when:**
+- Tool/process failed AND you recovered in an unexpected way
+- User corrected you on something you were confident about
+- Something worked notably better/worse than expected
+- Same friction occurred for the N-th time (pattern!)
+
+**Do NOT write when:**
+- Everything went as expected
+- Task completed normally
+- Domain status changed (that's domain status, not observation)
+
+```bash
+bun skills/engram/scripts/memory-observe.js \
+  --observation "Extraction missed 3 facts in long message — chunking needed?" \
+  --category friction \
+  --description "Messages >400 words lose facts at extraction"
+```
+
+**Max 1-3 observations per session.** Scarcity enforces quality.
 <!-- engram:rules:end -->

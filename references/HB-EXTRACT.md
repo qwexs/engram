@@ -97,7 +97,7 @@ Your response MUST end with this block. Fill in the values:
 Status: {ok | error}
 Summary: {one line, e.g. "extracted 3 facts from 2026-02-22.md (L47->L89)"}
 Stats: {"facts_written": N, "facts_skipped_dedup": N, "new_watermark": "L{last_line_processed}"}
-Flags: {[] or ["CANDIDATE_OBS: brief description of friction/surprise noticed"]}
+Flags: {[] — default empty; only add "CANDIDATE_OBS: ..." for genuine extraction anomalies (watermark corruption, repeated dedup failures, schema errors). Do NOT flag: empty daily notes, low content, normal zero-fact extractions.}
 Tensions: {[] or [{"tension": "Contradicts existing fact", "fact1": "new-fact-id", "fact2": "existing-fact-id"}]}
 Alerts: {[] or ["alert text"]}
 === END ===

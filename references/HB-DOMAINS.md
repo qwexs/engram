@@ -61,7 +61,11 @@ For each domain:
 3. Disabled cron-tasks are NOT alerts (they're intentionally paused)
 4. Low-risk PROPOSALs are flags; high-risk PROPOSALs are alerts
 5. Flags are strings: "CANDIDATE_OBS: brief description of friction/surprise noticed"
-6. Do NOT write domain status reports as flags — only genuine friction or surprises
+6. **Flags default to `[]`.** Only write a CANDIDATE_OBS for genuine anomalies:
+   - A file is missing or corrupted
+   - A PROPOSAL needs attention
+   - Something contradicts prior state (was enabled, now broken)
+   - **NEVER** flag: domain status summaries, "X is stable", "Y is active", disabled tasks (intentional), age-based staleness that's already an Alert
 7. Changelog rotation (>1000 lines) via `rotate-notes.js` — the ONLY write operation allowed
 8. Do NOT update heartbeat-state.json — the orchestrator handles this
 

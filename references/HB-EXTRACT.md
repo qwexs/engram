@@ -7,15 +7,34 @@ Read this document, then execute the extraction task below.
 Daily note: {{daily_note_path}}
 Watermark: {{watermark}}
 Session: {{session}}
+Session files dir: {{session_files_dir}}
+Last session extracted: {{last_session_extracted}}
 
 ## Task
+
+### Phase 1 — Daily Note
 
 1. Read the daily note file at the path above
 2. Start reading from line {{watermark}} (e.g., L47 means start at line 47). If L1, read the entire file.
 3. For each durable fact found, write it via memory-write.js (see CLI Reference below)
 4. Count facts written and facts skipped (dedup)
 5. Note the last line number you processed
-6. Return the handoff block at the end (MUST be your last output)
+
+### Phase 2 — Session Files
+
+6. List all `.md` files in `{{session_files_dir}}` sorted by name (alphabetical = chronological)
+7. If `{{last_session_extracted}}` is `none` — process all files found
+8. Otherwise — process only files whose name sorts **after** `{{last_session_extracted}}`
+9. For each new session file:
+   - Read the file content
+   - Extract durable facts (same rules as Phase 1, same categories)
+   - Focus on HIGH-signal: preferences, decisions, corrections, milestones — skip small talk and transient requests
+   - Skip facts already captured from the daily note (use `--semantic-check` to detect)
+   - Write via memory-write.js
+10. Track the filename of the last processed session file as `last_session_file`
+11. Return the handoff block at the end (MUST be your last output)
+
+**Session files isolation:** only read files from `{{session_files_dir}}`. Never read session files from other sessions.
 
 ## What to Extract
 
@@ -95,8 +114,8 @@ Your response MUST end with this block. Fill in the values:
 ```
 === HB-EXTRACT HANDOFF ===
 Status: {ok | error}
-Summary: {one line, e.g. "extracted 3 facts from 2026-02-22.md (L47->L89)"}
-Stats: {"facts_written": N, "facts_skipped_dedup": N, "new_watermark": "L{last_line_processed}"}
+Summary: {one line, e.g. "extracted 3 facts from 2026-02-22.md (L47->L89) + 1 from session files"}
+Stats: {"facts_written": N, "facts_skipped_dedup": N, "new_watermark": "L{last_line_processed}", "last_session_file": "{filename or null}"}
 Flags: {[] — default empty; only add "CANDIDATE_OBS: ..." for genuine extraction anomalies (watermark corruption, repeated dedup failures, schema errors). Do NOT flag: empty daily notes, low content, normal zero-fact extractions.}
 Tensions: {[] or [{"tension": "Contradicts existing fact", "fact1": "new-fact-id", "fact2": "existing-fact-id"}]}
 Alerts: {[] or ["alert text"]}

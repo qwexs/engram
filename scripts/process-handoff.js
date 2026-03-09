@@ -181,6 +181,13 @@ function handleExtract() {
   setState(`lastExtraction.${session}`, now);
   setState("subagentRuns.hb-extract.status", "ok");
 
+  // Track last processed session file (Phase 2 — session files extraction)
+  const lastSessionFile = stats.last_session_file ?? null;
+  if (lastSessionFile && lastSessionFile !== "null") {
+    setState(`lastSessionExtracted.${session}`, lastSessionFile);
+    console.log(`[hb-extract] Session file watermark: ${lastSessionFile}`);
+  }
+
   // Update report
   const reportVal = `ok (${factsWritten} facts${factsSkipped ? `, ${factsSkipped} skipped` : ""}, L${newWatermarkNum})`;
   updateReport("extraction", reportVal);

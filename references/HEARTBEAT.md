@@ -57,7 +57,9 @@ Run BEFORE extraction — rotation must happen first so extraction works on the 
     2. Replace `{{daily_note_path}}` with the absolute path to today's daily note
     3. Replace `{{watermark}}` with the validated watermark (e.g. `L7`)
     4. Replace `{{session}}` with the current session key (e.g. `main`)
-    5. Call `sessions_spawn(task=<filled template>, label="hb-extract", model="sonnet-4-6", cleanup="delete")`
+    5. Replace `{{session_files_dir}}` with the absolute path to `memory/agent-main/<session>/sessions/`
+    6. Replace `{{last_session_extracted}}` with `heartbeat-state.json` → `lastSessionExtracted.<session>`, or `none` if missing
+    7. Call `sessions_spawn(task=<filled template>, label="hb-extract", model="sonnet-4-6", cleanup="delete")`
     **Do not wait — result arrives via system message.**
   - If `false`: run extraction inline
     - Read daily note from validated watermark (or L1 if none)

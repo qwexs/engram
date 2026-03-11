@@ -67,13 +67,29 @@ const handler = async (event: any) => {
     console.log(`[engram-session-start] Created daily note ${notePath}`);
   }
 
-  // Skip if last non-empty line is already a session:start (avoid duplicates on gateway restart)
+  // Skip if there's already a session:start within the last 15 minutes (debounce repeated bootstraps)
   const content = existsSync(notePath) ? readFileSync(notePath, "utf-8") : "";
   const lines = content.trimEnd().split("\n");
   const lastLine = lines[lines.length - 1]?.trim() || "";
   if (lastLine.startsWith("<!-- session:start:")) {
     console.log(`[engram-session-start] Skipped (last line already session:start)`);
     return;
+  }
+  // Also skip if any session:start was written in the last 15 minutes
+  const debounceMs = 15 * 60 * 1000;
+  const now = Date.now();
+  const recentStart = lines.slice().reverse().find(l => l.trim().startsWith("<!-- session:start:"));
+  if (recentStart) {
+    const m = recentStart.match(/<!-- session:start:(.+?) -->/);
+    if (m) {
+      try {
+        const ts = new Date(m[1]).getTime();
+        if (!isNaN(ts) && now - ts < debounceMs) {
+          console.log(`[engram-session-start] Skipped (session:start written < 15min ago)`);
+          return;
+        }
+      } catch {}
+    }
   }
 
   const iso = localISO(TZ);

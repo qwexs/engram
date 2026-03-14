@@ -5,6 +5,7 @@
 
 import { join, dirname } from "path";
 import { existsSync, mkdirSync } from "fs";
+import { loadEngramConfig } from "./config.js";
 
 // Т.к. скрипт в skills/engram/scripts/, workspace на 3 уровня выше
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
@@ -59,7 +60,8 @@ if (!SECTION_MAP[sectionKey]) {
   process.exit(1);
 }
 
-const agentId = opts["agent-id"] || "main";
+const config = loadEngramConfig(workspace);
+const agentId = opts["agent-id"] || config.agent.replace(/^agent-/, "") || "main";
 const session = opts.session;
 const sectionTitle = SECTION_MAP[sectionKey];
 const text = opts.text.trim();

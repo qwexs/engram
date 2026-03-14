@@ -24,8 +24,10 @@
 import { join, dirname, basename } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, copyFileSync } from "fs";
 import { execSync } from "child_process";
+import { getAgentDir } from "./config.js";
 
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const AGENT_DIR = getAgentDir(WORKSPACE);
 const LINE_THRESHOLD = 1000;
 
 // --- Arg parsing ---
@@ -62,7 +64,7 @@ function extractWatermarks(content) {
 // CHECK MODE — scan for files needing rotation
 // ============================================================
 function checkDailyNotes(session, date) {
-  const sessionDir = join(WORKSPACE, "memory", "agent-main", session);
+  const sessionDir = join(WORKSPACE, "memory", AGENT_DIR, session);
   if (!existsSync(sessionDir)) {
     console.log(JSON.stringify({ needsRotation: false, reason: "session dir not found" }));
     return false;

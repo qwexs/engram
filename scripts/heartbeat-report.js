@@ -15,8 +15,10 @@
  */
 
 import { join } from "path";
+import { getAgentDir } from "./config.js";
 
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const AGENT_DIR = getAgentDir(WORKSPACE);
 
 // --- Arg parsing ---
 const args = process.argv.slice(2);
@@ -37,7 +39,7 @@ const provided = {
 };
 
 // --- Resolve path ---
-const notePath = join(WORKSPACE, "memory", "agent-main", session, `${date}.md`);
+const notePath = join(WORKSPACE, "memory", AGENT_DIR, session, `${date}.md`);
 
 // --- Read file ---
 let content = "";

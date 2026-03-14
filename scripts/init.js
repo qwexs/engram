@@ -7,10 +7,11 @@ import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
+import { loadEngramConfig } from './config.js';
 
 const { values: args } = parseArgs({
   options: {
-    'agent-id': { type: 'string', default: 'main' },
+    'agent-id': { type: 'string' },
     'qmd-variant': { type: 'string', default: 'auto' },
     'force': { type: 'boolean', default: false },
     'help': { type: 'boolean', short: 'h', default: false },
@@ -46,8 +47,9 @@ Examples:
   process.exit(0);
 }
 
-const agentId = args['agent-id'];
 const WORKSPACE = process.cwd();
+const config = loadEngramConfig(WORKSPACE);
+const agentId = args['agent-id'] || config.agent.replace(/^agent-/, '') || 'main';
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'assets', 'templates');

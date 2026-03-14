@@ -7,12 +7,13 @@ import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
+import { loadEngramConfig } from './config.js';
 
 const { values: args } = parseArgs({
   options: {
     'platform': { type: 'string' },
     'id': { type: 'string' },
-    'agent-id': { type: 'string', default: 'main' },
+    'agent-id': { type: 'string' },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -39,9 +40,10 @@ Examples:
 }
 
 const { platform, id } = args;
-const agentId = args['agent-id'];
-const sessionKey = `${platform}-${id}`;
 const WORKSPACE = process.cwd();
+const config = loadEngramConfig(WORKSPACE);
+const agentId = args['agent-id'] || config.agent.replace(/^agent-/, '') || 'main';
+const sessionKey = `${platform}-${id}`;
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'assets', 'templates');

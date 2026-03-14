@@ -238,11 +238,11 @@ await Bun.write(itemsPath, JSON.stringify(data, null, 2));
 await registerHash(factHash, entity);
 
 // 6.2 Авто-создать tensions из высококонфидентных противоречий
-// Условие: --check-contradictions передан + Jaccard ≥0.5 + ≥3 общих ключевых слова
+// Условие: --check-contradictions передан + Jaccard ≥0.65 + ≥3 общих ключевых слова
 const autoTensions = [];
 if (contradictions && opts["check-contradictions"]) {
   const highConf = (contradictions.conflicts || []).filter(
-    c => c.similarity >= 0.5 && (c.commonKeywords || []).length >= 3
+    c => c.similarity >= 0.65 && (c.commonKeywords || []).length >= 3
   );
   for (const conflict of highConf) {
     const tensionText = `Possible contradiction: new fact vs existing "${conflict.fact.slice(0, 100)}"`;

@@ -111,7 +111,7 @@ Tensions-Resolved: [{"id": "tension-id", "resolution": "fact-abc superseded by f
 2. `Stats.promoted` — list of obs to auto-promote to KG (will be executed by process-handoff.js)
 3. `Rethink-Report` — multi-line field, all content indented by 2 spaces after `|`
 4. `Tensions-Resolved` — only tensions you can confidently resolve/dissolve; leave ambiguous ones out
-5. `Alerts` — always include at least one ALERT (report ready notification)
+5. `Alerts` — always include at least one ALERT with the full report text (not just "report ready")
 6. If no observations or tensions to review, still complete the task with empty analysis
 
 

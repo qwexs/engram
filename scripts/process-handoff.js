@@ -20,10 +20,12 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { readFileSync, writeFileSync, appendFileSync, existsSync } from "fs";
 import { execSync } from "child_process";
+import { getAgentDir } from "./config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // scripts/ → engram/ → skills/ → workspace root
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(__dirname, "..", "..", "..");
+const AGENT_DIR = getAgentDir(WORKSPACE);
 
 // --- Arg parsing ---
 const argv = process.argv.slice(2);
@@ -139,7 +141,7 @@ function processFlags(flags) {
     // Support both old format (objects with .observation) and new format (strings)
     const text = typeof f === "string" ? f : (f.observation || JSON.stringify(f));
     if (!text || text === "[]") continue;
-    const notePath = join(WORKSPACE, "memory", "agent-main", session, `${date}.md`);
+    const notePath = join(WORKSPACE, "memory", AGENT_DIR, session, `${date}.md`);
     try {
       const { appendFileSync } = require("fs");
       appendFileSync(notePath, `\n- **Flag**: ${text}\n`);
@@ -166,7 +168,7 @@ function handleExtract() {
   const factsSkipped = stats.facts_skipped_dedup ?? 0;
 
   // Append watermark to daily note if advanced
-  const notePath = join(WORKSPACE, "memory", "agent-main", session, `${date}.md`);
+  const notePath = join(WORKSPACE, "memory", AGENT_DIR, session, `${date}.md`);
   const currentWm = getCurrentWatermark(notePath);
 
   if (newWatermarkNum > currentWm) {
@@ -284,7 +286,7 @@ function handleRethink() {
 
   // 1. Write report to daily note
   if (report.trim()) {
-    const notePath = join(WORKSPACE, "memory", "agent-main", session, `${date}.md`);
+    const notePath = join(WORKSPACE, "memory", AGENT_DIR, session, `${date}.md`);
     try {
       const { appendFileSync } = require("fs");
       appendFileSync(notePath, `\n## OLL Rethink ${date}\n\n${report.trim()}\n`);
@@ -347,9 +349,13 @@ function handleRethink() {
 
   updateReport("rethink", `ok — ${summary}; archived ${archiveCount}, promoted ${promoteCount}`);
 
-  // 6. Ensure alert is always present
+  // 6. Ensure alert is always present — include full report for user delivery
   if (!alerts.length) {
-    alerts.push(`/rethink report ready — see daily note ## OLL Rethink ${date}`);
+    if (report.trim()) {
+      alerts.push(`📊 OLL Rethink ${date}\n\n${report.trim()}`);
+    } else {
+      alerts.push(`/rethink report ready — see daily note ## OLL Rethink ${date}`);
+    }
   }
 
   console.log(`[hb-rethink] ✅ ${summary} | archived: ${archiveCount}, promoted: ${promoteCount}, resolved: ${tensionsResolved.length}`);

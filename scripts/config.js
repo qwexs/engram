@@ -20,7 +20,12 @@ export function loadEngramConfig(workspace) {
   
   try {
     const raw = readFileSync(join(workspace, "engram.json"), "utf-8");
-    _cache = { ...DEFAULTS, ...JSON.parse(raw) };
+    const parsed = { ...DEFAULTS, ...JSON.parse(raw) };
+    // Normalize: ensure agent always has "agent-" prefix
+    if (parsed.agent && !parsed.agent.startsWith("agent-")) {
+      parsed.agent = `agent-${parsed.agent}`;
+    }
+    _cache = parsed;
   } catch {
     _cache = { ...DEFAULTS };
   }

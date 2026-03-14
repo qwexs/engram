@@ -201,13 +201,14 @@ const handler = async (event: any) => {
   const nowIso = new Date(event.timestamp ?? Date.now()).toISOString();
   const dateStr = nowIso.slice(0, 10);
   const timeStr = nowIso.slice(11, 19);
+  const timeSortable = timeStr.replace(/:/g, ""); // HHMMSS for filename sorting
 
-  // Target: memory/agent-{agentId}/{sessionKey}/sessions/YYYY-MM-DD-{slug}.md
+  // Target: memory/agent-{agentId}/{sessionKey}/sessions/YYYY-MM-DD-HHMMSS-{slug}.md
   const targetDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey, "sessions");
   console.log(`[engram-session-memory] targetDir=${targetDir} slug=${slug}`);
   mkdirSync(targetDir, { recursive: true });
 
-  const filename = `${today}-${slug}.md`;
+  const filename = `${today}-${timeSortable}-${slug}.md`;
   const filePath = join(targetDir, filename);
 
   const md = [

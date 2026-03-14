@@ -22,9 +22,9 @@ Last session extracted: {{last_session_extracted}}
 
 ### Phase 2 — Session Files
 
-6. List all `.md` files in `{{session_files_dir}}` sorted by name (alphabetical = chronological)
+6. List all `.md` files in `{{session_files_dir}}`. For each file, read line 1 to extract the session timestamp from the header `# Session: YYYY-MM-DD HH:MM:SS UTC`. Sort files by this parsed timestamp (ascending). If a file has no parseable header, fall back to file modification time.
 7. If `{{last_session_extracted}}` is `none` — process all files found
-8. Otherwise — process only files whose name sorts **after** `{{last_session_extracted}}`
+8. Otherwise — read the header timestamp of `{{last_session_extracted}}` and process only files whose header timestamp is **strictly after** it. Do NOT compare filenames alphabetically — filenames are not guaranteed to sort chronologically.
 9. For each new session file:
    - Read the file content
    - Extract durable facts (same rules as Phase 1, same categories)

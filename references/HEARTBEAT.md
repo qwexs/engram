@@ -52,14 +52,15 @@ Run BEFORE extraction — rotation must happen first so extraction works on the 
 
 - **Watermark sanity check:** read daily note, count lines. If last watermark `L{N}` has N > total_lines + 5, reset watermark to `L1` (log "watermark reset: L{N} > {total_lines} lines"). The +5 buffer tolerates minor drift from heartbeat-report.js rewrites (±1-2 lines). Only reset on true corruption (watermark far past end of file).
 - Read `subagentExtraction` from state
-  - If `true`: build task from `skills/engram/references/HB-EXTRACT.md`:
-    1. Read the file content
+  - If `true`:
+    0. **Cleanup stale session**: before spawning, check if a session with label `hb-extract` already exists. Call `subagents(action="list")` and if any session has label `hb-extract`, kill it via `subagents(action="kill", target="hb-extract")`. This prevents `label already in use` errors from previous heartbeat runs.
+    1. Build task from `skills/engram/references/HB-EXTRACT.md`. Read the file content
     2. Replace `{{daily_note_path}}` with the absolute path to today's daily note
     3. Replace `{{watermark}}` with the validated watermark (e.g. `L7`)
     4. Replace `{{session}}` with the current session key (e.g. `main`)
     5. Replace `{{session_files_dir}}` with the absolute path to `memory/agent-main/<session>/sessions/`
     6. Replace `{{last_session_extracted}}` with `heartbeat-state.json` → `lastSessionExtracted.<session>`, or `none` if missing
-    7. Call `sessions_spawn(task=<filled template>, label="hb-extract", model="sonnet-4-6", cleanup="delete")`
+    7. Call `sessions_spawn(task=<filled template>, label="hb-extract", model="qwen", cleanup="delete")`
     **Do not wait — result arrives via system message.**
   - If `false`: run extraction inline
     - Read daily note from validated watermark (or L1 if none)
@@ -103,7 +104,7 @@ If the heartbeat model is too weak for summarization, defer to next interactive 
   2. Replace `{{registry_path}}` with the absolute path to `memory/domains/registry.json`
   3. Replace `{{domains_root}}` with the absolute path to `memory/domains`
   4. Replace `{{now_iso}}` with the current ISO timestamp
-  5. Call `sessions_spawn(task=<filled template>, label="hb-domains", model="haiku", cleanup="delete")`
+  5. Call `sessions_spawn(task=<filled template>, label="hb-domains", model="qwen", cleanup="delete")`
   **Do not wait — result arrives via system message.**
 
 ## Phase 4: Maintenance (inline, synchronous)

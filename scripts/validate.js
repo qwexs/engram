@@ -6,13 +6,14 @@
 import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
+import { loadEngramConfig } from './config.js';
 
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')).replace(/[\\\/]scripts$/, '');
 
 const { values: args } = parseArgs({
   options: {
     'fix': { type: 'boolean', default: false },
-    'agent-id': { type: 'string', default: 'main' },
+    'agent-id': { type: 'string' },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -43,8 +44,9 @@ Checks:
   process.exit(0);
 }
 
-const agentId = args['agent-id'];
 const WORKSPACE = process.cwd();
+const _config = loadEngramConfig(WORKSPACE);
+const agentId = args['agent-id'] || _config.agent.replace(/^agent-/, '') || 'main';
 const LIFE_DIR = join(WORKSPACE, 'life');
 const fix = args.fix;
 let errors = 0;

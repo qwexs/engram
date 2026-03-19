@@ -32,7 +32,7 @@ Last session extracted: {{last_session_extracted}}
    - Skip facts already captured from the daily note (use `--semantic-check` to detect)
    - Write via memory-write.js
 10. Track the filename of the last processed session file as `last_session_file`
-11. Return the handoff block at the end (MUST be your last output)
+11. Return the handoff block at the end — **THIS IS MANDATORY. Your response MUST end with the handoff block below. Do NOT output file contents, logs, or anything after the handoff block. If you output anything after `=== END ===`, the orchestrator will fail.**
 
 **Session files isolation:** only read files from `{{session_files_dir}}`. Never read session files from other sessions.
 
@@ -107,9 +107,13 @@ bun skills/engram/scripts/memory-write.js \
 8. If no extractable facts found, still return the handoff block with facts_written: 0
 9. For contradiction-prone categories (`preference`, `decision`, `correction`), add `--check-contradictions` to the memory-write.js call. When memory-write.js returns `result.tensions[]` (auto-created tensions), include them in the handoff Tensions field. When memory-write.js reports contradictions in `result.warnings.contradictions` but tensions were not auto-created (similarity 0.3–0.5), you may still include a Tension manually if the contradiction is clear.
 
-## Handoff (MUST be your LAST output)
+## ⚠️ CRITICAL: Handoff Block (REQUIRED — your response MUST end here)
 
-Your response MUST end with this block. Fill in the values:
+**Do NOT output any file contents, progress logs, or summaries before or after this block.**
+**Do NOT include the daily note text in your response.**
+**Your ONLY output is this handoff block — nothing else.**
+
+Fill in the values:
 
 ```
 === HB-EXTRACT HANDOFF ===

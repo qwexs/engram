@@ -45,8 +45,10 @@ const input = readFileSync(0, "utf-8"); // fd 0 = stdin
 // Pattern: === HB-<TYPE> HANDOFF === ... === END ===
 const blockMatch = input.match(/=== (HB-\w+) HANDOFF ===([\s\S]*?)=== END ===/);
 if (!blockMatch) {
-  console.log("[process-handoff] No handoff block found in input — nothing to do");
-  process.exit(0);
+  // No handoff block = subagent failed to produce required output — this is an error
+  const preview = input.slice(0, 200).replace(/\n/g, " ");
+  console.error(`[process-handoff] ERROR: No handoff block found in input. Subagent output preview: ${preview}`);
+  process.exit(1);
 }
 
 const handoffType = blockMatch[1]; // e.g. "HB-EXTRACT"

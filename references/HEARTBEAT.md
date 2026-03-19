@@ -60,7 +60,7 @@ Run BEFORE extraction — rotation must happen first so extraction works on the 
     4. Replace `{{session}}` with the current session key (e.g. `main`)
     5. Replace `{{session_files_dir}}` with the absolute path to `memory/agent-main/<session>/sessions/`
     6. Replace `{{last_session_extracted}}` with `heartbeat-state.json` → `lastSessionExtracted.<session>`, or `none` if missing
-    7. Call `sessions_spawn(task=<filled template>, label="hb-extract", model="qwen", cleanup="delete")`
+    7. Call `sessions_spawn(task=<filled template>, label="hb-extract", model="haiku", cleanup="delete", runTimeoutSeconds=600)`
     **Do not wait — result arrives via system message.**
   - If `false`: run extraction inline
     - Read daily note from validated watermark (or L1 if none)
@@ -104,7 +104,7 @@ If the heartbeat model is too weak for summarization, defer to next interactive 
   2. Replace `{{registry_path}}` with the absolute path to `memory/domains/registry.json`
   3. Replace `{{domains_root}}` with the absolute path to `memory/domains`
   4. Replace `{{now_iso}}` with the current ISO timestamp
-  5. Call `sessions_spawn(task=<filled template>, label="hb-domains", model="qwen", cleanup="delete")`
+  5. Call `sessions_spawn(task=<filled template>, label="hb-domains", model="haiku", cleanup="delete", runTimeoutSeconds=600)`
   **Do not wait — result arrives via system message.**
 
 ## Phase 4: Maintenance (inline, synchronous)
@@ -156,6 +156,85 @@ If the heartbeat model is too weak for summarization, defer to next interactive 
      bun skills/engram/scripts/heartbeat-state.js --set rethinkInProgress false
      bun skills/engram/scripts/heartbeat-state.js --set rethinkStartedAt null
      ```
+
+## Phase 5.5: Autoresearch (after Rethink)
+
+Runs when there are approved experiments waiting to execute.
+
+### Autoresearch Execution
+
+1. **Check for pending experiments**:
+   ```bash
+   bun skills/engram/scripts/list-experiments.js --status pending --decision auto
+   ```
+   This returns experiments with `status: "pending"` AND `budget.decision: "auto"`.
+
+2. **If experiments exist AND `autoresearchInProgress !== true`**:
+   - Take the first pending+auto experiment (FIFO order by ID)
+   - Read its spec from `workspace/research/EXP-{id}/spec.yaml`
+   - Read `skills/engram/references/HB-AUTORESEARCH.md`
+   - Replace template variables:
+     - `{{experiment_id}}` → experiment ID
+     - `{{date}}` → current date (YYYY-MM-DD)
+     - `{{session}}` → current session key
+     - `{{spec_yaml}}` → contents of spec.yaml
+   - Spawn subagent:
+     ```
+     sessions_spawn(task: filled template, label: "hb-autoresearch", model: "sonnet-4-6", cleanup: "delete")
+     ```
+   - Update experiment status to "running":
+     ```bash
+     bun skills/engram/scripts/update-experiment.js --id {id} --status running
+     ```
+   - Set state:
+     ```bash
+     bun skills/engram/scripts/heartbeat-state.js --set autoresearchInProgress true
+     bun skills/engram/scripts/heartbeat-state.js --set autoresearchStartedAt <ISO>
+     bun skills/engram/scripts/heartbeat-state.js --set currentExperiment <id>
+     ```
+   - **Note**: Only ONE experiment per heartbeat cycle (avoid budget explosion)
+
+3. **If `autoresearchInProgress === true` AND age > 30 min**:
+   - Auto-reset stale lock
+   - Mark experiment as failed:
+     ```bash
+     bun skills/engram/scripts/update-experiment.js --id {id} --status failed --summary "timeout"
+     ```
+
+4. **Surface in Phase 6 report**:
+   - If spawned: `"Autoresearch: spawned EXP-{id}"`
+   - If idle: `"Autoresearch: idle ({N} pending)"`
+
+### Rethink₂: Post-Research Synthesis
+
+After HB-AUTORESEARCH completes (detected via handoff), the orchestrator spawns Rethink₂:
+
+1. Check `heartbeat-state.json` → `pendingRethink2` field
+2. If set (contains experiment ID):
+   - Read experiment report from `workspace/research/{id}/report.md`
+   - Read experiment spec from `workspace/research/{id}/spec.yaml`
+   - Read `skills/engram/references/HB-RETHINK2.md`
+   - Replace template variables:
+     - `{{experiment_id}}` → experiment ID
+     - `{{date}}` → current date
+     - `{{session}}` → current session
+     - `{{report_content}}` → contents of report.md
+     - `{{spec_yaml}}` → contents of spec.yaml
+     - `{{delivery_config}}` → JSON.stringify(spec.delivery)
+   - Spawn: `sessions_spawn(task: filled template, label: "hb-rethink2", model: "sonnet-4-6", cleanup: "delete")`
+   - Clear flag: `--set pendingRethink2 null`
+3. Do not wait — result arrives via handoff
+
+### Morning Delivery Check
+
+During Phase 5.5, also check delivery queue (only between 08:00-10:00 Moscow time):
+
+1. Run: `bun skills/engram/scripts/deliver-research.js --dry-run`
+2. If output contains pending deliveries AND current time is 08:00-10:00 MSK:
+   - Run: `bun skills/engram/scripts/deliver-research.js`
+   - Read stdout — each line is a JSON object with delivery instructions
+   - Parse JSON and send via message tool to the specified chat_id
+   - Surface as alert if actionable
 
 ## Phase 6: Report + Unlock
 

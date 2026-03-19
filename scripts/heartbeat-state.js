@@ -38,6 +38,11 @@ const DEFAULT_STATE = {
   lastRethink: null,
   lastRethinkScore: null,
   rethinkCount: 0,
+  autoresearchInProgress: false,
+  autoresearchStartedAt: null,
+  currentExperiment: null,
+  lastAutoresearch: null,
+  pendingRethink2: null,
   subagentRuns: {},
 };
 

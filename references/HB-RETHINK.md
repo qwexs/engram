@@ -72,7 +72,44 @@ For patterns that suggest a workflow fix, write a `[PROPOSAL]`:
 
 Keep proposals concrete: name the file and describe the change.
 
-### Step 5: Write handoff
+### Step 5: Generate Experiment Specs
+
+For each pattern/observation where the resolution requires RESEARCH (not just a config change or workflow fix):
+
+1. **Formulate a hypothesis**: What do you need to verify or discover?
+2. **Determine experiment type**: research | analysis | comparison | validation
+3. **Define actions**: Concrete research steps (search docs, compare implementations, analyze data)
+4. **Estimate budget**:
+   - `estimated_tokens`: rough estimate based on type:
+     - research: 50000 tokens (comprehensive web search + synthesis)
+     - analysis: 30000 tokens (codebase/data analysis)
+     - comparison: 50000 tokens (multi-source comparison)
+     - validation: 40000 tokens (hypothesis testing)
+   - `estimated_cost_usd`: tokens × $0.015/1K (Sonnet 4.6 rate)
+   - `manual_hours_saved`: how many hours of manual work this research would save
+   - `roi_estimate`: (manual_hours_saved × 30) / estimated_cost_usd (assume $30/hour value)
+   - `decision`:
+     - `auto`: ROI > 10 AND (blocker=true OR deadline < 14 days) — execute immediately
+     - `propose`: ROI 3-10 — require human approval
+     - `skip`: ROI < 3 — not worth the cost
+
+5. **Only generate specs for `auto` and `propose` decisions** (skip low-ROI research)
+
+Each spec should include:
+- `hypothesis`: What you're trying to verify
+- `type`: research | analysis | comparison | validation
+- `source_observations`: List of obs-IDs that triggered this research
+- `actions`: Step-by-step research plan
+- `metric`: What to measure (e.g., "time saved", "error rate", "adoption rate")
+- `baseline`: Current state (e.g., "manual process takes 2h", "current error rate unknown")
+- `success_criteria`: How to determine if hypothesis is confirmed
+- `budget`: Full budget object with ROI calculation
+- `output`: Where to save report (`path`, `publish_to`)
+- `delivery`: How to deliver results (`report`, `daily_note`, optional `outline` config)
+
+**Format**: JSON array (will be parsed by process-handoff.js)
+
+### Step 6: Write handoff
 
 End your response with the HB-RETHINK HANDOFF block (MUST be your last output).
 
@@ -103,6 +140,7 @@ Rethink-Report: |
   {proposals with rationale}
 
 Tensions-Resolved: [{"id": "tension-id", "resolution": "fact-abc superseded by fact-xyz", "action": "resolve"}, {"id": "tension-id", "resolution": "dissolved: facts are scope-dependent", "action": "dissolve"}]
+Experiment-Specs: [{"hypothesis": "...", "type": "research", "source_observations": ["obs-0001"], "actions": ["Search for best practices in X", "Compare approach A vs B", "Analyze implementation Y"], "metric": "time saved per week", "baseline": "current manual process takes 2 hours", "success_criteria": "find automated solution that saves >1h/week", "budget": {"estimated_tokens": 50000, "estimated_cost_usd": 0.75, "value": {"blocker": true, "deadline_days": 28, "manual_hours_saved": 3}, "roi_estimate": 120, "decision": "auto"}, "output": {"path": "research/topic-name.md", "publish_to": "daily_note"}, "delivery": {"report": true, "daily_note": true}}]
 === END ===
 ```
 
@@ -111,7 +149,6 @@ Tensions-Resolved: [{"id": "tension-id", "resolution": "fact-abc superseded by f
 2. `Stats.promoted` — list of obs to auto-promote to KG (will be executed by process-handoff.js)
 3. `Rethink-Report` — multi-line field, all content indented by 2 spaces after `|`
 4. `Tensions-Resolved` — only tensions you can confidently resolve/dissolve; leave ambiguous ones out
-5. `Alerts` — always include at least one ALERT with the full report text (not just "report ready")
-6. If no observations or tensions to review, still complete the task with empty analysis
-
-
+5. `Experiment-Specs` — JSON array of experiment specifications (can be empty `[]`)
+6. `Alerts` — always include at least one ALERT with the full report text (not just "report ready")
+7. If no observations or tensions to review, still complete the task with empty analysis

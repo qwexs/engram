@@ -6,7 +6,7 @@
  *   echo "<handoff text>" | bun scripts/process-handoff.js [--session main] [--date YYYY-MM-DD]
  *   bun scripts/process-handoff.js --session main --date 2026-02-27 < handoff.txt
  *
- * Handles: HB-EXTRACT, HB-DOMAINS, HB-SYNTHESIS, HB-RETHINK
+ * Handles: HB-EXTRACT, HB-DOMAINS, HB-SYNTHESIS, HB-RETHINK, HB-AUTORESEARCH
  *
  * Exit codes:
  *   0 — processed OK (even if no handoff found — idempotent)
@@ -262,7 +262,7 @@ function handleSynthesis() {
 // ============================================================
 // Handler: HB-RETHINK
 // ============================================================
-function handleRethink() {
+async function handleRethink() {
   // Always reset lock (even on error — prevent permanent stuck state)
   setState("rethinkInProgress", "false");
   setState("rethinkStartedAt", "null");
@@ -283,6 +283,11 @@ function handleRethink() {
   const tensionsResolvedRaw = parseField(blockBody, "Tensions-Resolved") ?? "[]";
   let tensionsResolved = [];
   try { tensionsResolved = JSON.parse(tensionsResolvedRaw); } catch { tensionsResolved = []; }
+
+  // --- Parse Experiment-Specs field ---
+  const experimentSpecsRaw = parseField(blockBody, "Experiment-Specs") ?? "[]";
+  let experimentSpecs = [];
+  try { experimentSpecs = JSON.parse(experimentSpecsRaw); } catch { experimentSpecs = []; }
 
   // 1. Write report to daily note
   if (report.trim()) {
@@ -332,7 +337,50 @@ function handleRethink() {
     run(`bun scripts/memory-tension-resolve.js --id ${t.id} --resolution "${resEsc}" ${dissolvedFlag}`);
   }
 
-  // 5. Update state
+  // 5. Process Experiment-Specs
+  const createdExperiments = [];
+  const proposedExperiments = [];
+  
+  for (const spec of experimentSpecs) {
+    if (!spec.hypothesis || !spec.type || !spec.budget) continue;
+    
+    // Convert spec to YAML format
+    const { generateYAML } = await import("./experiment-spec.js");
+    const yamlSpec = generateYAML(spec);
+    
+    try {
+      // Create experiment via stdin
+      const result = execSync(`bun scripts/create-experiment.js --stdin`, {
+        cwd: WORKSPACE,
+        input: yamlSpec,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      
+      const created = JSON.parse(result);
+      
+      if (spec.budget.decision === "auto") {
+        createdExperiments.push(created.id);
+        console.log(`[hb-rethink] Created auto experiment: ${created.id}`);
+        
+        // Log to daily note
+        const notePath = join(WORKSPACE, "memory", AGENT_DIR, session, `${date}.md`);
+        const shortHyp = spec.hypothesis.slice(0, 60) + (spec.hypothesis.length > 60 ? "..." : "");
+        appendFileSync(notePath, `\n- **Autoresearch**: created ${created.id} (${shortHyp})\n`, "utf-8");
+      } else if (spec.budget.decision === "propose") {
+        proposedExperiments.push(created.id);
+        console.log(`[hb-rethink] Created proposed experiment: ${created.id}`);
+        
+        // Add to alerts for user approval
+        const shortHyp = spec.hypothesis.slice(0, 80) + (spec.hypothesis.length > 80 ? "..." : "");
+        alerts.push(`[PROPOSE] Experiment ${created.id}: ${shortHyp} — approve or skip?`);
+      }
+    } catch (e) {
+      console.error(`[hb-rethink] Failed to create experiment: ${e.message}`);
+    }
+  }
+
+  // 6. Update state
   setState("lastRethink", now);
   if (stats.weighted_score !== undefined) {
     setState("lastRethinkScore", String(stats.weighted_score));
@@ -347,9 +395,9 @@ function handleRethink() {
     writeFileSync(statePath, JSON.stringify(state, null, 2));
   } catch {}
 
-  updateReport("rethink", `ok — ${summary}; archived ${archiveCount}, promoted ${promoteCount}`);
+  updateReport("rethink", `ok — ${summary}; archived ${archiveCount}, promoted ${promoteCount}, experiments ${createdExperiments.length + proposedExperiments.length}`);
 
-  // 6. Ensure alert is always present — include full report for user delivery
+  // 7. Ensure alert is always present — include full report for user delivery
   if (!alerts.length) {
     if (report.trim()) {
       alerts.push(`📊 OLL Rethink ${date}\n\n${report.trim()}`);
@@ -358,7 +406,188 @@ function handleRethink() {
     }
   }
 
-  console.log(`[hb-rethink] ✅ ${summary} | archived: ${archiveCount}, promoted: ${promoteCount}, resolved: ${tensionsResolved.length}`);
+  console.log(`[hb-rethink] ✅ ${summary} | archived: ${archiveCount}, promoted: ${promoteCount}, resolved: ${tensionsResolved.length}, experiments: ${createdExperiments.length} auto + ${proposedExperiments.length} proposed`);
+}
+
+// ============================================================
+// Handler: HB-RETHINK2
+// ============================================================
+function handleRethink2() {
+  const experimentId = parseField(blockBody, "Experiment") ?? null;
+  const quality = parseField(blockBody, "Quality") ?? "low-value";
+  const keyFinding = parseField(blockBody, "Key-Finding") ?? "";
+  const recommendation = parseField(blockBody, "Recommendation") ?? "";
+  const summary = parseField(blockBody, "Summary") ?? "";
+  
+  if (!experimentId) {
+    console.error("[hb-rethink2] Missing Experiment ID");
+    return;
+  }
+
+  // 1. Parse delivery decisions
+  const deliveryMatch = blockBody.match(/^Delivery-Decisions:\n((?:\s+\w+:.*\n?)*)/m);
+  let deliverOutline = false;
+  let deliverGroup = false;
+  if (deliveryMatch) {
+    deliverOutline = /outline:\s*true/i.test(deliveryMatch[1]);
+    deliverGroup = /group_notify:\s*true/i.test(deliveryMatch[1]);
+  }
+
+  // 2. Always: daily note
+  const notePath = join(WORKSPACE, "memory", AGENT_DIR, session, `${date}.md`);
+  try {
+    const entry = `\n- **Research Result [${experimentId}]**: ${keyFinding}\n  - Recommendation: ${recommendation}\n  - Quality: ${quality}\n`;
+    appendFileSync(notePath, entry, "utf-8");
+  } catch {}
+
+  // 3. Outline publication
+  if (deliverOutline) {
+    const outlineTitle = parseField(blockBody, "Outline-Title") ?? `Research: ${experimentId}`;
+    const outlineMatch = blockBody.match(/^Outline-Content:\s*\|\n([\s\S]*?)(?=\n\w[\w-]*:|\n=== END ===)/m);
+    const outlineContent = outlineMatch ? outlineMatch[1].replace(/^ {2}/gm, "") : "";
+    
+    if (outlineContent.trim()) {
+      const specPath = join(WORKSPACE, "workspace", "research", experimentId, "spec.yaml");
+      let collectionId = null;
+      try {
+        const { parseYAML } = require("./experiment-spec.js");
+        const spec = parseYAML(readFileSync(specPath, "utf-8"));
+        collectionId = spec?.delivery?.outline?.collection_id || spec?.output?.collection_id || null;
+      } catch {}
+      
+      const tmpFile = join(WORKSPACE, "workspace", "research", experimentId, "outline-content.md");
+      writeFileSync(tmpFile, outlineContent, "utf-8");
+      
+      const collArg = collectionId ? `--collection ${collectionId}` : "--collection 4ea21866-d76e-4257-826b-7a18ac70a002";
+      const titleEsc = outlineTitle.replace(/"/g, '\\"');
+      const outlineOk = run(`cat "${tmpFile}" | node skills/outline/scripts/create.js --title "${titleEsc}" ${collArg} --publish`);
+      
+      if (outlineOk) {
+        console.log(`[hb-rethink2] Published to Outline: ${outlineTitle}`);
+      }
+    }
+  }
+
+  // 4. Group TG notification (deferred to morning 8-10 MSK)
+  if (deliverGroup) {
+    const groupMatch = blockBody.match(/^Group-Message:\s*\|\n([\s\S]*?)(?=\n\w[\w-]*:|\n=== END ===)/m);
+    const groupMessage = groupMatch ? groupMatch[1].replace(/^ {2}/gm, "").trim() : "";
+    
+    if (groupMessage) {
+      const queueDir = join(WORKSPACE, "workspace", "research", "delivery-queue");
+      const { mkdirSync } = require("fs");
+      try { mkdirSync(queueDir, { recursive: true }); } catch {}
+      const queueFile = join(queueDir, `${experimentId}.json`);
+      writeFileSync(queueFile, JSON.stringify({
+        experiment_id: experimentId,
+        message: groupMessage,
+        chat_id: null,
+        created_at: now,
+        delivered: false
+      }, null, 2), "utf-8");
+      console.log(`[hb-rethink2] Group message queued for morning delivery`);
+    }
+  }
+
+  // 5. Update experiment with quality rating
+  const summaryEsc = summary.replace(/"/g, '\\"');
+  run(`bun scripts/update-experiment.js --id ${experimentId} --status completed --summary "${summaryEsc}"`);
+
+  // 6. Process follow-up observations
+  const followUpRaw = parseField(blockBody, "Follow-Up-Observations") ?? "[]";
+  let followUpObs = [];
+  try { followUpObs = JSON.parse(followUpRaw); } catch {}
+  
+  let obsWritten = 0;
+  for (const obs of followUpObs) {
+    if (!obs.observation || !obs.category) continue;
+    const obsEsc = obs.observation.replace(/"/g, '\\"');
+    if (run(`bun scripts/memory-observe.js --observation "${obsEsc}" --category ${obs.category}`)) obsWritten++;
+  }
+
+  // 7. Update state
+  setState("lastAutoresearch", now);
+  setState("subagentRuns.hb-rethink2.status", "ok");
+
+  // 8. Alert only if group message was queued
+  if (deliverGroup) {
+    alerts.push(`Research ${experimentId} completed — group notification queued for morning delivery`);
+  }
+
+  console.log(`[hb-rethink2] ✅ ${experimentId} | quality: ${quality} | outline: ${deliverOutline} | group: ${deliverGroup} | obs: ${obsWritten}`);
+}
+
+// ============================================================
+// Handler: HB-AUTORESEARCH
+// ============================================================
+function handleAutoresearch() {
+  // Always reset lock (even on error)
+  setState("autoresearchInProgress", "false");
+  setState("autoresearchStartedAt", "null");
+  setState("currentExperiment", "null");
+
+  if (!isOk) {
+    console.log(`[hb-autoresearch] Status: error — ${summary}`);
+    setState("subagentRuns.hb-autoresearch.status", "failed");
+    return;
+  }
+
+  // --- Parse fields ---
+  const experimentId = parseField(blockBody, "Experiment") ?? null;
+  const hypothesis = parseField(blockBody, "Hypothesis") ?? null;
+  const reportPath = parseField(blockBody, "Report-Path") ?? null;
+  const followUpObsRaw = parseField(blockBody, "Follow-Up-Observations") ?? "[]";
+  
+  let followUpObs = [];
+  try { followUpObs = JSON.parse(followUpObsRaw); } catch { followUpObs = []; }
+
+  if (!experimentId) {
+    console.error(`[hb-autoresearch] Missing Experiment ID in handoff`);
+    setState("subagentRuns.hb-autoresearch.status", "failed");
+    return;
+  }
+
+  // 1. Update experiment status
+  const statusCmd = hypothesis === "CONFIRMED" ? "completed" : 
+                    hypothesis === "REFUTED" ? "completed" :
+                    hypothesis === "INCONCLUSIVE" ? "completed" : "failed";
+  
+  const summaryEsc = summary.replace(/"/g, '\\"');
+  const ok = run(`bun scripts/update-experiment.js --id ${experimentId} --status ${statusCmd} --summary "${summaryEsc}"`);
+  
+  if (!ok) {
+    console.error(`[hb-autoresearch] Failed to update experiment ${experimentId}`);
+  }
+
+  // 2. Process follow-up observations
+  let obsWritten = 0;
+  for (const obs of followUpObs) {
+    if (!obs.observation || !obs.category) continue;
+    const obsEsc = obs.observation.replace(/"/g, '\\"');
+    const writeOk = run(`bun scripts/memory-observe.js --observation "${obsEsc}" --category ${obs.category}`);
+    if (writeOk) obsWritten++;
+  }
+
+  // 3. Log to daily note
+  if (reportPath) {
+    const notePath = join(WORKSPACE, "memory", AGENT_DIR, session, `${date}.md`);
+    try {
+      const shortSummary = summary.slice(0, 100) + (summary.length > 100 ? "..." : "");
+      appendFileSync(notePath, `\n- **Autoresearch ${experimentId}**: ${shortSummary} — [Report](${reportPath})\n`, "utf-8");
+      console.log(`[hb-autoresearch] Report logged to daily note`);
+    } catch (e) {
+      console.error(`[hb-autoresearch] Failed to log to daily note: ${e.message}`);
+    }
+  }
+
+  // 4. Update state
+  setState("lastAutoresearch", now);
+  setState("subagentRuns.hb-autoresearch.status", "ok");
+
+  // 5. Signal that Rethink₂ should run for this experiment
+  setState("pendingRethink2", experimentId);
+
+  console.log(`[hb-autoresearch] ✅ ${experimentId} | ${hypothesis} | ${obsWritten} follow-up obs | Rethink₂ pending`);
 }
 
 // ============================================================
@@ -367,10 +596,12 @@ function handleRethink() {
 console.log(`[process-handoff] Type: ${handoffType} | Status: ${status}`);
 
 switch (handoffType) {
-  case "HB-EXTRACT":   handleExtract();   break;
-  case "HB-DOMAINS":   handleDomains();   break;
-  case "HB-SYNTHESIS": handleSynthesis(); break;
-  case "HB-RETHINK":   handleRethink();   break;
+  case "HB-EXTRACT":      handleExtract();      break;
+  case "HB-DOMAINS":      handleDomains();      break;
+  case "HB-SYNTHESIS":    handleSynthesis();    break;
+  case "HB-RETHINK":      handleRethink();      break;
+  case "HB-RETHINK2":     handleRethink2();     break;
+  case "HB-AUTORESEARCH": handleAutoresearch(); break;
   default:
     console.error(`[process-handoff] Unknown handoff type: ${handoffType}`);
     process.exit(1);

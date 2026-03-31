@@ -81,6 +81,47 @@ if (dedupResult.duplicate) {
 }
 const factHash = dedupResult.hash;
 
+// 1.2. In-entity Jaccard dedup (always-on, no QMD required)
+// Catches paraphrases and cross-language duplicates within same entity
+{
+  function extractKeywordsJaccard(text) {
+    return text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, "")
+      .split(/\s+/)
+      .filter(w => w.length > 3);
+  }
+  function jaccard(a, b) {
+    const sa = new Set(a), sb = new Set(b);
+    const inter = [...sa].filter(w => sb.has(w)).length;
+    const union = new Set([...sa, ...sb]).size;
+    return union > 0 ? inter / union : 0;
+  }
+
+  const JACCARD_BLOCK = parseFloat(opts["jaccard-threshold"] || "0.65");
+  const entityFileCheck = Bun.file(join(entityDir, "items.json"));
+  if (await entityFileCheck.exists()) {
+    const existingData = await entityFileCheck.json();
+    const newKw = extractKeywordsJaccard(opts.fact);
+    for (const ef of (existingData.facts || [])) {
+      if (ef.status === "superseded") continue;
+      const efText = ef.fact || ef.text;
+      if (!efText) continue;
+      const efKw = extractKeywordsJaccard(efText);
+      const sim = jaccard(newKw, efKw);
+      if (sim >= JACCARD_BLOCK) {
+        console.log(JSON.stringify({
+          status: "skipped",
+          reason: `In-entity Jaccard duplicate (${sim.toFixed(2)} ≥ ${JACCARD_BLOCK})`,
+          existingId: ef.id,
+          existingFact: efText.slice(0, 150),
+        }));
+        process.exit(0);
+      }
+    }
+  }
+}
+
 // 1.5. Семантическая проверка по множественным коллекциям (опционально)
 let semanticWarnings = [];
 if (opts["semantic-check"]) {

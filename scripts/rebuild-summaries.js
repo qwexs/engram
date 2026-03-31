@@ -150,7 +150,7 @@ function buildSummary(entityName, entityRelPath, facts) {
 
   // Top facts (краткое превью)
   if (topFacts.length > 0) {
-    md += `${topFacts.slice(0, 3).map(f => `> ${f.fact}`).join("\n")}\n\n`;
+    md += `${topFacts.slice(0, 3).map(f => `> ${f.text || f.fact}`).join("\n")}\n\n`;
   }
 
   // Key Facts
@@ -158,7 +158,7 @@ function buildSummary(entityName, entityRelPath, facts) {
   for (const fact of topFacts) {
     const conf = fact.confidence != null ? fact.confidence : 0.5;
     const date = fact.source || (fact.createdAt ? fact.createdAt.split("T")[0] : today);
-    md += `- ${fact.fact} _(confidence: ${conf.toFixed(1)}, ${date})_\n`;
+    md += `- ${fact.text || fact.fact} _(confidence: ${conf.toFixed(1)}, ${date})_\n`;
   }
   md += "\n";
 
@@ -190,7 +190,7 @@ function buildOverview(hotFacts) {
   if (hotFacts.length === 0) return "";
   // Берём до 3 самых уверенных hot-фактов
   const top = hotFacts.slice(0, 3);
-  return top.map(f => f.fact.endsWith(".") ? f.fact : f.fact + ".").join(" ");
+  return top.map(f => { const t = f.text || f.fact || ""; return t.endsWith(".") ? t : t + "."; }).join(" ");
 }
 
 /**
@@ -264,7 +264,7 @@ function buildSummaryWithDecay(entityName, entityRelPath, facts) {
     md += `## Current (Hot)\n\n`;
     for (const f of sortedHot) {
       const conf = f.confidence != null ? f.confidence : 0.5;
-      md += `- ${f.fact} _(confidence: ${conf.toFixed(2)})_\n`;
+      md += `- ${f.text || f.fact} _(confidence: ${conf.toFixed(2)})_\n`;
     }
     md += "\n";
   }
@@ -274,7 +274,7 @@ function buildSummaryWithDecay(entityName, entityRelPath, facts) {
     md += `## Background (Warm)\n\n`;
     for (const f of sortedWarm) {
       const conf = f.confidence != null ? f.confidence : 0.5;
-      md += `- ${f.fact} _(confidence: ${conf.toFixed(2)})_\n`;
+      md += `- ${f.text || f.fact} _(confidence: ${conf.toFixed(2)})_\n`;
     }
     md += "\n";
   }
@@ -284,7 +284,7 @@ function buildSummaryWithDecay(entityName, entityRelPath, facts) {
     md += `## Enduring (Principles)\n\n`;
     for (const f of sortedColdPrinciples) {
       const conf = f.confidence != null ? f.confidence : 0.5;
-      md += `- ${f.fact} _(confidence: ${conf.toFixed(2)}, principle)_\n`;
+      md += `- ${f.text || f.fact} _(confidence: ${conf.toFixed(2)}, principle)_\n`;
     }
     md += "\n";
   }

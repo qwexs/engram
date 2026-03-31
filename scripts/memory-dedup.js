@@ -81,8 +81,9 @@ async function seed() {
       const entityId = data.entityId || path.replace(/[\/\\]items\.json$/, "").replace(/\\/g, "/");
 
       for (const fact of (data.facts || [])) {
-        if (fact.fact && fact.status !== "superseded") {
-          const h = await hashFact(fact.fact);
+        const text = fact.fact || fact.text; // support both schema variants
+        if (text && fact.status !== "superseded") {
+          const h = await hashFact(text);
           hashes[h] = entityId;
           count++;
         }

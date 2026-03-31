@@ -7,6 +7,9 @@ const ENGRAM_DIR = join(import.meta.dir, "..");
 const LIFE_DIR = join(ENGRAM_DIR, "life");
 const HASH_FILE = join(ENGRAM_DIR, "workspace", "memory-state", "fact-hashes.json");
 
+// Ensure scripts resolve WORKSPACE to this engram dir (not clawd workspace)
+process.env.ENGRAM_WORKSPACE = ENGRAM_DIR;
+
 const TEST_ENTITY = "areas/people/__test_mw__";
 const TEST_ENTITY_DIR = join(LIFE_DIR, TEST_ENTITY);
 
@@ -47,6 +50,7 @@ async function run(args, cwd = ENGRAM_DIR) {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
+    env: { ...process.env, ENGRAM_WORKSPACE: ENGRAM_DIR },
   });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -113,7 +117,7 @@ describe("memory-write — argument validation", () => {
     expect(stderr).toContain("Неверная категория");
   });
 
-  test("accepts all valid categories", async () => {
+  test("accepts all valid categories", async () => { // slow: 7 spawns × ~2s each
     const categories = ["relationship", "milestone", "status", "preference", "context", "decision", "correction"];
     for (const cat of categories) {
       // Recreate entity fresh (previous write changes state)
@@ -301,14 +305,116 @@ describe("memory-write — deduplication", () => {
     const ts = Date.now();
 
     const { result: r1 } = await runJson([
-      "--entity", TEST_ENTITY, "--fact", `Fact A ${ts}`, "--category", "preference",
+      "--entity", TEST_ENTITY, "--fact", `Prefers Bun runtime over NodeJS ${ts}`, "--category", "preference",
     ]);
     const { result: r2 } = await runJson([
-      "--entity", TEST_ENTITY, "--fact", `Fact B ${ts}`, "--category", "preference",
+      "--entity", TEST_ENTITY, "--fact", `Uses TypeScript for backend projects ${ts}`, "--category", "preference",
     ]);
 
     expect(r1.status).toBe("created");
     expect(r2.status).toBe("created");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// In-entity Jaccard dedup (always-on)
+// ─────────────────────────────────────────────────────────────
+
+describe("memory-write — in-entity Jaccard deduplication", () => {
+  test("blocks paraphrase of existing fact (Jaccard ≥ 0.65)", async () => {
+    createEntity();
+
+    // Write original fact
+    await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Timeout for research subagents is always 600 seconds minimum",
+      "--category", "preference",
+    ]);
+
+    // Try to write a paraphrase — high Jaccard overlap
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Research subagents timeout must always be 600 seconds minimum",
+      "--category", "preference",
+    ]);
+
+    expect(result.status).toBe("skipped");
+    expect(result.reason).toContain("Jaccard");
+    expect(result.existingId).toBeDefined();
+  });
+
+  test("allows clearly different fact in same entity", async () => {
+    createEntity();
+
+    await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Timeout for research subagents is always 600 seconds minimum",
+      "--category", "preference",
+    ]);
+
+    // Completely different topic
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Prefers Bun runtime over Node.js for new TypeScript projects",
+      "--category", "preference",
+    ]);
+
+    expect(result.status).toBe("created");
+  });
+
+  test("respects --jaccard-threshold override (0.9 = stricter)", async () => {
+    createEntity();
+
+    await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Timeout for research subagents is always 600 seconds minimum",
+      "--category", "preference",
+    ]);
+
+    // Same paraphrase but with high threshold — should pass through
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Research subagents timeout must always be 600 seconds minimum",
+      "--category", "preference",
+      "--jaccard-threshold", "0.95",
+    ]);
+
+    // At 0.95 threshold paraphrase should not be blocked
+    expect(result.status).toBe("created");
+  });
+
+  test("skipped result includes existingId and existingFact preview", async () => {
+    createEntity();
+
+    await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Timeout for research subagents is always 600 seconds minimum",
+      "--category", "preference",
+    ]);
+
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Research subagents timeout must always be 600 seconds minimum",
+      "--category", "preference",
+    ]);
+
+    if (result.status === "skipped" && result.reason?.includes("Jaccard")) {
+      expect(result.existingId).toMatch(/^__test_mw__-\d{3}$/);
+      expect(typeof result.existingFact).toBe("string");
+      expect(result.existingFact.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("does not block first write to empty entity", async () => {
+    createEntity(); // empty facts array
+
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "First fact in empty entity",
+      "--category", "context",
+    ]);
+
+    expect(result.status).toBe("created");
   });
 });
 
@@ -373,8 +479,13 @@ describe("memory-write — related entities", () => {
 // Semantic check (--semantic-check, requires qmd running)
 // ─────────────────────────────────────────────────────────────
 
+// Check if QMD index exists (required for semantic-check tests)
+const qmdIndexExists = existsSync(join(ENGRAM_DIR, ".qmd", "index.db")) ||
+  existsSync(join(ENGRAM_DIR, "workspace", ".qmd", "index.db"));
+
 describe("memory-write — semantic check (qmd integration)", () => {
   test("writes unique fact without semantic warnings", async () => {
+    if (!qmdIndexExists) return; // skip: QMD index not available in this env
     createEntity();
     const { result } = await runJson([
       "--entity", TEST_ENTITY,
@@ -389,6 +500,7 @@ describe("memory-write — semantic check (qmd integration)", () => {
   });
 
   test("semantic check runs without errors on matching content", async () => {
+    if (!qmdIndexExists) return; // skip: QMD index not available in this env
     createEntity();
     // Use a fact that overlaps with KG content (Telemax project uses Bun + TypeScript + Hono)
     // Even if Jaccard doesn't hit threshold, the check should run cleanly
@@ -442,9 +554,9 @@ describe("memory-write — semantic check (qmd integration)", () => {
       "--search-collections", "life",
     ]);
 
-    // High Jaccard overlap → should be blocked
+    // High Jaccard overlap → should be blocked by in-entity Jaccard or QMD semantic check
     if (result.status === "skipped") {
-      expect(result.reason).toContain("Semantic duplicate");
+      expect(result.reason).toMatch(/Jaccard|Semantic duplicate/);
     }
     // If not blocked (qmd didn't index fast enough), at least it shouldn't crash
     expect(["created", "skipped"]).toContain(result.status);

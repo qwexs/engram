@@ -866,6 +866,22 @@ bun skills/engram/scripts/heartbeat-state.js --set pendingObservations 5
 
 Atomic read/write of `memory/heartbeat-state.json`. All heartbeat phase trackers (`lastExtraction`, `lastDomainScan`, `subagentRuns`, etc.) must be updated via this script — never edit the JSON directly.
 
+### heartbeat-runner.js — Deterministic cron entrypoint
+
+```bash
+bun skills/engram/scripts/heartbeat-runner.js \
+  --workspace /path/to/workspace \
+  --agent-id main \
+  --session main \
+  --label-prefix hb
+```
+
+Runs the mechanical heartbeat path without relying on an LLM to interpret
+`HEARTBEAT.md`: lock handling, daily note creation, extraction watermark,
+weekly summary rebuild, heartbeat report, validation, `qmd update`, and
+`qmd embed`. This is the recommended production cron target; see
+`references/setup.md` for the OpenClaw cron payload.
+
 ### heartbeat-report.js — Daily note report section
 
 ```bash

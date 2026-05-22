@@ -180,7 +180,7 @@ describe("memory-observe.js - CLI integration", () => {
     const proc = Bun.spawn([
       "bun", join(SCRIPTS_DIR, "memory-observe.js"),
       "--observation", "dry run test observation text",
-      "--category", "quality",
+      "--category", "friction",
       "--dry-run"
     ], {
       stderr: "pipe",
@@ -275,7 +275,7 @@ describe("OLL Integration - Observation Storage", () => {
     const proc = Bun.spawn([
       "bun", join(SCRIPTS_DIR, "memory-observe.js"),
       "--observation", "test observation",
-      "--category", "quality"
+      "--category", "pattern"
     ], { stdout: "pipe", stderr: "pipe" });
     
     const stdout = await new Response(proc.stdout).text();
@@ -330,7 +330,7 @@ describe("OLL Integration - Observation Storage", () => {
     const proc = Bun.spawn([
       "bun", join(SCRIPTS_DIR, "memory-observe.js"),
       "--observation", "test observation",
-      "--category", "quality"
+      "--category", "pattern"
     ], { stdout: "pipe", stderr: "pipe" });
     
     const stdout = await new Response(proc.stdout).text();

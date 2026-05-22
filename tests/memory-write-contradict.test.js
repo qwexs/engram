@@ -1,14 +1,18 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
-import { existsSync, rmSync, mkdirSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { existsSync, rmSync, mkdirSync, writeFileSync, mkdtempSync } from "fs";
 import { extractKeywords, jaccardSimilarity } from "../scripts/utils.js";
 
 const SCRIPTS_DIR = join(import.meta.dir, "..", "scripts");
-// Scripts resolve WORKSPACE as join(import.meta.dir, "..") = skills/engram/
-// So test entities must live in skills/engram/life/, not clawd/life/
-const WORKSPACE_ROOT = join(import.meta.dir, "..", "..", "..");
 const ENGRAM_DIR = join(import.meta.dir, "..");
-const LIFE_DIR = join(ENGRAM_DIR, "life");
+
+function createTestWorkspace() {
+  const workspace = mkdtempSync(join(tmpdir(), "engram-memory-contradict-"));
+  mkdirSync(join(workspace, "workspace", "memory-state"), { recursive: true });
+  writeFileSync(join(workspace, "workspace", "memory-state", "fact-hashes.json"), "{}");
+  return workspace;
+}
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -312,10 +316,14 @@ describe("memory-contradict — entity path extraction from qmd JSON", () => {
 
 describe("memory-write — CLI integration", () => {
   const TEST_ENTITY = "areas/people/__test_write__";
-  const TEST_ENTITY_DIR = join(LIFE_DIR, TEST_ENTITY);
+  let TEST_WORKSPACE;
+  let TEST_ENTITY_DIR;
+  let TEST_ENV;
 
   beforeEach(() => {
-    if (existsSync(TEST_ENTITY_DIR)) rmSync(TEST_ENTITY_DIR, { recursive: true });
+    TEST_WORKSPACE = createTestWorkspace();
+    TEST_ENTITY_DIR = join(TEST_WORKSPACE, "life", TEST_ENTITY);
+    TEST_ENV = { ...process.env, ENGRAM_WORKSPACE: TEST_WORKSPACE };
     mkdirSync(TEST_ENTITY_DIR, { recursive: true });
     writeFileSync(join(TEST_ENTITY_DIR, "items.json"), JSON.stringify({
       entityId: TEST_ENTITY,
@@ -326,7 +334,7 @@ describe("memory-write — CLI integration", () => {
   });
 
   afterEach(() => {
-    if (existsSync(TEST_ENTITY_DIR)) rmSync(TEST_ENTITY_DIR, { recursive: true });
+    if (TEST_WORKSPACE && existsSync(TEST_WORKSPACE)) rmSync(TEST_WORKSPACE, { recursive: true, force: true });
   });
 
   test("writes a new fact and returns created status", async () => {
@@ -337,7 +345,7 @@ describe("memory-write — CLI integration", () => {
       "--category", "preference",
       "--confidence", "0.9",
       "--abstraction", "pattern",
-    ], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe" });
+    ], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
 
     const out = await new Response(proc.stdout).text();
     await proc.exited;
@@ -358,12 +366,12 @@ describe("memory-write — CLI integration", () => {
     ];
 
     // First write
-    const p1 = Bun.spawn(args, { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe" });
+    const p1 = Bun.spawn(args, { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
     await new Response(p1.stdout).text();
     await p1.exited;
 
     // Second write — same fact → should be skipped
-    const p2 = Bun.spawn(args, { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe" });
+    const p2 = Bun.spawn(args, { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
     const out2 = await new Response(p2.stdout).text();
     await p2.exited;
     const result2 = JSON.parse(out2);
@@ -375,7 +383,7 @@ describe("memory-write — CLI integration", () => {
       "bun", join(SCRIPTS_DIR, "memory-write.js"),
       "--fact", "Some fact",
       "--category", "preference",
-    ], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe" });
+    ], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
     await proc.exited;
     expect(proc.exitCode).not.toBe(0);
   });
@@ -387,7 +395,7 @@ describe("memory-write — CLI integration", () => {
       "--entity", TEST_ENTITY,
       "--fact", "Fact for access tracking test " + Date.now(),
       "--category", "context",
-    ], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe" });
+    ], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
     const writeOut = await new Response(writeProc.stdout).text();
     await writeProc.exited;
     const written = JSON.parse(writeOut);
@@ -399,7 +407,7 @@ describe("memory-write — CLI integration", () => {
       "--access",
       "--entity", TEST_ENTITY,
       "--id", factId,
-    ], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe" });
+    ], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
     const accessOut = await new Response(accessProc.stdout).text();
     await accessProc.exited;
     const result = JSON.parse(accessOut);
@@ -414,11 +422,15 @@ describe("memory-write — CLI integration", () => {
 
 describe("memory-contradict — CLI integration", () => {
   const TEST_ENTITY = "areas/people/__test_contradict__";
-  const TEST_ENTITY_DIR = join(LIFE_DIR, TEST_ENTITY);
+  let TEST_WORKSPACE;
+  let TEST_ENTITY_DIR;
+  let TEST_ENV;
   const CWD = ENGRAM_DIR;
 
   beforeEach(() => {
-    if (existsSync(TEST_ENTITY_DIR)) rmSync(TEST_ENTITY_DIR, { recursive: true });
+    TEST_WORKSPACE = createTestWorkspace();
+    TEST_ENTITY_DIR = join(TEST_WORKSPACE, "life", TEST_ENTITY);
+    TEST_ENV = { ...process.env, ENGRAM_WORKSPACE: TEST_WORKSPACE };
     mkdirSync(TEST_ENTITY_DIR, { recursive: true });
     writeFileSync(join(TEST_ENTITY_DIR, "items.json"), JSON.stringify({
       entityId: TEST_ENTITY,
@@ -460,7 +472,7 @@ describe("memory-contradict — CLI integration", () => {
   });
 
   afterEach(() => {
-    if (existsSync(TEST_ENTITY_DIR)) rmSync(TEST_ENTITY_DIR, { recursive: true });
+    if (TEST_WORKSPACE && existsSync(TEST_WORKSPACE)) rmSync(TEST_WORKSPACE, { recursive: true, force: true });
   });
 
   test("detects intra-entity contradiction by keyword overlap", async () => {
@@ -468,7 +480,7 @@ describe("memory-contradict — CLI integration", () => {
       "bun", join(SCRIPTS_DIR, "memory-contradict.js"),
       "--fact", "Dislikes TypeScript and prefers JavaScript for backend projects",
       "--entity", TEST_ENTITY,
-    ], { cwd: CWD, stdout: "pipe", stderr: "pipe" });
+    ], { cwd: CWD, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
 
     const out = await new Response(proc.stdout).text();
     await proc.exited;
@@ -487,7 +499,7 @@ describe("memory-contradict — CLI integration", () => {
       "bun", join(SCRIPTS_DIR, "memory-contradict.js"),
       "--fact", "Enjoys hiking and outdoor activities on weekends",
       "--entity", TEST_ENTITY,
-    ], { cwd: CWD, stdout: "pipe", stderr: "pipe" });
+    ], { cwd: CWD, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
 
     const out = await new Response(proc.stdout).text();
     await proc.exited;
@@ -499,7 +511,7 @@ describe("memory-contradict — CLI integration", () => {
     const proc = Bun.spawn([
       "bun", join(SCRIPTS_DIR, "memory-contradict.js"),
       "--entity", TEST_ENTITY,
-    ], { cwd: CWD, stdout: "pipe", stderr: "pipe" });
+    ], { cwd: CWD, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
     await proc.exited;
     expect(proc.exitCode).not.toBe(0);
   });
@@ -508,7 +520,7 @@ describe("memory-contradict — CLI integration", () => {
     const proc = Bun.spawn([
       "bun", join(SCRIPTS_DIR, "memory-contradict.js"),
       "--fact", "Some fact",
-    ], { cwd: CWD, stdout: "pipe", stderr: "pipe" });
+    ], { cwd: CWD, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
     await proc.exited;
     expect(proc.exitCode).not.toBe(0);
   });
@@ -541,7 +553,7 @@ describe("memory-contradict — CLI integration", () => {
       "bun", join(SCRIPTS_DIR, "memory-contradict.js"),
       "--fact", "Dislikes TypeScript and prefers JavaScript for all projects",
       "--entity", TEST_ENTITY,
-    ], { cwd: CWD, stdout: "pipe", stderr: "pipe" });
+    ], { cwd: CWD, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
 
     const out = await new Response(proc.stdout).text();
     await proc.exited;

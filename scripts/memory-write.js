@@ -257,6 +257,21 @@ const newFact = {
   accessCount: 1,
 };
 
+const supersededIds = opts.supersedes
+  ? opts.supersedes.split(",").map(id => id.trim()).filter(Boolean)
+  : [];
+for (const oldId of supersededIds) {
+  const oldFact = data.facts.find(f => f.id === oldId);
+  if (!oldFact) {
+    console.error(`❌ Superseded fact ${oldId} не найден в ${entity}`);
+    process.exit(1);
+  }
+  if (oldFact.status === "superseded") {
+    console.error(`❌ Superseded fact ${oldId} уже superseded`);
+    process.exit(1);
+  }
+}
+
 // 5. Проверка противоречий (опционально)
 let contradictions = null;
 if (opts["check-contradictions"]) {
@@ -273,6 +288,11 @@ if (opts["check-contradictions"]) {
 
 // 6. Записать
 data.facts.push(newFact);
+for (const oldId of supersededIds) {
+  const oldFact = data.facts.find(f => f.id === oldId);
+  oldFact.status = "superseded";
+  oldFact.supersededBy = newFact.id;
+}
 await Bun.write(itemsPath, JSON.stringify(data, null, 2));
 
 // 6.1 Зарегистрировать хэш после успешной записи

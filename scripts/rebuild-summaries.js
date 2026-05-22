@@ -29,10 +29,76 @@ function parseArgs(argv) {
 const opts = parseArgs(process.argv);
 const dryRun = !!opts["dry-run"];
 const applyDecay = !!opts["apply-decay"];
+const jsonOutput = !!opts.json;
 const entityFilter = opts.entity ? opts.entity.replace(/^\/+|\/+$/g, "") : null;
+const maxColdPrinciples = Number.isFinite(Number(opts["max-cold-principles"]))
+  ? Math.max(0, Number(opts["max-cold-principles"]))
+  : 12;
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
 const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
+
+const TEST_ARTIFACT_RE = /(^|[\/\\_-])(test|tests|fixture|fixtures|dummy|sample)([\/\\_-]|$)|(^|[\/\\])__[^\/\\]*__($|[\/\\])/i;
+const OPERATIONAL_TEXT_RE = /\b(validate|warnings?|errors?|qmd update|qmd embed|rebuild-summaries|weekly synthesis ran|manually ran|heartbeat report|heartbeat-runner|full test gate|tests? passed|bun test|0 warnings|0 errors|scanned|updated|skipped|coldExcluded|hot=|warm=|exit code|stdout|stderr|tool call|exec completed)\b/i;
+const OPERATIONAL_TAGS = new Set(["heartbeat", "extraction", "daily", "session", "tool-log", "heartbeat-report", "debug"]);
+const TEST_TAGS = new Set(["test", "fixture", "fixtures", "dummy", "sample"]);
+
+function factText(fact) {
+  return fact.fact || fact.text || "";
+}
+
+function isTestArtifactEntity(entityRelPath, entityName = "") {
+  return TEST_ARTIFACT_RE.test(entityRelPath) || TEST_ARTIFACT_RE.test(entityName);
+}
+
+function factTags(fact) {
+  return Array.isArray(fact.tags) ? fact.tags.map(t => String(t).toLowerCase()) : [];
+}
+
+function hasAnyTag(fact, tagSet) {
+  return factTags(fact).some(tag => tagSet.has(tag));
+}
+
+function isCleanupMarker(fact) {
+  const text = factText(fact);
+  return /should be ignored as user memory|test artifact/i.test(text) && hasAnyTag(fact, new Set(["cleanup"]));
+}
+
+function isOperationalFact(fact) {
+  const category = String(fact.category || "").toLowerCase();
+  const abstraction = String(fact.abstractionLevel || fact.abstraction || "episode").toLowerCase();
+  if (category === "decision" || category === "correction" || abstraction === "principle") return false;
+  if (hasAnyTag(fact, OPERATIONAL_TAGS)) return true;
+  return OPERATIONAL_TEXT_RE.test(factText(fact));
+}
+
+function scoreFactForSummary(fact, tier) {
+  const category = String(fact.category || "context").toLowerCase();
+  const abstraction = String(fact.abstractionLevel || fact.abstraction || "episode").toLowerCase();
+  let priority = fact.confidence ?? 0.5;
+
+  if (abstraction === "principle") priority += 5;
+  else if (abstraction === "pattern") priority += 1.5;
+
+  if (category === "decision" || category === "correction" || category === "preference") priority += 3;
+  else if (category === "milestone") priority += 1.5;
+  else if (category === "status") priority += 0.5;
+
+  if (tier === "Hot") priority += 1;
+  else if (tier === "Warm") priority += 0.5;
+
+  if (isOperationalFact(fact)) {
+    return { include: false, priority, reason: "operational" };
+  }
+  if (hasAnyTag(fact, TEST_TAGS) && !isCleanupMarker(fact)) {
+    return { include: false, priority, reason: "testArtifact" };
+  }
+  if (tier === "Cold" && abstraction !== "principle" && priority < 3.5) {
+    return { include: false, priority, reason: "cold" };
+  }
+
+  return { include: true, priority, reason: tier === "Cold" ? "priority" : "tier" };
+}
 
 // ---------------------------------------------------------------------------
 // Decay: классификация факта по тиру (Hot / Warm / Cold)
@@ -95,7 +161,7 @@ function classifyFact(fact, todayStr) {
  * @returns {boolean}
  */
 function shouldInclude(fact, tier) {
-  const abstraction = (fact.abstraction || "episode").toLowerCase();
+  const abstraction = (fact.abstractionLevel || fact.abstraction || "episode").toLowerCase();
 
   if (tier === "Hot") return true;   // все абстракции
   if (tier === "Warm") return true;  // все абстракции
@@ -190,7 +256,7 @@ function buildOverview(hotFacts) {
   if (hotFacts.length === 0) return "";
   // Берём до 3 самых уверенных hot-фактов
   const top = hotFacts.slice(0, 3);
-  return top.map(f => { const t = f.text || f.fact || ""; return t.endsWith(".") ? t : t + "."; }).join(" ");
+  return top.map(f => { const t = factText(f); return t.endsWith(".") ? t : t + "."; }).join(" ");
 }
 
 /**
@@ -200,8 +266,29 @@ function buildOverview(hotFacts) {
 function buildSummaryWithDecay(entityName, entityRelPath, facts) {
   const activeFacts = facts.filter(f => f.status !== "superseded" && f.status !== "archived");
 
+  if (isTestArtifactEntity(entityRelPath, entityName)) {
+    const displayName = entityName
+      .split("/")
+      .pop()
+      .replace(/-/g, " ")
+      .replace(/\b\w/g, c => c.toUpperCase());
+    return {
+      content: `# ${displayName}\n\n_Excluded from weekly synthesis: test/fixture artifact entity._\n`,
+      decayStats: {
+        hot: 0,
+        warm: 0,
+        coldIncluded: 0,
+        coldExcluded: 0,
+        omittedOperational: 0,
+        omittedTestArtifacts: activeFacts.length,
+        includedByPriority: 0,
+        limitedPrinciples: 0,
+      },
+    };
+  }
+
   if (activeFacts.length === 0) {
-    return { content: null, decayStats: { hot: 0, warm: 0, coldIncluded: 0, coldExcluded: 0 } };
+    return { content: null, decayStats: { hot: 0, warm: 0, coldIncluded: 0, coldExcluded: 0, omittedOperational: 0, omittedTestArtifacts: 0, includedByPriority: 0, limitedPrinciples: 0 } };
   }
 
   // Классифицировать каждый факт
@@ -209,25 +296,47 @@ function buildSummaryWithDecay(entityName, entityRelPath, facts) {
     fact: f,
     tier: classifyFact(f, today),
   }));
+  const scored = classified.map(c => ({
+    ...c,
+    score: scoreFactForSummary(c.fact, c.tier),
+  }));
 
-  // Считаем статистику cold
-  const coldAll = classified.filter(c => c.tier === "Cold");
-  const coldIncluded = coldAll.filter(c => shouldInclude(c.fact, "Cold")); // principles
-  const coldExcluded = coldAll.filter(c => !shouldInclude(c.fact, "Cold"));
+  const included = scored.filter(c => c.score.include);
+  const omittedOperational = scored.filter(c => c.score.reason === "operational").length;
+  const omittedTestArtifacts = scored.filter(c => c.score.reason === "testArtifact").length;
+  const selectedByPriority = included.filter(c => c.score.reason === "priority").length;
+  const coldExcluded = scored.filter(c => c.tier === "Cold" && !c.score.include);
 
-  // Включаемые факты
-  const included = classified.filter(c => shouldInclude(c.fact, c.tier));
+  const hotFacts  = included.filter(c => c.tier === "Hot").map(c => ({ ...c.fact, _summaryPriority: c.score.priority }));
+  const warmFacts = included.filter(c => c.tier === "Warm").map(c => ({ ...c.fact, _summaryPriority: c.score.priority }));
+  const allColdPrinciples = included.filter(c => c.tier === "Cold").map(c => ({ ...c.fact, _summaryPriority: c.score.priority }));
 
-  const hotFacts  = included.filter(c => c.tier === "Hot").map(c => c.fact);
-  const warmFacts = included.filter(c => c.tier === "Warm").map(c => c.fact);
-  // Cold, которые прошли (только principles)
-  const coldPrinciples = coldIncluded.map(c => c.fact);
+  const sortBySummaryPriority = arr =>
+    [...arr].sort((a, b) => {
+      const priorityDiff = (b._summaryPriority ?? 0) - (a._summaryPriority ?? 0);
+      if (Math.abs(priorityDiff) > 0.01) return priorityDiff;
+      const accessDiff = (b.accessCount ?? 0) - (a.accessCount ?? 0);
+      if (accessDiff !== 0) return accessDiff;
+      const confDiff = (b.confidence ?? 0.5) - (a.confidence ?? 0.5);
+      if (Math.abs(confDiff) > 0.01) return confDiff;
+      const dateA = a.lastAccessed || a.createdAt || a.source || "";
+      const dateB = b.lastAccessed || b.createdAt || b.source || "";
+      return dateB.localeCompare(dateA);
+    });
+  const sortedAllColdPrinciples = sortBySummaryPriority(allColdPrinciples);
+  const coldPrinciples = sortedAllColdPrinciples.slice(0, maxColdPrinciples);
+  const limitedPrinciples = Math.max(0, sortedAllColdPrinciples.length - coldPrinciples.length);
+  const includedByPriority = Math.min(selectedByPriority, coldPrinciples.length);
 
   const decayStats = {
     hot: hotFacts.length,
     warm: warmFacts.length,
     coldIncluded: coldPrinciples.length,
     coldExcluded: coldExcluded.length,
+    omittedOperational,
+    omittedTestArtifacts,
+    includedByPriority,
+    limitedPrinciples,
   };
 
   // Если нечего включать — пропустить
@@ -236,13 +345,9 @@ function buildSummaryWithDecay(entityName, entityRelPath, facts) {
     return { content: null, decayStats };
   }
 
-  // Сортировка по accessCount desc внутри каждого тира
-  const sortByAccessDesc = arr =>
-    [...arr].sort((a, b) => (b.accessCount ?? 0) - (a.accessCount ?? 0));
-
-  const sortedHot        = sortByAccessDesc(hotFacts);
-  const sortedWarm       = sortByAccessDesc(warmFacts);
-  const sortedColdPrinciples = sortByAccessDesc(coldPrinciples);
+  const sortedHot = sortBySummaryPriority(hotFacts);
+  const sortedWarm = sortBySummaryPriority(warmFacts);
+  const sortedColdPrinciples = coldPrinciples;
 
   // Отображаемое имя entity
   const displayName = entityName
@@ -264,7 +369,7 @@ function buildSummaryWithDecay(entityName, entityRelPath, facts) {
     md += `## Current (Hot)\n\n`;
     for (const f of sortedHot) {
       const conf = f.confidence != null ? f.confidence : 0.5;
-      md += `- ${f.text || f.fact} _(confidence: ${conf.toFixed(2)})_\n`;
+      md += `- ${factText(f)} _(confidence: ${conf.toFixed(2)})_\n`;
     }
     md += "\n";
   }
@@ -274,17 +379,17 @@ function buildSummaryWithDecay(entityName, entityRelPath, facts) {
     md += `## Background (Warm)\n\n`;
     for (const f of sortedWarm) {
       const conf = f.confidence != null ? f.confidence : 0.5;
-      md += `- ${f.text || f.fact} _(confidence: ${conf.toFixed(2)})_\n`;
+      md += `- ${factText(f)} _(confidence: ${conf.toFixed(2)})_\n`;
     }
     md += "\n";
   }
 
-  // Enduring (Principles) — Cold principles always included
+  // Enduring (Principles) — top Cold principles only; full facts remain in items.json/QMD.
   if (sortedColdPrinciples.length > 0) {
     md += `## Enduring (Principles)\n\n`;
     for (const f of sortedColdPrinciples) {
       const conf = f.confidence != null ? f.confidence : 0.5;
-      md += `- ${f.text || f.fact} _(confidence: ${conf.toFixed(2)}, principle)_\n`;
+      md += `- ${factText(f)} _(confidence: ${conf.toFixed(2)}, principle)_\n`;
     }
     md += "\n";
   }
@@ -293,6 +398,12 @@ function buildSummaryWithDecay(entityName, entityRelPath, facts) {
   md += `---\n`;
   md += `*${activeFacts.length} active facts, ${totalIncluded} included in summary`;
   md += ` (${decayStats.hot} hot, ${decayStats.warm} warm, ${decayStats.coldExcluded} cold excluded).`;
+  if (decayStats.omittedOperational || decayStats.omittedTestArtifacts || decayStats.includedByPriority) {
+    md += ` Omitted: ${decayStats.omittedOperational} operational, ${decayStats.omittedTestArtifacts} test artifacts; ${decayStats.includedByPriority} cold facts included by priority.`;
+  }
+  if (decayStats.limitedPrinciples) {
+    md += ` ${decayStats.limitedPrinciples} lower-priority principles omitted from summary.`;
+  }
   md += ` Updated ${today}.*\n`;
 
   return { content: md, decayStats };
@@ -336,13 +447,21 @@ async function findAllItemsJson() {
 // Главная логика
 // ---------------------------------------------------------------------------
 const stats = {
+  entitiesScanned: 0,
   updated: 0,
+  unchanged: 0,
   skipped: 0,
   errors: 0,
+  changedEntities: [],
   // Decay-статистика (заполняется только при --apply-decay)
   hot: 0,
   warm: 0,
+  coldIncluded: 0,
   coldExcluded: 0,
+  omittedOperational: 0,
+  omittedTestArtifacts: 0,
+  includedByPriority: 0,
+  limitedPrinciples: 0,
 };
 
 let itemsFiles;
@@ -378,6 +497,7 @@ for (const itemsPath of itemsFiles) {
 
   const facts = data.facts || [];
   const entityName = data.entity || entityRelPath;
+  stats.entitiesScanned++;
 
   // Выбрать режим генерации
   let newContent;
@@ -391,7 +511,12 @@ for (const itemsPath of itemsFiles) {
     if (entityDecayStats) {
       stats.hot          += entityDecayStats.hot;
       stats.warm         += entityDecayStats.warm;
+      stats.coldIncluded += entityDecayStats.coldIncluded;
       stats.coldExcluded += entityDecayStats.coldExcluded;
+      stats.omittedOperational += entityDecayStats.omittedOperational || 0;
+      stats.omittedTestArtifacts += entityDecayStats.omittedTestArtifacts || 0;
+      stats.includedByPriority += entityDecayStats.includedByPriority || 0;
+      stats.limitedPrinciples += entityDecayStats.limitedPrinciples || 0;
     }
   } else {
     newContent = buildSummary(entityName, entityRelPath, facts);
@@ -403,21 +528,29 @@ for (const itemsPath of itemsFiles) {
   }
 
   const summaryPath = join(entityDir, "summary.md");
+  let oldContent = "";
+  if (existsSync(summaryPath)) {
+    oldContent = await Bun.file(summaryPath).text();
+  }
+  if (oldContent === newContent) {
+    stats.unchanged++;
+    continue;
+  }
 
   if (dryRun) {
-    let oldContent = "";
-    if (existsSync(summaryPath)) {
-      oldContent = await Bun.file(summaryPath).text();
+    if (!jsonOutput) {
+      console.log(`\n[DRY-RUN] ${entityRelPath}/summary.md`);
+      if (applyDecay && entityDecayStats) {
+        console.log(
+          `  decay: hot=${entityDecayStats.hot} warm=${entityDecayStats.warm}` +
+          ` coldExcluded=${entityDecayStats.coldExcluded} coldIncluded(principles)=${entityDecayStats.coldIncluded}` +
+          ` limitedPrinciples=${entityDecayStats.limitedPrinciples || 0}`
+        );
+      }
+      console.log(simpleDiff(oldContent, newContent, "summary.md"));
     }
-    console.log(`\n[DRY-RUN] ${entityRelPath}/summary.md`);
-    if (applyDecay && entityDecayStats) {
-      console.log(
-        `  decay: hot=${entityDecayStats.hot} warm=${entityDecayStats.warm}` +
-        ` coldExcluded=${entityDecayStats.coldExcluded} coldIncluded(principles)=${entityDecayStats.coldIncluded}`
-      );
-    }
-    console.log(simpleDiff(oldContent, newContent, "summary.md"));
     stats.updated++;
+    stats.changedEntities.push(entityRelPath);
     continue;
   }
 
@@ -426,6 +559,7 @@ for (const itemsPath of itemsFiles) {
     mkdirSync(entityDir, { recursive: true });
     await Bun.write(summaryPath, newContent);
     stats.updated++;
+    stats.changedEntities.push(entityRelPath);
   } catch (e) {
     console.error(`❌ Ошибка записи ${summaryPath}: ${e.message}`);
     stats.errors++;
@@ -435,22 +569,31 @@ for (const itemsPath of itemsFiles) {
 // ---------------------------------------------------------------------------
 // Итоговый вывод
 // ---------------------------------------------------------------------------
-if (!dryRun) {
-  const output = {
-    updated: stats.updated,
-    skipped: stats.skipped,
-    errors: stats.errors,
-  };
-  if (applyDecay) {
-    output.hot          = stats.hot;
-    output.warm         = stats.warm;
-    output.coldExcluded = stats.coldExcluded;
-  }
+const output = {
+  entitiesScanned: stats.entitiesScanned,
+  updated: stats.updated,
+  unchanged: stats.unchanged,
+  skipped: stats.skipped,
+  errors: stats.errors,
+  changedEntities: stats.changedEntities,
+};
+if (applyDecay) {
+  output.hot = stats.hot;
+  output.warm = stats.warm;
+  output.coldIncluded = stats.coldIncluded;
+  output.coldExcluded = stats.coldExcluded;
+  output.omittedOperational = stats.omittedOperational;
+  output.omittedTestArtifacts = stats.omittedTestArtifacts;
+  output.includedByPriority = stats.includedByPriority;
+  output.limitedPrinciples = stats.limitedPrinciples;
+}
+
+if (!dryRun || jsonOutput) {
   console.log(JSON.stringify(output));
 } else {
-  let line = `\n[DRY-RUN] Итого: ${stats.updated} обновлено, ${stats.skipped} пропущено, ${stats.errors} ошибок`;
+  let line = `\n[DRY-RUN] Итого: ${stats.updated} обновлено, ${stats.unchanged} без изменений, ${stats.skipped} пропущено, ${stats.errors} ошибок`;
   if (applyDecay) {
-    line += ` | decay: hot=${stats.hot} warm=${stats.warm} coldExcluded=${stats.coldExcluded}`;
+    line += ` | decay: hot=${stats.hot} warm=${stats.warm} coldIncluded=${stats.coldIncluded} coldExcluded=${stats.coldExcluded} omittedOperational=${stats.omittedOperational} omittedTestArtifacts=${stats.omittedTestArtifacts} includedByPriority=${stats.includedByPriority} limitedPrinciples=${stats.limitedPrinciples}`;
   }
   console.log(line);
 }

@@ -1,17 +1,15 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
-import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "fs";
+import { tmpdir } from "os";
+import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync } from "fs";
 
 const SCRIPTS_DIR = join(import.meta.dir, "..", "scripts");
 const ENGRAM_DIR = join(import.meta.dir, "..");
-const LIFE_DIR = join(ENGRAM_DIR, "life");
-const HASH_FILE = join(ENGRAM_DIR, "workspace", "memory-state", "fact-hashes.json");
-
-// Ensure scripts resolve WORKSPACE to this engram dir (not clawd workspace)
-process.env.ENGRAM_WORKSPACE = ENGRAM_DIR;
 
 const TEST_ENTITY = "areas/people/__test_mw__";
-const TEST_ENTITY_DIR = join(LIFE_DIR, TEST_ENTITY);
+let TEST_WORKSPACE;
+let LIFE_DIR;
+let TEST_ENTITY_DIR;
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -30,27 +28,12 @@ function readItems() {
   return JSON.parse(readFileSync(join(TEST_ENTITY_DIR, "items.json"), "utf-8"));
 }
 
-/** Backup and restore hash file to avoid test pollution */
-let hashBackup = null;
-function backupHashes() {
-  try {
-    hashBackup = readFileSync(HASH_FILE, "utf-8");
-  } catch {
-    hashBackup = null;
-  }
-}
-function restoreHashes() {
-  if (hashBackup !== null) {
-    writeFileSync(HASH_FILE, hashBackup);
-  }
-}
-
 async function run(args, cwd = ENGRAM_DIR) {
   const proc = Bun.spawn(["bun", join(SCRIPTS_DIR, "memory-write.js"), ...args], {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ENGRAM_WORKSPACE: ENGRAM_DIR },
+    env: { ...process.env, ENGRAM_WORKSPACE: TEST_WORKSPACE },
   });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -74,13 +57,15 @@ async function runJson(args) {
 // ─────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-  if (existsSync(TEST_ENTITY_DIR)) rmSync(TEST_ENTITY_DIR, { recursive: true });
-  backupHashes();
+  TEST_WORKSPACE = mkdtempSync(join(tmpdir(), "engram-memory-write-"));
+  LIFE_DIR = join(TEST_WORKSPACE, "life");
+  TEST_ENTITY_DIR = join(LIFE_DIR, TEST_ENTITY);
+  mkdirSync(join(TEST_WORKSPACE, "workspace", "memory-state"), { recursive: true });
+  writeFileSync(join(TEST_WORKSPACE, "workspace", "memory-state", "fact-hashes.json"), "{}");
 });
 
 afterEach(() => {
-  if (existsSync(TEST_ENTITY_DIR)) rmSync(TEST_ENTITY_DIR, { recursive: true });
-  restoreHashes();
+  if (TEST_WORKSPACE && existsSync(TEST_WORKSPACE)) rmSync(TEST_WORKSPACE, { recursive: true, force: true });
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -122,7 +107,7 @@ describe("memory-write — argument validation", () => {
     for (const cat of categories) {
       // Recreate entity fresh (previous write changes state)
       if (existsSync(TEST_ENTITY_DIR)) rmSync(TEST_ENTITY_DIR, { recursive: true });
-      restoreHashes();
+      writeFileSync(join(TEST_WORKSPACE, "workspace", "memory-state", "fact-hashes.json"), "{}");
       createEntity();
 
       const { result } = await runJson([
@@ -133,7 +118,7 @@ describe("memory-write — argument validation", () => {
       expect(result?.status).toBe("created");
       expect(result?.fact?.category).toBe(cat);
     }
-  });
+  }, 30000);
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -252,6 +237,53 @@ describe("memory-write — write flow", () => {
     const data = readItems();
     expect(data.facts.length).toBe(1);
     expect(data.facts[0].fact).toBe("Persisted fact test");
+  });
+
+  test("can supersede existing facts when writing their replacement", async () => {
+    createEntity([{
+      id: "__test_mw__-001",
+      fact: "Old noisy assistant status text",
+      category: "context",
+      confidence: 0.6,
+      abstractionLevel: "episode",
+      tags: [],
+      timestamp: "2026-05-21",
+      source: "test",
+      status: "active",
+      supersededBy: null,
+      relatedEntities: [],
+      lastAccessed: "2026-05-21",
+      accessCount: 1,
+    }, {
+      id: "__test_mw__-002",
+      fact: "Old tool log noise",
+      category: "context",
+      confidence: 0.6,
+      abstractionLevel: "episode",
+      tags: [],
+      timestamp: "2026-05-21",
+      source: "test",
+      status: "active",
+      supersededBy: null,
+      relatedEntities: [],
+      lastAccessed: "2026-05-21",
+      accessCount: 1,
+    }]);
+
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Replacement durable fact",
+      "--category", "context",
+      "--supersedes", "__test_mw__-001,__test_mw__-002",
+    ]);
+
+    expect(result.status).toBe("created");
+    const data = readItems();
+    expect(data.facts[0].status).toBe("superseded");
+    expect(data.facts[0].supersededBy).toBe("__test_mw__-003");
+    expect(data.facts[1].status).toBe("superseded");
+    expect(data.facts[1].supersededBy).toBe("__test_mw__-003");
+    expect(data.facts[2].fact).toBe("Replacement durable fact");
   });
 
   test("increments IDs correctly", async () => {

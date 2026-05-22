@@ -13,6 +13,7 @@ const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || dirname(new URL(import.meta.ur
 const { values: args } = parseArgs({
   options: {
     'fix': { type: 'boolean', default: false },
+    'quality': { type: 'boolean', default: false },
     'agent-id': { type: 'string' },
     'help': { type: 'boolean', short: 'h', default: false },
   },
@@ -49,12 +50,59 @@ const _config = loadEngramConfig(WORKSPACE);
 const agentId = args['agent-id'] || _config.agent.replace(/^agent-/, '') || 'main';
 const LIFE_DIR = join(WORKSPACE, 'life');
 const fix = args.fix;
+const quality = args.quality;
 let errors = 0;
 let warnings = 0;
 let fixed = 0;
 
 const VALID_ABSTRACTION = ['episode', 'pattern', 'principle'];
 const VALID_STATUS = ['active', 'superseded', 'pending'];
+const VALID_CATEGORIES = ['relationship', 'milestone', 'status', 'preference', 'context', 'decision', 'correction'];
+const CATEGORY_MAP = {
+  undefined: 'context',
+  technical: 'context',
+  features: 'context',
+  integration: 'context',
+  testing: 'context',
+  process: 'context',
+  'project-status': 'status',
+  instruction: 'preference',
+  infrastructure: 'context',
+  configuration: 'context',
+  pattern: 'context',
+  fact: 'context',
+  event: 'milestone',
+  verification: 'status',
+  observation: 'context',
+  system: 'context',
+  goal: 'status',
+  principle: 'context',
+  architecture: 'context',
+  security: 'context',
+  learning: 'context',
+  credential: 'context',
+  resource: 'context',
+};
+
+const TEST_ARTIFACT_RE = /(^|[\\/]|[-_])(test|tests|fixture|fixtures|dummy|sample)([-_]|$|[\\/])|(^|[\\/])__[^\\/]*__($|[\\/])/i;
+const TEST_TAGS = new Set(['test', 'fixture', 'fixtures', 'dummy', 'sample']);
+
+function tagsOf(fact) {
+  return Array.isArray(fact.tags) ? fact.tags.map(tag => String(tag).toLowerCase()) : [];
+}
+
+function hasTag(fact, tagSet) {
+  return tagsOf(fact).some(tag => tagSet.has(tag));
+}
+
+function isTestArtifactPath(relPath) {
+  return TEST_ARTIFACT_RE.test(relPath.replace(/\\/g, '/'));
+}
+
+function isCleanupMarker(fact) {
+  const factText = String(fact.fact || fact.text || '');
+  return /should be ignored as user memory|test artifact/i.test(factText) && tagsOf(fact).includes('cleanup');
+}
 
 function error(msg) { console.error(`❌ ${msg}`); errors++; }
 function warn(msg) { console.warn(`⚠️  ${msg}`); warnings++; }
@@ -216,6 +264,49 @@ for (const file of itemsFiles) {
     if (!f.text && !f.fact) {
       error(`${prefix}: missing text/fact`);
     }
+    if (f.text && !f.fact) {
+      if (fix) {
+        f.fact = f.text;
+        delete f.text;
+        needsRewrite = true;
+        fixMsg(`${prefix}: migrated legacy text → fact`);
+      } else {
+        warn(`${prefix}: legacy text field without fact`);
+      }
+    }
+    if (f.fact && f.text && f.fact === f.text && fix) {
+      delete f.text;
+      needsRewrite = true;
+      fixMsg(`${prefix}: removed duplicate legacy text field`);
+    }
+    if (!VALID_CATEGORIES.includes(f.category)) {
+      const categoryKey = f.category === undefined || f.category === null ? 'undefined' : String(f.category).toLowerCase();
+      const mapped = CATEGORY_MAP[categoryKey];
+      if (fix && mapped) {
+        fixMsg(`${prefix}: normalized category "${f.category}" → "${mapped}"`);
+        f.category = mapped;
+        needsRewrite = true;
+      } else {
+        const message = `${prefix}: non-canonical category "${f.category}" (must be: ${VALID_CATEGORIES.join(', ')})`;
+        if (quality) error(message);
+        else warn(message);
+      }
+    }
+    if (quality && f.status !== 'superseded') {
+      const factText = String(f.fact || f.text || '');
+      if (/^(Готово|Ок|Да,|Сделал|Проверил)[.!,:\s]/.test(factText)) {
+        warn(`${prefix}: fact looks like assistant status text, not durable knowledge`);
+      }
+      if (/\b(Exec completed|remote: !|deploy lock|Now let me|tool call|stdout|stderr)\b/i.test(factText)) {
+        warn(`${prefix}: fact looks like tool/session log noise`);
+      }
+      if (isTestArtifactPath(relPath) && !isCleanupMarker(f)) {
+        warn(`${prefix}: active fact belongs to test/fixture artifact entity`);
+      }
+      if (!isTestArtifactPath(relPath) && hasTag(f, TEST_TAGS)) {
+        warn(`${prefix}: active production fact has test/fixture tag`);
+      }
+    }
     if (!f.timestamp) {
       error(`${prefix}: missing timestamp`);
     }
@@ -240,7 +331,13 @@ for (const file of itemsFiles) {
 
     // Validate abstractionLevel
     if (f.abstractionLevel && !VALID_ABSTRACTION.includes(f.abstractionLevel)) {
-      error(`${prefix}: invalid abstractionLevel "${f.abstractionLevel}" (must be: ${VALID_ABSTRACTION.join(', ')})`);
+      if (fix && f.abstractionLevel === 'episodic') {
+        f.abstractionLevel = 'episode';
+        needsRewrite = true;
+        fixMsg(`${prefix}: normalized abstractionLevel "episodic" → "episode"`);
+      } else {
+        error(`${prefix}: invalid abstractionLevel "${f.abstractionLevel}" (must be: ${VALID_ABSTRACTION.join(', ')})`);
+      }
     }
 
     // Broken supersededBy reference
@@ -265,11 +362,24 @@ if (bomFixed > 0) fixMsg(`${bomFixed} BOM encodings fixed`);
 console.log('\n--- Domains ---');
 const domainsDir = join(WORKSPACE, 'memory', 'domains');
 if (existsSync(domainsDir)) {
-  const domainEntries = readdirSync(domainsDir, { withFileTypes: true })
+  const allDomainEntries = readdirSync(domainsDir, { withFileTypes: true })
     .filter(e => e.isDirectory());
+  const registryPath = join(domainsDir, 'registry.json');
+  let registeredDomainNames = null;
+  if (existsSync(registryPath)) {
+    try {
+      const registry = JSON.parse(readFileSync(registryPath, 'utf-8'));
+      registeredDomainNames = new Set(Object.keys(registry.domains || {}));
+    } catch (e) {
+      warn(`domains/registry.json parse error: ${e.message}`);
+    }
+  }
+  const domainEntries = registeredDomainNames
+    ? allDomainEntries.filter(e => registeredDomainNames.has(e.name))
+    : allDomainEntries;
 
-  if (domainEntries.length > 20) {
-    warn(`${domainEntries.length} доменов (рекомендуется ≤20)`);
+  if (allDomainEntries.length > 20) {
+    warn(`${allDomainEntries.length} доменов (рекомендуется ≤20)`);
   }
 
   const requiredDomainFiles = ['decisions.md', 'status.md', 'changelog.md'];
@@ -309,7 +419,9 @@ if (existsSync(domainsDir)) {
     }
   }
 
-  ok(`${domainEntries.length} domain(s) checked`);
+  ok(registeredDomainNames
+    ? `${domainEntries.length} registered domain(s) checked`
+    : `${domainEntries.length} domain(s) checked`);
 } else {
   ok('No domains directory (optional)');
 }
@@ -328,6 +440,9 @@ if (existsSync(heartbeatPath)) {
     const agentDir = join(WORKSPACE, `memory/agent-${agentId}`);
     if (existsSync(agentDir)) {
       for (const entry of readdirSync(agentDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && /^cron-.+-run-.+/.test(entry.name)) {
+          continue;
+        }
         if (entry.isDirectory() && !sessions.includes(entry.name)) {
           warn(`Session dir "${entry.name}" not in heartbeat-state.json`);
         }

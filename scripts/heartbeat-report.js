@@ -35,6 +35,7 @@ const provided = {
   extraction:  getArg("extraction"),
   synthesis:   getArg("synthesis"),
   domains:     getArg("domains"),
+  oll:         getArg("oll"),
   maintenance: getArg("maintenance"),
 };
 
@@ -48,6 +49,17 @@ try {
 } catch {
   console.error(`[heartbeat-report] File not found: ${notePath}`);
   process.exit(1);
+}
+
+// Keep the extraction watermark as the final line of the note. Older runner
+// versions wrote the report after the watermark, so normalize that shape too.
+const watermarkRegex = /(?:\r?\n)*<!-- extracted:L\d+:[^>]+ -->(?:\r?\n)*/g;
+const watermarkMatches = content.match(watermarkRegex) ?? [];
+const extractionWatermark = watermarkMatches.length
+  ? watermarkMatches[watermarkMatches.length - 1].trim()
+  : null;
+if (extractionWatermark) {
+  content = content.replace(watermarkRegex, "\n").trimEnd() + "\n";
 }
 
 // --- Split content around Heartbeat Report section ---
@@ -76,7 +88,7 @@ if (headerIdx !== -1) {
 }
 
 // --- Parse existing field values from sectionBody ---
-const defaults = { extraction: "—", synthesis: "—", domains: "—", maintenance: "—" };
+const defaults = { extraction: "—", synthesis: "—", domains: "—", oll: "—", maintenance: "—" };
 const existing = { ...defaults };
 
 function parseField(body, key) {
@@ -87,6 +99,7 @@ function parseField(body, key) {
 existing.extraction  = parseField(sectionBody, "Extraction")  ?? defaults.extraction;
 existing.synthesis   = parseField(sectionBody, "Synthesis")   ?? defaults.synthesis;
 existing.domains     = parseField(sectionBody, "Domains")     ?? defaults.domains;
+existing.oll         = parseField(sectionBody, "OLL")         ?? defaults.oll;
 existing.maintenance = parseField(sectionBody, "Maintenance") ?? defaults.maintenance;
 
 // --- Merge: provided wins, fall back to existing ---
@@ -94,6 +107,7 @@ const final = {
   extraction:  provided.extraction  ?? existing.extraction,
   synthesis:   provided.synthesis   ?? existing.synthesis,
   domains:     provided.domains     ?? existing.domains,
+  oll:         provided.oll         ?? existing.oll,
   maintenance: provided.maintenance ?? existing.maintenance,
 };
 
@@ -103,14 +117,19 @@ const newSection = `${HEADER}
 - **Extraction**: ${final.extraction}
 - **Synthesis**: ${final.synthesis}
 - **Domains**: ${final.domains}
+- **OLL**: ${final.oll}
 - **Maintenance**: ${final.maintenance}`;
 
 // --- Assemble and write ---
-const updated = prefix + newSection + (suffix || "\n");
+let updated = prefix + newSection + (suffix || "\n");
+if (extractionWatermark) {
+  updated = updated.trimEnd() + "\n" + extractionWatermark + "\n";
+}
 await Bun.write(notePath, updated);
 
 console.log(`[heartbeat-report] Updated: ${notePath}`);
 console.log(`  extraction:  ${final.extraction}`);
 console.log(`  synthesis:   ${final.synthesis}`);
 console.log(`  domains:     ${final.domains}`);
+console.log(`  oll:         ${final.oll}`);
 console.log(`  maintenance: ${final.maintenance}`);

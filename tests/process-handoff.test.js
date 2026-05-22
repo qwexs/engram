@@ -1,17 +1,17 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
-import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { tmpdir } from "os";
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 
 import { getAgentDir } from "../scripts/config.js";
+import { applyHandoff, parseHandoff } from "../scripts/process-handoff-core.js";
 
 const SCRIPTS_DIR = join(import.meta.dir, "..", "scripts");
-const WORKSPACE_ROOT = join(import.meta.dir, "..", "..", "..");
-const OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
-const TENSION_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "tensions");
-const MEMORY_DIR = join(WORKSPACE_ROOT, "memory", getAgentDir(WORKSPACE_ROOT), "main");
-const STATE_PATH = join(WORKSPACE_ROOT, "memory", "heartbeat-state.json");
-
 const TEST_DATE = "2026-03-02";
+let WORKSPACE_ROOT;
+let OBS_DIR;
+let MEMORY_DIR;
+let STATE_PATH;
 
 function cleanOpsDir(dir) {
   if (!existsSync(dir)) return;
@@ -27,6 +27,7 @@ async function runHandoff(handoffBlock, session = "main", date = TEST_DATE) {
       stdin: new Blob([handoffBlock]),
       stdout: "pipe",
       stderr: "pipe",
+      env: { ...process.env, ENGRAM_WORKSPACE: WORKSPACE_ROOT },
     }
   );
   const exitCode = await proc.exited;
@@ -35,27 +36,63 @@ async function runHandoff(handoffBlock, session = "main", date = TEST_DATE) {
   return { exitCode, stdout, stderr };
 }
 
+function writeDailyNote() {
+  mkdirSync(MEMORY_DIR, { recursive: true });
+  writeFileSync(join(MEMORY_DIR, `${TEST_DATE}.md`), `# ${TEST_DATE}
+
+## Events
+
+## Decisions
+
+## Learnings
+
+## Active Threads
+
+## Next
+`, "utf-8");
+}
+
 function readState() {
   if (!existsSync(STATE_PATH)) return {};
   return JSON.parse(readFileSync(STATE_PATH, "utf-8"));
 }
 
 describe("process-handoff.js — no handoff block", () => {
-  test("exits 0 when input has no handoff block", async () => {
-    const { exitCode, stdout } = await runHandoff("just some random text");
-    expect(exitCode).toBe(0);
-    expect(stdout).toContain("No handoff block found");
+  beforeEach(() => {
+    WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "engram-handoff-"));
+    OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
+    MEMORY_DIR = join(WORKSPACE_ROOT, "memory", getAgentDir(WORKSPACE_ROOT), "main");
+    STATE_PATH = join(WORKSPACE_ROOT, "memory", "heartbeat-state.json");
+    writeDailyNote();
   });
 
-  test("exits 0 on empty input", async () => {
+  afterEach(() => {
+    if (WORKSPACE_ROOT?.startsWith(tmpdir())) rmSync(WORKSPACE_ROOT, { recursive: true, force: true });
+  });
+
+  test("exits 1 when input has no handoff block", async () => {
+    const { exitCode, stdout } = await runHandoff("just some random text");
+    expect(exitCode).toBe(1);
+  });
+
+  test("exits 1 on empty input", async () => {
     const { exitCode } = await runHandoff("");
-    expect(exitCode).toBe(0);
+    expect(exitCode).toBe(1);
   });
 });
 
 describe("process-handoff.js — HB-EXTRACT", () => {
   beforeEach(() => {
+    WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "engram-handoff-"));
+    OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
+    MEMORY_DIR = join(WORKSPACE_ROOT, "memory", getAgentDir(WORKSPACE_ROOT), "main");
+    STATE_PATH = join(WORKSPACE_ROOT, "memory", "heartbeat-state.json");
+    writeDailyNote();
     cleanOpsDir(OBS_DIR);
+  });
+
+  afterEach(() => {
+    if (WORKSPACE_ROOT?.startsWith(tmpdir())) rmSync(WORKSPACE_ROOT, { recursive: true, force: true });
   });
 
   test("processes ok extract with watermark", async () => {
@@ -89,13 +126,10 @@ Alerts: []
 
     const { exitCode, stdout } = await runHandoff(block);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("Wrote 1 observations");
+    expect(stdout).toContain("Logged 1 flags");
 
-    // Check observation file exists
-    const indexPath = join(OBS_DIR, "index.json");
-    expect(existsSync(indexPath)).toBe(true);
-    const index = JSON.parse(readFileSync(indexPath, "utf-8"));
-    expect(index.observations.length).toBeGreaterThan(0);
+    const note = readFileSync(join(MEMORY_DIR, `${TEST_DATE}.md`), "utf-8");
+    expect(note).toContain("process-handoff test observation alpha");
   });
 
   test("handles error status", async () => {
@@ -115,11 +149,42 @@ Alerts: []
     const state = readState();
     expect(state.subagentRuns?.["hb-extract"]?.status).toBe("failed");
   });
+
+  test("core applyHandoff accepts context directly without CLI side effects", async () => {
+    const block = `=== HB-EXTRACT HANDOFF ===
+Status: ok
+Summary: Extracted 1 fact
+Stats: {"facts_written": 1, "facts_skipped_dedup": 0, "new_watermark": "L20"}
+Observations: []
+Tensions: []
+Alerts: []
+=== END ===`;
+
+    const result = await applyHandoff(parseHandoff(block), {
+      workspace: WORKSPACE_ROOT,
+      session: "main",
+      date: TEST_DATE,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.logs.join("\n")).toContain("HB-EXTRACT");
+    const state = readState();
+    expect(state.subagentRuns?.["hb-extract"]?.status).toBe("ok");
+  });
 });
 
 describe("process-handoff.js — HB-DOMAINS", () => {
   beforeEach(() => {
+    WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "engram-handoff-"));
+    OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
+    MEMORY_DIR = join(WORKSPACE_ROOT, "memory", getAgentDir(WORKSPACE_ROOT), "main");
+    STATE_PATH = join(WORKSPACE_ROOT, "memory", "heartbeat-state.json");
+    writeDailyNote();
     cleanOpsDir(OBS_DIR);
+  });
+
+  afterEach(() => {
+    if (WORKSPACE_ROOT?.startsWith(tmpdir())) rmSync(WORKSPACE_ROOT, { recursive: true, force: true });
   });
 
   test("processes ok domains", async () => {
@@ -185,11 +250,23 @@ Alerts: []
 
     const { exitCode, stdout } = await runHandoff(block);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("Wrote 1 observations");
+    expect(stdout).toContain("Logged 1 flags");
   });
 });
 
 describe("process-handoff.js — HB-SYNTHESIS", () => {
+  beforeEach(() => {
+    WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "engram-handoff-"));
+    OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
+    MEMORY_DIR = join(WORKSPACE_ROOT, "memory", getAgentDir(WORKSPACE_ROOT), "main");
+    STATE_PATH = join(WORKSPACE_ROOT, "memory", "heartbeat-state.json");
+    writeDailyNote();
+  });
+
+  afterEach(() => {
+    if (WORKSPACE_ROOT?.startsWith(tmpdir())) rmSync(WORKSPACE_ROOT, { recursive: true, force: true });
+  });
+
   test("processes ok synthesis", async () => {
     const block = `=== HB-SYNTHESIS HANDOFF ===
 Status: ok
@@ -227,6 +304,18 @@ Alerts: []
 });
 
 describe("process-handoff.js — unknown type", () => {
+  beforeEach(() => {
+    WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "engram-handoff-"));
+    OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
+    MEMORY_DIR = join(WORKSPACE_ROOT, "memory", getAgentDir(WORKSPACE_ROOT), "main");
+    STATE_PATH = join(WORKSPACE_ROOT, "memory", "heartbeat-state.json");
+    writeDailyNote();
+  });
+
+  afterEach(() => {
+    if (WORKSPACE_ROOT?.startsWith(tmpdir())) rmSync(WORKSPACE_ROOT, { recursive: true, force: true });
+  });
+
   test("exits 1 for unknown handoff type", async () => {
     const block = `=== HB-UNKNOWN HANDOFF ===
 Status: ok

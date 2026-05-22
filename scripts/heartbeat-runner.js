@@ -13,6 +13,8 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { loadEngramConfig } from "./config.js";
+import { parseHandoff } from "./process-handoff-core.js";
+import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary } from "./domains-runner.js";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -23,10 +25,23 @@ const DEFAULT_STATE = {
   heartbeatLockedAt: null,
   subagentExtraction: false,
   lastExtraction: {},
+  lastSessionExtracted: {},
   lastDomainScan: null,
   lastWeeklySynthesis: null,
   pendingObservations: 0,
   pendingTensions: 0,
+  rethinkInProgress: false,
+  rethinkStartedAt: null,
+  lastRethink: null,
+  lastRethinkScore: null,
+  rethinkCount: 0,
+  autoresearchInProgress: false,
+  autoresearchStartedAt: null,
+  currentExperiment: null,
+  lastAutoresearch: null,
+  pendingRethink2: null,
+  rethink2InProgress: false,
+  rethink2StartedAt: null,
   subagentRuns: {},
 };
 
@@ -63,7 +78,28 @@ if (opts.help || opts.h) {
     "  --label-prefix <prefix>  Prefix for heartbeat subagent labels. Default: hb for main, <agent>-hb otherwise.",
     "  --date <YYYY-MM-DD>      Date override. Default: today in ENGRAM_TZ/TZ.",
     "  --no-embed               Skip qmd embed.",
+    "  --no-semantic-check      Skip QMD semantic dedup inside extract-runner.",
+    "  --no-write-extraction    Dry-run extraction writes without advancing watermark.",
+    "  --advance-watermark-on-no-write",
+    "                           Allow dry-run extraction to advance watermark/session cursor.",
     "  --no-fix                 Run validate.js without --fix.",
+    "  --skip-maintenance       Skip validate/qmd maintenance (test/smoke only).",
+    "  --domains-write          Enable guarded domain write handoff application.",
+    "  --domains-dry-run        Validate domain write handoff without mutating files.",
+    "  --domain <name>          Select one domain for write mode.",
+    "  --domains-handoff-file <path>",
+    "                           HB-DOMAINS handoff block to apply in write mode.",
+    "  --spawn-rethink          Queue hb-rethink when OLL trigger is due.",
+    "  --spawn-autoresearch     Queue hb-autoresearch for the next pending auto experiment.",
+    "  --spawn-rethink2         Queue hb-rethink2 when pendingRethink2 is set.",
+    "  --recover-stale-oll-locks",
+    "                           Clear stale OLL worker locks before evaluating spawn flags.",
+    "  --oll-stale-rethink-hours <n>",
+    "                           hb-rethink stale TTL. Default: 2.",
+    "  --oll-stale-autoresearch-min <n>",
+    "                           hb-autoresearch stale TTL. Default: 30.",
+    "  --oll-stale-rethink2-hours <n>",
+    "                           hb-rethink2 stale TTL. Default: 2.",
     "  --timeout-ms <n>         Per-command timeout. Default: 300000.",
     "  --stale-lock-min <n>     Reset heartbeat lock older than N minutes. Default: 10.",
   ].join("\n"));
@@ -82,6 +118,11 @@ const tz = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
 const today = opts.date || new Date().toLocaleDateString("sv-SE", { timeZone: tz });
 const timeoutMs = Number(opts["timeout-ms"] || 300000);
 const staleLockMin = Number(opts["stale-lock-min"] || 10);
+const ollStale = {
+  rethinkHours: Number(opts["oll-stale-rethink-hours"] || 2),
+  autoresearchHours: Number(opts["oll-stale-autoresearch-min"] || 30) / 60,
+  rethink2Hours: Number(opts["oll-stale-rethink2-hours"] || 2),
+};
 
 const statePath = join(workspace, "memory", "heartbeat-state.json");
 const noteDir = join(workspace, "memory", agentDir, session);
@@ -96,7 +137,9 @@ const summary = {
   extraction: "not run",
   synthesis: "not run",
   domains: "not run",
+  oll: "not run",
   maintenance: "not run",
+  phases: {},
   warnings: [],
 };
 
@@ -149,20 +192,216 @@ async function patchState(patches) {
 }
 
 function run(command, args, options = {}) {
+  const startedAt = Date.now();
   const result = spawnSync(command, args, {
     cwd: options.cwd || workspace,
     env: { ...process.env, ENGRAM_WORKSPACE: workspace },
     encoding: "utf8",
     timeout: options.timeoutMs || timeoutMs,
-    shell: process.platform === "win32",
+    shell: false,
   });
   return {
     command: command + " " + args.join(" "),
     status: result.status,
     signal: result.signal,
+    elapsedMs: Date.now() - startedAt,
     stdout: result.stdout || "",
     stderr: result.stderr || "",
     error: result.error ? String(result.error.message || result.error) : null,
+  };
+}
+
+function summarizeCommand(result) {
+  const stdout = String(result.stdout || "").trim();
+  const stderr = String(result.stderr || "").trim();
+  return {
+    command: result.command,
+    status: result.status,
+    signal: result.signal,
+    elapsedMs: result.elapsedMs,
+    error: result.error,
+    stdoutPreview: stdout ? stdout.slice(0, 500) : "",
+    stderrPreview: stderr ? stderr.slice(0, 500) : "",
+  };
+}
+
+function parseLastJsonLine(output) {
+  const lines = String(output || "").trim().split(/\r?\n/).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try { return JSON.parse(lines[i]); } catch { /* keep scanning */ }
+  }
+  return null;
+}
+
+function formatSynthesisStats(stats) {
+  if (!stats) return "ok (runner apply-decay)";
+  const parts = [
+    `${stats.updated ?? 0} updated`,
+    `${stats.unchanged ?? 0} unchanged`,
+    `${stats.skipped ?? 0} skipped`,
+    `${stats.errors ?? 0} errors`,
+  ];
+  if (stats.hot != null || stats.warm != null || stats.coldExcluded != null) {
+    parts.push(`hot ${stats.hot ?? 0}`);
+    parts.push(`warm ${stats.warm ?? 0}`);
+    parts.push(`coldExcluded ${stats.coldExcluded ?? 0}`);
+  }
+  return `ok (${parts.join(", ")})`;
+}
+
+function daysSince(iso, fallback = 999) {
+  if (!iso) return fallback;
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return fallback;
+  return Math.floor((Date.now() - ms) / 86400000);
+}
+
+function hoursSince(iso, fallback = 999) {
+  if (!iso) return fallback;
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return fallback;
+  return Math.floor((Date.now() - ms) / 3600000);
+}
+
+async function readJsonIfExists(path, fallback) {
+  try {
+    if (!existsSync(path)) return structuredClone(fallback);
+    const raw = await readFile(path, "utf8");
+    return JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
+  } catch {
+    return structuredClone(fallback);
+  }
+}
+
+async function countPendingObservationCategories() {
+  const dir = join(workspace, "workspace", "ops", "observations");
+  const index = await readJsonIfExists(join(dir, "index.json"), { observations: [] });
+  const counts = { friction: 0, surprise: 0, pattern: 0, total: 0 };
+  for (const id of Array.isArray(index.observations) ? index.observations : []) {
+    const obs = await readJsonIfExists(join(dir, `${id}.json`), null);
+    if (!obs || obs.status !== "pending") continue;
+    const category = String(obs.category || "").toLowerCase();
+    if (Object.hasOwn(counts, category)) counts[category]++;
+    counts.total++;
+  }
+  return counts;
+}
+
+async function countPendingTensions() {
+  const dir = join(workspace, "workspace", "ops", "tensions");
+  const index = await readJsonIfExists(join(dir, "index.json"), { tensions: [] });
+  let pending = 0;
+  for (const id of Array.isArray(index.tensions) ? index.tensions : []) {
+    const tension = await readJsonIfExists(join(dir, `${id}.json`), null);
+    if (tension && tension.status === "pending") pending++;
+  }
+  return pending;
+}
+
+async function getExperimentTriggerStats() {
+  const registry = await readJsonIfExists(join(workspace, "workspace", "research", "experiments.json"), { stats: {}, experiments: [] });
+  return {
+    pending: Number(registry.stats?.pending || 0),
+    running: Number(registry.stats?.running || 0),
+    total: Number(registry.stats?.total || 0),
+  };
+}
+
+async function listPendingAutoExperiments() {
+  try {
+    const { listByStatus } = await import("./experiments-registry.js");
+    const pending = await listByStatus("pending");
+    return pending.filter((experiment) => experiment?.budget?.decision === "auto");
+  } catch {
+    return [];
+  }
+}
+
+function isWorkerRunning(state, phase) {
+  const run = state.subagentRuns?.[phase];
+  return Boolean(run && (run.status === "running" || run.status === "queued"));
+}
+
+function staleWorker(state, phase, legacyStartedAtKey, ttlHours) {
+  const legacyFlag = phase === "hb-rethink"
+    ? Boolean(state.rethinkInProgress)
+    : phase === "hb-autoresearch"
+      ? Boolean(state.autoresearchInProgress)
+      : Boolean(state.rethink2InProgress);
+  if (!legacyFlag && !isWorkerRunning(state, phase)) return false;
+  const startedAt = state.subagentRuns?.[phase]?.startedAt || state[legacyStartedAtKey] || null;
+  return hoursSince(startedAt) > ttlHours;
+}
+
+function spawnLabel(phase) {
+  return labelPrefix + "-" + phase.replace(/^hb-/, "");
+}
+
+function spawnRunId(phase) {
+  return phase + "-" + today + "-" + Date.now();
+}
+
+async function queueSpawnRequest({ phase, runId, label, task, model = "sonnet-4-6", experimentId = null }) {
+  const dir = join(workspace, "workspace", "ops", "heartbeat-spawns");
+  mkdirSync(dir, { recursive: true });
+  const payload = { runId, phase, label, model, cleanup: "delete", status: "queued", createdAt: localIso(), experimentId, task };
+  const path = join(dir, runId + ".json");
+  await atomicWrite(path, JSON.stringify(payload, null, 2) + "\n");
+  return { path, payload };
+}
+
+async function readReferenceTemplate(name) {
+  try {
+    return await readFile(join(scriptDir, "..", "references", name), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function buildOllTask(phase, context) {
+  const templateByPhase = { "hb-rethink": "HB-RETHINK.md", "hb-autoresearch": "HB-AUTORESEARCH.md", "hb-rethink2": "HB-RETHINK2.md" };
+  const template = await readReferenceTemplate(templateByPhase[phase]);
+  return [
+    template.trim(),
+    "",
+    "## Runner Context",
+    "Use this run id in the final handoff when a Run-Id field is supported.",
+    "```json",
+    JSON.stringify(context, null, 2),
+    "```",
+  ].join("\n");
+}
+
+async function markOllWorkerQueued({ phase, runId, label, requestPath, experimentId = null }) {
+  const patches = {
+    ["subagentRuns." + phase]: { status: "queued", label, runId, requestPath, startedAt: localIso() },
+  };
+  if (phase === "hb-rethink") {
+    patches.rethinkInProgress = true;
+    patches.rethinkStartedAt = localIso();
+    patches.lastRethinkScore = summary.phases.oll?.score ?? null;
+  } else if (phase === "hb-autoresearch") {
+    patches.autoresearchInProgress = true;
+    patches.autoresearchStartedAt = localIso();
+    patches.currentExperiment = experimentId;
+  } else if (phase === "hb-rethink2") {
+    patches.rethink2InProgress = true;
+    patches.rethink2StartedAt = localIso();
+  }
+  await patchState(patches);
+}
+
+async function commandRunner(args, options = {}) {
+  const [command, ...rest] = args;
+  const result = run(command, rest, {
+    cwd: options.cwd,
+    timeoutMs: options.timeoutMs,
+  });
+  return {
+    ok: result.status === 0,
+    exitCode: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr || result.error || "",
   };
 }
 
@@ -184,17 +423,71 @@ function stripWatermark(content) {
   return content.replace(/\s*<!-- extracted:L\d+:[^>]+ -->\s*$/, "").trimEnd() + "\n";
 }
 
-async function writeExtractionWatermark() {
-  const content = await readFile(notePath, "utf8");
-  const body = stripWatermark(content);
-  const lineCount = body.split(/\r?\n/).length;
+async function runExtraction() {
+  const state = await readJson(statePath, DEFAULT_STATE);
+  const args = [
+    scriptPath("extract-runner.js"),
+    "--workspace", workspace,
+    "--agent-id", agentId,
+    "--session", session,
+    "--date", today,
+  ];
+  const lastSessionFile = state.lastSessionExtracted?.[session];
+  if (lastSessionFile) args.push("--last-session-extracted", lastSessionFile);
+  if (opts["no-semantic-check"]) args.push("--no-semantic-check");
+  if (opts["no-write-extraction"]) args.push("--no-write");
+  if (opts["advance-watermark-on-no-write"]) args.push("--advance-watermark-on-no-write");
+
+  const result = run("bun", args);
+  summary.phases.extraction = {
+    command: summarizeCommand(result),
+    handoff: null,
+  };
+  const handoff = parseHandoff(result.stdout || "");
+  if (handoff.ok) {
+    summary.phases.extraction.handoff = {
+      status: handoff.status,
+      summary: handoff.summary,
+      stats: handoff.stats,
+    };
+  }
+  if (result.status !== 0 || !handoff.ok || !handoff.isOk) {
+    const reason = handoff.ok ? handoff.summary : (result.stderr || result.stdout || result.error || "extract-runner failed");
+    summary.extraction = "error (" + String(reason).slice(0, 160) + ")";
+    summary.warnings.push(result.stderr || result.stdout || result.error || "extract-runner failed");
+    await patchState({
+      "subagentRuns.hb-extract": { status: "failed", label: labelPrefix + "-extract", reason },
+    });
+    return;
+  }
+
+  const stats = handoff.stats || {};
   const iso = localIso();
-  await writeFile(notePath, body + "<!-- extracted:L" + lineCount + ":" + iso + " -->\n");
-  await patchState({
+  const patches = {
     ["lastExtraction." + session]: iso,
-    "subagentRuns.hb-extract": { status: "ok", label: labelPrefix + "-extract", facts: 0 },
-  });
-  summary.extraction = "ok (runner, 0 facts)";
+    "subagentRuns.hb-extract": {
+      status: "ok",
+      label: labelPrefix + "-extract",
+      facts: stats.facts_written ?? 0,
+      skipped: stats.facts_skipped_dedup ?? 0,
+      sessions: stats.sessions_processed ?? 0,
+      watermark: stats.new_watermark ?? null,
+      dryRun: Boolean(stats.dry_run),
+      watermarkAdvanced: stats.watermark_advanced ?? true,
+    },
+  };
+  if (stats.last_session_file) patches["lastSessionExtracted." + session] = stats.last_session_file;
+  await patchState(patches);
+
+  const prev = stats.previous_watermark ?? "?";
+  const next = stats.new_watermark ?? "?";
+  const facts = stats.facts_written ?? 0;
+  const planned = stats.facts_planned ?? 0;
+  const skipped = stats.facts_skipped_dedup ?? 0;
+  const sessions = stats.sessions_processed ?? 0;
+  summary.extraction = stats.dry_run
+    ? `dry-run (${planned} planned, ${skipped} skipped, ${sessions} sessions, ${prev}->${next}${stats.watermark_advanced ? "" : ", watermark not advanced"})`
+    : `ok (${facts} facts, ${skipped} skipped, ${sessions} sessions, ${prev}->${next})`;
 }
 
 function mondayFor(dateString) {
@@ -208,20 +501,36 @@ async function runSynthesis() {
   const monday = mondayFor(today);
   if (today !== monday) {
     summary.synthesis = "skipped (not Monday)";
+    summary.phases.synthesis = { status: "skipped", reason: "not Monday" };
     return;
   }
   const state = await readJson(statePath, DEFAULT_STATE);
   if (state.lastWeeklySynthesis === monday) {
     summary.synthesis = "skipped (already ran this week)";
+    summary.phases.synthesis = { status: "skipped", reason: "already ran this week", week: monday };
     return;
   }
-  const result = run("bun", [scriptPath("rebuild-summaries.js"), "--apply-decay"]);
+  const result = run("bun", [scriptPath("rebuild-summaries.js"), "--apply-decay", "--json"]);
+  const stats = parseLastJsonLine(result.stdout);
+  summary.phases.synthesis = { command: summarizeCommand(result), week: monday, stats };
   if (result.status === 0) {
     await patchState({
       lastWeeklySynthesis: monday,
-      "subagentRuns.hb-synthesis": { status: "ok", label: labelPrefix + "-synthesis" },
+      "subagentRuns.hb-synthesis": {
+        status: "ok",
+        label: labelPrefix + "-synthesis",
+        entitiesScanned: stats?.entitiesScanned ?? null,
+        updated: stats?.updated ?? null,
+        unchanged: stats?.unchanged ?? null,
+        skipped: stats?.skipped ?? null,
+        errors: stats?.errors ?? null,
+        hot: stats?.hot ?? null,
+        warm: stats?.warm ?? null,
+        coldIncluded: stats?.coldIncluded ?? null,
+        coldExcluded: stats?.coldExcluded ?? null,
+      },
     });
-    summary.synthesis = "ok (runner apply-decay)";
+    summary.synthesis = formatSynthesisStats(stats);
   } else {
     summary.synthesis = "error (rebuild-summaries failed)";
     summary.warnings.push(result.stderr || result.stdout || result.error || "rebuild-summaries failed");
@@ -232,16 +541,216 @@ async function runDomains() {
   const registry = join(workspace, "memory", "domains", "registry.json");
   if (!existsSync(registry)) {
     summary.domains = "skipped (no registry)";
+    summary.phases.domains = { status: "skipped", reason: "no registry" };
+    return;
+  }
+  let scan;
+  try {
+    scan = scanDomains({ workspace });
+  } catch (err) {
+    const reason = err && err.stack ? err.stack : String(err);
+    summary.domains = "error (domain scan failed)";
+    summary.phases.domains = { status: "error", error: reason };
+    summary.warnings.push(reason);
+    await patchState({
+      "subagentRuns.hb-domains": {
+        status: "failed",
+        label: labelPrefix + "-domains",
+        reason: "domain scan failed",
+      },
+    });
     return;
   }
   await patchState({
+    lastDomainScan: localIso(),
     "subagentRuns.hb-domains": {
-      status: "skipped",
+      status: "ok",
       label: labelPrefix + "-domains",
-      reason: "runner does not spawn domain workers yet",
+      mode: "scan-only",
+      registered: scan.registered,
+      checked: scan.checked,
+      missing: scan.missing,
+      stale: scan.stale,
+      due: scan.due,
+      overdue: scan.overdue,
+      alerts: scan.alerts.length,
     },
   });
-  summary.domains = "skipped (runner domain workers disabled)";
+  summary.domains = formatDomainScanSummary(scan);
+  summary.phases.domains = { status: "ok", mode: "scan-only", scan };
+
+  if (!opts["domains-write"]) return;
+
+  const selectedDomain = opts.domain || null;
+  const handoffFile = opts["domains-handoff-file"] || null;
+  if (!selectedDomain) {
+    summary.domains += "; write skipped (no --domain)";
+    summary.phases.domains.write = { status: "skipped", reason: "no --domain" };
+    return;
+  }
+  if (!handoffFile) {
+    summary.domains += "; write skipped (no --domains-handoff-file)";
+    summary.phases.domains.write = { status: "skipped", reason: "no --domains-handoff-file", domain: selectedDomain };
+    return;
+  }
+
+  const selected = scan.domains.find((domain) => domain.name === selectedDomain);
+  if (!selected) {
+    const reason = "domain not registered: " + selectedDomain;
+    summary.domains += "; write error (" + reason + ")";
+    summary.phases.domains.write = { status: "error", reason };
+    summary.warnings.push(reason);
+    await patchState({ "subagentRuns.hb-domains.status": "failed" });
+    return;
+  }
+  if (!selected.enabled) {
+    const reason = "domain disabled: " + selectedDomain;
+    summary.domains += "; write skipped (" + reason + ")";
+    summary.phases.domains.write = { status: "skipped", reason, domain: selectedDomain };
+    return;
+  }
+
+  let handoff;
+  try {
+    const raw = await readFile(resolve(handoffFile), "utf8");
+    handoff = parseHandoff(raw);
+    if (!handoff.ok) throw new Error(handoff.error || "invalid handoff");
+    if (handoff.type !== "HB-DOMAINS") throw new Error("expected HB-DOMAINS handoff, got " + handoff.type);
+    if (!handoff.isOk) throw new Error("domains handoff status is " + handoff.status + ": " + handoff.summary);
+  } catch (err) {
+    const reason = err && err.message ? err.message : String(err);
+    summary.domains += "; write error (" + reason + ")";
+    summary.phases.domains.write = { status: "error", reason, domain: selectedDomain };
+    summary.warnings.push(reason);
+    await patchState({ "subagentRuns.hb-domains.status": "failed" });
+    return;
+  }
+
+  try {
+    const applied = await applyDomainWriteHandoff(handoff, {
+      workspace,
+      statePath,
+      now: localIso(),
+      dryRun: Boolean(opts["domains-dry-run"]),
+      selectedDomain,
+      commandRunner,
+      scriptsDir: scriptDir,
+    });
+    await patchState({
+      lastDomainScan: localIso(),
+      "subagentRuns.hb-domains": {
+        status: "ok",
+        label: labelPrefix + "-domains",
+        mode: opts["domains-dry-run"] ? "write-dry-run" : "write",
+        domain: applied.domain,
+        runId: applied.runId,
+        changed: applied.changed,
+        idempotent: applied.idempotent,
+        appendedEntries: applied.appendedEntries ?? 0,
+        promotedFacts: applied.promotedFacts ?? 0,
+        proposedDecisionChanges: applied.proposedDecisionChanges ?? 0,
+      },
+    });
+    summary.domains += "; write " + applied.status + " (" + applied.domain + ", changed " + (applied.changed ? "yes" : "no") + ")";
+    summary.phases.domains.write = { status: applied.status, result: applied };
+  } catch (err) {
+    const reason = err && err.message ? err.message : String(err);
+    summary.domains += "; write error (" + reason + ")";
+    summary.phases.domains.write = { status: "error", reason, domain: selectedDomain };
+    summary.warnings.push(reason);
+    await patchState({ "subagentRuns.hb-domains.status": "failed" });
+  }
+}
+
+async function runOllTriggerShell() {
+  let state = await readJson(statePath, DEFAULT_STATE);
+  const obs = await countPendingObservationCategories();
+  const tensions = await countPendingTensions();
+  const experiments = await getExperimentTriggerStats();
+  const pendingAutoExperiments = await listPendingAutoExperiments();
+  const score = obs.friction * 3 + obs.surprise * 2 + obs.pattern;
+  const daysSinceRethink = daysSince(state.lastRethink);
+  const rethinkReasons = [];
+  if (score >= 15) rethinkReasons.push("score>=15");
+  if (tensions >= 3) rethinkReasons.push("tensions>=3");
+  if (daysSinceRethink >= 14) rethinkReasons.push("lastRethink>=14d");
+
+  const stale = {
+    rethink: staleWorker(state, "hb-rethink", "rethinkStartedAt", ollStale.rethinkHours),
+    autoresearch: staleWorker(state, "hb-autoresearch", "autoresearchStartedAt", ollStale.autoresearchHours),
+    rethink2: staleWorker(state, "hb-rethink2", "rethink2StartedAt", ollStale.rethink2Hours),
+  };
+
+  const recovered = [];
+  if (opts["recover-stale-oll-locks"]) {
+    const recoveryPatches = {};
+    if (stale.rethink) {
+      recoveryPatches.rethinkInProgress = false;
+      recoveryPatches.rethinkStartedAt = null;
+      recoveryPatches["subagentRuns.hb-rethink.status"] = "stale-reset";
+      recovered.push("hb-rethink");
+    }
+    if (stale.autoresearch) {
+      recoveryPatches.autoresearchInProgress = false;
+      recoveryPatches.autoresearchStartedAt = null;
+      recoveryPatches.currentExperiment = null;
+      recoveryPatches["subagentRuns.hb-autoresearch.status"] = "stale-reset";
+      recovered.push("hb-autoresearch");
+    }
+    if (stale.rethink2) {
+      recoveryPatches.rethink2InProgress = false;
+      recoveryPatches.rethink2StartedAt = null;
+      recoveryPatches["subagentRuns.hb-rethink2.status"] = "stale-reset";
+      recovered.push("hb-rethink2");
+    }
+    if (recovered.length > 0) state = await patchState(recoveryPatches);
+  }
+
+  const rethinkInProgress = Boolean(state.rethinkInProgress);
+  const autoresearchInProgress = Boolean(state.autoresearchInProgress);
+  const rethink2InProgress = Boolean(state.rethink2InProgress) || isWorkerRunning(state, "hb-rethink2");
+  const wouldRunRethink = rethinkReasons.length > 0 && !rethinkInProgress && !isWorkerRunning(state, "hb-rethink");
+  const wouldRunAutoresearch = pendingAutoExperiments.length > 0 && !autoresearchInProgress && !isWorkerRunning(state, "hb-autoresearch");
+  const wouldRunRethink2 = Boolean(state.pendingRethink2) && !rethink2InProgress;
+  const details = {
+    observations: obs,
+    tensions,
+    score,
+    daysSinceRethink,
+    rethink: { wouldRun: wouldRunRethink, inProgress: rethinkInProgress, staleLock: stale.rethink, reasons: rethinkReasons },
+    autoresearch: { wouldRun: wouldRunAutoresearch, inProgress: autoresearchInProgress, staleLock: stale.autoresearch, pending: pendingAutoExperiments.length, pendingTotal: experiments.pending, running: experiments.running },
+    rethink2: { wouldRun: wouldRunRethink2, inProgress: rethink2InProgress, staleLock: stale.rethink2, pendingExperiment: state.pendingRethink2 || null },
+    recovery: { enabled: Boolean(opts["recover-stale-oll-locks"]), recovered },
+    spawns: [],
+    mode: (opts["spawn-rethink"] || opts["spawn-autoresearch"] || opts["spawn-rethink2"]) ? "spawn-queue" : "report-only",
+  };
+  summary.phases.oll = details;
+
+  async function maybeQueue(phase, enabled, due, context) {
+    if (!enabled || !due) return null;
+    const label = spawnLabel(phase);
+    const runId = spawnRunId(phase);
+    const task = await buildOllTask(phase, { ...context, runId, label, date: today, workspace });
+    const request = await queueSpawnRequest({ phase, runId, label, task, experimentId: context.experimentId || null });
+    await markOllWorkerQueued({ phase, runId, label, requestPath: request.path, experimentId: context.experimentId || null });
+    const queued = { phase, runId, label, requestPath: request.path, experimentId: context.experimentId || null };
+    details.spawns.push(queued);
+    return queued;
+  }
+
+  await maybeQueue("hb-rethink", Boolean(opts["spawn-rethink"]), wouldRunRethink, { observations: obs, tensions, score, daysSinceRethink, reasons: rethinkReasons });
+  const nextExperiment = pendingAutoExperiments[0] || null;
+  await maybeQueue("hb-autoresearch", Boolean(opts["spawn-autoresearch"]), wouldRunAutoresearch, { experimentId: nextExperiment?.id || null, experiment: nextExperiment });
+  await maybeQueue("hb-rethink2", Boolean(opts["spawn-rethink2"]), wouldRunRethink2, { experimentId: state.pendingRethink2 || null });
+
+  const rethinkQueued = details.spawns.some((spawn) => spawn.phase === "hb-rethink");
+  const autoresearchQueued = details.spawns.some((spawn) => spawn.phase === "hb-autoresearch");
+  const rethink2Queued = details.spawns.some((spawn) => spawn.phase === "hb-rethink2");
+  const rethinkText = rethinkQueued ? "rethink queued" : wouldRunRethink ? "rethink due" : rethinkInProgress ? (stale.rethink ? "rethink stale lock" : "rethink in progress") : "rethink idle";
+  const autoresearchText = autoresearchQueued ? ("autoresearch queued " + (nextExperiment?.id || "")).trim() : wouldRunAutoresearch ? ("autoresearch due " + pendingAutoExperiments.length) : ("autoresearch pending " + pendingAutoExperiments.length);
+  const rethink2Text = rethink2Queued ? ("rethink2 queued " + state.pendingRethink2) : wouldRunRethink2 ? ("rethink2 pending " + state.pendingRethink2) : rethink2InProgress ? (stale.rethink2 ? "rethink2 stale lock" : "rethink2 in progress") : "rethink2 idle";
+  summary.oll = `score ${score} (${obs.friction}f/${obs.surprise}s/${obs.pattern}p), tensions ${tensions}; ${rethinkText}; ${autoresearchText}; ${rethink2Text}`;
+  if (recovered.length > 0) summary.oll += "; recovered " + recovered.join(",");
 }
 
 async function runMaintenance() {
@@ -252,8 +761,14 @@ async function runMaintenance() {
   const validate = run("bun", validateArgs);
   const qmdUpdate = run("qmd", ["update"]);
   const qmdEmbed = opts["no-embed"]
-    ? { status: 0, stdout: "skipped", stderr: "", error: null, command: "qmd embed skipped" }
+    ? { status: 0, stdout: "skipped", stderr: "", error: null, command: "qmd embed skipped", signal: null, elapsedMs: 0 }
     : run("qmd", ["embed"], { timeoutMs: Math.max(timeoutMs, 600000) });
+
+  summary.phases.maintenance = {
+    validate: summarizeCommand(validate),
+    qmdUpdate: summarizeCommand(qmdUpdate),
+    qmdEmbed: summarizeCommand(qmdEmbed),
+  };
 
   summary.maintenance = [
     validate.status === 0 ? "validate ok" : "validate error",
@@ -274,8 +789,10 @@ async function writeReport() {
     "--extraction", summary.extraction,
     "--synthesis", summary.synthesis,
     "--domains", summary.domains,
+    "--oll", summary.oll,
     "--maintenance", summary.maintenance,
   ]);
+  summary.phases.report = { command: summarizeCommand(result) };
   if (result.status !== 0) summary.warnings.push(result.stderr || result.stdout || result.error || "heartbeat-report failed");
 }
 
@@ -301,11 +818,17 @@ async function main() {
     if (rotateCheck.status !== 0 && rotateCheck.status !== 10) {
       summary.warnings.push(rotateCheck.stderr || rotateCheck.stdout || "rotate check failed");
     }
-    await writeExtractionWatermark();
     if (rotateCheck.status === 10) summary.warnings.push("rotation needed but not performed by runner MVP");
+    await runExtraction();
     await runSynthesis();
     await runDomains();
-    await runMaintenance();
+    await runOllTriggerShell();
+    if (opts["skip-maintenance"]) {
+      summary.maintenance = "skipped";
+      summary.phases.maintenance = { status: "skipped", reason: "skip-maintenance" };
+    } else {
+      await runMaintenance();
+    }
     await writeReport();
   } finally {
     await patchState({ heartbeatInProgress: false, heartbeatLockedAt: null });

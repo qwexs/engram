@@ -832,14 +832,14 @@ Atomically appends a bullet entry to a named section of today's daily note. Crea
 ### rebuild-summaries.js — Rebuild summary.md from items.json
 
 ```bash
-bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity people/sergey] [--apply-decay]
+bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity people/sergey] [--apply-decay] [--max-cold-principles 12]
 ```
 
 Deterministically regenerates `summary.md` for all entities in `life/` from their `items.json`. No LLM involved.
 
 **Without `--apply-decay`**: groups active facts by category, lists top 5 by confidence, shows counts per category and superseded stats. Outputs `{ "updated": N, "skipped": N, "errors": N }`.
 
-**With `--apply-decay`**: applies Memory Decay tiers (Hot/Warm/Cold) based on `lastAccessed`/`createdAt`/`source` date. Summary format changes to tiered sections: `## Current (Hot)`, `## Background (Warm)`, `## Enduring (Principles)`. Cold facts (except principles) are excluded from summary but remain in items.json. Outputs `{ "updated": N, "skipped": N, "errors": N, "hot": N, "warm": N, "coldExcluded": N }`.
+**With `--apply-decay`**: applies Memory Decay tiers (Hot/Warm/Cold) based on `lastAccessed`/`createdAt`/`source` date. Summary format changes to tiered sections: `## Current (Hot)`, `## Background (Warm)`, `## Enduring (Principles)`. Cold facts are excluded from summary unless selected by semantic priority. Cold principles are sorted by priority/access/confidence/date and capped by `--max-cold-principles` (default 12) so `summary.md` stays quick-context sized; omitted facts remain in items.json and searchable via QMD. Outputs include `{ "updated": N, "skipped": N, "errors": N, "hot": N, "warm": N, "coldExcluded": N, "omittedOperational": N, "omittedTestArtifacts": N, "includedByPriority": N, "limitedPrinciples": N }`.
 
 Decay algorithm: see `references/decay-rules.md`. Used by `HB-SYNTHESIS.md` subagent during Monday heartbeat.
 

@@ -40,8 +40,9 @@ const handler = async (event: any) => {
   const rawSession = event.context?.sessionId || "main";
   const sessionKey = rawSession.includes(":") ? rawSession.split(":").slice(2).join("-") || "main" : rawSession;
 
-  // Skip subagent sessions
+  // Skip ephemeral runtime sessions.
   if (sessionKey.startsWith("subagent-")) return;
+  if (/^cron-.+-run-/.test(sessionKey)) return;
 
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
   const notePath = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey, `${today}.md`);

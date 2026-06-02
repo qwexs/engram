@@ -882,6 +882,12 @@ weekly summary rebuild, heartbeat report, validation, `qmd update`, and
 `qmd embed`. This is the recommended production cron target; see
 `references/setup.md` for the OpenClaw cron payload.
 
+Use `--all-active-sessions` for workspace-level heartbeat. It reads
+`activeSessions` from `memory/heartbeat-state.json`, runs extraction/report for
+each active session, then runs workspace maintenance once. Use `engram.json`
+`qmd.index`, `qmd.collections`, and optional `qmd.command` when a workspace has a
+named QMD index or needs a Windows-safe command path.
+
 ### heartbeat-report.js — Daily note report section
 
 ```bash

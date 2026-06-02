@@ -43,6 +43,7 @@ const DEFAULT_STATE = {
   rethink2InProgress: false,
   rethink2StartedAt: null,
   subagentRuns: {},
+  activeSessions: [],
 };
 
 function parseArgs(argv) {
@@ -75,6 +76,8 @@ if (opts.help || opts.h) {
     "  --workspace <path>       Workspace root. Defaults to ENGRAM_WORKSPACE or cwd.",
     "  --agent-id <id>          Agent id without agent- prefix. Defaults from engram.json.",
     "  --session <name>         Canonical Engram session. Default: main.",
+    "  --all-active-sessions    Run extraction/report for all heartbeat-state activeSessions, then workspace phases once.",
+    "  --active-sessions <csv>   Override activeSessions for this run (comma-separated canonical session names).",
     "  --label-prefix <prefix>  Prefix for heartbeat subagent labels. Default: hb for main, <agent>-hb otherwise.",
     "  --date <YYYY-MM-DD>      Date override. Default: today in ENGRAM_TZ/TZ.",
     "  --no-embed               Skip qmd embed.",
@@ -113,6 +116,7 @@ const config = loadEngramConfig(workspace);
 const agentId = String(opts["agent-id"] || config.agent.replace(/^agent-/, "") || "main").replace(/^agent-/, "");
 const agentDir = "agent-" + agentId;
 const session = opts.session || "main";
+const allActiveSessions = Boolean(opts["all-active-sessions"]);
 const labelPrefix = opts["label-prefix"] || (agentId === "main" ? "hb" : agentId + "-hb");
 const tz = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
 const today = opts.date || new Date().toLocaleDateString("sv-SE", { timeZone: tz });
@@ -125,13 +129,13 @@ const ollStale = {
 };
 
 const statePath = join(workspace, "memory", "heartbeat-state.json");
-const noteDir = join(workspace, "memory", agentDir, session);
-const notePath = join(noteDir, today + ".md");
 
 const summary = {
   workspace,
   agentId,
   session,
+  scope: allActiveSessions ? "workspace" : "session",
+  activeSessions: [],
   labelPrefix,
   date: today,
   extraction: "not run",
@@ -409,65 +413,96 @@ function scriptPath(name) {
   return join(scriptDir, name);
 }
 
+function noteDirFor(targetSession) {
+  return join(workspace, "memory", agentDir, targetSession);
+}
+
+function notePathFor(targetSession) {
+  return join(noteDirFor(targetSession), today + ".md");
+}
+
 function dailyTemplate(date) {
   return "# " + date + "\n\n## Events\n\n## Decisions\n\n## Learnings\n\n## Active Threads\n\n## Next\n";
 }
 
-async function ensureDailyNote() {
+async function ensureDailyNote(targetSession = session) {
+  const noteDir = noteDirFor(targetSession);
+  const notePath = notePathFor(targetSession);
   mkdirSync(noteDir, { recursive: true });
   if (!existsSync(notePath)) await writeFile(notePath, dailyTemplate(today));
-  await patchState({ ["lastDailyNoteCreated." + session]: today });
+  await patchState({ ["lastDailyNoteCreated." + targetSession]: today });
 }
 
 function stripWatermark(content) {
   return content.replace(/\s*<!-- extracted:L\d+:[^>]+ -->\s*$/, "").trimEnd() + "\n";
 }
 
-async function runExtraction() {
+function sanitizeLabelPart(value) {
+  return String(value || "main").replace(/[^a-zA-Z0-9_-]+/g, "-");
+}
+
+function extractionRunKey(targetSession = session) {
+  return allActiveSessions ? "hb-extract-" + sanitizeLabelPart(targetSession) : "hb-extract";
+}
+
+function setExtractionPhase(targetSession, value) {
+  if (allActiveSessions) {
+    if (!summary.phases.extractions) summary.phases.extractions = {};
+    summary.phases.extractions[targetSession] = value;
+  } else {
+    summary.phases.extraction = value;
+  }
+}
+
+async function runExtraction(targetSession = session) {
   const state = await readJson(statePath, DEFAULT_STATE);
   const args = [
     scriptPath("extract-runner.js"),
     "--workspace", workspace,
     "--agent-id", agentId,
-    "--session", session,
+    "--session", targetSession,
     "--date", today,
   ];
-  const lastSessionFile = state.lastSessionExtracted?.[session];
+  const lastSessionFile = state.lastSessionExtracted?.[targetSession];
   if (lastSessionFile) args.push("--last-session-extracted", lastSessionFile);
   if (opts["no-semantic-check"]) args.push("--no-semantic-check");
   if (opts["no-write-extraction"]) args.push("--no-write");
   if (opts["advance-watermark-on-no-write"]) args.push("--advance-watermark-on-no-write");
 
   const result = run("bun", args);
-  summary.phases.extraction = {
+  const phase = {
     command: summarizeCommand(result),
     handoff: null,
   };
   const handoff = parseHandoff(result.stdout || "");
   if (handoff.ok) {
-    summary.phases.extraction.handoff = {
+    phase.handoff = {
       status: handoff.status,
       summary: handoff.summary,
       stats: handoff.stats,
     };
   }
+  setExtractionPhase(targetSession, phase);
+  const runKey = extractionRunKey(targetSession);
   if (result.status !== 0 || !handoff.ok || !handoff.isOk) {
     const reason = handoff.ok ? handoff.summary : (result.stderr || result.stdout || result.error || "extract-runner failed");
-    summary.extraction = "error (" + String(reason).slice(0, 160) + ")";
+    const text = "error (" + String(reason).slice(0, 160) + ")";
+    if (!allActiveSessions) summary.extraction = text;
     summary.warnings.push(result.stderr || result.stdout || result.error || "extract-runner failed");
     await patchState({
-      "subagentRuns.hb-extract": { status: "failed", label: labelPrefix + "-extract", reason },
+      ["subagentRuns." + runKey]: { status: "failed", label: labelPrefix + "-extract-" + sanitizeLabelPart(targetSession), session: targetSession, reason },
     });
-    return;
+    return text;
   }
 
   const stats = handoff.stats || {};
   const iso = localIso();
   const patches = {
-    ["lastExtraction." + session]: iso,
-    "subagentRuns.hb-extract": {
+    ["lastExtraction." + targetSession]: iso,
+    ["subagentRuns." + runKey]: {
       status: "ok",
-      label: labelPrefix + "-extract",
+      label: labelPrefix + "-extract-" + sanitizeLabelPart(targetSession),
+      session: targetSession,
       facts: stats.facts_written ?? 0,
       skipped: stats.facts_skipped_dedup ?? 0,
       sessions: stats.sessions_processed ?? 0,
@@ -476,7 +511,7 @@ async function runExtraction() {
       watermarkAdvanced: stats.watermark_advanced ?? true,
     },
   };
-  if (stats.last_session_file) patches["lastSessionExtracted." + session] = stats.last_session_file;
+  if (stats.last_session_file) patches["lastSessionExtracted." + targetSession] = stats.last_session_file;
   await patchState(patches);
 
   const prev = stats.previous_watermark ?? "?";
@@ -485,9 +520,11 @@ async function runExtraction() {
   const planned = stats.facts_planned ?? 0;
   const skipped = stats.facts_skipped_dedup ?? 0;
   const sessions = stats.sessions_processed ?? 0;
-  summary.extraction = stats.dry_run
+  const text = stats.dry_run
     ? `dry-run (${planned} planned, ${skipped} skipped, ${sessions} sessions, ${prev}->${next}${stats.watermark_advanced ? "" : ", watermark not advanced"})`
     : `ok (${facts} facts, ${skipped} skipped, ${sessions} sessions, ${prev}->${next})`;
+  if (!allActiveSessions) summary.extraction = text;
+  return text;
 }
 
 function mondayFor(dateString) {
@@ -759,10 +796,11 @@ async function runMaintenance() {
   validateArgs.push("--agent-id", agentId);
 
   const validate = run("bun", validateArgs);
-  const qmdUpdate = run("qmd", ["update"]);
+  const qmdCommand = qmdCommandName();
+  const qmdUpdate = run(qmdCommand, qmdCommandArgs("update"));
   const qmdEmbed = opts["no-embed"]
     ? { status: 0, stdout: "skipped", stderr: "", error: null, command: "qmd embed skipped", signal: null, elapsedMs: 0 }
-    : run("qmd", ["embed"], { timeoutMs: Math.max(timeoutMs, 600000) });
+    : run(qmdCommand, qmdCommandArgs("embed"), { timeoutMs: Math.max(timeoutMs, 600000) });
 
   summary.phases.maintenance = {
     validate: summarizeCommand(validate),
@@ -781,23 +819,71 @@ async function runMaintenance() {
   }
 }
 
-async function writeReport() {
+function qmdCommandArgs(command) {
+  const qmd = config.qmd || {};
+  const args = [];
+  if (qmd.index) args.push("--index", String(qmd.index));
+  args.push(command);
+  const collections = Array.isArray(qmd.collections) ? qmd.collections : [];
+  for (const collection of collections) {
+    if (collection) args.push("-c", String(collection));
+  }
+  return args;
+}
+
+function qmdCommandName() {
+  return String(config.qmd?.command || "qmd");
+}
+
+async function writeReport(targetSession = session, extractionText = summary.extraction) {
   const result = run("bun", [
     scriptPath("heartbeat-report.js"),
-    "--session", session,
+    "--session", targetSession,
     "--date", today,
-    "--extraction", summary.extraction,
+    "--extraction", extractionText,
     "--synthesis", summary.synthesis,
     "--domains", summary.domains,
     "--oll", summary.oll,
     "--maintenance", summary.maintenance,
   ]);
-  summary.phases.report = { command: summarizeCommand(result) };
+  if (allActiveSessions) {
+    if (!summary.phases.reports) summary.phases.reports = {};
+    summary.phases.reports[targetSession] = { command: summarizeCommand(result) };
+  } else {
+    summary.phases.report = { command: summarizeCommand(result) };
+  }
   if (result.status !== 0) summary.warnings.push(result.stderr || result.stdout || result.error || "heartbeat-report failed");
+}
+
+function normalizeActiveSession(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (!raw.startsWith("agent:")) return raw;
+  const parts = raw.split(":");
+  if (parts.length >= 3) return parts.slice(2).join(":");
+  return raw;
+}
+
+function getActiveSessions(initialState) {
+  const explicit = opts["active-sessions"]
+    ? String(opts["active-sessions"]).split(",")
+    : (Array.isArray(initialState.activeSessions) ? initialState.activeSessions : []);
+  const source = explicit.length > 0 ? explicit : [session];
+  const seen = new Set();
+  const result = [];
+  for (const entry of source) {
+    const normalized = normalizeActiveSession(entry);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result.length > 0 ? result : [session];
 }
 
 async function main() {
   const initial = await readJson(statePath, DEFAULT_STATE);
+  const activeSessions = allActiveSessions ? getActiveSessions(initial) : [session];
+  summary.activeSessions = activeSessions;
   if (initial.heartbeatInProgress) {
     const lockedAt = initial.heartbeatLockedAt ? new Date(initial.heartbeatLockedAt).getTime() : 0;
     const ageMs = Date.now() - lockedAt;
@@ -813,13 +899,19 @@ async function main() {
 
   await patchState({ heartbeatInProgress: true, heartbeatLockedAt: nowIso() });
   try {
-    await ensureDailyNote();
-    const rotateCheck = run("bun", [scriptPath("rotate-notes.js"), "--check", "--session", session]);
-    if (rotateCheck.status !== 0 && rotateCheck.status !== 10) {
-      summary.warnings.push(rotateCheck.stderr || rotateCheck.stdout || "rotate check failed");
+    const extractionReports = {};
+    for (const targetSession of activeSessions) {
+      await ensureDailyNote(targetSession);
+      const rotateCheck = run("bun", [scriptPath("rotate-notes.js"), "--check", "--session", targetSession]);
+      if (rotateCheck.status !== 0 && rotateCheck.status !== 10) {
+        summary.warnings.push(rotateCheck.stderr || rotateCheck.stdout || `rotate check failed (${targetSession})`);
+      }
+      if (rotateCheck.status === 10) summary.warnings.push(`rotation needed but not performed by runner MVP (${targetSession})`);
+      extractionReports[targetSession] = await runExtraction(targetSession);
     }
-    if (rotateCheck.status === 10) summary.warnings.push("rotation needed but not performed by runner MVP");
-    await runExtraction();
+    if (allActiveSessions) {
+      summary.extraction = activeSessions.map((targetSession) => `${targetSession}: ${extractionReports[targetSession]}`).join("; ");
+    }
     await runSynthesis();
     await runDomains();
     await runOllTriggerShell();
@@ -829,7 +921,9 @@ async function main() {
     } else {
       await runMaintenance();
     }
-    await writeReport();
+    for (const targetSession of activeSessions) {
+      await writeReport(targetSession, extractionReports[targetSession]);
+    }
   } finally {
     await patchState({ heartbeatInProgress: false, heartbeatLockedAt: null });
   }

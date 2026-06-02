@@ -118,4 +118,31 @@ describe("heartbeat-runner OLL spawn gates", () => {
     expect(recovered.summary.phases.oll.spawns).toHaveLength(1);
     expect(spawnFiles()).toHaveLength(1);
   });
+
+  test("workspace mode runs extraction/report for active sessions", () => {
+    mkdirSync(join(root, "memory", "agent-main", "main"), { recursive: true });
+    mkdirSync(join(root, "memory", "agent-main", "telegram-group--1"), { recursive: true });
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main", "telegram-group--1"],
+      subagentRuns: {},
+    });
+
+    const result = runRunner(["--all-active-sessions"]);
+    expect(result.summary.scope).toBe("workspace");
+    expect(result.summary.activeSessions).toEqual(["main", "telegram-group--1"]);
+    expect(result.summary.phases.extractions.main.handoff.status).toBe("ok");
+    expect(result.summary.phases.extractions["telegram-group--1"].handoff.status).toBe("ok");
+
+    const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+    expect(state.lastExtraction.main).toBeTruthy();
+    expect(state.lastExtraction["telegram-group--1"]).toBeTruthy();
+    expect(state.subagentRuns["hb-extract-main"].status).toBe("ok");
+    expect(state.subagentRuns["hb-extract-telegram-group--1"].status).toBe("ok");
+
+    const mainNote = readFileSync(join(root, "memory", "agent-main", "main", DATE + ".md"), "utf8");
+    const groupNote = readFileSync(join(root, "memory", "agent-main", "telegram-group--1", DATE + ".md"), "utf8");
+    expect(mainNote).toContain("## Heartbeat Report");
+    expect(groupNote).toContain("## Heartbeat Report");
+  });
 });

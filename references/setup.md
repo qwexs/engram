@@ -66,6 +66,51 @@ runner phases. It is not the production cron entrypoint.
 Use `--no-embed` for diagnostics or constrained machines. Use `--no-fix` when
 you want validation to report without applying automatic repairs.
 
+### Workspace-level heartbeat
+
+For workspaces with multiple active sessions, run the same deterministic runner
+with `--all-active-sessions`. The runner reads `activeSessions` from
+`memory/heartbeat-state.json`, runs extraction and heartbeat reports for each
+listed session, then runs workspace phases once: synthesis, domains, OLL,
+validation, `qmd update`, and `qmd embed`.
+
+```json
+{
+  "activeSessions": ["main", "telegram-group--123", "telegram-bot-456"]
+}
+```
+
+```bash
+bun skills/engram/scripts/heartbeat-runner.js \
+  --workspace /path/to/workspace \
+  --agent-id my-agent \
+  --session main \
+  --all-active-sessions \
+  --label-prefix my-agent-hb \
+  --timeout-ms 300000
+```
+
+Use `--active-sessions main,telegram-group--123` to override the state file for
+one diagnostic run.
+
+If a workspace uses a named QMD index or needs collection scoping, configure it
+in `engram.json`:
+
+```json
+{
+  "agent": "agent-my-agent",
+  "qmd": {
+    "command": "qmd",
+    "index": "my-index",
+    "collections": ["life", "openclaw-memory-agent-my-agent-main"]
+  }
+}
+```
+
+On Windows cron/node environments, set `qmd.command` to the absolute `qmd.cmd`
+path if `qmd` is available in an interactive shell but not visible to the
+runner.
+
 ## Session Memory Hook
 
 Engram ships `engram-session-memory` hook that replaces the built-in `session-memory` hook.

@@ -370,6 +370,12 @@ if (existsSync(domainsDir)) {
     try {
       const registry = JSON.parse(readFileSync(registryPath, 'utf-8'));
       registeredDomainNames = new Set(Object.keys(registry.domains || {}));
+      // Build {name -> type} so per-type checks can skip non-applicable rules
+      // (e.g. topic-thread does not need workflow.md).
+      var registeredDomainTypes = {};
+      for (const [n, cfg] of Object.entries(registry.domains || {})) {
+        if (cfg && typeof cfg === 'object' && cfg.type) registeredDomainTypes[n] = cfg.type;
+      }
     } catch (e) {
       warn(`domains/registry.json parse error: ${e.message}`);
     }
@@ -412,6 +418,9 @@ if (existsSync(domainsDir)) {
   }
   if (spawnPromptsUseWorkflow.size > 0) {
     for (const entry of domainEntries) {
+      // topic-thread domains are bound to a Telegram topic and never spawned,
+      // so spawn-prompts/{{workflow}} does not apply to them.
+      if (registeredDomainTypes && registeredDomainTypes[entry.name] === 'topic-thread') continue;
       const workflowPath = join(domainsDir, entry.name, 'workflow.md');
       if (!existsSync(workflowPath)) {
         warn(`Domain "${entry.name}" has no workflow.md (used by spawn-prompts: ${[...spawnPromptsUseWorkflow].join(', ')})`);

@@ -11,6 +11,33 @@ Read this document top to bottom and execute each phase sequentially.
 
 ---
 
+## Subagent Model Resolution
+
+Each `sessions_spawn` call below says `model=<resolved via engram.json>`. The actual model is picked at spawn time by `scripts/config.js → resolveSubagentModel(workspace, label)`, in this order:
+
+1. `process.env.ENGRAM_MODEL_<LABEL_UPPER>` (e.g. `ENGRAM_MODEL_HB_EXTRACT`)
+2. `engram.json → models.heartbeat.subagents[<label>]` (e.g. `"hb-extract": "<model-id>"`)
+3. Per-label default in `SUBAGENT_MODEL_DEFAULTS` (currently `sonnet-4-6` for all phases)
+4. Generic fallback: `sonnet-4-6`
+
+Example `engram.json` override:
+```json
+{
+  "models": {
+    "heartbeat": {
+      "subagents": {
+        "hb-extract": "<cheap-model>",
+        "hb-synthesis": "<capable-model>"
+      }
+    }
+  }
+}
+```
+
+**Why this is configurable, not hardcoded:** Engram itself is model-agnostic — the docs above use a sensible default (`sonnet-4-6`) so the protocol is reproducible, but deployments pick their own models. Hardcoding deployment-specific aliases (e.g. `m3`, `m2.7`) in the protocol would leak private infra and break for other users.
+
+---
+
 ## Phase 0: Fast Init
 
 1. Read `memory/heartbeat-state.json`

@@ -4,8 +4,10 @@
 
 import { join } from "path";
 import { isDuplicate, registerHash } from "./memory-dedup.js";
+import { resolveQmdCommand } from "./config.js";
 
-const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
+const QMD = resolveQmdCommand(WORKSPACE);
 
 // Парсинг аргументов
 function parseArgs(argv) {
@@ -148,7 +150,9 @@ if (opts["semantic-check"]) {
 
   try {
     // qmd query --json (BM25 + vectors + rerank) для лучшего качества dedup
-    const qmdArgs = ["qmd", "query", opts.fact, "--json"];
+    // QMD может быть "qmd.cmd" или "qmd.cmd --index <name>" — split by whitespace
+    const qmdPrefix = QMD.split(/\s+/).filter(Boolean);
+    const qmdArgs = [...qmdPrefix, "query", opts.fact, "--json"];
     for (const col of searchCollections) {
       qmdArgs.push("-c", col);
     }
@@ -335,9 +339,26 @@ try {
   await proc.exited;
 } catch {}
 
-// 8. QMD update
+// 8. Regenerate derived facts-active.md (BEFORE qmd update, so qmd picks it up)
+//    Только для режима записи нового факта — в --access режиме accessCount/lastAccessed
+//    не попадают в derived, поэтому пересборка не нужна.
+if (!opts.access) {
+  try {
+    const proc = Bun.spawn(
+      ["node", join(import.meta.dir, "derive-facts.js")],
+      { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" }
+    );
+    await proc.exited;
+  } catch (e) {
+    console.error(`⚠️ derive-facts.js failed: ${e.message?.slice(0, 200) || e}`);
+  }
+}
+
+// 9. QMD update
 try {
-  const proc = Bun.spawn(["qmd", "update"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
+  // QMD может быть "qmd.cmd" или "qmd.cmd --index <name>" — split by whitespace
+  const qmdPrefix = QMD.split(/\s+/).filter(Boolean);
+  const proc = Bun.spawn([...qmdPrefix, "update"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
   await proc.exited;
 } catch {}
 

@@ -279,6 +279,31 @@ If subagent domains exist (`memory/domains/`), heartbeat acts as supervisor:
 
 For full details, see [references/HEARTBEAT.md](references/HEARTBEAT.md) and [references/subagent-memory.md](references/subagent-memory.md).
 
+### Subagent Model Resolution
+
+The heartbeat spawns subagents (hb-extract, hb-synthesis, hb-domains, hb-rethink, hb-autoresearch, hb-rethink2). The model for each is **not hardcoded** in the protocol — it is resolved at spawn time by `scripts/config.js → resolveSubagentModel(workspace, label)`. Resolution order:
+
+1. `process.env.ENGRAM_MODEL_<LABEL_UPPER>` (e.g. `ENGRAM_MODEL_HB_EXTRACT`)
+2. `engram.json → models.heartbeat.subagents[<label>]` (e.g. `"hb-extract": "<model-id>"`)
+3. Per-label default in `SUBAGENT_MODEL_DEFAULTS` (currently `sonnet-4-6` for all phases)
+4. Generic fallback: `sonnet-4-6`
+
+Example `engram.json` override:
+```json
+{
+  "models": {
+    "heartbeat": {
+      "subagents": {
+        "hb-extract": "<cheap-model>",
+        "hb-synthesis": "<capable-model>"
+      }
+    }
+  }
+}
+```
+
+**Why configurable, not hardcoded:** Engram is model-agnostic. The protocol docs use `sonnet-4-6` as a sensible default so behavior is reproducible across deployments, but hardcoding deployment-specific aliases (e.g. `m3`, `m2.7`) in the protocol would leak private infra and break for other users.
+
 ## Memory Decay
 
 Facts decay based on recency, with modifiers for confidence, frequency, and abstraction:

@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
-import { loadEngramConfig } from './config.js';
+import { loadEngramConfig, resolveQmdCommand } from './config.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -42,6 +42,7 @@ Examples:
 const { platform, id } = args;
 const WORKSPACE = process.cwd();
 const config = loadEngramConfig(WORKSPACE);
+const QMD = resolveQmdCommand(WORKSPACE);
 const agentId = args['agent-id'] || config.agent.replace(/^agent-/, '') || 'main';
 const sessionKey = `${platform}-${id}`;
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
@@ -92,9 +93,9 @@ if (existsSync(heartbeatPath)) {
 // 5. Add QMD collection
 const collectionName = `openclaw-memory-agent-${agentId}-${sessionKey}`;
 try {
-  execSync(`qmd collection add "${sessionPath}" --name ${collectionName} --mask "**/*.md"`, { stdio: 'pipe' });
+  execSync(`${QMD} collection add "${sessionPath}" --name ${collectionName} --mask "**/*.md"`, { stdio: 'pipe' });
   console.log(`рџ”Ќ QMD collection: ${collectionName}`);
-  execSync('qmd update', { stdio: 'pipe' });
+  execSync(`${QMD} update`, { stdio: 'pipe' });
   console.log(`рџ“Љ QMD index updated`);
 } catch {
   console.log(`⚠️  QMD not available — add collection manually:`);

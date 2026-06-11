@@ -12,7 +12,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { loadEngramConfig } from "./config.js";
+import { loadEngramConfig, resolveSubagentModel } from "./config.js";
 import { parseHandoff } from "./process-handoff-core.js";
 import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary } from "./domains-runner.js";
 
@@ -345,7 +345,7 @@ function spawnRunId(phase) {
   return phase + "-" + today + "-" + Date.now();
 }
 
-async function queueSpawnRequest({ phase, runId, label, task, model = "sonnet-4-6", experimentId = null }) {
+async function queueSpawnRequest({ phase, runId, label, task, experimentId = null, model = resolveSubagentModel(workspace, label) }) {
   const dir = join(workspace, "workspace", "ops", "heartbeat-spawns");
   mkdirSync(dir, { recursive: true });
   const payload = { runId, phase, label, model, cleanup: "delete", status: "queued", createdAt: localIso(), experimentId, task };
@@ -796,6 +796,11 @@ async function runMaintenance() {
   validateArgs.push("--agent-id", agentId);
 
   const validate = run("bun", validateArgs);
+
+  // Regenerate derived facts-active.md (BEFORE qmd update, so qmd picks it up).
+  // Закрывает backburner "QMD индексирует *.md, а не items.json" (см. v3.3 §3.5).
+  const deriveFacts = run("node", [scriptPath("derive-facts.js")]);
+
   const qmdCommand = qmdCommandName();
   const qmdUpdate = run(qmdCommand, qmdCommandArgs("update"));
   const qmdEmbed = opts["no-embed"]
@@ -804,17 +809,19 @@ async function runMaintenance() {
 
   summary.phases.maintenance = {
     validate: summarizeCommand(validate),
+    deriveFacts: summarizeCommand(deriveFacts),
     qmdUpdate: summarizeCommand(qmdUpdate),
     qmdEmbed: summarizeCommand(qmdEmbed),
   };
 
   summary.maintenance = [
     validate.status === 0 ? "validate ok" : "validate error",
+    deriveFacts.status === 0 ? "derive-facts ok" : "derive-facts error",
     qmdUpdate.status === 0 ? "qmd update ok" : "qmd update error",
     opts["no-embed"] ? "qmd embed skipped" : (qmdEmbed.status === 0 ? "qmd embed ok" : "qmd embed error"),
   ].join("; ");
 
-  for (const result of [validate, qmdUpdate, qmdEmbed]) {
+  for (const result of [validate, deriveFacts, qmdUpdate, qmdEmbed]) {
     if (result.status !== 0) summary.warnings.push(result.stderr || result.stdout || result.error || result.command + " failed");
   }
 }

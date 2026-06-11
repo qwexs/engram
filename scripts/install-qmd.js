@@ -49,9 +49,13 @@ Examples:
 }
 
 // --- Helpers ---
+// On Windows, npm shebang-wrappers install as `qmd.cmd`; `bun`/`Bun.spawn` cannot
+// exec the wrapper without the extension, so default to `qmd.cmd` there.
+const QMD_CMD = process.env.ENGRAM_QMD || (process.platform === "win32" ? "qmd.cmd" : "qmd");
+
 function qmdInstalled() {
   try {
-    execSync('qmd --help', { stdio: 'pipe' });
+    execSync(`${QMD_CMD} --help`, { stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -85,7 +89,7 @@ function runCmd(cmd, label) {
 if (qmdInstalled()) {
   console.log('✅ QMD is already installed.');
   try {
-    const version = execSync('qmd --version', { encoding: 'utf-8' }).trim();
+    const version = execSync(`${QMD_CMD} --version`, { encoding: 'utf-8' }).trim();
     console.log(`   Version: ${version}`);
   } catch {}
 
@@ -225,7 +229,7 @@ if (variant === 'local') {
 console.log('\nрџ”Ќ Verifying installation...');
 if (qmdInstalled()) {
   try {
-    const version = execSync('qmd --version', { encoding: 'utf-8' }).trim();
+    const version = execSync(`${QMD_CMD} --version`, { encoding: 'utf-8' }).trim();
     console.log(`  ✅ QMD available: ${version}`);
   } catch {
     console.log('  ✅ QMD available');

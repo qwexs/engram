@@ -4,8 +4,10 @@
 // Cross-entity: bun scripts/memory-contradict.js --fact "Prefers JS" --entity "people/sergey" --cross-entity
 
 import { join } from "path";
+import { resolveQmdCommand } from "./config.js";
 
-const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
+const QMD = resolveQmdCommand(WORKSPACE);
 
 // Парсинг аргументов
 function parseArgs(argv) {
@@ -100,7 +102,7 @@ async function discoverEntitiesViaQmd(queryText) {
   try {
     // qmd query (BM25 + vectors + rerank) для лучшего качества
     // Формируем аргументы с множественными коллекциями
-    const qmdArgs = ["qmd", "query", queryText, "--json"];
+    const qmdArgs = [QMD, "query", queryText, "--json"];
     for (const col of collections) {
       qmdArgs.push("-c", col);
     }

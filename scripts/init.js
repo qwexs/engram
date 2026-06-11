@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
-import { loadEngramConfig } from './config.js';
+import { loadEngramConfig, resolveQmdCommand } from './config.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -49,6 +49,7 @@ Examples:
 
 const WORKSPACE = process.cwd();
 const config = loadEngramConfig(WORKSPACE);
+const QMD = resolveQmdCommand(WORKSPACE);
 const agentId = args['agent-id'] || config.agent.replace(/^agent-/, '') || 'main';
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
@@ -65,7 +66,7 @@ function detectQmdVariant() {
 
 function qmdAvailable() {
   try {
-    execSync('qmd --help', { stdio: 'pipe' });
+    execSync(`${QMD} --help`, { stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -228,7 +229,7 @@ if (hasQmd) {
 
   for (const col of collections) {
     try {
-      execSync(`qmd collection add "${join(WORKSPACE, col.path)}" --name ${col.name} --mask "${col.mask}"`, { stdio: 'pipe' });
+      execSync(`${QMD} collection add "${join(WORKSPACE, col.path)}" --name ${col.name} --mask "${col.mask}"`, { stdio: 'pipe' });
       console.log(`  ✅ ${col.name}`);
     } catch {
       console.log(`  ⚠️  ${col.name} (may already exist)`);
@@ -237,7 +238,7 @@ if (hasQmd) {
 
   console.log('\nрџ"Љ Running QMD index...');
   try {
-    execSync('qmd update', { stdio: 'inherit' });
+    execSync(`${QMD} update`, { stdio: 'inherit' });
   } catch {
     console.warn('  ⚠️  qmd update failed - run manually');
   }

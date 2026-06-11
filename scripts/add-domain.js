@@ -7,6 +7,7 @@ import { parseArgs } from 'node:util';
 import { mkdirSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
+import { resolveQmdCommand } from './config.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -46,6 +47,7 @@ const description = args.description || domain;
 const domainType = args.type;
 const kgEntity = args['kg-entity'];
 const WORKSPACE = process.cwd();
+const QMD = resolveQmdCommand(WORKSPACE);
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'templates', 'domain');
@@ -127,7 +129,7 @@ console.log(`  ✅ registry.json (тип: ${domainType}${kgEntity ? `, KG: ${kgE
 // Регистрация QMD коллекции domains (одна на все домены)
 function qmdAvailable() {
   try {
-    execSync('qmd --help', { stdio: 'pipe' });
+    execSync(`${QMD} --help`, { stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -137,14 +139,14 @@ function qmdAvailable() {
 if (qmdAvailable()) {
   try {
     // Пробуем добавить коллекцию — если уже есть, будет ошибка (OK)
-    execSync(`qmd collection add "${join(WORKSPACE, 'memory', 'domains')}" --name domains --mask "**/*.md"`, { stdio: 'pipe' });
+    execSync(`${QMD} collection add "${join(WORKSPACE, 'memory', 'domains')}" --name domains --mask "**/*.md"`, { stdio: 'pipe' });
     console.log('📝 QMD коллекция `domains` создана');
   } catch {
     console.log('📝 QMD коллекция `domains` уже существует');
   }
 
   try {
-    execSync('qmd update', { stdio: 'pipe' });
+    execSync(`${QMD} update`, { stdio: 'pipe' });
     console.log('📊 QMD индекс обновлён');
   } catch {
     console.warn('⚠️  qmd update не удался — запустите вручную');

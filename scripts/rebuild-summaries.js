@@ -9,7 +9,7 @@ import { join, dirname, relative } from "path";
 import { existsSync, mkdirSync } from "fs";
 
 // Скрипт в skills/engram/scripts/ — workspace на 3 уровня выше
-const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 const LIFE_DIR = join(WORKSPACE, "life");
 
 function parseArgs(argv) {

@@ -26,7 +26,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, copyFil
 import { execSync } from "child_process";
 import { getAgentDir } from "./config.js";
 
-const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 const AGENT_DIR = getAgentDir(WORKSPACE);
 const LINE_THRESHOLD = 1000;
 

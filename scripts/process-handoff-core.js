@@ -7,7 +7,7 @@ import { getAgentDir } from "./config.js";
 import { applyDomainWriteHandoff } from "./domains-runner.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_WORKSPACE = join(__dirname, "..", "..", "..");
+const DEFAULT_WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(__dirname, "..", "..", "..");
 const DEFAULT_STATE = {
   lastDailyNoteCreated: {},
   lastChecks: { email: null, calendar: null, weather: null },

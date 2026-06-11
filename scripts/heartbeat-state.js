@@ -66,6 +66,7 @@ const WORKSPACE =
   opts.workspace ||
   process.env.ENGRAM_WORKSPACE ||
   process.env.CLAWD_WORKSPACE ||
+  process.cwd() ||
   join(__dirname, "..", "..", "..");
 
 const STATE_FILE = join(WORKSPACE, "memory", "heartbeat-state.json");

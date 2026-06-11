@@ -29,3 +29,7 @@
 ## Создан
 
 {{DATE}}
+
+## More
+
+For the full contract (binding format, hooks, archive lifecycle, QMD usage, registry fields), see `references/topic-thread.md` in the engram skill.

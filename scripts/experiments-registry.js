@@ -5,7 +5,7 @@
 import { join } from "path";
 
 // Скрипт в skills/engram/scripts/ — workspace на 3 уровня выше
-const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 const RESEARCH_DIR = join(WORKSPACE, "workspace", "research");
 const REGISTRY_PATH = join(RESEARCH_DIR, "experiments.json");
 

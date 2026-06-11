@@ -14,7 +14,7 @@
 
 import { join } from "path";
 
-const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 const OBS_DIR = join(WORKSPACE, "workspace", "ops", "observations");
 
 function parseArgs(argv) {

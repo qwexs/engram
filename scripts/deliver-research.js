@@ -18,7 +18,7 @@ import { fileURLToPath } from "url";
 import { readFileSync, writeFileSync, readdirSync, existsSync } from "fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(__dirname, "..", "..", "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(__dirname, "..", "..", "..");
 const QUEUE_DIR = join(WORKSPACE, "workspace", "research", "delivery-queue");
 const RESEARCH_DIR = join(WORKSPACE, "workspace", "research");
 

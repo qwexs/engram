@@ -8,7 +8,7 @@ import { join } from "path";
 import { extractKeywords, jaccardSimilarity } from "./utils.js";
 
 // Скрипт в skills/engram/scripts/ — workspace на 3 уровня выше
-const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 const TENSION_DIR = join(WORKSPACE, "workspace", "ops", "tensions");
 
 const VALID_TYPES = ["factual", "temporal", "priority"];

@@ -8,7 +8,7 @@ import { existsSync, mkdirSync } from "fs";
 import { loadEngramConfig } from "./config.js";
 
 // Т.к. скрипт в skills/engram/scripts/, workspace на 3 уровня выше
-const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 
 const SECTION_MAP = {
   events: "Events",

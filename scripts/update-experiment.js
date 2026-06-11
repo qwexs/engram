@@ -5,7 +5,7 @@
 import { join } from "path";
 import { updateStatus } from "./experiments-registry.js";
 
-const WORKSPACE = process.env.ENGRAM_WORKSPACE || join(import.meta.dir, "..", "..", "..");
+const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 const RESEARCH_DIR = join(WORKSPACE, "workspace", "research");
 
 function parseArgs(argv) {

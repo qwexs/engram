@@ -9,11 +9,83 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { dirname, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
-const EXPECTED_FILES = ["decisions.md", "workflow.md", "status.md", "changelog.md"];
+const EXPECTED_FILES_BY_TYPE = {
+  "dev-project": ["decisions.md", "workflow.md", "status.md", "changelog.md"],
+  "cron-task":   ["decisions.md", "workflow.md", "status.md", "changelog.md"],
+  "topic-thread":["decisions.md", "status.md", "changelog.md"],
+};
+const EXPECTED_FILES = EXPECTED_FILES_BY_TYPE["dev-project"]; // default for legacy callers
+function expectedFilesFor(config) {
+  if (config && config.type && EXPECTED_FILES_BY_TYPE[config.type]) {
+    return EXPECTED_FILES_BY_TYPE[config.type];
+  }
+  return EXPECTED_FILES;
+}
 const DEFAULT_STALE_DAYS = 30;
 const MUTABLE_FILES = new Set(["status.md", "changelog.md"]);
 const MAX_STATUS_BYTES = 64 * 1024;
 const MAX_CHANGELOG_APPEND_BYTES = 64 * 1024;
+
+
+function archiveTopicThreadDomain({ name, config, domainsRoot, nowMs, dryRun = true }) {
+  // Archive a stale topic-thread domain: set archived: true in registry and
+  // move files from memory/domains/{slug}/ to memory/domains/archives/{slug}/.
+  // Returns { archived: boolean, reason: string, archivePath?: string }.
+  if (!config || config.type !== "topic-thread") {
+    return { archived: false, reason: "not topic-thread" };
+  }
+  if (config.archived === true) {
+    return { archived: false, reason: "already archived" };
+  }
+  const domainDir = join(domainsRoot, name);
+  if (!existsSync(domainDir)) {
+    return { archived: false, reason: "domain dir missing" };
+  }
+  // Check freshness: read changelog.md content-date, fallback to status.md mtime
+  const changelogPath = join(domainDir, "changelog.md");
+  const statusPath = join(domainDir, "status.md");
+  let lastActivityMs = 0;
+  if (existsSync(changelogPath)) {
+    const c = newestContentDateMs(readFileSync(changelogPath, "utf8"));
+    if (c != null) lastActivityMs = Math.max(lastActivityMs, c);
+    const m = statSync(changelogPath).mtimeMs;
+    lastActivityMs = Math.max(lastActivityMs, m);
+  }
+  if (existsSync(statusPath)) {
+    const m = statSync(statusPath).mtimeMs;
+    lastActivityMs = Math.max(lastActivityMs, m);
+  }
+  if (lastActivityMs === 0) {
+    return { archived: false, reason: "no activity signal (no changelog.md or status.md)" };
+  }
+  const staleAfterDays = numberFromConfig(config, ["staleAfterDays", "statusStaleDays"]) ?? 60;
+  const age = ageDays(lastActivityMs, nowMs);
+  if (age < staleAfterDays) {
+    return { archived: false, reason: `not stale yet (age ${age}d < ${staleAfterDays}d)` };
+  }
+  // Mark for archive. If dryRun, don't actually move.
+  const archiveDir = join(domainsRoot, "archives", name);
+  const result = { archived: false, reason: "dry-run", archivePath: archiveDir, ageDays };
+  if (dryRun) return result;
+  // Move files
+  mkdirSync(dirname(archiveDir), { recursive: true });
+  if (existsSync(archiveDir)) {
+    return { archived: false, reason: `archive dir already exists: ${archiveDir}` };
+  }
+  // Atomic rename of the entire domain dir to archives/{slug}/
+  renameSync(domainDir, archiveDir);
+  // Mutate registry
+  const registryPath = join(domainsRoot, "registry.json");
+  const reg = readJson(registryPath);
+  if (!reg.domains) reg.domains = {};
+  if (!reg.domains[name]) reg.domains[name] = {};
+  reg.domains[name].archived = true;
+  reg.domains[name].archivedAt = new Date(nowMs).toISOString();
+  reg.domains[name].archivePath = relative(domainsRoot, archiveDir);
+  writeJson(registryPath, reg);
+  return { archived: true, archivePath: archiveDir, ageDays };
+}
+
 
 function parseArgs(argv) {
   const opts = {};
@@ -309,7 +381,7 @@ export async function applyDomainWriteHandoff(handoff, {
   };
 }
 
-export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_STALE_DAYS } = {}) {
+export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_STALE_DAYS, archiveMode = false, dryRun = true } = {}) {
   const root = resolve(workspace || process.env.ENGRAM_WORKSPACE || process.cwd());
   const domainsRoot = join(root, "memory", "domains");
   const registryPath = join(domainsRoot, "registry.json");
@@ -354,7 +426,8 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
     const staleFiles = [];
     const files = {};
 
-    for (const file of EXPECTED_FILES) {
+    const expectedForDomain = expectedFilesFor(config);
+    for (const file of expectedForDomain) {
       const filePath = join(domainDir, file);
       if (!existsSync(filePath)) {
         missingFiles.push(file);
@@ -407,11 +480,48 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
       overdue,
       files,
     };
+    // Dry-run archive check (always done; archived: false if not actually archived)
+    const archiveResult = archiveTopicThreadDomain({
+      name,
+      config,
+      domainsRoot,
+      nowMs,
+      dryRun: true,
+    });
+    domain.wouldArchive = archiveResult.archived === false && archiveResult.archivePath && archiveResult.ageDays >= (numberFromConfig(config, ["staleAfterDays", "statusStaleDays"]) ?? 60);
+    domain.archiveCandidate = !config?.archived && config?.type === "topic-thread" && archiveResult.archivePath ? archiveResult.archivePath : null;
+    domain.ageDays = archiveResult.ageDays ?? null;
     domains.push(domain);
 
     if (missingFiles.length > 0) alerts.push({ domain: name, kind: "missing", files: missingFiles });
     if (staleFiles.length > 0) alerts.push({ domain: name, kind: "stale", files: staleFiles });
     if (overdue) alerts.push({ domain: name, kind: "overdue" });
+  }
+
+  // Phase D: archive stale topic-thread domains (only if archiveMode && !dryRun)
+  if (archiveMode && !dryRun) {
+    for (const domain of domains) {
+      if (domain.type !== "topic-thread") continue;
+      if (domain.archived) continue;
+      const config = registry.domains[domain.name] || {};
+      const result = archiveTopicThreadDomain({
+        name: domain.name,
+        config,
+        domainsRoot,
+        nowMs,
+        dryRun: false,
+      });
+      if (result.archived) {
+        domain.archived = true;
+        domain.archivePath = result.archivePath;
+        alerts.push({ domain: domain.name, kind: "archived", archivePath: result.archivePath, ageDays: result.ageDays });
+      } else if (result.reason && result.reason !== "already archived" && result.reason !== "not topic-thread") {
+        // Don't alert on "not stale yet" — that's normal.
+        if (result.reason !== "dry-run" && !result.reason.startsWith("not stale")) {
+          alerts.push({ domain: domain.name, kind: "archive-skip", reason: result.reason });
+        }
+      }
+    }
   }
 
   const enabledDomains = domains.filter((domain) => domain.enabled);
@@ -451,12 +561,14 @@ export function formatDomainScanSummary(scan) {
 
 if (import.meta.main) {
   const opts = parseArgs(process.argv);
+  if (opts.archive === true) opts.archive = true;
+  if (opts["dry-run"] === true || opts.dryRun === true) opts.dryRun = true;
   if (opts.help || opts.h) {
     console.log([
       "domains-runner.js",
       "",
       "Usage:",
-      "  bun skills/engram/scripts/domains-runner.js --workspace <path> [--stale-days 30]",
+      "  bun skills/engram/scripts/domains-runner.js --workspace <path> [--stale-days 60] [--archive] [--dry-run]",
       "",
       "Scans memory/domains continuity files without mutating them.",
     ].join("\n"));
@@ -464,9 +576,12 @@ if (import.meta.main) {
   }
 
   try {
+    const dryRun = opts.dryRun !== true && opts.archive !== true;
     const scan = scanDomains({
       workspace: opts.workspace || process.env.ENGRAM_WORKSPACE || process.cwd(),
       staleDays: Number(opts["stale-days"] || DEFAULT_STALE_DAYS),
+      archiveMode: opts.archive === true,
+      dryRun,
     });
     console.log(JSON.stringify({ ...scan, summary: formatSummary(scan) }, null, 2));
   } catch (err) {

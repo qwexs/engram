@@ -38,7 +38,6 @@ Use OpenClaw's cron system (`/cron add` or via API):
   "payload": {
     "kind": "agentTurn",
     "message": "Run the engram heartbeat runner for the target workspace.\n\nCall the exec tool with:\n- command: `bun skills/engram/scripts/heartbeat-runner.js --workspace /path/to/workspace --agent-id PLACEHOLDER_AGENT_ID --session main --all-active-sessions --label-prefix PLACEHOLDER_LABEL_PREFIX --timeout-ms 300000`\n- workdir: `/path/to/workspace`\n- timeout: 900 seconds\n\nThe runner is self-contained and deterministic. After exec returns, post a one-line summary in this format:\n\n`status=... extraction=... domains=... oll=... maintenance=...`\n\nIf exec fails, report the error message verbatim and stop.",
-    "model": "openai/gpt-5.5",
     "timeoutSeconds": 900,
     "lightContext": true
   },
@@ -50,6 +49,15 @@ Replace `/path/to/workspace`, `--agent-id`, `--session`, and `--label-prefix`
 for the target agent/workspace. The runner prints `HEARTBEAT_OK` when it
 finishes, so the cron job can stay silent unless the OpenClaw cron layer reports
 an execution failure.
+
+`payload.model` is intentionally omitted from the example. When unset, the
+agent turn uses the workspace's active model (whatever model the agent would
+pick for any other turn). To pin a specific model for the cron turn, add a
+`"model": "<model-id>"` field using a model id available in your OpenClaw
+runtime. Note that the heartbeat **subagents** (hb-extract, hb-synthesis,
+hb-domains, hb-rethink, hb-autoresearch, hb-rethink2) pick their own models
+separately via `engram.json → models.heartbeat.subagents` or the
+`ENGRAM_MODEL_<LABEL>` env vars; see SKILL.md §Subagent Model Resolution.
 
 `HEARTBEAT.md` remains the detailed protocol/reference for agents and future
 runner phases. It is not the production cron entrypoint.

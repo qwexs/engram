@@ -37,9 +37,10 @@ Use OpenClaw's cron system (`/cron add` or via API):
   "wakeMode": "now",
   "payload": {
     "kind": "agentTurn",
-    "message": "Call the exec tool exactly once with this JavaScript source:\n\nconst out = await tools.shell_command({\n  command: \"bun ./skills/engram/scripts/heartbeat-runner.js --workspace /path/to/workspace --agent-id main --session main --label-prefix hb --timeout-ms 300000\",\n  workdir: \"/path/to/workspace\",\n  timeout_ms: 900000\n});\ntext(out);\n\nAfter exec completes, reply with the exact exec output only. Do not read HEARTBEAT.md. Do not run any other tool.",
+    "message": "Run the engram heartbeat runner for the target workspace.\n\nCall the exec tool with:\n- command: `bun skills/engram/scripts/heartbeat-runner.js --workspace /path/to/workspace --agent-id PLACEHOLDER_AGENT_ID --session main --all-active-sessions --label-prefix PLACEHOLDER_LABEL_PREFIX --timeout-ms 300000`\n- workdir: `/path/to/workspace`\n- timeout: 900 seconds\n\nThe runner is self-contained and deterministic. After exec returns, post a one-line summary in this format:\n\n`status=... extraction=... domains=... oll=... maintenance=...`\n\nIf exec fails, report the error message verbatim and stop.",
     "model": "openai/gpt-5.5",
-    "timeoutSeconds": 900
+    "timeoutSeconds": 900,
+    "lightContext": true
   },
   "delivery": { "mode": "none" }
 }

@@ -16,6 +16,9 @@ const { values: args } = parseArgs({
     'type': { type: 'string', default: 'dev-project' },
     'kg-entity': { type: 'string', default: '' },
     'topic': { type: 'string', default: '' },
+    'create-telegram-topic': { type: 'boolean', default: false },
+    'telegram-chat-id': { type: 'string', default: '' },
+    'telegram-icon-color': { type: 'string', default: '0x6FB9F0' },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -36,8 +39,17 @@ Options:
                                cron-task     — periodic task
                                topic-thread  — Telegram topic as memory contour
   --kg-entity <path>         Путь к KG entity (например "projects/engram")
-  --topic <chatId:topicId>   Привязка к Telegram-топику (только для type=topic-thread).
+  --topic <chatId:topicId>   Привязка к существующему Telegram-топику (только для type=topic-thread).
                              Формат: "-1001234567890:42"
+  --create-telegram-topic   Создать новый Telegram-топик через Bot API и привязать к домену
+                             (только для type=topic-thread, требует --telegram-chat-id).
+                             Токен бота: ~/.openclaw/openclaw.json -> channels.telegram.accounts.sergey.botToken
+                             (или env TELEGRAM_BOT_TOKEN).
+  --telegram-chat-id <id>   Chat ID форум-группы для --create-telegram-topic
+                             (например "-1001234567890").
+  --telegram-icon-color <h> Цвет иконки топика в hex (по умолчанию 0x6FB9F0 - синий).
+                             Telegram: 0x6FB9F0 blue, 0xFFD67E yellow, 0xCB86DB purple,
+                             0x8EEE98 green, 0xFF93B2 pink, 0xFB6F5F red.
   -h, --help                 Показать справку
 
 Examples:
@@ -45,7 +57,15 @@ Examples:
   bun skills/engram/scripts/add-domain.js --domain monitoring
   bun skills/engram/scripts/add-domain.js --domain engram --type dev-project --kg-entity projects/engram
 
-  # Telegram-топик как домен
+  # Telegram-топик как домен (создать новый)
+  bun skills/engram/scripts/add-domain.js --domain about \\
+    --type topic-thread \\
+    --create-telegram-topic \\
+    --telegram-chat-id -1001234567890 \\
+    --kg-entity projects/professional-profile \\
+    --description "Professional profile: CV, bio, личный бренд"
+
+  # Telegram-топик как домен (привязать к существующему)
   bun skills/engram/scripts/add-domain.js --domain engram \\
     --type topic-thread \\
     --topic -1001234567890:42 \\
@@ -60,11 +80,28 @@ const description = args.description || domain;
 const domainType = args.type;
 const kgEntity = args['kg-entity'];
 const topicArg = args.topic;
+const createTelegramTopic = args['create-telegram-topic'];
+const telegramChatIdArg = args['telegram-chat-id'];
+const telegramIconColor = args['telegram-icon-color'];
 const WORKSPACE = process.cwd();
 const QMD = resolveQmdCommand(WORKSPACE);
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'templates', 'domain');
+
+// Конфликт: --topic и --create-telegram-topic взаимоисключающие
+if (topicArg && createTelegramTopic) {
+  console.error('❌ --topic и --create-telegram-topic взаимоисключающие.');
+  console.error('   --topic — привязать к существующему топику.');
+  console.error('   --create-telegram-topic — создать новый топик через Bot API.');
+  process.exit(1);
+}
+
+// --create-telegram-topic требует type=topic-thread
+if (createTelegramTopic && domainType !== 'topic-thread') {
+  console.error('❌ --create-telegram-topic работает только с --type topic-thread');
+  process.exit(1);
+}
 
 // Валидация имени домена
 if (!/^[a-z][a-z0-9-]*$/.test(domain)) {
@@ -81,18 +118,80 @@ if (!['dev-project', 'cron-task', 'topic-thread'].includes(domainType)) {
 // Парсинг и валидация --topic для topic-thread
 let topicBinding = null;
 if (domainType === 'topic-thread') {
-  if (!topicArg) {
-    console.error('❌ Для type=topic-thread обязателен --topic <chatId:topicId>');
-    console.error('   Пример: --topic -1001234567890:42');
-    process.exit(1);
+  if (createTelegramTopic) {
+    if (!telegramChatIdArg) {
+      console.error('❌ Для --create-telegram-topic обязателен --telegram-chat-id <id>');
+      console.error('   Пример: --telegram-chat-id -1001234567890');
+      process.exit(1);
+    }
+    if (!/^-?\d+$/.test(telegramChatIdArg)) {
+      console.error(`❌ --telegram-chat-id должен быть числовым ID (например -1001234567890)`);
+      console.error(`   Получено: "${telegramChatIdArg}"`);
+      process.exit(1);
+    }
+
+    let botToken = process.env.TELEGRAM_BOT_TOKEN || '';
+    if (!botToken) {
+      try {
+        const oc = JSON.parse(await Bun.file(join(process.env.USERPROFILE || process.env.HOME, '.openclaw', 'openclaw.json')).text());
+        botToken = oc?.channels?.telegram?.accounts?.sergey?.botToken || '';
+      } catch (e) {
+        console.error('❌ Не удалось прочитать ~/.openclaw/openclaw.json. Установите TELEGRAM_BOT_TOKEN или проверьте config.');
+        process.exit(1);
+      }
+    }
+    if (!botToken) {
+      console.error('❌ Токен бота не найден ни в TELEGRAM_BOT_TOKEN, ни в openclaw.json:channels.telegram.accounts.sergey.botToken');
+      process.exit(1);
+    }
+
+    if (!/^0x[0-9A-Fa-f]{6}$/.test(telegramIconColor)) {
+      console.error(`❌ --telegram-icon-color должен быть в формате 0xRRGGBB, например 0x6FB9F0`);
+      console.error(`   Получено: "${telegramIconColor}"`);
+      process.exit(1);
+    }
+
+    console.log(`🤖 Создаю Telegram-топик "${domain}" в chat_id=${telegramChatIdArg} (icon ${telegramIconColor})...`);
+    const url = `https://api.telegram.org/bot${botToken}/createForumTopic`;
+    // Telegram Bot API ожидает icon_color как Integer (RGB24), не hex-строку.
+    // Парсим "0xRRGGBB" (после валидации) в integer.
+    const iconColorInt = parseInt(telegramIconColor, 16);
+    const formData = new URLSearchParams({
+      chat_id: telegramChatIdArg,
+      name: domain,
+      icon_color: String(iconColorInt),
+    });
+    let response;
+    try {
+      response = await fetch(url, { method: 'POST', body: formData });
+    } catch (e) {
+      console.error(`❌ Не удалось вызвать Telegram Bot API: ${e.message}`);
+      console.error('   Проверьте сетевое соединение и токен бота.');
+      process.exit(1);
+    }
+    const result = await response.json();
+    if (!result.ok) {
+      console.error(`❌ Telegram Bot API вернул ошибку: ${result.error_code} — ${result.description}`);
+      console.error('   Частые причины: бот не админ форума (can_manage_topics=false), чат не форум, неверный chat_id.');
+      process.exit(1);
+    }
+    const newTopicId = String(result.result.message_thread_id);
+    console.log(`✅ Топик создан: ${telegramChatIdArg}:${newTopicId} (icon_color=0x${result.result.icon_color.toString(16).toUpperCase()})`);
+    topicBinding = { chatId: telegramChatIdArg, topicId: newTopicId };
+  } else {
+    if (!topicArg) {
+      console.error('❌ Для type=topic-thread обязателен --topic <chatId:topicId> или --create-telegram-topic');
+      console.error('   Пример: --topic -1001234567890:42');
+      process.exit(1);
+    }
+    const m = topicArg.match(/^(-?\d+):(\d+)$/);
+    if (!m) {
+      console.error(`❌ --topic должен быть в формате <chatId:topicId>, например "-1001234567890:42"`);
+      console.error(`   Получено: "${topicArg}"`);
+      process.exit(1);
+    }
+    topicBinding = { chatId: m[1], topicId: m[2] };
   }
-  const m = topicArg.match(/^(-?\d+):(\d+)$/);
-  if (!m) {
-    console.error(`❌ --topic должен быть в формате <chatId:topicId>, например "-1001234567890:42"`);
-    console.error(`   Получено: "${topicArg}"`);
-    process.exit(1);
-  }
-  topicBinding = { chatId: m[1], topicId: m[2] };
 } else if (topicArg) {
   console.warn(`⚠️  --topic указан, но тип домена ${domainType} (не topic-thread). Игнорирую.`);
 }

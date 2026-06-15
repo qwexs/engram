@@ -1,0 +1,524 @@
+#!/usr/bin/env bun
+/**
+ * install-cron.js
+ *
+ * Provisions the OpenClaw cron job that drives the engram heartbeat
+ * (Phase 5.5: heartbeat-runner.js → spawn-claim.js → sessions_spawn).
+ *
+ * The cron payload is a 4-step agent turn:
+ *   1. shell_command: bun skills/engram/scripts/heartbeat-runner.js ...
+ *   2. shell_command: bun skills/engram/scripts/spawn-claim.js ...
+ *   3. for each JSON line with action="spawn": sessions_spawn(...)
+ *   4. reply with runner output + "[phase-5.5] ..." + HEARTBEAT_OK
+ *
+ * This script is idempotent: re-running it updates the existing job's
+ * payload.message and name to the current 4-step prose form, but does
+ * NOT touch agentId, schedule, model, thinking, timeoutSeconds,
+ * lightContext, sessionTarget, delivery, or sessionKey. So existing
+ * schedule and routing are preserved across updates.
+ *
+ * ## Windows + multi-line --message note
+ *
+ * On Windows, `openclaw` resolves to a `.cmd` wrapper. When Bun.spawn
+ * invokes a .cmd file, the args go through `cmd.exe`, which treats
+ * literal newlines in arguments as command separators. The result:
+ * `--message "line 1\nline 2"` is silently truncated to `line 1`.
+ * This affects the REAL openclaw binary the same way — it has nothing
+ * to do with the test mock.
+ *
+ * To preserve the multi-line message, on Windows we bypass the .cmd
+ * wrapper and invoke `node <openclaw.mjs>` directly via `process.execPath`
+ * (Bun is Node-compatible). The .mjs path is auto-detected from
+ * `where openclaw.cmd` + npm-global layout, or override via
+ * `ENGRAM_OPENCLAW_NODE_SCRIPT=<path>` (used by tests).
+ *
+ * On POSIX, the .cmd wrapper does not exist; we use `openclaw` directly
+ * via PATH and multi-line args are preserved by the OS.
+ *
+ * Usage:
+ *   bun skills/engram/scripts/install-cron.js [action] [options]
+ *
+ * Actions:
+ *   install               Create or update the heartbeat cron job (default)
+ *   uninstall             Remove the heartbeat cron job by name
+ *   status                Show current cron job state as JSON
+ *
+ * Options:
+ *   --agent-id <id>       Agent identifier (default: engram.json -> agent, normalized)
+ *   --workspace <path>    Workspace path (default: $ENGRAM_WORKSPACE or cwd)
+ *   --session <key>       Session key for runner (default: main)
+ *   --label-prefix <p>    Label prefix for spawned subagents (default: hb)
+ *   --cron-name <name>    Job name to look for (default: "Heartbeat (Engram runner)")
+ *   --schedule <expr>     Schedule: "30m" (default), "5m", "1h", or cron expr
+ *   --dry-run             Print cron job spec JSON, no openclaw calls
+ *   -h, --help            Show this help
+ *
+ * Exit codes:
+ *   0  Success
+ *   1  openclaw error
+ *   2  Bad args (unknown flag, unknown action, ...)
+ *   3  openclaw binary not found / not in OpenClaw-managed workspace
+ */
+
+import { parseArgs } from "node:util";
+import { execSync, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { resolve, join, dirname } from "node:path";
+import { loadEngramConfig } from "./config.js";
+
+// On Windows, npm/global wrappers install as `openclaw.cmd`; bun/Bun.spawn
+// cannot exec the wrapper without the extension. ENGRAM_OPENCLAW overrides
+// for testing (e.g. ENGRAM_OPENCLAW=/no/such/binary to test exit 3).
+const OPENCLAW_CMD =
+  process.env.ENGRAM_OPENCLAW ||
+  (process.platform === "win32" ? "openclaw.cmd" : "openclaw");
+
+// Known CLI options (anything else is rejected with exit 2).
+const KNOWN_OPTIONS = new Set([
+  "agent-id",
+  "workspace",
+  "session",
+  "label-prefix",
+  "cron-name",
+  "schedule",
+  "dry-run",
+  "help",
+  "_",
+]);
+
+const KNOWN_ACTIONS = new Set(["install", "uninstall", "status"]);
+
+const { values: args } = parseArgs({
+  options: {
+    "agent-id": { type: "string" },
+    "workspace": { type: "string" },
+    "session": { type: "string" },
+    "label-prefix": { type: "string" },
+    "cron-name": { type: "string" },
+    "schedule": { type: "string" },
+    "dry-run": { type: "boolean", default: false },
+    "help": { type: "boolean", short: "h", default: false },
+  },
+  strict: false,
+});
+
+// Detect action from raw argv: first non-flag token. Required to live in
+// KNOWN_ACTIONS (else exit 2 with a helpful message — see `if (firstArg...)`
+// block below).
+const argv = process.argv.slice(2);
+let action = "install";
+const firstArg = argv[0];
+if (firstArg !== undefined) {
+  if (firstArg.startsWith("-")) {
+    // No action specified; use default "install".
+  } else if (KNOWN_ACTIONS.has(firstArg)) {
+    action = firstArg;
+  } else {
+    console.error(`❌ Unknown action: ${firstArg}`);
+    console.error(`   Use one of: ${[...KNOWN_ACTIONS].join(", ")}`);
+    process.exit(2);
+  }
+}
+
+if (args.help) {
+  console.log(`
+install-cron — Install the engram heartbeat cron job
+
+Usage:
+  bun skills/engram/scripts/install-cron.js [action] [options]
+
+Actions:
+  install               Create or update the heartbeat cron job (default)
+  uninstall             Remove the heartbeat cron job
+  status                Show current cron job state
+
+Options:
+  --agent-id <id>       Agent identifier (default: engram.json -> agent)
+  --workspace <path>    Workspace path (default: \$ENGRAM_WORKSPACE or cwd)
+  --session <key>       Session key (default: main)
+  --label-prefix <p>    Label prefix for spawned subagents (default: hb)
+  --cron-name <name>    Job name to look for (default: "Heartbeat (Engram runner)")
+  --schedule <expr>     Schedule: "30m" (default), "5m", "1h", or cron expr
+  --dry-run             Print cron job spec JSON, no openclaw calls
+  -h, --help            Show this help
+
+Examples:
+  bun skills/engram/scripts/install-cron.js
+  bun skills/engram/scripts/install-cron.js install --agent-id main --schedule 30m
+  bun skills/engram/scripts/install-cron.js status
+  bun skills/engram/scripts/install-cron.js uninstall
+  bun skills/engram/scripts/install-cron.js install --dry-run > cron-spec.json
+
+Exit codes:
+  0  Success
+  1  openclaw error
+  2  Bad args
+  3  openclaw binary not found
+`);
+  process.exit(0);
+}
+
+// --- Validate args ---
+for (const k of Object.keys(args)) {
+  if (!KNOWN_OPTIONS.has(k)) {
+    console.error(`❌ Unknown option: --${k}`);
+    console.error(`   Run with --help for the list of known options.`);
+    process.exit(2);
+  }
+}
+
+// --- Resolve config ---
+const WORKSPACE = (
+  args.workspace || process.env.ENGRAM_WORKSPACE || process.cwd()
+).replace(/\\/g, "/");
+
+const config = loadEngramConfig(WORKSPACE);
+const agentId =
+  args["agent-id"] || config.agent.replace(/^agent-/, "") || "main";
+const session = args.session || "main";
+const labelPrefix = args["label-prefix"] || "hb";
+const cronName = args["cron-name"] || "Heartbeat (Engram runner)";
+const schedule = args.schedule || "30m";
+const dryRun = !!args["dry-run"];
+
+// Sub-agent model: prefer engram.json -> models.subagents_default, then
+// models.heartbeat.subagents.hb-extract (closest analog for the cron agent
+// itself), then hardcoded sonnet-4-6 OSS default. Never hardcode
+// deployment-specific aliases in this script.
+const subagentModel = (() => {
+  if (config?.models?.subagents_default) {
+    return String(config.models.subagents_default);
+  }
+  if (config?.models?.heartbeat?.subagents?.["hb-extract"]) {
+    return String(config.models.heartbeat.subagents["hb-extract"]);
+  }
+  return "sonnet-4-6";
+})();
+
+// --- Resolve openclaw invocation strategy ---
+// On Windows, we need to bypass the .cmd wrapper to preserve multi-line
+// --message args. ENGRAM_OPENCLAW_NODE_SCRIPT overrides auto-detection;
+// auto-detection uses `where openclaw.cmd` to find the wrapper and resolves
+// the sibling .mjs (npm-global layout).
+function autoDetectNodeScript() {
+  if (process.platform !== "win32") return null;
+  try {
+    const out = execSync("where openclaw.cmd", {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    const cmdPath = out.split(/\r?\n/)[0]?.trim();
+    if (!cmdPath) return null;
+    const cmdDir = dirname(cmdPath);
+    // Common npm-global layouts:
+    //   <prefix>/bin/openclaw.cmd  →  <prefix>/lib/node_modules/openclaw/openclaw.mjs
+    //   <prefix>/openclaw.cmd      →  <prefix>/node_modules/openclaw/openclaw.mjs  (bun-style)
+    const candidates = [
+      join(cmdDir, "..", "node_modules", "openclaw", "openclaw.mjs"),
+      join(cmdDir, "..", "lib", "node_modules", "openclaw", "openclaw.mjs"),
+    ];
+    for (const c of candidates) {
+      if (existsSync(c)) return c;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+const OPENCLAW_NODE_SCRIPT =
+  process.env.ENGRAM_OPENCLAW_NODE_SCRIPT || autoDetectNodeScript();
+
+/**
+ * Returns { exe, prefixArgs } such that running
+ *   spawnSync(exe, [...prefixArgs, ...userArgs])
+ * invokes openclaw with the given user args.
+ *
+ * On Windows, when a node-direct script is available, we ALWAYS use the
+ * node-direct path (process.execPath + .mjs). Otherwise we fall back to
+ * the .cmd wrapper, which truncates multi-line args.
+ *
+ * On POSIX, we use `openclaw` via PATH directly.
+ */
+function resolveInvocation() {
+  if (process.platform === "win32" && OPENCLAW_NODE_SCRIPT) {
+    return { exe: process.execPath, prefixArgs: [OPENCLAW_NODE_SCRIPT] };
+  }
+  return { exe: OPENCLAW_CMD, prefixArgs: [] };
+}
+
+// --- Check openclaw availability (skipped in dry-run) ---
+function openclawAvailable() {
+  try {
+    const { exe, prefixArgs } = resolveInvocation();
+    const proc = spawnSync(exe, [...prefixArgs, "--version"], {
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+    return proc.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+if (!dryRun && !openclawAvailable()) {
+  console.error(`❌ openclaw binary not found on PATH.`);
+  console.error(`   Looking for: ${OPENCLAW_CMD}`);
+  if (process.platform === "win32" && !OPENCLAW_NODE_SCRIPT) {
+    console.error(`   (Could not auto-detect openclaw.mjs to bypass the .cmd wrapper.)`);
+    console.error(`   Set ENGRAM_OPENCLAW_NODE_SCRIPT=<path-to-openclaw.mjs> to override.`);
+  }
+  console.error(`   Install: see https://github.com/openclaw/openclaw`);
+  console.error(`   Or pass --dry-run to print the spec without applying.`);
+  process.exit(3);
+}
+
+// --- Schedule conversion ---
+function buildSchedule(s) {
+  // Duration like "30m", "5m", "1h", "10s", "1d"
+  const m = /^(\d+)([smhd])$/.exec(s);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    const unit = m[2];
+    const mult =
+      unit === "s"
+        ? 1_000
+        : unit === "m"
+        ? 60_000
+        : unit === "h"
+        ? 3_600_000
+        : 86_400_000;
+    return { kind: "every", everyMs: n * mult };
+  }
+  // Otherwise: treat as cron expression (5-field), default tz Europe/Moscow.
+  return { kind: "cron", expr: s, tz: "Europe/Moscow" };
+}
+
+// --- Cron payload prose template ---
+// Placeholders: <WORKSPACE>, <AGENT_ID>, <SESSION>, <LABEL_PREFIX>.
+// They are substituted by buildPayloadMessage() before the cron job is
+// created or updated. Do NOT edit this template without checking
+// references/HEARTBEAT.md Phase 5.5 — the agent's reply structure is
+// what makes Phase 5.5 work end-to-end.
+const PROSE_TEMPLATE = `You are the cron job for the Clawd engram heartbeat. Do these steps in order using your available tools (do not write or run any JavaScript or shell scripts; call the tools directly).
+
+Step 1 — Run the heartbeat runner:
+Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --timeout-ms 300000", workdir="<WORKSPACE>", timeout_ms=900000. Capture the output as \`runner\`.
+
+Step 2 — Drain the subagent-spawn queue (Phase 5.5):
+The runner enqueues subagent spawn requests into workspace/ops/heartbeat-spawns/*.json (Bun scripts have no LLM tool access and cannot call sessions_spawn directly). You claim and dispatch them.
+Call tools.shell_command with command="bun ./skills/engram/scripts/spawn-claim.js --workspace <WORKSPACE> --agent-id <AGENT_ID>", workdir="<WORKSPACE>", timeout_ms=60000. Capture the output as \`claim\`.
+
+Step 3 — For each line in \`claim.stdout\` that parses as JSON with action="spawn":
+Call tools.sessions_spawn with task=<rec.task>, label=<rec.label>, model=<rec.model>, cleanup="delete", cwd="<WORKSPACE>". Count successful calls as \`spawnedCount\`. Ignore the final {action:"summary",...} line and any non-spawn lines.
+
+Step 4 — Final reply:
+Reply with: the runner output (as text), then a one-line summary "[phase-5.5] scanned N, claimed M, errors E, spawned K" if claim.stdout was non-empty, then "HEARTBEAT_OK" (or NO_REPLY if runner exit_code != 0 and you did not proceed). Do not call any other tool beyond what's specified above.`;
+
+const NEW_PAYLOAD_MARKER_1 = "Step 1 — Run the heartbeat runner";
+const NEW_PAYLOAD_MARKER_2 = "Step 2 — Drain the subagent-spawn queue";
+
+function buildPayloadMessage({ workspace, agentId, session, labelPrefix }) {
+  return PROSE_TEMPLATE
+    .replaceAll("<WORKSPACE>", workspace)
+    .replaceAll("<AGENT_ID>", agentId)
+    .replaceAll("<SESSION>", session)
+    .replaceAll("<LABEL_PREFIX>", labelPrefix);
+}
+
+function isOnNewFormat(payload) {
+  if (!payload || !payload.message) return false;
+  return (
+    payload.message.includes(NEW_PAYLOAD_MARKER_1) &&
+    payload.message.includes(NEW_PAYLOAD_MARKER_2)
+  );
+}
+
+// --- Build full cron spec (for add / dry-run) ---
+function buildCronSpec() {
+  return {
+    name: cronName,
+    agentId,
+    schedule: buildSchedule(schedule),
+    sessionTarget: "isolated",
+    sessionKey: `agent:${agentId}:${session}`,
+    wakeMode: "now",
+    payload: {
+      kind: "agentTurn",
+      message: buildPayloadMessage({
+        workspace: WORKSPACE,
+        agentId,
+        session,
+        labelPrefix,
+      }),
+      model: subagentModel,
+      thinking: "medium",
+      timeoutSeconds: 900,
+      lightContext: true,
+    },
+    delivery: {
+      mode: "none",
+    },
+  };
+}
+
+// --- openclaw I/O ---
+// Real `openclaw cron list --json` prints "Config warnings: ..." to stdout
+// before the JSON object. Strip everything before the first '{' so we
+// always have parseable JSON regardless of warning presence.
+function listCronJobs() {
+  const { exe, prefixArgs } = resolveInvocation();
+  const proc = spawnSync(exe, [...prefixArgs, "cron", "list", "--json"], {
+    encoding: "utf-8",
+  });
+  if (proc.error) {
+    console.error(`❌ openclaw error: ${proc.error.message}`);
+    process.exit(1);
+  }
+  if (proc.status !== 0) {
+    console.error(`❌ openclaw exited with code ${proc.status}`);
+    if (proc.stderr) console.error(proc.stderr);
+    process.exit(1);
+  }
+  const out = proc.stdout || "";
+  const firstBrace = out.indexOf("{");
+  if (firstBrace === -1) {
+    throw new Error("openclaw cron list --json: no JSON object in output");
+  }
+  return JSON.parse(out.slice(firstBrace));
+}
+
+function findCronJobByName(jobsData, name) {
+  const jobs = jobsData?.jobs || [];
+  return jobs.find((j) => j.name === name) || null;
+}
+
+// Invoke openclaw with an argv array (no shell, no quoting issues).
+// Uses the resolved invocation strategy (node-direct on Windows when
+// available, otherwise the .cmd wrapper).
+function runOpenclaw(cmdArgv) {
+  const { exe, prefixArgs } = resolveInvocation();
+  const proc = spawnSync(exe, [...prefixArgs, ...cmdArgv], {
+    encoding: "utf-8",
+  });
+  if (proc.error) {
+    console.error(`❌ openclaw error: ${proc.error.message}`);
+    process.exit(1);
+  }
+  if (proc.status !== 0) {
+    console.error(`❌ openclaw exited with code ${proc.status}`);
+    if (proc.stderr) console.error(proc.stderr);
+    process.exit(1);
+  }
+  return proc.stdout || "";
+}
+
+// --- Actions ---
+function actionInstall() {
+  const spec = buildCronSpec();
+
+  if (dryRun) {
+    console.log(JSON.stringify(spec, null, 2));
+    return;
+  }
+
+  const jobsData = listCronJobs();
+  const existing = findCronJobByName(jobsData, cronName);
+
+  if (existing) {
+    if (isOnNewFormat(existing.payload)) {
+      console.log(`✅ already up to date (id=${existing.id})`);
+      return;
+    }
+    // Update only name + payload.message. agentId, schedule, model, thinking,
+    // timeoutSeconds, lightContext, sessionTarget, delivery, sessionKey are
+    // preserved from the existing job — we MUST NOT touch them.
+    runOpenclaw([
+      "cron",
+      "edit",
+      existing.id,
+      "--name",
+      cronName,
+      "--message",
+      spec.payload.message,
+    ]);
+    console.log(`✅ updated cron job ${existing.id}`);
+    return;
+  }
+
+  // Create from scratch. Translate schedule into --every/--cron + --tz.
+  const addArgv = [
+    "cron",
+    "add",
+    "--name",
+    cronName,
+    "--agent",
+    agentId,
+    "--session",
+    "isolated",
+    "--session-key",
+    `agent:${agentId}:${session}`,
+    "--message",
+    spec.payload.message,
+    "--model",
+    subagentModel,
+    "--thinking",
+    "medium",
+    "--timeout-seconds",
+    "900",
+    "--light-context",
+    "--no-deliver",
+    "--json",
+  ];
+  if (spec.schedule.kind === "every") {
+    const minutes = Math.round(spec.schedule.everyMs / 60_000);
+    addArgv.push("--every", `${minutes}m`);
+  } else {
+    addArgv.push("--cron", spec.schedule.expr, "--tz", spec.schedule.tz);
+  }
+  const out = runOpenclaw(addArgv);
+  const firstBrace = out.indexOf("{");
+  const json = firstBrace >= 0 ? out.slice(firstBrace) : "{}";
+  let id = "<unknown>";
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed.id) id = parsed.id;
+  } catch {
+    /* keep <unknown> */
+  }
+  console.log(`✅ created cron job ${id}`);
+}
+
+function actionUninstall() {
+  if (dryRun) {
+    console.log("{}");
+    return;
+  }
+  const jobsData = listCronJobs();
+  const existing = findCronJobByName(jobsData, cronName);
+  if (!existing) {
+    console.log("no job to remove");
+    return;
+  }
+  runOpenclaw(["cron", "rm", existing.id]);
+  console.log(`✅ removed cron job ${existing.id}`);
+}
+
+function actionStatus() {
+  if (dryRun) {
+    console.log("{}");
+    return;
+  }
+  const jobsData = listCronJobs();
+  const existing = findCronJobByName(jobsData, cronName);
+  if (!existing) {
+    console.log(`no cron jobs found matching name ${JSON.stringify(cronName)}`);
+    return;
+  }
+  console.log(JSON.stringify(existing, null, 2));
+}
+
+// --- Dispatch ---
+if (action === "install") actionInstall();
+else if (action === "uninstall") actionUninstall();
+else if (action === "status") actionStatus();

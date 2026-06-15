@@ -29,6 +29,8 @@ bun skills/engram/scripts/install-qmd.js
 # 2. Initialize everything
 bun skills/engram/scripts/init.js
 
+# 3. Install cron (optional): bun skills/engram/scripts/init.js --with-cron
+
 # Add a group session
 bun skills/engram/scripts/add-session.js --platform telegram --id 3382546134
 
@@ -722,6 +724,16 @@ Interactive installer for QMD. Two variants:
 - **jina** — Cloud embeddings via Jina AI API, free tier 1M tokens/month (recommended for Docker/VPS)
 
 Handles npm install, API key configuration, .env file creation, and verification.
+
+### install-cron.js — Install heartbeat cron job
+
+```bash
+bun skills/engram/scripts/install-cron.js [install|uninstall|status] [options]
+```
+
+Provisions the OpenClaw cron job that drives the heartbeat (Phase 5.5: runner + spawn-claim + sessions_spawn). Idempotent: detects existing cron job by name, creates if missing, updates the payload to the current 4-step prose form if outdated. Does NOT touch agentId, schedule, model, or delivery config — only `name` and `payload.message`.
+
+Use after `init.js`, or pass `--with-cron` to `init.js` to do both in one step.
 
 ### init.js — Initialize memory system
 

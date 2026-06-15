@@ -14,6 +14,8 @@ const { values: args } = parseArgs({
     'agent-id': { type: 'string' },
     'qmd-variant': { type: 'string', default: 'auto' },
     'force': { type: 'boolean', default: false },
+    'with-cron': { type: 'boolean', default: false },
+    'cron-schedule': { type: 'string', default: '30m' },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -30,6 +32,8 @@ Options:
   --agent-id <id>       Agent identifier (default: main)
   --qmd-variant <v>     QMD variant: auto|local|jina (default: auto)
   --force               Merge with existing dirs (won't overwrite files)
+  --with-cron           Also install the heartbeat cron job (idempotent)
+  --cron-schedule <e>   Schedule for the cron job: "30m" (default), "5m", "1h", or cron expr
   -h, --help            Show this help
 
 What it does:
@@ -43,6 +47,8 @@ Examples:
   bun skills/engram/scripts/init.js
   bun skills/engram/scripts/init.js --agent-id work --qmd-variant jina
   bun skills/engram/scripts/init.js --force
+  bun skills/engram/scripts/init.js --with-cron
+  bun skills/engram/scripts/init.js --with-cron --cron-schedule 5m
 `);
   process.exit(0);
 }
@@ -278,6 +284,20 @@ if (existsSync(hooksSourceDir)) {
   console.log('  ⚠️  hooks/ directory not found in skill — skipping');
 }
 
+// --- Step 7: Cron install (optional) ---
+if (args['with-cron']) {
+  console.log('\n⏰ Installing heartbeat cron job...');
+  try {
+    execSync(
+      `bun skills/engram/scripts/install-cron.js install --agent-id ${agentId} --workspace ${WORKSPACE} --schedule ${args['cron-schedule']}`,
+      { stdio: 'inherit' }
+    );
+    console.log('  ✅ Cron job installed/updated');
+  } catch (e) {
+    console.log(`  ⚠️  Cron install failed (exit ${e.status ?? '?'}). Run install-cron.js manually after configuring OpenClaw.`);
+  }
+}
+
 // --- Summary ---
 console.log(`
 ✅ Memory system initialized!
@@ -292,6 +312,7 @@ Next steps:
   2. Configure heartbeat (see references/HEARTBEAT.md)
   3. Add sessions: bun skills/engram/scripts/add-session.js --platform telegram --id <groupId>
   4. Run: qmd embed (for vector search)
+  5. Install cron: bun skills/engram/scripts/init.js --with-cron
 
 ⚠️  Restart Gateway to activate hooks: openclaw gateway restart
 `);

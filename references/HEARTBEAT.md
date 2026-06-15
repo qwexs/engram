@@ -186,6 +186,8 @@ If the heartbeat model is too weak for summarization, defer to next interactive 
 
 ## Phase 5.5: Autoresearch (after Rethink)
 
+> **Note:** The `spawn-claim.js` step that drains the subagent-spawn queue is run by the cron agent itself (Step 2 of its payload), not by the heartbeat-runner. The runner enqueues requests to `workspace/ops/heartbeat-spawns/*.json`; the cron agent then claims and dispatches them. See the `Init` section at the bottom of this doc for how to provision this on a new agent.
+
 Runs when there are approved experiments waiting to execute.
 
 ### Autoresearch Execution
@@ -334,3 +336,28 @@ Fields: Status (ok | error | partial), Summary (one line), Stats (JSON), Flags (
 - NEVER abort the entire heartbeat because one phase failed
 - Rotation failure — log to daily note, continue without rotation
 - `qmd embed` failure (GPU OOM) — log warning, continue (BM25 via `qmd update` still works)
+
+## Init (one-time per workspace)
+
+To provision a fresh workspace with the heartbeat cron job:
+
+```bash
+# After init.js:
+bun skills/engram/scripts/install-cron.js install --agent-id <id> --workspace <path>
+# Or, do everything in one shot:
+bun skills/engram/scripts/init.js --with-cron --agent-id <id>
+```
+
+This creates (or updates) a cron job named "Heartbeat (Engram runner)" with the 4-step prose payload (runner → spawn-claim → sessions_spawn → reply). Idempotent — safe to re-run. Schedule defaults to every 30 minutes.
+
+The installer:
+
+- Detects the existing job by `--cron-name` (default `"Heartbeat (Engram runner)"`)
+- If the payload is already on the new 4-step prose form (contains both "Step 1 — Run the heartbeat runner" and "Step 2 — Drain the subagent-spawn queue"), prints `✅ already up to date` and exits 0
+- If the payload is on an older form (e.g. runner-only), calls `openclaw cron edit <id> --name … --message …` to patch the prose. **Does NOT touch** `agentId`, `schedule`, `model`, `thinking`, `timeoutSeconds`, `lightContext`, `sessionTarget`, `delivery`, or `sessionKey`
+- If no matching job exists, builds the full spec and calls `openclaw cron add …` with all flags (every 30m, model from `engram.json → models.subagents_default`, thinking medium, timeoutSeconds 900, lightContext true, no-deliver, isolated session)
+- `--dry-run` prints the full spec JSON to stdout without invoking `openclaw` — useful for CI and for reviewing the spec before applying
+
+Exit codes: `0` success, `1` openclaw error, `2` bad args, `3` openclaw not on PATH.
+
+Use `--schedule` to pick a cadence: `30m` (default), `5m`, `1h`, or a cron expression (e.g. `*/15 * * * *`, Europe/Moscow tz).

@@ -345,13 +345,21 @@ function spawnRunId(phase) {
   return phase + "-" + today + "-" + Date.now();
 }
 
+// Normalize a filesystem path to forward-slash form for storage in JSON state.
+// `readFileSync` / `readdirSync` accept forward slashes on both Windows and
+// POSIX, but backslashes are POSIX-incompatible. Storing POSIX paths keeps
+// heartbeat-state.json portable. (See audits/engram-path-audit-2026-06-15.md.)
+function toPosixPath(p) {
+  return typeof p === "string" ? p.replace(/\\/g, "/") : p;
+}
+
 async function queueSpawnRequest({ phase, runId, label, task, experimentId = null, model = resolveSubagentModel(workspace, label) }) {
   const dir = join(workspace, "workspace", "ops", "heartbeat-spawns");
   mkdirSync(dir, { recursive: true });
   const payload = { runId, phase, label, model, cleanup: "delete", status: "queued", createdAt: localIso(), experimentId, task };
   const path = join(dir, runId + ".json");
   await atomicWrite(path, JSON.stringify(payload, null, 2) + "\n");
-  return { path, payload };
+  return { path: toPosixPath(path), payload };
 }
 
 async function readReferenceTemplate(name) {
@@ -364,7 +372,48 @@ async function readReferenceTemplate(name) {
 
 async function buildOllTask(phase, context) {
   const templateByPhase = { "hb-rethink": "HB-RETHINK.md", "hb-autoresearch": "HB-AUTORESEARCH.md", "hb-rethink2": "HB-RETHINK2.md" };
-  const template = await readReferenceTemplate(templateByPhase[phase]);
+  let template = await readReferenceTemplate(templateByPhase[phase]);
+
+  // Substitute {{key}} placeholders from context. Anything not in context
+  // is left as the raw placeholder so the LLM subagent can see what's
+  // expected and reason about it (rather than silently dropping data).
+  // Возник из hb-rethink 2026-06-15: queued task contained unfilled
+  // `{{session}}`, `{{weighted_score}}` etc. — subagent received broken
+  // context block. Now runner fills the values it actually has.
+  if (phase === "hb-rethink") {
+    // tensions is a count (number) at this point, not a list. Surface a
+    // JSON array for the template: [] when zero, or a stub note when >0
+    // telling the subagent to read workspace/ops/tensions/index.json.
+    const tensionsJson = (() => {
+      if (Array.isArray(context.tensions)) return JSON.stringify(context.tensions, null, 2);
+      const n = Number(context.tensions ?? 0);
+      if (n === 0) return "[]";
+      return JSON.stringify([{ note: `${n} tensions pending — read workspace/ops/tensions/index.json for details (runner only has the count, not the bodies)` }], null, 2);
+    })();
+    template = template
+      .replace(/\{\{session\}\}/g, context.session ?? "main")
+      .replace(/\{\{date\}\}/g, context.date ?? new Date().toISOString().slice(0, 10))
+      .replace(/\{\{weighted_score\}\}/g, String(context.score ?? 0))
+      .replace(/\{\{days_since_rethink\}\}/g, String(context.daysSinceRethink ?? 0))
+      .replace(/\{\{trigger_reason\}\}/g, Array.isArray(context.reasons) ? context.reasons.join(", ") : String(context.reasons ?? ""))
+      .replace(/\{\{observations_json\}\}/g, JSON.stringify(context.observations ?? {}, null, 2))
+      .replace(/\{\{tensions_json\}\}/g, tensionsJson);
+  } else if (phase === "hb-autoresearch") {
+    template = template
+      .replace(/\{\{session\}\}/g, context.session ?? "main")
+      .replace(/\{\{date\}\}/g, context.date ?? new Date().toISOString().slice(0, 10))
+      .replace(/\{\{experiment_id\}\}/g, String(context.experimentId ?? ""))
+      .replace(/\{\{spec_yaml\}\}/g, String(context.specYaml ?? "(spec.yaml not yet loaded — fill from workspace/research/{id}/spec.yaml)"));
+  } else if (phase === "hb-rethink2") {
+    template = template
+      .replace(/\{\{session\}\}/g, context.session ?? "main")
+      .replace(/\{\{date\}\}/g, context.date ?? new Date().toISOString().slice(0, 10))
+      .replace(/\{\{experiment_id\}\}/g, String(context.experimentId ?? ""))
+      .replace(/\{\{report_content\}\}/g, String(context.reportContent ?? "(report.md not yet loaded — fill from workspace/research/{id}/report.md)"))
+      .replace(/\{\{spec_yaml\}\}/g, String(context.specYaml ?? "(spec.yaml not yet loaded — fill from workspace/research/{id}/spec.yaml)"))
+      .replace(/\{\{delivery_config\}\}/g, JSON.stringify(context.deliveryConfig ?? {}, null, 2));
+  }
+
   return [
     template.trim(),
     "",

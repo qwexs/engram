@@ -45,6 +45,23 @@ const TZ = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
 const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
 const now = new Date().toISOString();
 
+// --- Hard-blocker pre-check (rejects obvious junk before any file I/O) ---
+// Возник из hb-rethink 2026-06-15: 4/7 obs были test/junk ("test observation text here",
+// "aaa..." padding, "test observation", "test observation without category"). 57% noise rate.
+// Срабатывает и в --dry-run: пользователь должен видеть причину отказа.
+const HARDBLOCK_PATTERNS = [
+  { name: "empty", re: /^\s*$/ },
+  { name: "test-observation", re: /test observation/i },
+  { name: "placeholder", re: /placeholder/i },
+  { name: "single-char-repeat", re: /^(.)\1{20,}/ }, // 21+ повторов одного символа (padding типа "aaa…")
+];
+for (const { name, re } of HARDBLOCK_PATTERNS) {
+  if (re.test(observation)) {
+    console.log(JSON.stringify({ status: "rejected", reason: "hard-blocker", pattern: name }));
+    process.exit(0);
+  }
+}
+
 // Создать директорию если нет (даже в dry-run — проверяем состояние)
 await Bun.write(join(OBS_DIR, ".gitkeep"), "");
 

@@ -62,16 +62,20 @@
 
 import { parseArgs } from "node:util";
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve, join, dirname } from "node:path";
+import { dirname } from "node:path";
 import { loadEngramConfig } from "./config.js";
+import { findNodeScriptForCmdDir } from "./lib/find-openclaw-mjs.js";
 
 // On Windows, npm/global wrappers install as `openclaw.cmd`; bun/Bun.spawn
 // cannot exec the wrapper without the extension. ENGRAM_OPENCLAW overrides
 // for testing (e.g. ENGRAM_OPENCLAW=/no/such/binary to test exit 3).
+// `__use_node_script_only__` disables the .cmd fallback entirely so tests
+// can rely purely on ENGRAM_OPENCLAW_NODE_SCRIPT.
 const OPENCLAW_CMD =
-  process.env.ENGRAM_OPENCLAW ||
-  (process.platform === "win32" ? "openclaw.cmd" : "openclaw");
+  process.env.ENGRAM_OPENCLAW === "__use_node_script_only__"
+    ? "__use_node_script_only__"
+    : process.env.ENGRAM_OPENCLAW ||
+      (process.platform === "win32" ? "openclaw.cmd" : "openclaw");
 
 // Known CLI options (anything else is rejected with exit 2).
 const KNOWN_OPTIONS = new Set([
@@ -199,7 +203,9 @@ const subagentModel = (() => {
 // On Windows, we need to bypass the .cmd wrapper to preserve multi-line
 // --message args. ENGRAM_OPENCLAW_NODE_SCRIPT overrides auto-detection;
 // auto-detection uses `where openclaw.cmd` to find the wrapper and resolves
-// the sibling .mjs (npm-global layout).
+// the sibling .mjs (npm-global layout) via
+// `findNodeScriptForCmdDir` (see scripts/lib/find-openclaw-mjs.js for the
+// layout table and rationale).
 function autoDetectNodeScript() {
   if (process.platform !== "win32") return null;
   try {
@@ -209,18 +215,7 @@ function autoDetectNodeScript() {
     });
     const cmdPath = out.split(/\r?\n/)[0]?.trim();
     if (!cmdPath) return null;
-    const cmdDir = dirname(cmdPath);
-    // Common npm-global layouts:
-    //   <prefix>/bin/openclaw.cmd  →  <prefix>/lib/node_modules/openclaw/openclaw.mjs
-    //   <prefix>/openclaw.cmd      →  <prefix>/node_modules/openclaw/openclaw.mjs  (bun-style)
-    const candidates = [
-      join(cmdDir, "..", "node_modules", "openclaw", "openclaw.mjs"),
-      join(cmdDir, "..", "lib", "node_modules", "openclaw", "openclaw.mjs"),
-    ];
-    for (const c of candidates) {
-      if (existsSync(c)) return c;
-    }
-    return null;
+    return findNodeScriptForCmdDir(dirname(cmdPath));
   } catch {
     return null;
   }
@@ -235,14 +230,20 @@ const OPENCLAW_NODE_SCRIPT =
  * invokes openclaw with the given user args.
  *
  * On Windows, when a node-direct script is available, we ALWAYS use the
- * node-direct path (process.execPath + .mjs). Otherwise we fall back to
- * the .cmd wrapper, which truncates multi-line args.
+ * node-direct path (`node <openclaw.mjs>`) — NOT `process.execPath`. The
+ * `openclaw.cmd` shim itself uses `node` to invoke the same .mjs (see
+ * `npm\openclaw.cmd`), and we do the same so the .mjs's `node_modules`
+ * (jiti, etc.) resolves correctly from the script's location regardless
+ * of the caller's CWD. Using `process.execPath` (bun on this host) would
+ * fail with `Cannot find package 'jiti'` whenever the CWD is not the
+ * openclaw package dir. The .cmd wrapper is only used as a fallback when
+ * auto-detection can't find the .mjs.
  *
  * On POSIX, we use `openclaw` via PATH directly.
  */
 function resolveInvocation() {
   if (process.platform === "win32" && OPENCLAW_NODE_SCRIPT) {
-    return { exe: process.execPath, prefixArgs: [OPENCLAW_NODE_SCRIPT] };
+    return { exe: "node", prefixArgs: [OPENCLAW_NODE_SCRIPT] };
   }
   return { exe: OPENCLAW_CMD, prefixArgs: [] };
 }

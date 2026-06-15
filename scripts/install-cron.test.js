@@ -56,6 +56,11 @@ import { fileURLToPath } from "node:url";
 const CWD = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = "scripts/install-cron.js";
 
+// Direct unit-tests of the path-candidate logic. Importing the CLI module
+// would re-trigger top-level side effects (parseArgs + action dispatch),
+// so we import the extracted helper instead.
+import { findNodeScriptForCmdDir } from "./lib/find-openclaw-mjs.js";
+
 /** Unique tmp dir per test, forward-slash normalized. */
 function makeTmp() {
   const base = tmpdir().replace(/\\/g, "/").replace(/\/$/, "");
@@ -528,14 +533,21 @@ describe("install-cron.js", () => {
 
   test("15. missing openclaw binary — exits 3 with clear error", async () => {
     // We bypass both the node-script and the .cmd by setting
-    // ENGRAM_OPENCLAW to a non-existent binary. The script's
-    // resolveInvocation() returns the .cmd path; the binary check fails.
+    // ENGRAM_OPENCLAW_NODE_SCRIPT to a non-existent .mjs path AND
+    // ENGRAM_OPENCLAW to the "__use_node_script_only__" sentinel that
+    // disables the .cmd fallback. resolveInvocation() then returns the
+    // non-existent .mjs path; the binary check fails.
+    //
+    // Note: setting ENGRAM_OPENCLAW_NODE_SCRIPT="" would NOT work on
+    // Windows hosts where `where openclaw.cmd` finds a real install —
+    // autoDetectNodeScript() would resolve it and the script would
+    // actually succeed. Test relies on a forced non-existent path.
     const r = await runInstallCron({
       workspace: tmp,
       args: ["install"],
       extraEnv: {
-        ENGRAM_OPENCLAW_NODE_SCRIPT: "",
-        ENGRAM_OPENCLAW: join(tmp, "no-such-binary"),
+        ENGRAM_OPENCLAW_NODE_SCRIPT: join(tmp, "no-such-openclaw.mjs"),
+        ENGRAM_OPENCLAW: "__use_node_script_only__",
       },
     });
     expect(r.exitCode).toBe(3);
@@ -699,5 +711,65 @@ describe("install-cron.js", () => {
     } finally {
       rmSync(otherTmp, { recursive: true, force: true });
     }
+  });
+
+  // 22–24: direct unit tests for findNodeScriptForCmdDir (extracted from
+  // install-cron.js so the path-candidate logic is testable without PATH
+  // mocks or `where` side effects). These cover the npm-shim layout that
+  // shipped on Windows 2026-06-15: `<prefix>/openclaw.cmd` paired with
+  // `<prefix>/node_modules/openclaw/openclaw.mjs` (NOT one level up).
+  test("22. findNodeScriptForCmdDir — npm-shim layout (<cmdDir>/node_modules/...)", () => {
+    // Mimic the actual Windows npm-shim layout:
+    //   <tmp>/openclaw.cmd
+    //   <tmp>/node_modules/openclaw/openclaw.mjs
+    // The pre-2026-06-15 auto-detect only checked `<cmdDir>/../node_modules/...`,
+    // so this case returned null and the .cmd wrapper was used, which silently
+    // truncated multi-line --message args. The fix added this layout.
+    const openclawCmdDir = tmp;
+    const mjsDir = join(openclawCmdDir, "node_modules", "openclaw");
+    mkdirSync(mjsDir, { recursive: true });
+    writeFileSync(join(mjsDir, "openclaw.mjs"), "");
+    const result = findNodeScriptForCmdDir(openclawCmdDir);
+    expect(result).toBe(join(openclawCmdDir, "node_modules", "openclaw", "openclaw.mjs"));
+  });
+
+  test("23. findNodeScriptForCmdDir — bun-style / yarn layout (<cmdDir>/../node_modules/...)", () => {
+    // Mimic: <tmp>/bin/openclaw.cmd  +  <tmp>/node_modules/openclaw/openclaw.mjs
+    const binDir = join(tmp, "bin");
+    const mjsDir = join(tmp, "node_modules", "openclaw");
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(mjsDir, { recursive: true });
+    writeFileSync(join(binDir, "openclaw.cmd"), "");
+    writeFileSync(join(mjsDir, "openclaw.mjs"), "");
+    expect(findNodeScriptForCmdDir(binDir)).toBe(join(tmp, "node_modules", "openclaw", "openclaw.mjs"));
+  });
+
+  test("24. findNodeScriptForCmdDir — npm POSIX prefix layout (<cmdDir>/../lib/node_modules/...)", () => {
+    // Mimic: <tmp>/bin/openclaw.cmd  +  <tmp>/lib/node_modules/openclaw/openclaw.mjs
+    const binDir = join(tmp, "bin");
+    const mjsDir = join(tmp, "lib", "node_modules", "openclaw");
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(mjsDir, { recursive: true });
+    writeFileSync(join(binDir, "openclaw.cmd"), "");
+    writeFileSync(join(mjsDir, "openclaw.mjs"), "");
+    expect(findNodeScriptForCmdDir(binDir)).toBe(join(tmp, "lib", "node_modules", "openclaw", "openclaw.mjs"));
+  });
+
+  test("25. findNodeScriptForCmdDir — returns null when no candidate exists", () => {
+    // No .mjs anywhere near tmp/.
+    expect(findNodeScriptForCmdDir(join(tmp, "bin"))).toBeNull();
+  });
+
+  test("26. findNodeScriptForCmdDir — candidate priority (npm-shim wins over bun-style)", () => {
+    // If both layouts exist, the first candidate (bun-style <cmdDir>/../node_modules/...)
+    // takes precedence. Order is part of the public contract — do not change
+    // without updating the layout comment in find-openclaw-mjs.js.
+    const binDir = join(tmp, "bin");
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(join(tmp, "node_modules", "openclaw"), { recursive: true });
+    mkdirSync(join(binDir, "node_modules", "openclaw"), { recursive: true });
+    writeFileSync(join(tmp, "node_modules", "openclaw", "openclaw.mjs"), "");
+    writeFileSync(join(binDir, "node_modules", "openclaw", "openclaw.mjs"), "");
+    expect(findNodeScriptForCmdDir(binDir)).toBe(join(tmp, "node_modules", "openclaw", "openclaw.mjs"));
   });
 });

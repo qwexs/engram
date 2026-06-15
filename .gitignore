@@ -2,3 +2,8 @@
 CLAUDE.md
 docs
 .claude
+
+# Operational state for live heartbeat runs. Not source — contains
+# full filesystem paths and per-machine data. Workspace/memory-state/
+# is still tracked (only the fact-hashes.json file inside it).
+workspace/ops/

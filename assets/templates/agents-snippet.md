@@ -191,4 +191,20 @@ bun skills/engram/scripts/memory-observe.js \
 ```
 
 **Max 1-3 observations per session.** Scarcity enforces quality.
+
+### 16. Cron Heartbeat Is Part Of Init
+
+After `init.js` is done, install the cron job that drives the heartbeat (Phase 5.5):
+
+```bash
+bun skills/engram/scripts/init.js --with-cron
+# OR explicitly
+bun skills/engram/scripts/install-cron.js install --schedule 30m
+```
+
+The installer is **idempotent**: re-running it detects the existing cron job by name, and updates the payload to the current 4-step prose form without touching agentId, schedule, model, or delivery. It never duplicates jobs. Why: cron jobs were historically hand-copied between workspaces and got stuck on the old runner-only format that did not drain the Phase 5.5 spawn queue — making install idempotent is what keeps every workspace on the same payload.
+
+### 17. Phase 5.5 Spawn Queue Is Automatic
+
+The heartbeat runner writes subagent spawn requests to `workspace/ops/heartbeat-spawns/*.json`. The cron agent (Step 2/3 of its payload) drains the queue via `spawn-claim.js` and dispatches each request as a `sessions_spawn`. **You do NOT do this manually.** If a handoff appears in `workspace/heartbeat/inbox/`, it is processed by the next cron tick (or by you directly if interactive). Why: the runner is a Bun script with no LLM tool access and cannot call `sessions_spawn` on its own — splitting the claim out of the runner is what makes fire-and-forget spawning reliable.
 <!-- engram:rules:end -->

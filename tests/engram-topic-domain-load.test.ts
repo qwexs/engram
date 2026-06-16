@@ -13,7 +13,14 @@
  *     below so the daily-note filename is reproducible regardless of host TZ.
  *   - Each test creates its own temp workspace under os.tmpdir() and
  *     cleans it up in `finally`, so tests are fully isolated.
+ *   - Two blocks are now injected: ## Domain Context (auto) and
+ *     ## Domain AGENTS (auto). Each has its own hash and sentinel.
  */
+
+// IMPORTANT: env vars must be set BEFORE the handler import (ES `import` is
+// hoisted, so module-level `const` would capture stale env values).
+process.env.ENGRAM_TZ = "UTC";
+process.env.TZ = "UTC";
 
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import {
@@ -29,10 +36,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import handler from "../hooks/engram-topic-domain-load/handler.ts";
 
-// Pin timezone so the daily-note filename is deterministic across hosts.
-process.env.ENGRAM_TZ = "UTC";
-process.env.TZ = "UTC";
-
 const TZ = "UTC";
 
 function todayString(): string {
@@ -44,6 +47,8 @@ type MakeWorkspaceOpts = {
   registryChatId: string; // chatId stored in registry.json
   topicId: string;
   agentId?: string;
+  /** If provided, also create agents.md in the domain dir with this content. */
+  agentsContent?: string;
 };
 
 function makeWorkspace(opts: MakeWorkspaceOpts) {
@@ -68,6 +73,9 @@ function makeWorkspace(opts: MakeWorkspaceOpts) {
     join(domainDir, "changelog.md"),
     "## 2026-06-11\n\nInitial setup of test domain.\n",
   );
+  if (opts.agentsContent !== undefined) {
+    writeFileSync(join(domainDir, "agents.md"), opts.agentsContent);
+  }
 
   // Registry
   const registry = {
@@ -110,9 +118,25 @@ function makeEvent(workspaceDir: string, opts: { chatId: string; topicId: string
   };
 }
 
-function extractDomainMarker(content: string): { slug: string; hash: string } | null {
-  const m = content.match(/<!-- domain-context:([\w-]+):([a-f0-9]+) -->/);
+function extractMarker(
+  content: string,
+  block: "context" | "agents",
+): { slug: string; hash: string } | null {
+  const re = new RegExp(`<!-- domain-${block}:([\\w-]+):([a-f0-9]+) -->`);
+  const m = content.match(re);
   return m ? { slug: m[1], hash: m[2] } : null;
+}
+
+function countBlocks(content: string, block: "context" | "agents"): number {
+  return (content.match(new RegExp(`<!-- domain-${block}:`, "g")) || []).length;
+}
+
+function expectInjectedLogs(logSpy: ReturnType<typeof spyOn>, expected: number) {
+  const calls = logSpy.mock.calls.filter(
+    (c: unknown[]) =>
+      typeof c[0] === "string" && c[0].includes("Injected domain context"),
+  );
+  expect(calls.length).toBe(expected);
 }
 
 describe("engram-topic-domain-load hook", () => {
@@ -127,9 +151,9 @@ describe("engram-topic-domain-load hook", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Test 1: Happy path
+  // Test 1: Happy path — both blocks injected on fresh daily note
   // -------------------------------------------------------------------------
-  test("Test 1: injects domain context block into a fresh daily note", async () => {
+  test("Test 1: injects context + agents blocks into a fresh daily note", async () => {
     const ws = makeWorkspace({
       chatId: "-1001234567890",
       registryChatId: "-1001234567890",
@@ -141,45 +165,52 @@ describe("engram-topic-domain-load hook", () => {
         topicId: "1",
       });
 
-      // Handler must not throw and must return undefined
       await expect(handler(event)).resolves.toBeUndefined();
-
       const after = readFileSync(ws.notePath, "utf-8");
 
-      // 1. Marker present, well-formed
-      const marker = extractDomainMarker(after);
-      expect(marker).not.toBeNull();
-      expect(marker!.slug).toBe("test");
-      expect(marker!.hash).toMatch(/^[a-f0-9]{12}$/);
+      // --- Context block ---
+      const contextMarker = extractMarker(after, "context");
+      expect(contextMarker).not.toBeNull();
+      expect(contextMarker!.slug).toBe("test");
+      expect(contextMarker!.hash).toMatch(/^[a-f0-9]{12}$/);
 
-      // 2. Marker sits directly after the "# YYYY-MM-DD" heading
       const lines = after.split(/\r?\n/);
       const dateLineIdx = lines.findIndex((l) => l === `# ${ws.today}`);
       expect(dateLineIdx).toBe(0);
-      // Only a blank line may sit between the heading and the marker
       expect(lines[dateLineIdx + 1].trim()).toBe("");
       expect(lines[dateLineIdx + 2].startsWith("<!-- domain-context:")).toBe(true);
 
-      // 3. Block has the expected shape
       expect(after).toContain("## Domain Context (auto)");
-      expect(after).toContain("Domain");
       expect(after).toContain("topic-thread");
       expect(after).toContain("Status");
       expect(after).toContain("changelog");
       expect(after).toContain("<!-- /domain-context -->");
+      expect(countBlocks(after, "context")).toBe(1);
 
-      // 4. Only one block was injected
-      const sentinels = (after.match(/<!-- domain-context:/g) || []).length;
-      expect(sentinels).toBe(1);
-      const closers = (after.match(/<!-- \/domain-context -->/g) || []).length;
-      expect(closers).toBe(1);
+      // --- Agents block (no agents.md → fallback) ---
+      const agentsMarker = extractMarker(after, "agents");
+      expect(agentsMarker).not.toBeNull();
+      expect(agentsMarker!.slug).toBe("test");
+      expect(agentsMarker!.hash).toMatch(/^[a-f0-9]{12}$/);
+      // Hashes must differ — they come from different sources
+      expect(agentsMarker!.hash).not.toBe(contextMarker!.hash);
 
-      // 5. console.log was called with the "Injected" prefix
-      const injectedCall = logSpy.mock.calls.find(
-        (c: unknown[]) =>
-          typeof c[0] === "string" && c[0].includes("Injected domain context"),
-      );
-      expect(injectedCall).toBeTruthy();
+      expect(after).toContain("## Domain AGENTS (auto)");
+      // Fallback warning is shown when agents.md is missing
+      expect(after).toContain("⚠️");
+      expect(after).toContain("fallback");
+      expect(after).toContain("backfill-domain-agents.js");
+      expect(after).toContain("<!-- /domain-agents -->");
+      expect(countBlocks(after, "agents")).toBe(1);
+
+      // Agents block is positioned AFTER the context block
+      const contextPos = after.indexOf("<!-- domain-context:");
+      const agentsPos = after.indexOf("<!-- domain-agents:");
+      expect(contextPos).toBeGreaterThanOrEqual(0);
+      expect(agentsPos).toBeGreaterThan(contextPos);
+
+      // The "Injected" log fires once
+      expectInjectedLogs(logSpy, 1);
     } finally {
       rmSync(ws.root, { recursive: true, force: true });
     }
@@ -188,7 +219,7 @@ describe("engram-topic-domain-load hook", () => {
   // -------------------------------------------------------------------------
   // Test 2: Idempotency
   // -------------------------------------------------------------------------
-  test("Test 2: re-running with the same domain content leaves the note untouched", async () => {
+  test("Test 2: re-running with unchanged domain leaves the note untouched", async () => {
     const ws = makeWorkspace({
       chatId: "-1001234567890",
       registryChatId: "-1001234567890",
@@ -200,45 +231,34 @@ describe("engram-topic-domain-load hook", () => {
         topicId: "1",
       });
 
-      // First run — injects the block
       await handler(event);
       const firstContent = readFileSync(ws.notePath, "utf-8");
-      const firstMarker = extractDomainMarker(firstContent);
-      expect(firstMarker).not.toBeNull();
+      const firstContext = extractMarker(firstContent, "context");
+      const firstAgents = extractMarker(firstContent, "agents");
+      expect(firstContext).not.toBeNull();
+      expect(firstAgents).not.toBeNull();
       const firstSize = statSync(ws.notePath).size;
-      const firstInjectedCalls = logSpy.mock.calls.filter(
-        (c: unknown[]) => typeof c[0] === "string" && c[0].includes("Injected domain context"),
-      ).length;
-      expect(firstInjectedCalls).toBe(1);
+      expectInjectedLogs(logSpy, 1);
 
-      // Second run — must be a no-op
+      // Second run — must be a no-op (both hashes match)
       await handler(event);
       const secondContent = readFileSync(ws.notePath, "utf-8");
       const secondSize = statSync(ws.notePath).size;
-
-      // File bytes identical
       expect(secondSize).toBe(firstSize);
       expect(secondContent).toBe(firstContent);
-
-      // Marker hash unchanged
-      const secondMarker = extractDomainMarker(secondContent);
-      expect(secondMarker).not.toBeNull();
-      expect(secondMarker!.hash).toBe(firstMarker!.hash);
-
-      // No new "Injected" log on the second call
-      const totalInjectedCalls = logSpy.mock.calls.filter(
-        (c: unknown[]) => typeof c[0] === "string" && c[0].includes("Injected domain context"),
-      ).length;
-      expect(totalInjectedCalls).toBe(1);
+      expect(extractMarker(secondContent, "context")!.hash).toBe(firstContext!.hash);
+      expect(extractMarker(secondContent, "agents")!.hash).toBe(firstAgents!.hash);
+      // No new "Injected" log
+      expectInjectedLogs(logSpy, 1);
     } finally {
       rmSync(ws.root, { recursive: true, force: true });
     }
   });
 
   // -------------------------------------------------------------------------
-  // Test 3: Content change → re-inject
+  // Test 3: Content change → re-inject both blocks
   // -------------------------------------------------------------------------
-  test("Test 3: domain content change replaces the old block with a new one", async () => {
+  test("Test 3: domain content change replaces both blocks with new hashes", async () => {
     const ws = makeWorkspace({
       chatId: "-1001234567890",
       registryChatId: "-1001234567890",
@@ -250,47 +270,38 @@ describe("engram-topic-domain-load hook", () => {
         topicId: "1",
       });
 
-      // First run
       await handler(event);
       const firstContent = readFileSync(ws.notePath, "utf-8");
-      const firstMarker = extractDomainMarker(firstContent);
-      expect(firstMarker).not.toBeNull();
-      const firstSentinels = (firstContent.match(/<!-- domain-context:/g) || []).length;
-      expect(firstSentinels).toBe(1);
+      const firstContext = extractMarker(firstContent, "context")!;
+      const firstAgents = extractMarker(firstContent, "agents")!;
+      expect(countBlocks(firstContent, "context")).toBe(1);
+      expect(countBlocks(firstContent, "agents")).toBe(1);
 
-      // Mutate status.md — append a new line so the content hash changes
-      // (the hash mixes path + mtime + size + content, so the new content
-      // is enough to force a new hash even if mtime resolution is coarse).
+      // Mutate status.md → context hash must change, agents hash stable
       const statusPath = join(ws.domainDir, "status.md");
       appendFileSync(statusPath, "\nAdditional line after change.\n");
 
-      // Second run — must replace old block, not duplicate it
       await handler(event);
       const secondContent = readFileSync(ws.notePath, "utf-8");
-      const secondMarker = extractDomainMarker(secondContent);
-      expect(secondMarker).not.toBeNull();
+      const secondContext = extractMarker(secondContent, "context")!;
+      const secondAgents = extractMarker(secondContent, "agents")!;
 
-      // 1. New hash differs from old hash
-      expect(secondMarker!.hash).not.toBe(firstMarker!.hash);
-      // Same slug
-      expect(secondMarker!.slug).toBe(firstMarker!.slug);
+      // Context hash changed, agents hash stayed
+      expect(secondContext.hash).not.toBe(firstContext.hash);
+      expect(secondContext.slug).toBe(firstContext.slug);
+      expect(secondAgents.hash).toBe(firstAgents.hash);
+      expect(secondAgents.slug).toBe(firstAgents.slug);
 
-      // 2. Old sentinel-closing text from the previous block is fully gone
-      //    (only ONE domain-context block in the file now).
-      const secondSentinels = (secondContent.match(/<!-- domain-context:/g) || []).length;
-      expect(secondSentinels).toBe(1);
-      const secondClosers = (secondContent.match(/<!-- \/domain-context -->/g) || []).length;
-      expect(secondClosers).toBe(1);
+      // Only one of each block, no duplication
+      expect(countBlocks(secondContent, "context")).toBe(1);
+      expect(countBlocks(secondContent, "agents")).toBe(1);
 
-      // 3. New content from the mutated status.md is reflected
       expect(secondContent).toContain("Additional line after change.");
       expect(secondContent).toContain("## Domain Context (auto)");
+      expect(secondContent).toContain("## Domain AGENTS (auto)");
 
-      // 4. Two "Injected" log calls total (one per non-idempotent run)
-      const injectedCount = logSpy.mock.calls.filter(
-        (c: unknown[]) => typeof c[0] === "string" && c[0].includes("Injected domain context"),
-      ).length;
-      expect(injectedCount).toBe(2);
+      // Two "Injected" logs total
+      expectInjectedLogs(logSpy, 2);
     } finally {
       rmSync(ws.root, { recursive: true, force: true });
     }
@@ -313,46 +324,36 @@ describe("engram-topic-domain-load hook", () => {
         });
         await handler(event);
         const after = readFileSync(ws.notePath, "utf-8");
-        const marker = extractDomainMarker(after);
-        expect(marker).not.toBeNull();
-        expect(marker!.slug).toBe("test");
+        expect(extractMarker(after, "context")).not.toBeNull();
+        expect(extractMarker(after, "agents")).not.toBeNull();
         expect(after).toContain("## Domain Context (auto)");
-        expect(after).toContain("<!-- /domain-context -->");
+        expect(after).toContain("## Domain AGENTS (auto)");
       } finally {
         rmSync(ws.root, { recursive: true, force: true });
       }
     });
 
-    test("4b: registry has a leading minus, event has none → match (symmetric normalization)", async () => {
-      // The handler now symmetrically normalizes entry.topic.chatId the same
-      // way it normalizes event.context.chatId (both are stripped of the
-      // leading "-" before comparison). So registry "-X" with event "X" matches.
-      // This is the case the original three-way match got wrong; the new
-      // comparison is "String(entry.topic.chatId).replace(/^-/, '') === absChatId".
+    test("4b: registry has leading minus, event has none → match (symmetric)", async () => {
       const ws = makeWorkspace({
         chatId: "-1001234567890",
         registryChatId: "-1001234567890",
         topicId: "1",
       });
       try {
-        // Event payload omits the leading minus
         const event = makeEvent(ws.root, {
           chatId: "1001234567890",
           topicId: "1",
         });
         await handler(event);
         const after = readFileSync(ws.notePath, "utf-8");
-        const marker = extractDomainMarker(after);
-        expect(marker).not.toBeNull();
-        expect(marker!.slug).toBe("test");
-        expect(after).toContain("## Domain Context (auto)");
-        expect(after).toContain("<!-- /domain-context -->");
+        expect(extractMarker(after, "context")).not.toBeNull();
+        expect(extractMarker(after, "agents")).not.toBeNull();
       } finally {
         rmSync(ws.root, { recursive: true, force: true });
       }
     });
 
-    test("4c: registry has no minus (edge), event has a leading minus → match", async () => {
+    test("4c: registry has no minus (edge), event has leading minus → match", async () => {
       const ws = makeWorkspace({
         chatId: "-1001234567890",
         registryChatId: "1001234567890",
@@ -365,14 +366,143 @@ describe("engram-topic-domain-load hook", () => {
         });
         await handler(event);
         const after = readFileSync(ws.notePath, "utf-8");
-        const marker = extractDomainMarker(after);
-        expect(marker).not.toBeNull();
-        expect(marker!.slug).toBe("test");
-        expect(after).toContain("## Domain Context (auto)");
-        expect(after).toContain("<!-- /domain-context -->");
+        expect(extractMarker(after, "context")).not.toBeNull();
+        expect(extractMarker(after, "agents")).not.toBeNull();
       } finally {
         rmSync(ws.root, { recursive: true, force: true });
       }
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5: agents.md present → reads from file, no fallback warning
+  // -------------------------------------------------------------------------
+  test("Test 5: agents.md present → reads from file, no fallback warning", async () => {
+    const agentsBody = `# Domain AGENTS — test (custom)
+
+## Custom rule
+This is a user-customized agents block.
+`;
+    const ws = makeWorkspace({
+      chatId: "-1001234567890",
+      registryChatId: "-1001234567890",
+      topicId: "1",
+      agentsContent: agentsBody,
+    });
+    try {
+      const event = makeEvent(ws.root, {
+        chatId: "-1001234567890",
+        topicId: "1",
+      });
+      await handler(event);
+      const after = readFileSync(ws.notePath, "utf-8");
+
+      // Agents block present
+      const agentsMarker = extractMarker(after, "agents");
+      expect(agentsMarker).not.toBeNull();
+      expect(after).toContain("## Domain AGENTS (auto)");
+      expect(after).toContain("<!-- /domain-agents -->");
+
+      // Custom content is rendered verbatim
+      expect(after).toContain("(custom)");
+      expect(after).toContain("This is a user-customized agents block.");
+
+      // No fallback warning (the warning is keyed on the word "fallback" + ⚠️)
+      // It only appears when agents.md is missing
+      // Extract the agents block body and check for the warning
+      const blockMatch = after.match(
+        /<!-- domain-agents:test:[a-f0-9]+ -->\n## Domain AGENTS \(auto\)\n([\s\S]*?)\n<!-- \/domain-agents -->/,
+      );
+      expect(blockMatch).not.toBeNull();
+      const agentsBlockBody = blockMatch![1];
+      expect(agentsBlockBody).not.toContain("⚠️");
+      expect(agentsBlockBody).not.toContain("fallback");
+      expect(agentsBlockBody).not.toContain("backfill-domain-agents.js");
+    } finally {
+      rmSync(ws.root, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 6: agents.md change → new agents hash, context hash stable
+  // -------------------------------------------------------------------------
+  test("Test 6: agents.md change → new agents hash, context hash stable", async () => {
+    const ws = makeWorkspace({
+      chatId: "-1001234567890",
+      registryChatId: "-1001234567890",
+      topicId: "1",
+      agentsContent: "# Domain AGENTS — test\n\nInitial agents body.\n",
+    });
+    try {
+      const event = makeEvent(ws.root, {
+        chatId: "-1001234567890",
+        topicId: "1",
+      });
+
+      await handler(event);
+      const firstContent = readFileSync(ws.notePath, "utf-8");
+      const firstContext = extractMarker(firstContent, "context")!;
+      const firstAgents = extractMarker(firstContent, "agents")!;
+
+      // Edit agents.md
+      const agentsPath = join(ws.domainDir, "agents.md");
+      appendFileSync(agentsPath, "\n## New rule added by operator\n");
+
+      await handler(event);
+      const secondContent = readFileSync(ws.notePath, "utf-8");
+      const secondContext = extractMarker(secondContent, "context")!;
+      const secondAgents = extractMarker(secondContent, "agents")!;
+
+      // Context hash unchanged (no decision/status/changelog change),
+      // agents hash changed (new content).
+      expect(secondContext.hash).toBe(firstContext.hash);
+      expect(secondAgents.hash).not.toBe(firstAgents.hash);
+
+      // New content is reflected
+      expect(secondContent).toContain("New rule added by operator");
+      // Old single-sentinel pair is preserved (no duplication)
+      expect(countBlocks(secondContent, "agents")).toBe(1);
+      expect(countBlocks(secondContent, "context")).toBe(1);
+    } finally {
+      rmSync(ws.root, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 7: agents.md removed after first inject → next call uses fallback
+  // -------------------------------------------------------------------------
+  test("Test 7: agents.md removed after first inject → next call uses fallback", async () => {
+    const ws = makeWorkspace({
+      chatId: "-1001234567890",
+      registryChatId: "-1001234567890",
+      topicId: "1",
+      agentsContent: "# Domain AGENTS — test\n\nOriginal agents body.\n",
+    });
+    try {
+      const event = makeEvent(ws.root, {
+        chatId: "-1001234567890",
+        topicId: "1",
+      });
+
+      await handler(event);
+      const firstContent = readFileSync(ws.notePath, "utf-8");
+      // No fallback warning on first call (file existed)
+      expect(firstContent).not.toContain("⚠️");
+
+      // Operator deletes agents.md
+      const agentsPath = join(ws.domainDir, "agents.md");
+      rmSync(agentsPath, { force: true });
+
+      await handler(event);
+      const secondContent = readFileSync(ws.notePath, "utf-8");
+
+      // Fallback warning now appears
+      expect(secondContent).toContain("⚠️");
+      expect(secondContent).toContain("fallback");
+      // The original custom content is gone
+      expect(secondContent).not.toContain("Original agents body.");
+    } finally {
+      rmSync(ws.root, { recursive: true, force: true });
+    }
   });
 });

@@ -3,30 +3,54 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 
-const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
+// Resolve TZ at call time, not module load time. This makes the hook testable:
+// the test can set process.env.ENGRAM_TZ after importing the module.
+// (ES `import` is hoisted, so `const TZ = process.env...` at module top would
+// capture the value before the test's env setup runs.)
 const NEWLINE = /\r?\n/;
+function resolveTz(): string {
+  return process.env.ENGRAM_TZ || process.env.TZ || "UTC";
+}
 
 /**
  * engram-topic-domain-load
  *
  * On message:received, if the message is in a Telegram topic session, look up a
- * domain bound to that topic in memory/domains/registry.json and inject a
- * "## Domain Context" block into today's daily note. Idempotent: only re-writes
- * when domain files change (content hash).
+ * domain bound to that topic in memory/domains/registry.json and inject TWO blocks
+ * into today's daily note:
+ *   1. "## Domain Context (auto)" — decisions + status + last changelog entry.
+ *      Content hash from decisions.md + status.md + changelog.md.
+ *   2. "## Domain AGENTS (auto)" — operational ruleset from agents.md.
+ *      Content hash from agents.md only. If agents.md is missing, a built-in
+ *      minimal fallback is used and a warning note is added to the block.
  *
- * Block format:
+ * Idempotency: each block has its own hash. If the latest context marker AND
+ * the latest agents marker both match their respective hashes, the hook does
+ * nothing. Otherwise, both existing blocks are removed and re-injected fresh.
+ *
+ * Block formats:
  *   <!-- domain-context:{name}:{hash} -->
  *   ## Domain Context (auto)
  *   ...
  *   <!-- /domain-context -->
+ *
+ *   <!-- domain-agents:{name}:{hash} -->
+ *   ## Domain AGENTS (auto)
+ *   ...
+ *   <!-- /domain-agents -->
  */
 const handler = async (event: any) => {
-  if (event.type !== "message" || event.action !== "received") return;
+  const TZ = resolveTz();
+  if (event.type !== "message" || event.action !== "received") {
+    return;
+  }
 
   const workspaceDir =
     event.context?.workspaceDir ||
     process.env.OPENCLAW_WORKSPACE;
-  if (!workspaceDir) return;
+  if (!workspaceDir) {
+    return;
+  }
 
   const conversationId: string = event.context?.conversationId || "";
   const sessionKey: string = event.context?.sessionKey || "";
@@ -45,19 +69,25 @@ const handler = async (event: any) => {
       if (!topicId) topicId = m[2] || null;
     }
   }
-  if (!topicId || !chatId) return;
+  if (!topicId || !chatId) {
+    return;
+  }
 
   const absChatId = chatId.replace(/^-/, "");
   const sessionSegment = `telegram-group--${absChatId}-topic-${topicId}`;
 
   const registryPath = join(workspaceDir, "memory", "domains", "registry.json");
-  if (!existsSync(registryPath)) return;
+  if (!existsSync(registryPath)) {
+    return;
+  }
 
   let registry: any;
   try {
     registry = JSON.parse(readFileSync(registryPath, "utf-8"));
   } catch { return; }
-  if (!registry.domains || typeof registry.domains !== "object") return;
+  if (!registry.domains || typeof registry.domains !== "object") {
+    return;
+  }
 
   let domainName: string | null = null;
   let domainEntry: any = null;
@@ -75,7 +105,9 @@ const handler = async (event: any) => {
       break;
     }
   }
-  if (!domainName || !domainEntry) return;
+  if (!domainName || !domainEntry) {
+    return;
+  }
 
   // Unarchive-on-message: if the domain is archived, restore it before injection.
   if (domainEntry.archived === true) {
@@ -96,18 +128,36 @@ const handler = async (event: any) => {
   const decisionsPath = join(domainDir, "decisions.md");
   const statusPath = join(domainDir, "status.md");
   const changelogPath = join(domainDir, "changelog.md");
+  const agentsPath = join(domainDir, "agents.md");
 
-  const hash = createHash("sha256");
+  // --- Hash 1: context (decisions + status + changelog) ---
+  const contextHasher = createHash("sha256");
   for (const p of [decisionsPath, statusPath, changelogPath]) {
     if (existsSync(p)) {
       const st = statSync(p);
-      hash.update(`${p}:${st.mtimeMs}:${st.size};`);
-      hash.update(readFileSync(p, "utf-8"));
+      contextHasher.update(`${p}:${st.mtimeMs}:${st.size};`);
+      contextHasher.update(readFileSync(p, "utf-8"));
     } else {
-      hash.update(`${p}:missing;`);
+      contextHasher.update(`${p}:missing;`);
     }
   }
-  const contentHash = hash.digest("hex").slice(0, 12);
+  const contentHash = contextHasher.digest("hex").slice(0, 12);
+
+  // --- Hash 2: agents (agents.md, or built-in fallback) ---
+  let agentsBody: string;
+  let agentsSource: "file" | "fallback";
+  if (existsSync(agentsPath)) {
+    agentsBody = readFileSync(agentsPath, "utf-8");
+    agentsSource = "file";
+  } else {
+    agentsBody = buildFallbackAgentsMd(domainName, sessionSegment, domainEntry.kgEntity);
+    agentsSource = "fallback";
+  }
+  // Stable hash: domain + source (file/fallback) + body. Prevents hash churn
+  // when fallback body is rebuilt every call (since buildFallbackAgentsMd is
+  // deterministic for a given input, this is also stable across calls).
+  const agentsHashInput = `${domainName}|${agentsSource}|${agentsBody}`;
+  const agentsHash = createHash("sha256").update(agentsHashInput).digest("hex").slice(0, 12);
 
   function head(p: string, maxLines: number): string {
     if (!existsSync(p)) return "";
@@ -138,7 +188,8 @@ const handler = async (event: any) => {
   const statusBody = head(statusPath, 40);
   const changelogLast = lastChangelogEntry(changelogPath);
 
-  const block = `<!-- domain-context:${domainName}:${contentHash} -->
+  // --- Build context block (decisions + status + last changelog) ---
+  const contextBlock = `<!-- domain-context:${domainName}:${contentHash} -->
 ## Domain Context (auto)
 
 **Domain**: \`${domainName}\` (${domainEntry.type})
@@ -161,36 +212,59 @@ ${changelogLast || "_changelog.md пуст_"}
 <!-- /domain-context -->
 `;
 
+  // --- Build agents block (operational ruleset) ---
+  const fallbackNote = agentsSource === "fallback"
+    ? `\n\n> ⚠️ \`memory/domains/${domainName}/agents.md\` не найден — используется встроенный fallback. Создай файл из шаблона \`templates/domain/topic-thread/agents.md\` или запусти \`bun skills/engram/scripts/backfill-domain-agents.js\`.\n`
+    : "";
+
+  const agentsBlock = `<!-- domain-agents:${domainName}:${agentsHash} -->
+## Domain AGENTS (auto)${fallbackNote}
+${agentsBody.trim()}
+<!-- /domain-agents -->
+`;
+
   const agentId = event.context?.agentId || "main";
   const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionSegment);
-  if (!existsSync(sessionDir)) return;
+  if (!existsSync(sessionDir)) {
+    return;
+  }
 
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
   const notePath = join(sessionDir, `${today}.md`);
-  if (!existsSync(notePath)) return;
+  if (!existsSync(notePath)) {
+    return;
+  }
 
   const noteContent = readFileSync(notePath, "utf-8");
 
-  // Idempotency: if the latest block has the same hash, skip
-  const existingMarkerRe = /<!-- domain-context:([\w-]+):([a-f0-9]+) -->/g;
-  let lastMarkerHash: string | null = null;
-  let m: RegExpExecArray | null;
-  while ((m = existingMarkerRe.exec(noteContent)) !== null) {
-    lastMarkerHash = m[2];
+  // Idempotency: each block checked independently. If both latest markers match
+  // their hashes, skip the write entirely.
+  function findLatestHash(content: string, marker: "context" | "agents"): string | null {
+    const re = new RegExp(`<!-- domain-${marker}:[\\w-]+:([a-f0-9]+) -->`, "g");
+    let last: string | null = null;
+    let mm: RegExpExecArray | null;
+    while ((mm = re.exec(content)) !== null) {
+      last = mm[1];
+    }
+    return last;
   }
-  if (lastMarkerHash === contentHash) return;
+  const lastContextHash = findLatestHash(noteContent, "context");
+  const lastAgentsHash = findLatestHash(noteContent, "agents");
+  if (lastContextHash === contentHash && lastAgentsHash === agentsHash) return;
 
-  // Remove all existing domain-context blocks (using sentinels)
-  const blockRe = /<!-- domain-context:[\w-]+:[a-f0-9]+ -->[\s\S]*?<!-- \/domain-context -->\n?/g;
+  // Remove all existing domain-* blocks (context + agents) using sentinels.
+  const blockRe = /<!-- domain-(?:context|agents):[\w-]+:[a-f0-9]+ -->[\s\S]*?<!-- \/domain-(?:context|agents) -->\n?/g;
   let cleaned = noteContent.replace(blockRe, "").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
 
-  // Inject at the top, right after the "# YYYY-MM-DD" line
+  // Inject both blocks at the top, right after the "# YYYY-MM-DD" line.
+  // Order: Domain Context first (state), then Domain AGENTS (rules).
+  const combinedBlock = `${contextBlock.trimEnd()}\n\n${agentsBlock.trimEnd()}`;
   const lines = cleaned.split(NEWLINE);
   const dateLineIdx = lines.findIndex(l => /^# \d{4}-\d{2}-\d{2}/.test(l));
   if (dateLineIdx < 0) {
-    cleaned = cleaned + "\n" + block;
+    cleaned = cleaned + "\n" + combinedBlock;
   } else {
-    lines.splice(dateLineIdx + 1, 0, "", block.trimEnd());
+    lines.splice(dateLineIdx + 1, 0, "", combinedBlock);
     cleaned = lines.join("\n");
   }
 
@@ -204,7 +278,44 @@ ${changelogLast || "_changelog.md пуст_"}
   } finally {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
-  console.log(`[engram-topic-domain-load] Injected domain context for "${domainName}" → ${notePath} (hash ${contentHash})`);
+  console.log(`[engram-topic-domain-load] Injected domain context + agents for "${domainName}" → ${notePath} (context ${contentHash}, agents ${agentsHash}${agentsSource === "fallback" ? ", fallback" : ""})`);
 };
+
+/**
+ * Build a minimal inline fallback for the agents block when `memory/domains/{slug}/agents.md`
+ * is missing. The full template lives at `templates/domain/topic-thread/agents.md`.
+ * Used to keep topic-agents functional even before backfill runs.
+ */
+function buildFallbackAgentsMd(domainName: string, sessionKey: string, kgEntity?: string): string {
+  const kgLine = kgEntity
+    ? `- **Свой KG entity**: \`${kgEntity}\` → \`qmd --index apriori query "<topic>" -c life-projects-${domainName}\` или \`read life/${kgEntity}/summary.md\``
+    : `- **KG entity не задан** — QMD для KG не использовать`;
+  return `# Domain AGENTS — ${domainName} (fallback)
+
+⚠️ Это встроенный fallback. Полная версия: \`memory/domains/${domainName}/agents.md\`.
+Создай из шаблона: \`bun skills/engram/scripts/backfill-domain-agents.js\`.
+
+## Ты в роли
+Topic-agent домена \`${domainName}\`. Session: \`${sessionKey}\`.
+
+## QMD default
+\`\`\`bash
+qmd --index apriori query "<topic>" \\
+  -c domain-${domainName} \\
+  -c openclaw-memory-agent-apriori-tech-${sessionKey}
+\`\`\`
+${kgLine}
+- ❌ Без явного OK Сергея НЕ использовать: \`-c domains\` (cross-topic), \`-c apriori-life\` (cross-KG)
+
+## Write rules (минимум)
+- ✅ Своя daily note, decisions.md (на маркерах), status.md (handover), changelog.md (curated)
+- ❌ \`life/\`, ❌ чужие домены, ❌ workspace MEMORY.md/AGENTS.md
+- ❌ Telegram-сообщения, посты в Сетку, Хабр — только по явному «да» Сергея
+
+## Когда выходить за пределы
+- Cross-topic: \`-c domains\`
+- Cross-KG: \`-c apriori-life\` (лучше делегировать main-агенту)
+`;
+}
 
 export default handler;

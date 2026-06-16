@@ -38,21 +38,42 @@ main sessions).
   1. Sets `archived: true`, `archivedAt: <ISO>`, `archivePath: archives/{slug}` in registry.json (atomic write).
   2. Renames `memory/domains/{slug}/` → `memory/domains/archives/{slug}/` (atomic FS rename).
   3. Emits an alert of kind `archived`. `dev-project` and `cron-task` are NEVER archived by this path.
-- **Unarchive**: when `engram-topic-domain-load` fires for a topic whose domain has `archived: true`, the hook clears the flag and re-injects the Domain Context block. The actual files stay in `archives/{slug}/` (the link is a registry pointer; the runner does not move them back automatically). To fully restore, the user (or a tool) renames `archives/{slug}/` → `{slug}/` and clears `archivePath`. For most cases the in-memory restoration is enough.
+- **Unarchive**: when `engram-topic-domain-load` fires for a topic whose domain has `archived: true`, the hook clears the flag and re-injects the Domain Context + Domain AGENTS blocks. The actual files stay in `archives/{slug}/` (the link is a registry pointer; the runner does not move them back automatically). To fully restore, the user (or a tool) renames `archives/{slug}/` → `{slug}/` and clears `archivePath`. For most cases the in-memory restoration is enough.
 - **Delete**: never. Supersede only.
 
 ## QMD usage (topic-agent)
+
+The default QMD behavior and write/read rules for a topic-agent are encoded
+in the per-domain `memory/domains/{slug}/agents.md` file, which the
+`engram-topic-domain-load` hook injects as a `## Domain AGENTS (auto)` block
+at the top of the daily note. The agent should follow those rules verbatim.
+
+Reference patterns (in case the agent needs to look them up outside the block):
 
 ```bash
 # Default: own domain + own session notes
 qmd --index <index> query "<topic>" -c domain-{slug} -c openclaw-memory-agent-<agent-id>-{sessionKey}
 
-# Cross-topic (explicit opt-in)
+# Cross-topic (explicit opt-in only)
 qmd --index <index> query "<term>" -c domains
 
 # Own KG entity (if --kg-entity was set)
 qmd --index <index> query "<term>" -c life-projects-{slug}
 ```
+
+**Boundary rules** (enforced via `agents.md`):
+- Use `domain-{slug}` + own session notes for default queries. Do **not** use
+  `domains` (cross-topic) or `apriori-life` (cross-KG) without explicit OK.
+- Read access: own daily note + own domain files. Other domains and
+  workspace-level `MEMORY.md`/`AGENTS.md` are off-limits in default flow.
+- Write access: own daily note + own domain files (`decisions.md` on explicit
+  markers, `status.md` on handover, `changelog.md` curated). Never write to
+  `life/`, other domains, or workspace-level files without explicit OK.
+
+If `agents.md` is missing, the hook uses a built-in minimal fallback so the
+topic-agent is never without rules. Use
+`bun skills/engram/scripts/backfill-domain-agents.js` to create it from the
+template.
 
 ## Registry fields specific to topic-thread
 

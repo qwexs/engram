@@ -759,6 +759,36 @@ bun skills/engram/scripts/add-domain.js --domain <name> [--description "Descript
 
 Creates `memory/domains/{domain}/` with decisions.md, status.md, changelog.md, README.md. Registers QMD collection `domains` (one for all domains). Warns if >20 domains.
 
+For `type=topic-thread` (Telegram topic as memory contour), also creates:
+- `agents.md` — operational ruleset for the topic-agent (QMD default, read/write rules). Injected into the daily note by `engram-topic-domain-load` as the `## Domain AGENTS (auto)` block.
+- QMD collections: shared `domains`, per-domain `domain-{slug}`, per-entity `life-projects-{slug}` (opt-in if `--kg-entity` given).
+- Telegram binding in `registry.json` (`topic: { chatId, topicId }`).
+
+Example:
+```bash
+bun skills/engram/scripts/add-domain.js --domain engram \
+  --type topic-thread \
+  --topic <chatId>:<topicId> \
+  --kg-entity projects/engram \
+  --description "Engram memory architecture — design, RFC, decisions"
+```
+
+### backfill-domain-agents.js — Create/refresh agents.md for topic-thread domains
+
+```bash
+bun skills/engram/scripts/backfill-domain-agents.js             # create missing
+bun skills/engram/scripts/backfill-domain-agents.js --force     # overwrite all
+bun skills/engram/scripts/backfill-domain-agents.js --domain engram  # one domain
+bun skills/engram/scripts/backfill-domain-agents.js --dry-run  # preview
+```
+
+Renders `templates/domain/topic-thread/agents.md` with substitutions and writes to `memory/domains/{slug}/agents.md`. Use to:
+- Apply the current template to all existing topic-thread domains (one-off backfill).
+- Apply an updated template to all domains (with `--force`, since manual overrides are preserved by default).
+- Pre-create a single domain's agents.md (with `--domain`).
+
+Idempotent: skips existing files unless `--force` is passed. Archival-archived domains are skipped unless explicitly named.
+
 ### validate.js — Check integrity
 
 ```bash
@@ -949,7 +979,7 @@ Processes `=== HB-* HANDOFF ===` blocks from subagent results. Handles HB-EXTRAC
 
 ## OpenClaw Hooks
 
-Engram ships 5 OpenClaw hooks that automate mechanical session tasks. Hooks run automatically — agents do NOT need to repeat these steps manually.
+Engram ships 7 OpenClaw hooks that automate mechanical session tasks. Hooks run automatically — agents do NOT need to repeat these steps manually.
 
 | Hook | Event | What it does |
 |------|-------|--------------|
@@ -959,6 +989,8 @@ Engram ships 5 OpenClaw hooks that automate mechanical session tasks. Hooks run 
 | `engram-bootstrap-qmd` | `agent:bootstrap` | Runs `qmd update` (15s timeout, silent skip if unavailable) |
 | `engram-message-log` | `message:received` | Logs messages to `workspace/message-log/YYYY-MM-DD.jsonl` |
 | `engram-session-memory` | `command:new`, `command:reset` | Save session transcript to `sessions/` subdir (QMD-indexed). Replaces native `session-memory`. |
+| `engram-topic-domain-load` | `message:received` | On Telegram topic, inject `## Domain Context (auto)` (decisions/status/changelog) **and** `## Domain AGENTS (auto)` (per-domain ruleset) blocks at the top of today's daily note. |
+| `engram-topic-auto-domain-suggest` | `message:received` | Sibling of `engram-topic-domain-load`. In unbound topics, after ≥2 user messages, inject `## engram:auto-suggest` block offering domain creation. |
 
 > **Note:** Disable the built-in `session-memory` hook when enabling `engram-session-memory` — they serve the same purpose but write to different locations.
 
@@ -968,6 +1000,12 @@ Engram ships 5 OpenClaw hooks that automate mechanical session tasks. Hooks run 
 2. New agent session starts → `agent:bootstrap` fires
 3. `engram-session-start` → writes `<!-- session:start -->`
 4. `engram-bootstrap-qmd` → refreshes QMD index
+
+### Topic-thread message flow
+
+1. `engram-message-log` fires on `message:received` → logs to `workspace/message-log/`
+2. `engram-topic-domain-load` fires on `message:received` → injects Domain Context + Domain AGENTS blocks (idempotent per-block)
+3. `engram-topic-auto-domain-suggest` fires on `message:received` (sibling) → if topic is unbound and ≥2 user messages, injects `## engram:auto-suggest` block
 
 ### Installation
 

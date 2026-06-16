@@ -4,8 +4,8 @@
 // Usage: bun skills/engram/scripts/add-domain.js --domain <name> [options]
 
 import { parseArgs } from 'node:util';
-import { mkdirSync, readdirSync, existsSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { mkdirSync, readdirSync, existsSync, readFileSync } from 'node:fs';
+import { join, resolve, dirname, basename } from 'node:path';
 import { execSync } from 'node:child_process';
 import { resolveQmdCommand } from './config.js';
 
@@ -220,11 +220,47 @@ console.log(`📁 Создан: memory/domains/${domain}/`);
 
 // Копирование шаблонов с подстановками
 const today = new Date().toISOString().split('T')[0];
+// Session key для topic-thread: OpenClaw хранит chatId с ведущим минусом для групп;
+// в session key используется абсолютное значение (без минуса).
+const sessionKey = topicBinding
+  ? `telegram-group--${topicBinding.chatId.replace(/^-/, '')}-topic-${topicBinding.topicId}`
+  : '';
+const kgEntityPath = kgEntity || '';
+const kgEntityDisplay = kgEntity
+  ? `\`${kgEntity}\` (QMD collection: \`life-projects-${domain}\`, FS: \`life/${kgEntity}/\`)`
+  : 'не задан (домен без KG entity)';
+
+// Workspace context: read from engram.json if available, else use placeholders.
+// Эти substitutions делают agents.md template generic в public repo, а deployed
+// копии получают workspace-specific values при backfill/add-domain.
+function readEngramConfig() {
+  const p = join(WORKSPACE, 'engram.json');
+  if (!existsSync(p)) return {};
+  try { return JSON.parse(readFileSync(p, 'utf-8')); } catch { return {}; }
+}
+const engramConfig = readEngramConfig();
+// AGENT_ID — суффикс без "agent-" префикса (например "apriori-tech" в нашем workspace).
+// engram.json хранит полный "agent-apriori-tech"; template использует литерал "agent-"
+// перед {{AGENT_ID}} чтобы собрать правильный QMD collection name
+// "openclaw-memory-agent-{agentId}-{sessionKey}".
+const agentIdRaw = engramConfig.agent || engramConfig.agentId || process.env.ENGRAM_AGENT_ID || 'agent-main';
+const agentId = agentIdRaw.replace(/^agent-/, '');
+const workspaceName = engramConfig.workspace?.name || process.env.ENGRAM_WORKSPACE_NAME || basename(WORKSPACE);
+const operator = engramConfig.operator || process.env.ENGRAM_OPERATOR || 'Operator (см. workspace AGENTS.md)';
+const qmdIndex = engramConfig.qmd?.index || process.env.ENGRAM_QMD_INDEX || 'apriori';
+const workspaceKgCollection = engramConfig.qmd?.workspaceKgCollection || process.env.ENGRAM_WORKSPACE_KG_COLLECTION || 'life';
+
 const replacements = {
   DOMAIN: domain,
   DESCRIPTION: description,
   DATE: today,
-  ...(topicBinding ? { CHAT_ID: topicBinding.chatId, TOPIC_ID: topicBinding.topicId } : {}),
+  WORKSPACE: workspaceName,
+  OPERATOR: operator,
+  QMD_INDEX: qmdIndex,
+  AGENT_ID: agentId,
+  WORKSPACE_KG_COLLECTION: workspaceKgCollection,
+  ...(topicBinding ? { CHAT_ID: topicBinding.chatId, TOPIC_ID: topicBinding.topicId, SESSION_KEY: sessionKey } : {}),
+  ...(kgEntity ? { KG_ENTITY_PATH: kgEntityPath, KG_ENTITY_DISPLAY: kgEntityDisplay } : {}),
 };
 
 // Приоритет у type-specific папки, фолбэк на defaults
@@ -239,6 +275,11 @@ const templates = ['decisions.md', 'status.md', 'changelog.md', 'README.md'];
 // workflow.md — только для типов с инфраструктурой (не для topic-thread)
 if (domainType !== 'topic-thread') {
   templates.push('workflow.md');
+}
+// agents.md — для topic-thread. Per-domain operational ruleset, инжектится хуком
+// engram-topic-domain-load вторым блоком в daily note.
+if (domainType === 'topic-thread') {
+  templates.push('agents.md');
 }
 
 for (const tmpl of templates) {
@@ -382,8 +423,9 @@ ${domainType === 'topic-thread'
   ? `  1. Решения и pinned-факты → decisions.md (агент обновляет по «решили X» в чате)
   2. Текущее состояние разговора → status.md (обновляется агентом при завершении тематического блока)
   3. Лог значимых обменов → changelog.md
-  4. Хук engram-topic-domain-load автоматически подгружает контекст в daily note при заходе в топик
-  5. Heartbeat: liveness, changelog rotation, KG extraction`
+  4. Операционные правила топик-агента → agents.md (auto-inject в daily note, ручной override)
+  5. Хук engram-topic-domain-load автоматически подгружает контекст в daily note при заходе в топик
+  6. Heartbeat: liveness, changelog rotation, KG extraction`
   : `  1. Настрой правила в decisions.md
   2. Запусти субагент с промптом из templates/spawn-prompt.md
   3. Субагент обновит status.md и changelog.md`}

@@ -566,10 +566,12 @@ The binding is defined via the domain registry (`memory/domains/registry.json`):
 **Rule: always use a template.** Don't write prompts manually — use `spawnTemplate` from the registry. This ensures the subagent receives the Domain Lifecycle (paths to decisions, status, changelog).
 
 Templates are in `templates/spawn-prompts/`:
-- `dev-project.md` — for development (decisions + status + changelog tail)
-- `cron-task.md` — for periodic tasks (decisions + status)
+- `dev-project.md` — for development (decisions + AGENTS + status + changelog tail)
+- `cron-task.md` — for periodic tasks (decisions + AGENTS + status)
 
-Templates use placeholders: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`.
+Templates use placeholders: `{{domain}}`, `{{task}}`, `{{workflow}}`, `{{decisions}}`, `{{status}}`, `{{changelog_tail}}`, `{{agents}}`.
+
+**`{{agents}}`** — runtime ruleset для subagent'а (QMD default, read/write rules, when to escalate). Rendered through `scripts/render-agents-section.js --domain <slug> --kg-entity <path> --spawn-type dev-project|cron-task`. Generic в `_shared/agents-section.template.md`, workspace-specific values (QMD index, agentId, operator) подставляются из `engram.json` + env vars. Обязателен: subagent без `{{agents}}` может дрифтить в cross-topic/cross-KG поиск.
 
 Context chain: Template → workflow.md → decisions.md → wiki (if needed) → execution.
 
@@ -594,7 +596,8 @@ The main agent (not a script) handles spawning:
 4. Read `decisions.md` + `workflow.md` → include verbatim in prompt
 5. Load template from `templates/spawn-prompts/{spawnTemplate}`
 6. Replace `{{domain}}`, `{{decisions}}`, `{{workflow}}`, `{{task}}`
-7. Spawn with `sessions_spawn(label: subagentLabel, cleanup: "delete", task: <prompt>)`
+7. Render `{{agents}}` via `bun skills/engram/scripts/render-agents-section.js --domain <slug> --kg-entity <path> --spawn-type dev-project|cron-task` (output captured into prompt)
+8. Spawn with `sessions_spawn(label: subagentLabel, cleanup: "delete", task: <prompt>)`
 
 **Key principle:** the agent's judgment in interpreting status/changelog and formulating a precise task IS the value. Templates provide structure, not automation.
 

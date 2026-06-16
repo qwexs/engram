@@ -3,6 +3,9 @@
 ## Правила (read-only)
 {{decisions}}
 
+## AGENTS (runtime ruleset)
+{{agents}}
+
 ## Инфраструктура
 {{workflow}}
 

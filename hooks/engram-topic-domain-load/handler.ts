@@ -143,6 +143,25 @@ const handler = async (event: any) => {
   }
   const contentHash = contextHasher.digest("hex").slice(0, 12);
 
+  // --- Resolve workspace-agnostic identifiers for the fallback body ---
+  // The fallback is rendered when agents.md is missing, so it must not
+  // hardcode apriotech-specific values like qmd index, agent id, or KG
+  // collection. Read them from the workspace's engram.json when available.
+  const agentId = event.context?.agentId || "main";
+  const engramConfigPath = join(workspaceDir, "engram.json");
+  let qmdIndex = "apriori";
+  let kgCollection = "life";
+  if (existsSync(engramConfigPath)) {
+    try {
+      const cfg = JSON.parse(readFileSync(engramConfigPath, "utf-8"));
+      qmdIndex = cfg.qmd?.index || qmdIndex;
+      kgCollection = cfg.qmd?.workspaceKgCollection || kgCollection;
+    } catch {
+      // engram.json exists but is malformed — keep defaults. Better to inject
+      // a slightly off-config fallback than to skip injection entirely.
+    }
+  }
+
   // --- Hash 2: agents (agents.md, or built-in fallback) ---
   let agentsBody: string;
   let agentsSource: "file" | "fallback";
@@ -150,7 +169,14 @@ const handler = async (event: any) => {
     agentsBody = readFileSync(agentsPath, "utf-8");
     agentsSource = "file";
   } else {
-    agentsBody = buildFallbackAgentsMd(domainName, sessionSegment, domainEntry.kgEntity);
+    agentsBody = buildFallbackAgentsMd(
+      domainName,
+      sessionSegment,
+      qmdIndex,
+      agentId,
+      kgCollection,
+      domainEntry.kgEntity,
+    );
     agentsSource = "fallback";
   }
   // Stable hash: domain + source (file/fallback) + body. Prevents hash churn
@@ -223,7 +249,6 @@ ${agentsBody.trim()}
 <!-- /domain-agents -->
 `;
 
-  const agentId = event.context?.agentId || "main";
   const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionSegment);
   if (!existsSync(sessionDir)) {
     return;
@@ -286,9 +311,16 @@ ${agentsBody.trim()}
  * is missing. The full template lives at `templates/domain/topic-thread/agents.md`.
  * Used to keep topic-agents functional even before backfill runs.
  */
-function buildFallbackAgentsMd(domainName: string, sessionKey: string, kgEntity?: string): string {
+function buildFallbackAgentsMd(
+  domainName: string,
+  sessionKey: string,
+  qmdIndex: string,
+  agentId: string,
+  kgCollection: string,
+  kgEntity?: string,
+): string {
   const kgLine = kgEntity
-    ? `- **Свой KG entity**: \`${kgEntity}\` → \`qmd --index apriori query "<topic>" -c life-projects-${domainName}\` или \`read life/${kgEntity}/summary.md\``
+    ? `- **Свой KG entity**: \`${kgEntity}\` → \`qmd --index ${qmdIndex} query "<topic>" -c life-projects-${domainName}\` или \`read life/${kgEntity}/summary.md\``
     : `- **KG entity не задан** — QMD для KG не использовать`;
   return `# Domain AGENTS — ${domainName} (fallback)
 
@@ -300,12 +332,12 @@ Topic-agent домена \`${domainName}\`. Session: \`${sessionKey}\`.
 
 ## QMD default
 \`\`\`bash
-qmd --index apriori query "<topic>" \\
+qmd --index ${qmdIndex} query "<topic>" \\
   -c domain-${domainName} \\
-  -c openclaw-memory-agent-apriori-tech-${sessionKey}
+  -c openclaw-memory-agent-${agentId}-${sessionKey}
 \`\`\`
 ${kgLine}
-- ❌ Без явного OK Сергея НЕ использовать: \`-c domains\` (cross-topic), \`-c apriori-life\` (cross-KG)
+- ❌ Без явного OK Сергея НЕ использовать: \`-c domains\` (cross-topic), \`-c ${kgCollection}\` (cross-KG)
 
 ## Write rules (минимум)
 - ✅ Своя daily note, decisions.md (на маркерах), status.md (handover), changelog.md (curated)
@@ -314,7 +346,7 @@ ${kgLine}
 
 ## Когда выходить за пределы
 - Cross-topic: \`-c domains\`
-- Cross-KG: \`-c apriori-life\` (лучше делегировать main-агенту)
+- Cross-KG: \`-c ${kgCollection}\` (лучше делегировать main-агенту)
 `;
 }
 

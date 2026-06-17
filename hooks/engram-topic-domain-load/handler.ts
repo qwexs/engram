@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, statSync, renameSync, mkdtempS
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
+import { parseAgentIdFromSessionKey, resolveWorkspaceByAgentId } from "./workspace-resolver.js";
 
 // Resolve TZ at call time, not module load time. This makes the hook testable:
 // the test can set process.env.ENGRAM_TZ after importing the module.
@@ -45,15 +46,24 @@ const handler = async (event: any) => {
     return;
   }
 
+  // OpenClaw puts sessionKey on the top-level event, not in `context` —
+  // fall back to context for any legacy callers that still set it there.
+  const sessionKey: string = event.sessionKey || event.context?.sessionKey || "";
+
+  // Derive agentId from sessionKey (format: "agent:<id>:<channel>:<rest>").
+  // Used as a third fallback for workspaceDir resolution and as the primary
+  // agent id when building the sessionDir path on disk.
+  const resolvedAgentId = parseAgentIdFromSessionKey(sessionKey);
+
   const workspaceDir =
     event.context?.workspaceDir ||
-    process.env.OPENCLAW_WORKSPACE;
+    process.env.OPENCLAW_WORKSPACE ||
+    (resolvedAgentId ? resolveWorkspaceByAgentId(resolvedAgentId) : null);
   if (!workspaceDir) {
     return;
   }
 
   const conversationId: string = event.context?.conversationId || "";
-  const sessionKey: string = event.context?.sessionKey || "";
 
   let topicId: string | null = null;
   let chatId: string | null = null;
@@ -147,7 +157,9 @@ const handler = async (event: any) => {
   // The fallback is rendered when agents.md is missing, so it must not
   // hardcode apriotech-specific values like qmd index, agent id, or KG
   // collection. Read them from the workspace's engram.json when available.
-  const agentId = event.context?.agentId || "main";
+  // Prefer the agentId we just resolved from sessionKey; fall back to
+  // event.context.agentId (legacy) and finally "main" (last-resort).
+  const agentId = resolvedAgentId || event.context?.agentId || "main";
   const engramConfigPath = join(workspaceDir, "engram.json");
   let qmdIndex = "apriori";
   let kgCollection = "life";

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# engram/.githooks/pre-commit
+#
+# Local pre-commit guard for the engram repo. Runs the personal-data linter
+# over staged files and aborts the commit on any leak. Install once per clone:
+#
+#   git config core.hooksPath .githooks
+#
+# Why: the repo is public. Hardcoded paths, agentIds, chatIds, or bot tokens
+# in tests, fixtures, or sample configs are PII / workspace-specific data
+# that should never leave the author's machine.
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+LINTER="${REPO_ROOT}/scripts/lint-no-personal-data.ts"
+
+if [ ! -f "$LINTER" ]; then
+  echo "pre-commit: linter not found at $LINTER — skipping (refusing to break the commit)." >&2
+  exit 0
+fi
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "pre-commit: 'bun' not on PATH; cannot run $LINTER." >&2
+  echo "         Install bun (https://bun.sh) or commit --no-verify." >&2
+  exit 1
+fi
+
+echo "pre-commit: running lint-no-personal-data on staged files…"
+if ! bun "$LINTER"; then
+  cat >&2 <<'EOF'
+
+Personal-data linter failed. Your staged files contain patterns that look
+like local filesystem paths, reserved agentIds, Telegram chatIds, or bot
+tokens. None of those belong in the public engram repo.
+
+What to do:
+  1. Read the linter output above — it shows the file:line and pattern.
+  2. Replace the leaked value with a synthetic placeholder
+     (e.g. "/workspaces/alpha", agent id "alpha", chat id "-1001").
+  3. Re-stage and try the commit again.
+
+To skip this check (NOT recommended):
+  git commit --no-verify
+EOF
+  exit 1
+fi

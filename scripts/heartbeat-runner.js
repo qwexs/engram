@@ -880,11 +880,49 @@ function qmdCommandArgs(command) {
   const args = [];
   if (qmd.index) args.push("--index", String(qmd.index));
   args.push(command);
-  const collections = Array.isArray(qmd.collections) ? qmd.collections : [];
+  let collections = Array.isArray(qmd.collections) ? qmd.collections : [];
+  if (qmd.autoDiscoverCollections) {
+    const discovered = discoverQmdCollections();
+    if (discovered.length) {
+      const merged = new Set(collections);
+      for (const name of discovered) merged.add(name);
+      collections = Array.from(merged);
+    }
+  }
   for (const collection of collections) {
     if (collection) args.push("-c", String(collection));
   }
   return args;
+}
+
+function discoverQmdCollections() {
+  const qmd = config.qmd || {};
+  if (!qmd.index) return [];
+  const command = String(qmd.command || "qmd");
+  const proc = spawnSync(command, ["--index", String(qmd.index), "collection", "list", "--format", "cli"], {
+    encoding: "utf8",
+    timeout: 30000,
+  });
+  if (proc.status !== 0) {
+    summary.warnings.push("qmd collection list failed; falling back to engram.json qmd.collections");
+    return [];
+  }
+  return parseQmdCollectionList(String(proc.stdout || ""));
+}
+
+/**
+ * Parse the `--format cli` output of `qmd collection list` into an array of
+ * collection names. Extracted from discoverQmdCollections so it can be
+ * unit-tested without mocking child_process.spawnSync.
+ */
+function parseQmdCollectionList(stdout) {
+  const names = [];
+  const re = /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*\(qmd:\/\/[^)]+\/\)/gm;
+  let m;
+  while ((m = re.exec(stdout)) !== null) {
+    names.push(m[1]);
+  }
+  return names;
 }
 
 function qmdCommandName() {
@@ -988,9 +1026,24 @@ async function main() {
   console.log("HEARTBEAT_OK");
 }
 
-main().catch(async (err) => {
-  summary.warnings.push(err && err.stack ? err.stack : String(err));
-  await patchState({ heartbeatInProgress: false, heartbeatLockedAt: null }).catch(() => {});
-  console.error(JSON.stringify({ status: "error", summary }, null, 2));
-  process.exit(1);
-});
+// Run main() only when this file is the entry point (e.g. `bun
+// scripts/heartbeat-runner.js`). When imported from a test harness, skip
+// the side-effect and expose testable helpers below.
+if (import.meta.main) {
+  main().catch(async (err) => {
+    summary.warnings.push(err && err.stack ? err.stack : String(err));
+    await patchState({ heartbeatInProgress: false, heartbeatLockedAt: null }).catch(() => {});
+    console.error(JSON.stringify({ status: "error", summary }, null, 2));
+    process.exit(1);
+  });
+}
+
+// Test exports. Available when the module is imported (not running as the
+// entry point). Production behaviour is unchanged.
+if (!import.meta.main) {
+  globalThis.__engramHeartbeatRunnerExports = {
+    parseQmdCollectionList,
+    discoverQmdCollections,
+    qmdCommandArgs,
+  };
+}

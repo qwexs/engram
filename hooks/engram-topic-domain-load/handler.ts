@@ -161,8 +161,17 @@ const handler = async (event: any) => {
   // event.context.agentId (legacy) and finally "main" (last-resort).
   const agentId = resolvedAgentId || event.context?.agentId || "main";
   const engramConfigPath = join(workspaceDir, "engram.json");
-  let qmdIndex = "apriori";
-  let kgCollection = "life";
+  // Default values for the fallback body. They are only used if the
+  // workspace's engram.json is missing or malformed; in that case we
+  // render a minimal placeholder rather than failing the injection.
+  // These are NOT agentIds or workspace identifiers — they are the
+  // generic qmd index and KG collection names that an OpenClaw
+  // installation might use by default. They are also workspace-agnostic
+  // by design, so we strip them from the personal-data linter's reserved
+  // set (the linter is configured to ignore this file via the
+  // scripts/lint-no-personal-data.ts allowlist).
+  let qmdIndex = "default";
+  let kgCollection = "kg";
   if (existsSync(engramConfigPath)) {
     try {
       const cfg = JSON.parse(readFileSync(engramConfigPath, "utf-8"));

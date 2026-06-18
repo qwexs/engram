@@ -4,7 +4,7 @@
 // Usage: bun skills/engram/scripts/init.js [--agent-id main] [--qmd-variant auto|local|jina] [--force] [--help]
 
 import { parseArgs } from 'node:util';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 import { loadEngramConfig, resolveQmdCommand } from './config.js';
@@ -111,7 +111,7 @@ const dirs = [
 for (const dir of dirs) {
   mkdirSync(join(WORKSPACE, dir), { recursive: true });
 }
-console.log(`рџ"Ѓ Created ${dirs.length} directories`);
+console.log(`🚀 Created ${dirs.length} directories`);
 
 // --- OLL (Operational Learning Loop) directories ---
 const ollDirs = [
@@ -142,7 +142,7 @@ const gitkeepPaths = [
 for (const gk of gitkeepPaths) {
   if (!existsSync(gk)) writeFileSync(gk, '');
 }
-console.log(`рџ"Ё OLL directories created (ops/observations/, ops/tensions/)`);
+console.log(`🔧 OLL directories created (ops/observations/, ops/tensions/)`);
 
 // --- Copy templates ---
 function copyTemplate(templateName, destPath, replacements = {}) {
@@ -168,7 +168,7 @@ function copyTemplate(templateName, destPath, replacements = {}) {
 const today = new Date().toISOString().split('T')[0];
 const replacements = { AGENT_ID: agentId, DATE: today, SESSION_KEY: 'main' };
 
-console.log('\nрџ"" Copying templates...');
+console.log('\n📋 Copying templates...');
 copyTemplate('MEMORY.md', 'MEMORY.md', replacements);
 copyTemplate('memory-readme.md', 'memory/README.md', replacements);
 copyTemplate('heartbeat-state.json', 'memory/heartbeat-state.json', replacements);
@@ -226,7 +226,7 @@ for (const tmpl of ['clients.md', 'contacts.md', 'decisions.md', 'resources.md']
 
 // --- QMD collections ---
 if (hasQmd) {
-  console.log('\nрџ"Ќ Setting up QMD collections...');
+  console.log('\n⚙️ Setting up QMD collections...');
   const collections = [
     { path: '.', name: 'openclaw-root', mask: '*.md' },
     { path: `memory/agent-${agentId}/main`, name: `openclaw-memory-agent-${agentId}-main`, mask: '**/*.md' },
@@ -242,7 +242,7 @@ if (hasQmd) {
     }
   }
 
-  console.log('\nрџ"Љ Running QMD index...');
+  console.log('\n📉 Running QMD index...');
   try {
     execSync(`${QMD} update`, { stdio: 'inherit' });
   } catch {
@@ -255,33 +255,21 @@ if (hasQmd) {
   console.log('  Memory structure created without search indexing.');
 }
 
-// --- Install hooks ---
-console.log('\n🪝 Installing OpenClaw hooks...');
-const hooksSourceDir = join(SKILL_DIR, 'hooks');
-const hooksDestDir = join(WORKSPACE, 'hooks');
-let hooksInstalled = 0;
-let hooksSkipped = 0;
-
-if (existsSync(hooksSourceDir)) {
-  mkdirSync(hooksDestDir, { recursive: true });
-  const hookNames = readdirSync(hooksSourceDir, { withFileTypes: true })
-    .filter(e => e.isDirectory() && e.name.startsWith('engram-'))
-    .map(e => e.name);
-
-  for (const hookName of hookNames) {
-    const destHookDir = join(hooksDestDir, hookName);
-    if (existsSync(destHookDir)) {
-      console.log(`  SKIP hooks/${hookName} (exists — not overwriting user changes)`);
-      hooksSkipped++;
-    } else {
-      cpSync(join(hooksSourceDir, hookName), destHookDir, { recursive: true });
-      console.log(`  ✅ hooks/${hookName}`);
-      hooksInstalled++;
-    }
-  }
-  console.log(`  Installed: ${hooksInstalled}, skipped: ${hooksSkipped}`);
-} else {
-  console.log('  ⚠️  hooks/ directory not found in skill — skipping');
+// --- Install hooks via install-hooks.js (junction-based, drift-free) ---
+// Why a separate script and not a copy loop here? OpenClaw loads workspace
+// hooks from `~/clawd/hooks/`, not from the per-workspace `WORKSPACE/hooks/`.
+// Copying into WORKSPACE/hooks/ leaves OpenClaw's runtime loader untouched,
+// which is exactly the drift that hid engram-topic-domain-load in 2026-06.
+// install-hooks.js creates per-hook junctions from the skill into the
+// OpenClaw hooks directory; init.js just delegates to it.
+console.log('\n🪝 Installing OpenClaw hooks (junction-based)...');
+try {
+  execSync(
+    `bun ${join(SKILL_DIR, 'scripts', 'install-hooks.js')} --skill-dir ${SKILL_DIR}`,
+    { stdio: 'inherit' }
+  );
+} catch (e) {
+  console.log(`  ⚠️  install-hooks.js failed (exit ${e.status ?? '?'}). Hooks may not be active until you run it manually.`);
 }
 
 // --- Step 7: Cron install (optional) ---

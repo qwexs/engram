@@ -6,6 +6,7 @@
 import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { loadEngramConfig } from './config.js';
 
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')).replace(/[\\\/]scripts$/, '');
@@ -107,7 +108,7 @@ function isCleanupMarker(fact) {
 function error(msg) { console.error(`❌ ${msg}`); errors++; }
 function warn(msg) { console.warn(`⚠️  ${msg}`); warnings++; }
 function ok(msg) { console.log(`✅ ${msg}`); }
-function fixMsg(msg) { console.log(`рџ”§ ${msg}`); fixed++; }
+function fixMsg(msg) { console.log(`🔧 ${msg}`); fixed++; }
 
 // 1. Directory structure
 const requiredDirs = [
@@ -449,10 +450,12 @@ if (existsSync(heartbeatPath)) {
     const agentDir = join(WORKSPACE, `memory/agent-${agentId}`);
     if (existsSync(agentDir)) {
       for (const entry of readdirSync(agentDir, { withFileTypes: true })) {
-        if (entry.isDirectory() && /^cron-.+-run-.+/.test(entry.name)) {
-          continue;
-        }
-        if (entry.isDirectory() && !sessions.includes(entry.name)) {
+        if (!entry.isDirectory()) continue;
+        // Skip non-session helper directories inside the agent dir.
+        if (/^cron-.+-run-.+/.test(entry.name)) continue;
+        if (/^_archived-\d{4}-\d{2}-\d{2}$/.test(entry.name)) continue; // soft-archive of leftover session dirs
+        if (entry.name === 'archives') continue; // legacy archive layout
+        if (!sessions.includes(entry.name)) {
           warn(`Session dir "${entry.name}" not in heartbeat-state.json`);
         }
       }
@@ -460,6 +463,163 @@ if (existsSync(heartbeatPath)) {
     ok(`heartbeat-state: ${sessions.length} sessions tracked`);
   } catch (e) {
     error(`heartbeat-state.json parse error: ${e.message}`);
+  }
+}
+
+// 8. Cron Config drift guard (catches HEARTBEAT.md ↔ gateway drift).
+// Generic: reads engram.json -> cron.<expectedJobName|expectedSchedule|requireAllActiveSessions|staleRunMinutes>
+// and asserts the heartbeat job is present, enabled, on the expected schedule,
+// has `--all-active-sessions` in payload (if required), and ran recently.
+// If the CLI is unavailable (sandbox / PATH issue), downgrade to warn.
+// Workspaces that don't define engram.json -> cron skip the check cleanly.
+console.log('\n--- Cron Config ---');
+const cronCfg = _config && _config.cron;
+if (!cronCfg || !cronCfg.expectedJobName) {
+  ok('Cron drift check skipped (engram.json -> cron.expectedJobName not set for this workspace)');
+} else {
+  const expectedJobName = cronCfg.expectedJobName;
+  const expectedSchedule = cronCfg.expectedSchedule || { kind: 'cron', expr: '*/30 * * * *' };
+  const requireAllActive = cronCfg.requireAllActiveSessions !== false; // default true
+  const staleMin = Number(cronCfg.staleRunMinutes || 90);
+  const cronProbe = spawnSync('openclaw', ['cron', 'list', '--json'], { encoding: 'utf8', shell: false, timeout: 30000 });
+  if (cronProbe.error || cronProbe.status !== 0) {
+    warn(`openclaw cron list unavailable (${cronProbe.error?.message || 'exit ' + cronProbe.status}) — skipping cron drift check`);
+  } else {
+    const stdout = cronProbe.stdout || '';
+    const jsonStart = stdout.indexOf('{');
+    if (jsonStart < 0) {
+      warn('openclaw cron list returned no JSON — skipping cron drift check');
+    } else {
+      let parsed = null;
+      try { parsed = JSON.parse(stdout.slice(jsonStart)); }
+      catch (e) { warn(`openclaw cron list parse error: ${e.message} — skipping cron drift check`); }
+      if (parsed && Array.isArray(parsed.jobs)) {
+        const job = parsed.jobs.find(j => j.name === expectedJobName);
+        if (!job) {
+          error(`Cron job "${expectedJobName}" not found in gateway. Run \`openclaw cron list\` to inspect; see HEARTBEAT.md for the expected id.`);
+        } else {
+          if (!job.enabled) {
+            error(`Cron job "${expectedJobName}" is DISABLED`);
+          } else {
+            ok(`Cron job present and enabled (id ${job.id}, agent=${job.agentId})`);
+          }
+          const sched = job.schedule || {};
+          if (sched.kind === expectedSchedule.kind && (expectedSchedule.kind !== 'cron' || sched.expr === expectedSchedule.expr)) {
+            const schedDesc = sched.kind === 'cron' ? `${sched.expr} ${sched.tz || 'local'}` : `every ${Math.round((sched.everyMs || 0) / 60000)}m`;
+            ok(`Schedule: ${schedDesc}`);
+          } else {
+            warn(`Schedule unexpected: got ${JSON.stringify(sched)}, expected ${JSON.stringify(expectedSchedule)}`);
+          }
+          const msg = job.payload?.message || '';
+          if (!requireAllActive || msg.includes('--all-active-sessions')) {
+            if (requireAllActive) ok('Payload contains --all-active-sessions (per-session daily notes enabled)');
+          } else {
+            error(`Payload missing --all-active-sessions — only "main" daily note will be created. Update via \`openclaw cron update ${job.id} --patch '{"payload":{"message":"<new>"}}'\` or \`bun skills/engram/scripts/heartbeat-runner.js … --all-active-sessions\``);
+          }
+          if (job.payload?.lightContext !== true) {
+            warn(`Payload lightContext is ${job.payload?.lightContext}, expected true (cron should not load full workspace bootstrap)`);
+          }
+          const last = job.state?.lastRunAtMs;
+          if (!last) {
+            warn('No lastRunAtMs — cron has not run yet (or state is missing)');
+          } else {
+            const ageMin = Math.floor((Date.now() - last) / 60000);
+            if (ageMin > staleMin) {
+              warn(`Last run ${ageMin}m ago (expected ≤${staleMin}m)`);
+            } else {
+              ok(`Last run ${ageMin}m ago (status=${job.state?.lastRunStatus || '?'})`);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// 9. Hooks sync drift guard (catches skill/hooks/ ↔ ~/clawd/hooks/ drift).
+// Skill is the source of truth; OpenClaw loads from `~/clawd/hooks/`. If
+// `engram-topic-domain-load` and `engram-topic-auto-domain-suggest` are in
+// the skill but missing as junctions in the OpenClaw hooks dir, OpenClaw
+// silently skips them. install-hooks.js creates the junctions; this check
+// surfaces drift before runtime hits it. Idempotent install: this does not
+// run install-hooks.js itself, just reports.
+console.log('\n--- Hooks Sync ---');
+{
+  // Resolve skill hooks dir from SCRIPT_DIR (this file lives in
+  // <skill>/scripts/validate.js, so skill root is one up). SCRIPT_DIR may
+  // be a junction under <workspace>/skills/engram — realpathSync would
+  // dereference; here we accept the symlink path because install-hooks.js
+  // resolves through the same join() and OS-level path comparisons match.
+  const skillHooksDir = join(SCRIPT_DIR, '..', 'hooks');
+  if (!existsSync(skillHooksDir)) {
+    warn(`Skill hooks dir missing: ${skillHooksDir}`);
+  } else {
+    // Discover gateway hooks dir the same way install-hooks.js does, but
+    // locally without shelling out (so the check works even if openclaw
+    // CLI is unavailable in this workspace).
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    let gatewayHooksDir = null;
+    const candidates = [
+      join(home, 'clawd', 'hooks'),
+      join(home, '.openclaw', 'hooks'),
+    ];
+    for (const c of candidates) {
+      if (existsSync(c)) { gatewayHooksDir = c; break; }
+    }
+    if (!gatewayHooksDir) {
+      warn('Could not locate OpenClaw hooks directory (~/clawd/hooks or ~/.openclaw/hooks). Skipping hook sync check.');
+    } else {
+      // List hooks in skill
+      const skillHooks = readdirSync(skillHooksDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && e.name.startsWith('engram-'))
+        .map((e) => e.name)
+        .sort();
+      // For each, check the corresponding entry in gatewayHooksDir
+      let kept = 0, missing = 0, drifted = 0;
+      const entriesToReport = [];
+      for (const name of skillHooks) {
+        const link = join(gatewayHooksDir, name);
+        if (!existsSync(link)) {
+          entriesToReport.push({ name, status: 'missing' });
+          missing++;
+          continue;
+        }
+        let existingTarget = null;
+        try {
+          existingTarget = readlinkSync(link);
+        } catch {
+          // Not a symlink/junction — regular directory (legacy copy).
+          entriesToReport.push({ name, status: 'drifted', detail: 'regular directory, not junction' });
+          drifted++;
+          continue;
+        }
+        const expected = join(skillHooksDir, name);
+        const resolved = resolve(dirname(link), existingTarget);
+        const okMatch = process.platform === 'win32'
+          ? resolved.toLowerCase() === expected.toLowerCase()
+          : resolved === expected;
+        if (okMatch) {
+          entriesToReport.push({ name, status: 'ok' });
+          kept++;
+        } else {
+          entriesToReport.push({ name, status: 'drifted', detail: `points to ${resolved}` });
+          drifted++;
+        }
+      }
+      for (const e of entriesToReport) {
+        if (e.status === 'ok') continue; // Don't spam OK lines for already-current junctions.
+        if (e.status === 'missing') {
+          warn(`Hook "${e.name}" missing in ${gatewayHooksDir} (run \`bun skills/engram/scripts/install-hooks.js\` to install)`);
+        } else {
+          warn(`Hook "${e.name}" drifted: ${e.detail}`);
+        }
+      }
+      if (missing === 0 && drifted === 0) {
+        ok(`All ${kept} engram hooks synced (junctions in ${gatewayHooksDir} -> ${skillHooksDir})`);
+      } else {
+        warn(`${kept} synced, ${missing} missing, ${drifted} drifted. Run install-hooks.js to reconcile.`);
+      }
+    }
   }
 }
 

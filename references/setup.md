@@ -120,14 +120,74 @@ On Windows cron/node environments, set `qmd.command` to the absolute `qmd.cmd`
 path if `qmd` is available in an interactive shell but not visible to the
 runner.
 
-## Session Memory Hook
+## Hooks
 
-Engram ships `engram-session-memory` hook that replaces the built-in `session-memory` hook.
-The difference: saves transcripts inside `memory/agent-main/{session}/sessions/` (QMD-indexed).
+Engram ships 8 hooks under `skills/engram/hooks/`:
 
-### Enable engram-session-memory
+- `engram-bootstrap-qmd`, `engram-daily-note`, `engram-message-log`
+- `engram-session-start`, `engram-session-end`, `engram-session-memory`
+- `engram-topic-auto-domain-suggest`, `engram-topic-domain-load`
 
-In `openclaw.json`:
+OpenClaw 2026.6.6 loads hooks from its **managed hooks directory** —
+`~/clawd/hooks/` on Windows (`%USERPROFILE%\clawd\hooks\`,
+`CONFIG_DIR/hooks` in OpenClaw terms). The loader scans that path on
+gateway startup; hooks that exist there as **regular directories** with
+`handler.js` + `handler.ts` + `HOOK.md` register as
+`openclaw-workspace` source.
+
+### Install (recommended)
+
+Use `scripts/install-hooks.js` to mirror the skill's hooks into
+`~/clawd/hooks/`. Default mode is **regular recursive copy** — this is
+the mode that actually loads on OpenClaw 2026.6.6.
+
+```bash
+bun skills/engram/scripts/install-hooks.js            # install all 8
+bun skills/engram/scripts/install-hooks.js --dry-run  # preview, no changes
+bun skills/engram/scripts/install-hooks.js --force    # overwrite existing entries
+openclaw gateway restart
+bun scripts/install-hooks.js --dry-run                # should report 'kept: 8' (idempotent)
+openclaw hooks list                                   # should show 11/13 ready
+```
+
+After `openclaw gateway restart`, `openclaw hooks list` should report
+13 entries (5 bundled + 8 engram-workspace, 11 ready — `session-memory`
+and `engram-message-log` are disabled by config).
+
+### Install (manual)
+
+If you cannot run the script, copy by hand:
+
+```bash
+cp -r skills/engram/hooks/engram-* ~/clawd/hooks/
+openclaw gateway restart
+```
+
+This is the same operation the script performs under `--dry-run=false`.
+
+### Why not junctions?
+
+An earlier design (`install-hooks.js --link`, and a 2f7c6c6-era
+`scripts/init.js`) created **NTFS junctions** instead of copies. Empirically
+this did NOT load on OpenClaw 2026.6.6 — the gateway reported the hooks as
+registered, but `"loaded N internal hook handlers"` stayed at the bundled
+count and `engram-topic-domain-load` (the hook this skill depends on) never
+fired. Cause: OpenClaw's loader + dynamic `import()` cache-busting do not
+follow the reparse point consistently on Windows. `--link` is preserved as
+an opt-in escape hatch for future OpenClaw releases but is **not the default**.
+
+### Why not `hooks.internal.load.extraDirs`?
+
+Do NOT add `~/.openclaw/openclaw.json` → `hooks.internal.load.extraDirs`.
+The schema accepts the value and `validate` is clean, but **the gateway
+crashes on startup** when `extraDirs` is set on Windows 2026.6.6. This is a
+known runtime crash, not a config error. Keep `extraDirs` empty and rely on
+the managed hooks directory.
+
+### Enable / disable individual hooks
+
+In `~/.openclaw/openclaw.json`:
+
 ```json
 {
   "hooks": {
@@ -137,14 +197,24 @@ In `openclaw.json`:
         "engram-session-memory": {
           "enabled": true,
           "messages": 40
-        }
+        },
+        "engram-message-log": { "enabled": false },
+        "engram-topic-domain-load": { "enabled": true }
       }
     }
   }
 }
 ```
 
-The hook is installed automatically by `scripts/init.js`. To install manually:
+The skill's `engram-session-memory` hook replaces the built-in
+`session-memory` hook and saves transcripts inside
+`memory/agent-{id}/{session}/sessions/` (QMD-indexed).
+
+### Verify
+
+After install + restart, both should be true:
+
 ```bash
-cp -r skills/engram/hooks/engram-* hooks/
+openclaw hooks list          # 11/13 ready, engram-* hooks show openclaw-workspace
+bun scripts/validate.js      # Errors: 0, "All 8 engram hooks installed in …"
 ```

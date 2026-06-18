@@ -4,7 +4,7 @@
 // Usage: node scripts/validate.js [--fix] [--agent-id main]
 
 import { parseArgs } from 'node:util';
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, lstatSync, readlinkSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadEngramConfig } from './config.js';
@@ -545,12 +545,11 @@ if (!cronCfg || !cronCfg.expectedJobName) {
 // run install-hooks.js itself, just reports.
 console.log('\n--- Hooks Sync ---');
 {
-  // Resolve skill hooks dir from SCRIPT_DIR (this file lives in
-  // <skill>/scripts/validate.js, so skill root is one up). SCRIPT_DIR may
-  // be a junction under <workspace>/skills/engram — realpathSync would
-  // dereference; here we accept the symlink path because install-hooks.js
-  // resolves through the same join() and OS-level path comparisons match.
-  const skillHooksDir = join(SCRIPT_DIR, '..', 'hooks');
+  // Skill hooks dir = <skill>/hooks. resolveDir is the workspace-specific
+  // junction target (e.g. <workspace>/skills/engram -> clawd/skills/engram);
+  // SKILL_DIR is whatever process.env.ENGRAM_SKILL_DIR says, or the actual
+  // file location. We follow whatever path install-hooks.js used to install.
+  const skillHooksDir = join(SKILL_DIR, 'hooks');
   if (!existsSync(skillHooksDir)) {
     warn(`Skill hooks dir missing: ${skillHooksDir}`);
   } else {
@@ -574,7 +573,12 @@ console.log('\n--- Hooks Sync ---');
         .filter((e) => e.isDirectory() && e.name.startsWith('engram-'))
         .map((e) => e.name)
         .sort();
-      // For each, check the corresponding entry in gatewayHooksDir
+      // For each, check the corresponding entry in gatewayHooksDir. We
+      // accept either a regular recursive copy (current default) or a
+      // junction/symlink (legacy / --link mode). The "synced" criterion is:
+      //   1. entry exists in gateway hooks dir
+      //   2. handler.js exists inside (OpenClaw loads from handler.{js,ts,index.*})
+      //   3. (for junctions) target resolves to <skill>/hooks/<name>
       let kept = 0, missing = 0, drifted = 0;
       const entriesToReport = [];
       for (const name of skillHooks) {
@@ -584,30 +588,52 @@ console.log('\n--- Hooks Sync ---');
           missing++;
           continue;
         }
-        let existingTarget = null;
+        // Check if it's a junction/symlink (lstat doesn't follow reparse)
+        let isLink = false;
+        let linkTarget = null;
         try {
-          existingTarget = readlinkSync(link);
+          const lst = lstatSync(link);
+          isLink = lst.isSymbolicLink();
+          if (isLink) linkTarget = readlinkSync(link);
         } catch {
-          // Not a symlink/junction — regular directory (legacy copy).
-          entriesToReport.push({ name, status: 'drifted', detail: 'regular directory, not junction' });
-          drifted++;
+          isLink = false;
+        }
+        if (isLink) {
+          // Legacy / --link mode. Verify junction target is correct.
+          const expected = join(skillHooksDir, name);
+          const resolved = resolve(dirname(link), linkTarget);
+          const okMatch = process.platform === 'win32'
+            ? resolved.toLowerCase() === expected.toLowerCase()
+            : resolved === expected;
+          if (okMatch) {
+            // Even for correct junctions, handler.js must exist for OpenClaw
+            // to import. Probe through the junction.
+            const handlerJs = join(link, 'handler.js');
+            if (existsSync(handlerJs)) {
+              entriesToReport.push({ name, status: 'ok' });
+              kept++;
+            } else {
+              entriesToReport.push({ name, status: 'drifted', detail: 'junction present but handler.js missing' });
+              drifted++;
+            }
+          } else {
+            entriesToReport.push({ name, status: 'drifted', detail: `junction points to ${resolved}` });
+            drifted++;
+          }
           continue;
         }
-        const expected = join(skillHooksDir, name);
-        const resolved = resolve(dirname(link), existingTarget);
-        const okMatch = process.platform === 'win32'
-          ? resolved.toLowerCase() === expected.toLowerCase()
-          : resolved === expected;
-        if (okMatch) {
+        // Regular copy. Verify handler.js is present.
+        const handlerJs = join(link, 'handler.js');
+        if (existsSync(handlerJs)) {
           entriesToReport.push({ name, status: 'ok' });
           kept++;
         } else {
-          entriesToReport.push({ name, status: 'drifted', detail: `points to ${resolved}` });
+          entriesToReport.push({ name, status: 'drifted', detail: 'regular copy but handler.js missing' });
           drifted++;
         }
       }
       for (const e of entriesToReport) {
-        if (e.status === 'ok') continue; // Don't spam OK lines for already-current junctions.
+        if (e.status === 'ok') continue; // Don't spam OK lines for already-current entries.
         if (e.status === 'missing') {
           warn(`Hook "${e.name}" missing in ${gatewayHooksDir} (run \`bun skills/engram/scripts/install-hooks.js\` to install)`);
         } else {
@@ -615,7 +641,7 @@ console.log('\n--- Hooks Sync ---');
         }
       }
       if (missing === 0 && drifted === 0) {
-        ok(`All ${kept} engram hooks synced (junctions in ${gatewayHooksDir} -> ${skillHooksDir})`);
+        ok(`All ${kept} engram hooks installed in ${gatewayHooksDir} (source ${skillHooksDir})`);
       } else {
         warn(`${kept} synced, ${missing} missing, ${drifted} drifted. Run install-hooks.js to reconcile.`);
       }

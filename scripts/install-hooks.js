@@ -1,28 +1,44 @@
 #!/usr/bin/env bun
 // engram/scripts/install-hooks.js
-// Install OpenClaw workspace hooks via per-hook junctions from the engram skill.
+// Install OpenClaw workspace hooks from the engram skill into the gateway
+// hooks directory (managedHooksDir = `~/clawd/hooks/`).
 //
-// Why junctions (not copies)?
+// Why regular copy (default) and not junction?
 //   The skill is the source of truth (lives in git at qwexs/engram/hooks/).
 //   OpenClaw loads hooks from `~/clawd/hooks/` (see `openclaw hooks info
-//   <name>` — the reported Handler path is the runtime source). Copying the
-//   files into `~/clawd/hooks/` produces a silent drift: any edit in the
-//   skill after init is invisible until someone re-copies by hand. That is
-//   exactly the bug that hid engram-topic-domain-load for every workspace
-//   in 2026-06 — the hook was in the skill, but not in the runtime loader.
+//   <name>` — the reported Handler path is the runtime source). Junctions
+//   are a great idea in theory (zero copy, single source of truth) but
+//   OpenClaw 2026.6.6 fails to load hook entries that are NTFS junctions on
+//   Windows — the loader scans the directory, sees the reparse point, but
+//   `handler.js` resolution and import-url cache-busting do not follow the
+//   reparse as expected. Result: zero engram hooks load, even though
+//   `openclaw hooks list` shows them as "registered".
 //
-//   Junctions make the skill the single source of truth: every OpenClaw
-//   startup resolves `~/clawd/hooks/engram-*` to `skills/engram/hooks/engram-*`
-//   through the reparse point. Drift disappears as a class. Adding a new hook
-//   to the skill only requires running this script again to create the
-//   junction — `openclaw gateway restart` picks it up.
+//   Empirically verified: copying `handler.js + handler.ts + HOOK.md` from
+//   `clawd/skills/engram/hooks/engram-*/` into `~/clawd/hooks/engram-*/` as
+//   regular directories makes OpenClaw load all 8 hooks as
+//   `openclaw-workspace` source. After `openclaw gateway restart`:
+//     Hooks (11/13 ready) — 5 bundled + 8 engram.
+//
+//   The drift concern that motivated junctions ("edit in skill, re-pull, need
+//   to re-copy") is real but bounded: re-running this script after a `git
+//   pull` that adds or modifies a hook rebuilds and re-copies the affected
+//   entry. Old entries are backed up to `_pre-install-{ts}/` before overwrite.
+//   For the `engram-*` skill, this is a 30-second manual step after every
+//   `git pull` in the skill repo — acceptable for the controlled cohort.
+//
+// Why --link exists at all?
+//   If a future OpenClaw release fixes junction loading, --link re-enables
+//   the zero-copy mode. Today (2026-06) it's a known-broken mode and the
+//   help text flags it as EXPERIMENTAL.
 //
 // Usage:
-//   bun skills/engram/scripts/install-hooks.js                       # install all engram-* hooks
+//   bun skills/engram/scripts/install-hooks.js                       # copy all engram-* hooks to managedHooksDir
 //   bun skills/engram/scripts/install-hooks.js --dry-run             # preview only, no changes
-//   bun skills/engram/scripts/install-hooks.js --force               # replace wrong junctions
+//   bun skills/engram/scripts/install-hooks.js --force               # overwrite existing entries (after backup)
 //   bun skills/engram/scripts/install-hooks.js --hooks-dir <path>    # override gateway hooks dir
 //   bun skills/engram/scripts/install-hooks.js --no-backup           # skip backup (dangerous)
+//   bun skills/engram/scripts/install-hooks.js --link                # experimental: NTFS junctions (do not use on OpenClaw 2026.6.6)
 //
 // Idempotent: running it twice with the same inputs is a no-op.
 
@@ -36,6 +52,7 @@ import {
   readlinkSync,
   renameSync,
   rmSync,
+  cpSync,
 } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -48,6 +65,7 @@ const { values: args } = parseArgs({
     'no-backup': { type: 'boolean', default: false },
     'dry-run': { type: 'boolean', default: false },
     'build': { type: 'boolean', default: true },
+    'link': { type: 'boolean', default: false },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -67,16 +85,23 @@ Options:
   --no-backup            Skip backup of non-junction entries (dangerous)
   --dry-run              Preview only, no filesystem changes
   --no-build             Skip handler.js build step
+  --link                 Use NTFS junctions (or symlinks on POSIX) instead of
+                         regular copies. EXPERIMENTAL: OpenClaw 2026.6.6 loads
+                         regular copies from managedHooksDir but does NOT load
+                         junction entries. Keep this off unless you know you
+                         need a live-mirror (and verified OpenClaw supports it
+                         in your version).
   -h, --help             Show this help
 
 What it does:
   1. Locates engram-* hook directories under <skill-dir>/hooks/
   2. Builds handler.js for any hook with handler.ts but no handler.js
-  3. Backs up any existing non-junction entries in <hooks-dir>/ to a
-     timestamped _pre-junction-*/ subdir (skipped with --no-backup)
-  4. Creates a junction (or symlink on non-Windows) for each hook
-     pointing at <skill-dir>/hooks/<name>
-  5. Reports created / already-correct / failed counts
+  3. Backs up any existing entries in <hooks-dir>/ to a timestamped
+     _pre-install-*/ subdir (skipped with --no-backup)
+  4. Installs each hook into <hooks-dir>/<name>:
+       - default: regular recursive copy (cp -r semantics)
+       - with --link: NTFS junction (Windows) / symlink (POSIX)
+  5. Reports created / already-current / failed / orphan counts
 
 After running, restart OpenClaw gateway:
   openclaw gateway restart
@@ -112,11 +137,15 @@ function discoverOpenclawHooksDir() {
     if (r.status === 0) {
       // Accept either Windows (C:\…\hooks\engram-daily-note\HOOK.md) or POSIX
       // (/…/hooks/engram-daily-note/HOOK.md) output, and both / and \ separators.
-      const m = r.stdout.match(/Path:\s+(~?[^\s]+[/\\]hooks[/\\]engram-daily-note[/\\]HOOK\.md)/);
+      // Lazy-match the prefix up to "/hooks/engram-daily-note/HOOK.md" so we
+      // can reattach "hooks" and get the gateway hooks dir directly without
+      // relying on dirname (which would give us the per-hook dir, not the
+      // gateway hooks dir, when given the full path).
+      const m = r.stdout.match(/Path:\s+(.*?[/\\])hooks[/\\]engram-daily-note[/\\]HOOK\.md/);
       if (m) {
-        const path = m[1].replace(/^~/, process.env.USERPROFILE || process.env.HOME || '');
-        const parent = dirname(path);
-        if (existsSync(parent)) return parent;
+        const prefix = m[1].replace(/^~/, process.env.USERPROFILE || process.env.HOME || '');
+        const candidate = prefix + 'hooks';
+        if (existsSync(candidate)) return candidate;
       }
     }
   } catch {
@@ -157,6 +186,7 @@ console.log(`install-hooks:`);
 console.log(`  skill-dir:  ${SKILL_DIR}`);
 console.log(`  source:     ${SOURCE_HOOKS} (${hookNames.length} hooks)`);
 console.log(`  target:     ${GATEWAY_HOOKS}`);
+console.log(`  install:    ${args.link ? 'link/junction (EXPERIMENTAL)' : 'copy (default)'}`);
 console.log(`  mode:       ${args['dry-run'] ? 'dry-run' : args.force ? 'force' : 'safe'}`);
 console.log();
 
@@ -233,7 +263,8 @@ for (const name of hookNames) {
 if (existsSync(GATEWAY_HOOKS)) {
   for (const entry of readdirSync(GATEWAY_HOOKS, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    if (entry.name.startsWith('_pre-junction-')) continue; // backup directories are intentional
+    if (entry.name.startsWith('_pre-install-')) continue; // backup directories are intentional
+    if (entry.name.startsWith('_pre-junction-')) continue; // legacy backup prefix from previous default
     if (entry.name.startsWith('_archived-')) continue;
     if (!hookNames.includes(entry.name)) {
       orphans.push(entry.name);
@@ -241,7 +272,7 @@ if (existsSync(GATEWAY_HOOKS)) {
   }
 }
 
-// --- Step 4: backup existing non-junction entries ---
+// --- Step 4: backup existing entries before install ---
 const toReplace = plan.filter((p) => p.action === 'replace');
 if (toReplace.length > 0 && !args['dry-run']) {
   if (args['no-backup']) {
@@ -249,14 +280,14 @@ if (toReplace.length > 0 && !args['dry-run']) {
     process.exit(2);
   }
   const ts = new Date().toISOString().replace(/[:.]/g, '-').replace(/T/, '_').slice(0, 19);
-  const backupDir = join(GATEWAY_HOOKS, `_pre-junction-${ts}`);
+  const backupDir = join(GATEWAY_HOOKS, `_pre-install-${ts}`);
   console.log(`  backing up ${toReplace.length} existing entries to ${backupDir}`);
   mkdirSync(backupDir, { recursive: true });
   for (const p of toReplace) {
-    const link = join(GATEWAY_HOOKS, p.name);
+    const dstPath = join(GATEWAY_HOOKS, p.name);
     const backupPath = join(backupDir, p.name);
     try {
-      renameSync(link, backupPath);
+      renameSync(dstPath, backupPath);
       console.log(`    backed up: ${p.name}`);
     } catch (e) {
       console.error(`    failed to back up ${p.name}: ${e.message}`);
@@ -266,15 +297,16 @@ if (toReplace.length > 0 && !args['dry-run']) {
   console.log();
 }
 
-// --- Step 5: create junctions ---
+// --- Step 5: install (default = copy, --link = junction/symlink) ---
 let created = 0;
 let kept = 0;
 let failed = 0;
+const installMode = args.link ? (process.platform === 'win32' ? 'junction' : 'symlink') : 'copy';
 
 for (const p of plan) {
   if (p.action === 'keep') {
     kept++;
-    if (!args['dry-run']) console.log(`  ✓ ${p.name} (junction already current)`);
+    if (!args['dry-run']) console.log(`  ✓ ${p.name} (already current)`);
     continue;
   }
 
@@ -285,19 +317,26 @@ for (const p of plan) {
   }
 
   const target = join(SOURCE_HOOKS, p.name);
-  const link = join(GATEWAY_HOOKS, p.name);
+  const dstPath = join(GATEWAY_HOOKS, p.name);
 
   if (args['dry-run']) {
-    console.log(`  [dry-run] would create junction: ${p.name} -> ${target}`);
+    console.log(`  [dry-run] would ${installMode}: ${p.name} <- ${target}`);
     created++;
     continue;
   }
 
   try {
-    // On Windows, type 'junction' creates an NTFS reparse point (no admin
-    // required). On other platforms it falls back to a regular symlink,
-    // which still serves the same purpose.
-    symlinkSync(target, link, 'junction');
+    if (installMode === 'copy') {
+      // Regular recursive copy. OpenClaw 2026.6.6 loader reliably reads
+      // handler.js from regular copies under managedHooksDir; junction
+      // entries (the previous default) failed to load on Windows. Keep
+      // this as the safe default.
+      cpSync(target, dstPath, { recursive: true, force: true });
+    } else {
+      // 'junction' on Windows = NTFS reparse point (no admin); falls back
+      // to a regular symlink on POSIX. EXPERIMENTAL — see --link docs.
+      symlinkSync(target, dstPath, installMode);
+    }
     console.log(`  ✅ ${p.name}`);
     created++;
   } catch (e) {

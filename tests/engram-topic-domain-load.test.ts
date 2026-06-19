@@ -155,13 +155,13 @@ describe("engram-topic-domain-load hook", () => {
   // -------------------------------------------------------------------------
   test("Test 1: injects context + agents blocks into a fresh daily note", async () => {
     const ws = makeWorkspace({
-      chatId: "-1001234567890",
-      registryChatId: "-1001234567890",
+      chatId: "-1001",
+      registryChatId: "-1001",
       topicId: "1",
     });
     try {
       const event = makeEvent(ws.root, {
-        chatId: "-1001234567890",
+        chatId: "-1001",
         topicId: "1",
       });
 
@@ -221,13 +221,13 @@ describe("engram-topic-domain-load hook", () => {
   // -------------------------------------------------------------------------
   test("Test 2: re-running with unchanged domain leaves the note untouched", async () => {
     const ws = makeWorkspace({
-      chatId: "-1001234567890",
-      registryChatId: "-1001234567890",
+      chatId: "-1001",
+      registryChatId: "-1001",
       topicId: "1",
     });
     try {
       const event = makeEvent(ws.root, {
-        chatId: "-1001234567890",
+        chatId: "-1001",
         topicId: "1",
       });
 
@@ -260,13 +260,13 @@ describe("engram-topic-domain-load hook", () => {
   // -------------------------------------------------------------------------
   test("Test 3: domain content change replaces both blocks with new hashes", async () => {
     const ws = makeWorkspace({
-      chatId: "-1001234567890",
-      registryChatId: "-1001234567890",
+      chatId: "-1001",
+      registryChatId: "-1001",
       topicId: "1",
     });
     try {
       const event = makeEvent(ws.root, {
-        chatId: "-1001234567890",
+        chatId: "-1001",
         topicId: "1",
       });
 
@@ -313,13 +313,13 @@ describe("engram-topic-domain-load hook", () => {
   describe("Test 4: chatId variants", () => {
     test("4a: registry and event both have a leading minus → match", async () => {
       const ws = makeWorkspace({
-        chatId: "-1001234567890",
-        registryChatId: "-1001234567890",
+        chatId: "-1001",
+        registryChatId: "-1001",
         topicId: "1",
       });
       try {
         const event = makeEvent(ws.root, {
-          chatId: "-1001234567890",
+          chatId: "-1001",
           topicId: "1",
         });
         await handler(event);
@@ -335,13 +335,13 @@ describe("engram-topic-domain-load hook", () => {
 
     test("4b: registry has leading minus, event has none → match (symmetric)", async () => {
       const ws = makeWorkspace({
-        chatId: "-1001234567890",
-        registryChatId: "-1001234567890",
+        chatId: "-1001",
+        registryChatId: "-1001",
         topicId: "1",
       });
       try {
         const event = makeEvent(ws.root, {
-          chatId: "1001234567890",
+          chatId: "1001",
           topicId: "1",
         });
         await handler(event);
@@ -355,13 +355,13 @@ describe("engram-topic-domain-load hook", () => {
 
     test("4c: registry has no minus (edge), event has leading minus → match", async () => {
       const ws = makeWorkspace({
-        chatId: "-1001234567890",
-        registryChatId: "1001234567890",
+        chatId: "-1001",
+        registryChatId: "1001",
         topicId: "1",
       });
       try {
         const event = makeEvent(ws.root, {
-          chatId: "-1001234567890",
+          chatId: "-1001",
           topicId: "1",
         });
         await handler(event);
@@ -384,14 +384,14 @@ describe("engram-topic-domain-load hook", () => {
 This is a user-customized agents block.
 `;
     const ws = makeWorkspace({
-      chatId: "-1001234567890",
-      registryChatId: "-1001234567890",
+      chatId: "-1001",
+      registryChatId: "-1001",
       topicId: "1",
       agentsContent: agentsBody,
     });
     try {
       const event = makeEvent(ws.root, {
-        chatId: "-1001234567890",
+        chatId: "-1001",
         topicId: "1",
       });
       await handler(event);
@@ -428,14 +428,14 @@ This is a user-customized agents block.
   // -------------------------------------------------------------------------
   test("Test 6: agents.md change → new agents hash, context hash stable", async () => {
     const ws = makeWorkspace({
-      chatId: "-1001234567890",
-      registryChatId: "-1001234567890",
+      chatId: "-1001",
+      registryChatId: "-1001",
       topicId: "1",
       agentsContent: "# Domain AGENTS — test\n\nInitial agents body.\n",
     });
     try {
       const event = makeEvent(ws.root, {
-        chatId: "-1001234567890",
+        chatId: "-1001",
         topicId: "1",
       });
 
@@ -473,14 +473,14 @@ This is a user-customized agents block.
   // -------------------------------------------------------------------------
   test("Test 7: agents.md removed after first inject → next call uses fallback", async () => {
     const ws = makeWorkspace({
-      chatId: "-1001234567890",
-      registryChatId: "-1001234567890",
+      chatId: "-1001",
+      registryChatId: "-1001",
       topicId: "1",
       agentsContent: "# Domain AGENTS — test\n\nOriginal agents body.\n",
     });
     try {
       const event = makeEvent(ws.root, {
-        chatId: "-1001234567890",
+        chatId: "-1001",
         topicId: "1",
       });
 
@@ -504,5 +504,134 @@ This is a user-customized agents block.
     } finally {
       rmSync(ws.root, { recursive: true, force: true });
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 8: OpenClaw 2026.6.6 event format
+  //
+  // In OC66, message:received events deliver topicId and chatId via:
+  //   - internal:  event.context.metadata.threadId  + event.context.metadata.to
+  //   - plugin:    event.threadId (top-level)        + event.context.conversationId
+  // conversationId arrives as "telegram:{chatId}" — no :topic: suffix, so
+  // the older regex `^telegram:(-?\d+)(?::topic:(\d+))?$` would only
+  // match chatId (group 2 stays empty). The handler must fall back to
+  // metadata.{threadId,to} / event.threadId to recover topicId/chatId.
+  // -------------------------------------------------------------------------
+  describe("Test 8: OpenClaw 2026.6.6 event format", () => {
+    function makeOc66Event(workspaceDir: string, opts: { chatId: string; topicId: string }) {
+      // Internal OC66 shape: from/content/channelId/conversationId + metadata
+      return {
+        type: "message",
+        action: "received",
+        sessionKey: `agent:test:telegram:group:${opts.chatId.replace(/^-/, "")}:topic:${opts.topicId}`,
+        context: {
+          workspaceDir,
+          agentId: "test",
+          from: "999",
+          content: "oc66 test",
+          timestamp: Date.now(),
+          channelId: "telegram",
+          accountId: "test",
+          conversationId: `telegram:${opts.chatId.replace(/^-/, "")}`,
+          messageId: "oc66-msg-001",
+          senderId: "999",
+          provider: "telegram",
+          surface: "telegram",
+          metadata: {
+            to: opts.chatId,
+            provider: "telegram",
+            surface: "telegram",
+            threadId: opts.topicId,
+            topicName: "Engram",
+          },
+        },
+      };
+    }
+
+    test("8a: OC66 internal event — resolves topicId from metadata.threadId, chatId from metadata.to", async () => {
+      const ws = makeWorkspace({
+        chatId: "-1001",
+        registryChatId: "-1001",
+        topicId: "1",
+      });
+      try {
+        const event = makeOc66Event(ws.root, {
+          chatId: "-1001",
+          topicId: "1",
+        });
+        await handler(event);
+        const after = readFileSync(ws.notePath, "utf-8");
+        expect(extractMarker(after, "context")).not.toBeNull();
+        expect(extractMarker(after, "agents")).not.toBeNull();
+        expect(after).toContain("## Domain Context (auto)");
+        expect(after).toContain("## Domain AGENTS (auto)");
+        expect(after).toContain("<!-- /domain-context -->");
+        expect(after).toContain("<!-- /domain-agents -->");
+        expectInjectedLogs(logSpy, 1);
+      } finally {
+        rmSync(ws.root, { recursive: true, force: true });
+      }
+    });
+
+    test("8b: OC66 plugin event — resolves topicId from top-level event.threadId, chatId from conversationId", async () => {
+      const ws = makeWorkspace({
+        chatId: "-1001",
+        registryChatId: "-1001",
+        topicId: "1",
+      });
+      try {
+        // Plugin OC66 shape: threadId top-level, conversationId in context
+        // (no metadata.threadId, no metadata.to).
+        const event = {
+          type: "message",
+          action: "received",
+          sessionKey: "agent:test:telegram:group:1001:topic:1",
+          threadId: "1",
+          context: {
+            workspaceDir: ws.root,
+            agentId: "test",
+            from: "999",
+            content: "oc66 plugin test",
+            timestamp: Date.now(),
+            channelId: "telegram",
+            accountId: "test",
+            conversationId: "telegram:1001",
+            messageId: "oc66-plug-001",
+            senderId: "999",
+          },
+        };
+        await handler(event);
+        const after = readFileSync(ws.notePath, "utf-8");
+        expect(extractMarker(after, "context")).not.toBeNull();
+        expect(extractMarker(after, "agents")).not.toBeNull();
+        expect(after).toContain("## Domain Context (auto)");
+        expectInjectedLogs(logSpy, 1);
+      } finally {
+        rmSync(ws.root, { recursive: true, force: true });
+      }
+    });
+
+    test("8c: OC66 internal event with negative-sign mismatch on chatId → still matches", async () => {
+      // Registry has leading minus, OC66 metadata.to has no leading minus.
+      // Handler's symmetric chatId comparison + fallback to metadata.to
+      // should still resolve and inject.
+      const ws = makeWorkspace({
+        chatId: "-1001",
+        registryChatId: "-1001",
+        topicId: "1",
+      });
+      try {
+        const event = makeOc66Event(ws.root, {
+          chatId: "1001", // no leading minus
+          topicId: "1",
+        });
+        await handler(event);
+        const after = readFileSync(ws.notePath, "utf-8");
+        expect(extractMarker(after, "context")).not.toBeNull();
+        expectInjectedLogs(logSpy, 1);
+      } finally {
+        rmSync(ws.root, { recursive: true, force: true });
+      }
+    });
   });
 });

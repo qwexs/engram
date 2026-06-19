@@ -27,10 +27,22 @@
 //   For the `engram-*` skill, this is a 30-second manual step after every
 //   `git pull` in the skill repo — acceptable for the controlled cohort.
 //
-// Why --link exists at all?
-//   If a future OpenClaw release fixes junction loading, --link re-enables
-//   the zero-copy mode. Today (2026-06) it's a known-broken mode and the
-//   help text flags it as EXPERIMENTAL.
+// Why --link is gone:
+//   The previous experimental `--link` mode used NTFS junctions (Windows)
+//   or symlinks (POSIX) to point the runtime hooks dir at the source tree
+//   directly — no copy, no build. As of OpenClaw 2026.6.6 this is broken:
+//   the loader scans the directory, sees the reparse point, but `handler.js`
+//   resolution and import-url cache-busting do not follow the reparse as
+//   expected. Result: zero engram hooks load, even though
+//   `openclaw hooks list` shows them as "registered". The fallback --copy
+//   mode (regular recursive copy) is the only working option today and is
+//   the new default and only mode.
+//
+//   With the refactor (source is .ts-only, runtime is .js-only), --link is
+//   additionally broken because the source no longer contains handler.js.
+//   A symlink/junction pointing at a .ts-only source makes the runtime
+//   .js-only, and OpenClaw loads nothing. So --link is not just broken in
+//   OC66 — it's incompatible with the new source layout. Removed.
 //
 // Usage:
 //   bun skills/engram/scripts/install-hooks.js                       # copy all engram-* hooks to managedHooksDir
@@ -38,7 +50,6 @@
 //   bun skills/engram/scripts/install-hooks.js --force               # overwrite existing entries (after backup)
 //   bun skills/engram/scripts/install-hooks.js --hooks-dir <path>    # override gateway hooks dir
 //   bun skills/engram/scripts/install-hooks.js --no-backup           # skip backup (dangerous)
-//   bun skills/engram/scripts/install-hooks.js --link                # experimental: NTFS junctions (do not use on OpenClaw 2026.6.6)
 //
 // Idempotent: running it twice with the same inputs is a no-op.
 
@@ -48,13 +59,13 @@ import {
   mkdirSync,
   readdirSync,
   statSync,
-  symlinkSync,
-  readlinkSync,
   renameSync,
   rmSync,
-  cpSync,
+  mkdtempSync,
+  copyFileSync,
 } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
+import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 const { values: args } = parseArgs({
@@ -65,7 +76,6 @@ const { values: args } = parseArgs({
     'no-backup': { type: 'boolean', default: false },
     'dry-run': { type: 'boolean', default: false },
     'build': { type: 'boolean', default: true },
-    'link': { type: 'boolean', default: false },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -73,7 +83,7 @@ const { values: args } = parseArgs({
 
 if (args.help) {
   console.log(`
-engram install-hooks — install OpenClaw workspace hooks via junctions
+engram install-hooks — build and install OpenClaw workspace hooks
 
 Usage:
   bun skills/engram/scripts/install-hooks.js [options]
@@ -85,12 +95,6 @@ Options:
   --no-backup            Skip backup of non-junction entries (dangerous)
   --dry-run              Preview only, no filesystem changes
   --no-build             Skip handler.js build step
-  --link                 Use NTFS junctions (or symlinks on POSIX) instead of
-                         regular copies. EXPERIMENTAL: OpenClaw 2026.6.6 loads
-                         regular copies from managedHooksDir but does NOT load
-                         junction entries. Keep this off unless you know you
-                         need a live-mirror (and verified OpenClaw supports it
-                         in your version).
   -h, --help             Show this help
 
 What it does:
@@ -98,9 +102,9 @@ What it does:
   2. Builds handler.js for any hook with handler.ts but no handler.js
   3. Backs up any existing entries in <hooks-dir>/ to a timestamped
      _pre-install-*/ subdir (skipped with --no-backup)
-  4. Installs each hook into <hooks-dir>/<name>:
-       - default: regular recursive copy (cp -r semantics)
-       - with --link: NTFS junction (Windows) / symlink (POSIX)
+  4. Installs each hook into <hooks-dir>/<name> as a regular directory
+     containing only handler.js (built from source handler.ts) and HOOK.md.
+     The runtime is .js-only; source .ts files are not copied.
   5. Reports created / already-current / failed / orphan counts
 
 After running, restart OpenClaw gateway:
@@ -186,29 +190,43 @@ console.log(`install-hooks:`);
 console.log(`  skill-dir:  ${SKILL_DIR}`);
 console.log(`  source:     ${SOURCE_HOOKS} (${hookNames.length} hooks)`);
 console.log(`  target:     ${GATEWAY_HOOKS}`);
-console.log(`  install:    ${args.link ? 'link/junction (EXPERIMENTAL)' : 'copy (default)'}`);
+console.log(`  install:    copy (default; --link removed — see header)`);
 console.log(`  mode:       ${args['dry-run'] ? 'dry-run' : args.force ? 'force' : 'safe'}`);
 console.log();
 
-// --- Step 1: build handler.js if missing ---
+// --- Step 1: build handler.js bundles into per-hook temp dirs ---
+// The source repo (skills/engram/hooks/) holds only handler.ts. The runtime
+// (managedHooksDir) holds only handler.js. The .js bundle is a derived
+// artifact that lives in a temp dir for the duration of the install, so
+// nothing derived is ever written to source or committed to git.
+const builtBundles = new Map(); // hookName -> absolute path of built handler.js
 if (args.build !== false) {
-  const needsBuild = hookNames.some((name) => {
-    const dir = join(SOURCE_HOOKS, name);
-    return existsSync(join(dir, 'handler.ts')) && !existsSync(join(dir, 'handler.js'));
-  });
-
-  if (needsBuild) {
+  for (const name of hookNames) {
+    const sourceDir = join(SOURCE_HOOKS, name);
+    const ts = join(sourceDir, 'handler.ts');
+    if (!existsSync(ts)) continue;
+    const tmpDir = mkdtempSync(join(tmpdir(), 'engram-hook-bundle-'));
+    const tmpJs = join(tmpDir, 'handler.js');
     if (args['dry-run']) {
-      console.log('  [dry-run] would run build-hook-bundles.ts (missing handler.js detected)');
-    } else {
-      console.log('  building missing handler.js bundles...');
-      const buildScript = join(SKILL_DIR, 'scripts', 'build-hook-bundles.ts');
-      const r = spawnSync('bun', ['run', buildScript], { stdio: 'inherit' });
-      if (r.status !== 0) {
-        console.error(`install-hooks: build failed (exit ${r.status})`);
-        process.exit(r.status ?? 1);
-      }
+      console.log(`  [dry-run] would build ${ts} -> ${tmpJs}`);
+      builtBundles.set(name, tmpJs);
+      continue;
     }
+    const r = spawnSync('bun', [
+      'build', ts,
+      '--target=node',
+      '--format=esm',
+      '--outfile', tmpJs,
+    ], { stdio: 'inherit' });
+    if (r.status !== 0) {
+      console.error(`install-hooks: build ${ts} failed (exit ${r.status})`);
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      process.exit(r.status ?? 1);
+    }
+    builtBundles.set(name, tmpJs);
+  }
+  if (builtBundles.size > 0) {
+    console.log(`  built ${builtBundles.size} handler.js bundle(s) into temp`);
   }
 }
 
@@ -218,44 +236,18 @@ if (!args['dry-run']) {
 }
 
 // --- Step 3: classify existing entries ---
-// For each hook in source, check if target entry already exists, and if so,
-// whether it's a junction to the right place. Build a plan.
-const plan = []; // [{ name, action, existingTarget?, isJunction? }]
+// With --link removed, every existing entry (regular dir, leftover junction,
+// or anything else) is treated as something to replace. The plan only
+// distinguishes between "create" (no entry yet) and "replace" (entry exists).
+const plan = []; // [{ name, action }]
 const orphans = []; // entries in target dir that are not in source (informational)
 
 for (const name of hookNames) {
-  const target = join(SOURCE_HOOKS, name);
   const link = join(GATEWAY_HOOKS, name);
-
   if (!existsSync(link)) {
     plan.push({ name, action: 'create' });
-    continue;
-  }
-
-  let isSymlink = false;
-  let existingTarget = null;
-  try {
-    existingTarget = readlinkSync(link);
-    isSymlink = true;
-  } catch {
-    isSymlink = false;
-  }
-
-  if (isSymlink) {
-    const resolved = resolve(dirname(link), existingTarget);
-    const expected = target;
-    if (process.platform === 'win32') {
-      if (resolved.toLowerCase() === expected.toLowerCase()) {
-        plan.push({ name, action: 'keep' });
-        continue;
-      }
-    } else if (resolved === expected) {
-      plan.push({ name, action: 'keep' });
-      continue;
-    }
-    plan.push({ name, action: 'replace', existingTarget, isJunction: true });
   } else {
-    plan.push({ name, action: 'replace', existingTarget: '(regular directory)', isJunction: false });
+    plan.push({ name, action: 'replace' });
   }
 }
 
@@ -264,7 +256,7 @@ if (existsSync(GATEWAY_HOOKS)) {
   for (const entry of readdirSync(GATEWAY_HOOKS, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     if (entry.name.startsWith('_pre-install-')) continue; // backup directories are intentional
-    if (entry.name.startsWith('_pre-junction-')) continue; // legacy backup prefix from previous default
+    if (entry.name.startsWith('_pre-junction-')) continue; // legacy backup prefix from before --link removal
     if (entry.name.startsWith('_archived-')) continue;
     if (!hookNames.includes(entry.name)) {
       orphans.push(entry.name);
@@ -297,21 +289,13 @@ if (toReplace.length > 0 && !args['dry-run']) {
   console.log();
 }
 
-// --- Step 5: install (default = copy, --link = junction/symlink) ---
+// --- Step 5: install (only mode = copy/regular-dir, --link removed) ---
 let created = 0;
-let kept = 0;
 let failed = 0;
-const installMode = args.link ? (process.platform === 'win32' ? 'junction' : 'symlink') : 'copy';
 
 for (const p of plan) {
-  if (p.action === 'keep') {
-    kept++;
-    if (!args['dry-run']) console.log(`  ✓ ${p.name} (already current)`);
-    continue;
-  }
-
   if (p.action === 'replace' && !args.force) {
-    console.log(`  ⚠️  ${p.name}: existing entry points to '${p.existingTarget}', use --force to replace`);
+    console.log(`  ⚠️  ${p.name}: existing entry present, use --force to replace (it will be backed up first)`);
     failed++;
     continue;
   }
@@ -320,22 +304,30 @@ for (const p of plan) {
   const dstPath = join(GATEWAY_HOOKS, p.name);
 
   if (args['dry-run']) {
-    console.log(`  [dry-run] would ${installMode}: ${p.name} <- ${target}`);
+    console.log(`  [dry-run] would copy: ${p.name} <- ${target}`);
     created++;
     continue;
   }
 
   try {
-    if (installMode === 'copy') {
-      // Regular recursive copy. OpenClaw 2026.6.6 loader reliably reads
-      // handler.js from regular copies under managedHooksDir; junction
-      // entries (the previous default) failed to load on Windows. Keep
-      // this as the safe default.
-      cpSync(target, dstPath, { recursive: true, force: true });
-    } else {
-      // 'junction' on Windows = NTFS reparse point (no admin); falls back
-      // to a regular symlink on POSIX. EXPERIMENTAL — see --link docs.
-      symlinkSync(target, dstPath, installMode);
+    // Runtime hook dir is .js-only. We materialize the built bundle
+    // (handler.js) + HOOK.md from source, and clean up any leftover
+    // .ts files left over from the old .ts+.js-in-one-folder layout.
+    mkdirSync(dstPath, { recursive: true });
+    const builtJs = builtBundles.get(p.name);
+    if (builtJs && existsSync(builtJs)) {
+      copyFileSync(builtJs, join(dstPath, 'handler.js'));
+    }
+    const hookMd = join(target, 'HOOK.md');
+    if (existsSync(hookMd)) {
+      copyFileSync(hookMd, join(dstPath, 'HOOK.md'));
+    }
+    // Cleanup: drop any .ts left over from the previous layout. Safe
+    // because runtime hooks must not contain source files anyway.
+    for (const entry of readdirSync(dstPath)) {
+      if (entry.endsWith('.ts')) {
+        rmSync(join(dstPath, entry), { force: true });
+      }
     }
     console.log(`  ✅ ${p.name}`);
     created++;
@@ -345,11 +337,15 @@ for (const p of plan) {
   }
 }
 
+// --- Step 5b: cleanup temp build dirs ---
+for (const builtJs of builtBundles.values()) {
+  try { rmSync(dirname(builtJs), { recursive: true, force: true }); } catch {}
+}
+
 // --- Step 6: report ---
 console.log();
 console.log(`install-hooks summary:`);
 console.log(`  created:  ${created}`);
-console.log(`  kept:     ${kept}`);
 console.log(`  failed:   ${failed}`);
 if (orphans.length > 0) {
   console.log(`  orphans:  ${orphans.length} (in target dir but not in skill; review manually)`);

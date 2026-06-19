@@ -55,11 +55,26 @@ const handler = async (event: any) => {
   // agent id when building the sessionDir path on disk.
   const resolvedAgentId = parseAgentIdFromSessionKey(sessionKey);
 
+  // TEMP DEBUG — remove after we know the runtime shape.
+  try {
+    process.stderr.write(
+      `[engram-topic-domain-load:debug] sessionKey=${JSON.stringify(sessionKey)} ` +
+      `resolvedAgentId=${JSON.stringify(resolvedAgentId)} ` +
+      `event.context=${JSON.stringify(event.context)}\n`,
+    );
+  } catch {}
+
   const workspaceDir =
     event.context?.workspaceDir ||
     process.env.OPENCLAW_WORKSPACE ||
     (resolvedAgentId ? resolveWorkspaceByAgentId(resolvedAgentId) : null);
   if (!workspaceDir) {
+    try {
+      process.stderr.write(
+        `[engram-topic-domain-load:debug] no workspaceDir — returning early. ` +
+        `sessionKey=${JSON.stringify(sessionKey)} resolvedAgentId=${JSON.stringify(resolvedAgentId)}\n`,
+      );
+    } catch {}
     return;
   }
 
@@ -77,6 +92,34 @@ const handler = async (event: any) => {
     if (m) {
       if (!chatId) chatId = m[1];
       if (!topicId) topicId = m[2] || null;
+    }
+  }
+  // OpenClaw 2026.6.6 fallback chain.
+  //   - topicId: legacy context.topicId already handled above; for OC66 the
+  //     value lands in context.metadata.threadId (internal event) or as a
+  //     top-level event.threadId (plugin event).
+  //   - chatId: in OC66 conversationId arrives as "telegram:{chatId}" (no
+  //     :topic: suffix), so the regex above only catches chatId. When
+  //     conversationId is empty/absent, try context.metadata.to /
+  //     context.metadata.originatingTo.
+  if (!topicId) {
+    const fromMeta = event.context?.metadata?.threadId;
+    const fromTop = event.threadId;
+    if (typeof fromMeta === "string" && fromMeta.length > 0) {
+      topicId = fromMeta;
+    } else if (typeof fromTop === "string" && fromTop.length > 0) {
+      topicId = fromTop;
+    }
+  }
+  if (!chatId) {
+    const fromConv = conversationId.match(/^telegram:(-?\d+)/);
+    if (fromConv) {
+      chatId = fromConv[1];
+    } else {
+      const fromMeta = event.context?.metadata?.to || event.context?.metadata?.originatingTo;
+      if (typeof fromMeta === "string" && fromMeta.length > 0) {
+        chatId = fromMeta;
+      }
     }
   }
   if (!topicId || !chatId) {

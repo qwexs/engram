@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # engram/.githooks/pre-commit
 #
-# Local pre-commit guard for the engram repo. Two responsibilities:
+# Local pre-commit guard for the engram repo. One responsibility:
 #   1. Run the personal-data linter over staged files and abort the commit
 #      on any leak (workspace paths, reserved agentIds, chatIds, bot tokens).
-#   2. Rebuild hook handler bundles (handler.ts -> handler.js) so the gateway
-#      can import them at runtime. The commit is aborted if a bundle is
-#      stale (i.e. a handler.ts is staged but handler.js is not updated).
+#
+# Hook bundles (handler.js) are NOT rebuilt in source any more — the source
+# repo is .ts-only. The runtime copy at ~/clawd/hooks/ is built and installed
+# by `bun scripts/install-hooks.js`, which is the only place handler.js is
+# produced.
 #
 # Install once per clone:
 #   git config core.hooksPath .githooks
 #
 # Why: the repo is public. Hardcoded paths, agentIds, chatIds, or bot tokens
 # in tests, fixtures, or sample configs are PII / workspace-specific data
-# that should never leave the author's machine. Hook bundles must stay in
-# sync with their TypeScript sources so a fresh checkout works without a
-# build step.
+# that should never leave the author's machine.
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -47,27 +47,5 @@ To skip this check (NOT recommended):
   git commit --no-verify
 EOF
     exit 1
-  fi
-fi
-
-# --- 2) Hook bundle rebuild ------------------------------------------------
-# Rebuild handler.js for any hook whose handler.ts is staged (or whose
-# handler.js is already staged / out of date relative to its source). If
-# the build is needed but no changes are produced, the commit still
-# proceeds — bun build is deterministic.
-BUILDER="${REPO_ROOT}/scripts/build-hook-bundles.ts"
-if [ -f "$BUILDER" ]; then
-  staged_ts=$(git diff --cached --name-only -- 'hooks/*/handler.ts' || true)
-  if [ -n "$staged_ts" ]; then
-    echo "pre-commit: rebuilding hook bundles (staged: $staged_ts)…"
-    bun "$BUILDER"
-    # Add freshly-built bundles to the index so the commit captures them.
-    for f in $staged_ts; do
-      dir=$(dirname "$f")
-      js="$dir/handler.js"
-      if [ -f "$js" ]; then
-        git add -- "$js"
-      fi
-    done
   fi
 fi

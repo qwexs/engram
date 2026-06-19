@@ -132,27 +132,75 @@ OpenClaw 2026.6.6 loads hooks from its **managed hooks directory** —
 `~/clawd/hooks/` on Windows (`%USERPROFILE%\clawd\hooks\`,
 `CONFIG_DIR/hooks` in OpenClaw terms). The loader scans that path on
 gateway startup; hooks that exist there as **regular directories** with
-`handler.js` + `handler.ts` + `HOOK.md` register as
-`openclaw-workspace` source.
+`handler.js` + `HOOK.md` register as `openclaw-workspace` source.
+
+### Source vs runtime layout
+
+Hooks live in two places with intentionally different layouts:
+
+- **Source** (`skills/engram/hooks/<name>/handler.ts`) — what you read,
+  edit, and commit. **Only `.ts` files live here**; there are no
+  pre-built `.js` artifacts in the repo. Keeping the source `.ts`-only
+  means no consistency work between two parallel files per hook.
+- **Runtime** (`<workspace>/hooks/<name>/handler.js` + `HOOK.md`) —
+  what OpenClaw actually loads. **Only `.js` files live here**, plus
+  `HOOK.md`. `.ts` files in the runtime dir are not loaded and are
+  actively cleaned up by `install-hooks.js`.
+
+The runtime `handler.js` is derived from source via
+`bun build --target=node --format=esm`. The build happens inside
+`install-hooks.js`, in a per-hook temp dir (`os.tmpdir()`), and the
+resulting `.js` is copied into the runtime hooks dir. The temp dir is
+removed after install; nothing derived is ever written to source.
+
+Because the build step needs **bun** at install time, bun is the only
+hard runtime dependency for hooks. Once installed, the runtime is
+plain Node.js — OpenClaw's loader does not need bun.
 
 ### Install (recommended)
 
 Use `scripts/install-hooks.js` to mirror the skill's hooks into
-`~/clawd/hooks/`. Default mode is **regular recursive copy** — this is
-the mode that actually loads on OpenClaw 2026.6.6.
+`~/clawd/hooks/`. Default mode is **regular copy** — this is the mode
+that actually loads on OpenClaw 2026.6.6.
 
 ```bash
 bun skills/engram/scripts/install-hooks.js            # install all 8
 bun skills/engram/scripts/install-hooks.js --dry-run  # preview, no changes
 bun skills/engram/scripts/install-hooks.js --force    # overwrite existing entries
 openclaw gateway restart
-bun scripts/install-hooks.js --dry-run                # should report 'kept: 8' (idempotent)
+bun scripts/install-hooks.js --dry-run                # should report 'created: 8' (idempotent)
 openclaw hooks list                                   # should show 11/13 ready
 ```
 
 After `openclaw gateway restart`, `openclaw hooks list` should report
 13 entries (5 bundled + 8 engram-workspace, 11 ready — `session-memory`
 and `engram-message-log` are disabled by config).
+
+`init.js` already calls `install-hooks.js` for you during first-time
+setup; you only need to run it manually after `git pull`, after editing
+`handler.ts`, or after adding a new hook.
+
+### Multi-workspace install
+
+If you run multiple OpenClaw workspaces on the same host (each with its
+own `hooks/`), the script autodetects the target via
+`openclaw hooks info`, which always returns the gateway's primary
+workspace (`~/clawd/hooks`). To install into additional workspaces,
+pass `--hooks-dir` explicitly:
+
+```bash
+cd ~/workspace-b
+bun skills/engram/scripts/install-hooks.js --hooks-dir ~/workspace-b/hooks
+cd ~/workspace-c
+bun skills/engram/scripts/install-hooks.js --hooks-dir ~/workspace-c/hooks
+cd ~/workspace-d
+bun skills/engram/scripts/install-hooks.js --hooks-dir ~/workspace-d/hooks
+```
+
+Use synthetic placeholders like `workspace-b/c/d` if you're writing
+docs for a public repo — the personal-data linter (`.githooks/pre-commit`)
+rejects workspace-specific names like `<agent-a>` or `<agent-b>` as
+`reserved-agent-id` patterns.
 
 ### Install (manual)
 

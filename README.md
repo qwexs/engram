@@ -127,6 +127,57 @@ Engram ships 8 hooks that automate mechanical session tasks. Agents do
 Disable the built-in `session-memory` hook when enabling
 `engram-session-memory` — they write to different locations.
 
+### Installing the hooks
+
+Hooks live in two places:
+
+- **Source** (`skills/engram/hooks/<name>/handler.ts`) — what you read,
+  what you edit, what Git tracks. **Only `.ts` files are committed**;
+  there are no pre-built `.js` artifacts in the repo.
+- **Runtime** (`<workspace>/hooks/<name>/handler.js`) — what OpenClaw
+  actually loads. **Only `.js` files live here**, plus `HOOK.md`.
+
+The runtime bundle is derived from source via `bun build` and copied
+into place by `scripts/install-hooks.js`. Because the build needs
+[bun](https://bun.sh), install-time bun is the only hard dependency for
+hooks — once installed, the runtime is plain Node.js.
+
+```bash
+# Install all 8 engram-* hooks into OpenClaw's runtime hooks dir.
+# Default target: ~/clawd/hooks/ (the gateway's managedHooksDir).
+bun skills/engram/scripts/install-hooks.js
+
+# Multi-workspace: each OpenClaw workspace has its own hooks dir.
+# install-hooks.js autodetects via `openclaw hooks info` but that
+# always returns the gateway's primary workspace. To install into
+# additional workspaces (or per-workspace junctions), pass --hooks-dir:
+cd ~/workspace-b
+bun skills/engram/scripts/install-hooks.js --hooks-dir ~/workspace-b/hooks
+cd ~/workspace-c
+bun skills/engram/scripts/install-hooks.js --hooks-dir ~/workspace-c/hooks
+cd ~/workspace-d
+bun skills/engram/scripts/install-hooks.js --hooks-dir ~/workspace-d/hooks
+
+# Re-install (after editing handler.ts, after `git pull`, after adding
+# a new hook). --force backs up existing entries to _pre-install-<ts>/
+# before replacing them. Default is a no-op when content matches.
+bun skills/engram/scripts/install-hooks.js --force
+
+# Preview without writing anything.
+bun skills/engram/scripts/install-hooks.js --dry-run
+```
+
+After any hook change, restart the gateway so the loader picks up the
+new `handler.js`:
+
+```bash
+openclaw gateway restart
+```
+
+`init.js` already calls `install-hooks.js` for you during first-time
+setup; you only need to run it manually after pulling new hook code,
+adding a new hook, or modifying an existing `handler.ts`.
+
 ---
 
 ## Quick Start

@@ -55,26 +55,11 @@ const handler = async (event: any) => {
   // agent id when building the sessionDir path on disk.
   const resolvedAgentId = parseAgentIdFromSessionKey(sessionKey);
 
-  // TEMP DEBUG — remove after we know the runtime shape.
-  try {
-    process.stderr.write(
-      `[engram-topic-domain-load:debug] sessionKey=${JSON.stringify(sessionKey)} ` +
-      `resolvedAgentId=${JSON.stringify(resolvedAgentId)} ` +
-      `event.context=${JSON.stringify(event.context)}\n`,
-    );
-  } catch {}
-
   const workspaceDir =
     event.context?.workspaceDir ||
     process.env.OPENCLAW_WORKSPACE ||
     (resolvedAgentId ? resolveWorkspaceByAgentId(resolvedAgentId) : null);
   if (!workspaceDir) {
-    try {
-      process.stderr.write(
-        `[engram-topic-domain-load:debug] no workspaceDir — returning early. ` +
-        `sessionKey=${JSON.stringify(sessionKey)} resolvedAgentId=${JSON.stringify(resolvedAgentId)}\n`,
-      );
-    } catch {}
     return;
   }
 

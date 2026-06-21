@@ -41,6 +41,45 @@ bun skills/engram/scripts/validate.js
 bun skills/engram/scripts/migrate-v2.js --dry-run
 ```
 
+
+
+## Topic-thread домены (Telegram-топики)
+
+Telegram-топик в форум-группе = долгоживущая OpenClaw-сессия с отдельной памятью.
+Топик и домен создаются одной командой `add-domain`. Используется в двух ситуациях:
+
+1. **Просьба «создай топик про X»** — бот создаёт топик в группе через Bot API
+   и сразу привязывает к нему новый домен:
+   ```bash
+   bun skills/engram/scripts/add-domain.js --domain <slug> \
+     --type topic-thread \
+     --create-telegram-topic \
+     --telegram-chat-id -1001 \
+     --kg-entity projects/<slug> \
+     --description "<что обсуждаем>"
+   ```
+   Бот использует токен из `~/.openclaw/openclaw.json` (или `TELEGRAM_BOT_TOKEN`).
+   Следующее сообщение в новом топике подхватит хук `engram-topic-domain-load`
+   и начнёт инжектить `## Domain Context (auto)` + `## Domain AGENTS (auto)`.
+2. **Уже есть топик без домена** (≥2 сообщений по теме, домен не заведён) — привязать
+   существующий топик к новому домену:
+   ```bash
+   bun skills/engram/scripts/add-domain.js --domain <slug> \
+     --type topic-thread \
+     --topic <chatId>:<topicId> \
+     --kg-entity projects/<slug> \
+     --description "<что обсуждаем>"
+   ```
+   Формат `<chatId>:<topicId>` — например `-1001:60`.
+
+**Когда какой:**
+- Просьба «заведи новый тред» / новая тема без существующего топика → `--create-telegram-topic`.
+- Уже есть топик с контекстом, хочется дать ему memory contour → `--topic`.
+
+Полный lifecycle, авто-архив, типы доменов: `references/topic-thread.md`.
+Workspace-специфичные конвенции (QMD-контракт, read/write rules): `workspace/topic-domain-conventions.md`.
+
+
 ## Architecture Overview
 
 ```

@@ -530,6 +530,23 @@ if (!cronCfg || !cronCfg.expectedJobName) {
               ok(`Last run ${ageMin}m ago (status=${job.state?.lastRunStatus || '?'})`);
             }
           }
+          // 8b. Heartbeat prompt format check. The pre-2026-06-23 prompt
+          // required the LLM to echo the full ~38kB runner output into its
+          // final reply, which (a) burned ~11k output tokens per tick
+          // across all workspaces and (b) frequently clipped at
+          // max_tokens=8192, causing NO_REPLY / truncated summaries. The
+          // 2026-06-23+ form uses a decision tree keyed on
+          // runner.summary.status and warnings, with a ≤512-token reply
+          // cap. The check below catches any cron still on the old
+          // form so the operator can re-run install-cron.js to upgrade.
+          const promptMsg = job.payload?.message || '';
+          if (promptMsg.includes('Reply with: the runner output (as text)')) {
+            error(`Cron payload uses the pre-2026-06-23 echo prompt (~11k output tokens/tick wasted, frequent max_tokens=8192 clipping). Run \`bun skills/engram/scripts/install-cron.js install\` in this workspace to upgrade to the concise form.`);
+          } else if (promptMsg.includes('Step 4 — Final reply (CONCISE, NO ECHO)')) {
+            ok('Heartbeat prompt is on the 2026-06-23+ concise format (no echo, ≤512-token reply cap)');
+          } else if (promptMsg) {
+            warn('Heartbeat prompt format is unrecognized — manual review recommended');
+          }
         }
       }
     }

@@ -309,6 +309,36 @@ During heartbeats, scan daily notes for durable facts:
 
 For the complete heartbeat flow, see [references/HEARTBEAT.md](references/HEARTBEAT.md).
 
+### Heartbeat cron provisioning
+
+The cron job that drives the heartbeat LLM agent is provisioned (and
+upgraded) by `scripts/install-cron.js`. Since 2026-06-23 the payload
+uses a concise Step 4 (no echo, decision tree on `runner.summary.status`
+and `warnings`, ≤512-token reply cap) — the canonical form lives in the
+`PROSE_TEMPLATE` constant in that script. The pre-2026-06-23 echo form
+required the model to re-emit the full runner output (~38kB) into its
+final reply, which burned ~11k output tokens/tick and frequently clipped
+at the Anthropic `max_tokens=8192` default.
+
+For a new workspace:
+
+```bash
+bun skills/engram/scripts/install-cron.js install \
+  --workspace <path> --agent-id <id> --schedule '*/30 * * * *'
+```
+
+For an existing workspace on the old form, re-run the same command —
+`isOnNewFormat()` returns false and the script emits
+`openclaw cron edit <id> --message <new>` automatically, preserving
+agentId, schedule, model, thinking, timeoutSeconds, lightContext,
+delivery, and sessionKey. The step is idempotent and safe to run
+repeatedly.
+
+`scripts/validate.js` (cron drift guard) flags any heartbeat job still
+on the pre-2026-06-23 echo form. See
+[references/heartbeat-legacy.md § Prompt format history](references/heartbeat-legacy.md#prompt-format-history)
+for the two forms, measured impact, and migration steps.
+
 ### Domain Supervisor Scan
 
 If subagent domains exist (`memory/domains/`), heartbeat acts as supervisor:

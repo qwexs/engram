@@ -250,7 +250,13 @@ workdir="/tmp/ws" timeout_ms=60000.
 Step 3 — For each line in claim.stdout that parses as JSON with action="spawn":
 Call tools.sessions_spawn(...).
 
-Step 4 — Final reply: HEARTBEAT_OK.`;
+Step 4 — Final reply (CONCISE, NO ECHO):
+Delivery is \`none\` — your reply is only stored in the session log, never sent to a chat. Keep it short.
+
+Look at \`runner.summary.status\` and \`runner.summary.warnings\`:
+- status == "ok" and warnings empty → reply EXACTLY: \`HEARTBEAT_OK\`
+- status == "ok" with warnings → reply with up to 5 one-liners, then \`HEARTBEAT_OK\`
+- status == "error" → reply with up to 2 one-liners, then \`NO_REPLY\``;
 
 const OLD_PAYLOAD = `Run the heartbeat. One command:
 bun ./skills/engram/scripts/heartbeat-runner.js --workspace /tmp/ws

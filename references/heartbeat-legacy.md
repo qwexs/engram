@@ -228,3 +228,65 @@ Run ONCE per heartbeat to reduce GPU load.
   "nextRun": "2026-02-16 (Monday, Week 7)"
 }
 ```
+
+
+## Prompt format history
+
+The cron payload that drives the heartbeat LLM agent has changed over time.
+The install-cron.js template in `scripts/` is the source of truth; this
+section exists to document the two forms so existing deployments and the
+validate.js drift guard can detect and upgrade old installations.
+
+### 2026-06-23+ — concise form (current)
+
+Step 4 is a short decision tree keyed on `runner.summary.status` and
+`runner.summary.warnings`, with a hard cap of `≤512 tokens` on the final
+reply. The agent never echoes the full runner output — that JSON is
+already written to the daily note via `heartbeat-report.js`, so re-emitting
+it into the assistant message is pure waste. The full Step 4 lives in
+`scripts/install-cron.js` `PROSE_TEMPLATE`; the marker that
+`isOnNewFormat()` checks for is the substring
+`Step 4 — Final reply (CONCISE, NO ECHO)`.
+
+Behavior matrix:
+
+- `status == "ok"` and `warnings == []` → reply exactly `HEARTBEAT_OK`.
+- `status == "ok"` with `warnings` → up to 5 one-liners (≤200 chars each),
+  then `HEARTBEAT_OK`.
+- `status == "error"` → up to 2 one-liners summarizing the first failures
+  (≤200 chars each), then `NO_REPLY`.
+- If `claim.stdout` was non-empty, append one final line:
+  `[phase-5.5] scanned N, claimed M, errors E, spawned K`.
+
+### pre-2026-06-23 — echo form (deprecated)
+
+Step 4 said: *"Reply with: the runner output (as text), then a one-line
+summary …"*. The runner output is ~38kB / ~11k output tokens per tick on
+quiet workspaces. With `delivery.mode: none` (which all heartbeat crons
+use) the reply is only stored in the session log, so the echo is never
+read by anyone. It also regularly clipped at the Anthropic API default
+`max_tokens=8192`, causing NO_REPLY / truncated summary rows in
+`cron list runs`.
+
+Measured impact of upgrading a single workspace from echo → concise
+(quiet m2.7-fast tick, 2026-06-23):
+
+- input tokens: 29 566 → 14 133 (**−52 %**)
+- output tokens: 1 733 → 1 198 (**−31 %**)
+- duration: 99 643 ms → 81 723 ms (**−18 %** wall time)
+
+The bigger win is on noisy ticks (warnings / error path): the old form
+scaled with runner output size and could reach 5–10 k output tokens; the
+new form is hard-capped at ≤512 tokens on the final reply (plus the
+model's thinking budget, which is set per-model, not per-reply).
+
+### Detecting and upgrading old crons
+
+`scripts/validate.js` (cron drift guard) flags any heartbeat job whose
+payload still contains `Reply with: the runner output (as text)` with an
+`error`-level message. To upgrade an existing job, re-run
+`bun skills/engram/scripts/install-cron.js install` in that workspace —
+`isOnNewFormat()` returns false for the old form, so the script emits
+`openclaw cron edit <id> --message "<new>"` and preserves agentId,
+schedule, model, thinking, timeoutSeconds, lightContext, delivery, and
+sessionKey. The step is idempotent and safe to run repeatedly.

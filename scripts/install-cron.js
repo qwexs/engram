@@ -301,6 +301,17 @@ function buildSchedule(s) {
 // created or updated. Do NOT edit this template without checking
 // references/HEARTBEAT.md Phase 5.5 — the agent's reply structure is
 // what makes Phase 5.5 work end-to-end.
+//
+// Step 4 history (see references/heartbeat-legacy.md § Prompt format history):
+//   - pre-2026-06-23: required the model to echo the full runner output
+//     (~38kB / ~11k output tokens per tick) into the final reply. With
+//     delivery.mode=none this is pure waste and frequently clipped at
+//     max_tokens=8192, causing NO_REPLY / truncated summaries.
+//   - 2026-06-23+: concise decision tree keyed on runner.summary.status
+//     and warnings. Reply capped at ≤512 tokens, no echo. First
+//     measurement on a quiet m2.7-fast tick: input ~14.1k (-52%),
+//     output ~1.2k (-31%), wall time ~82s (-18%); on noisy ticks the
+//     savings are 5-10x because the old echo path is fully eliminated.
 const PROSE_TEMPLATE = `You are the cron job for the Clawd engram heartbeat. Do these steps in order using your available tools (do not write or run any JavaScript or shell scripts; call the tools directly).
 
 Step 1 — Run the heartbeat runner:
@@ -313,8 +324,16 @@ Call tools.shell_command with command="bun ./skills/engram/scripts/spawn-claim.j
 Step 3 — For each line in \`claim.stdout\` that parses as JSON with action="spawn":
 Call tools.sessions_spawn with task=<rec.task>, label=<rec.label>, model=<rec.model>, cleanup="delete", cwd="<WORKSPACE>". Count successful calls as \`spawnedCount\`. Ignore the final {action:"summary",...} line and any non-spawn lines.
 
-Step 4 — Final reply:
-Reply with: the runner output (as text), then a one-line summary "[phase-5.5] scanned N, claimed M, errors E, spawned K" if claim.stdout was non-empty, then "HEARTBEAT_OK" (or NO_REPLY if runner exit_code != 0 and you did not proceed). Do not call any other tool beyond what's specified above.`;
+Step 4 — Final reply (CONCISE, NO ECHO):
+Delivery is \`none\` — your reply is only stored in the session log, never sent to a chat. Keep it short.
+
+Look at \`runner.summary.status\` and \`runner.summary.warnings\` (the JSON has them at the top level):
+- status == "ok" and warnings empty → reply EXACTLY: \`HEARTBEAT_OK\` (one line, no other text)
+- status == "ok" with warnings → reply with up to 5 one-liners (one per warning, each ≤200 chars), then \`HEARTBEAT_OK\`
+- status == "error" → reply with up to 2 one-liners summarizing the first failures (≤200 chars each), then \`NO_REPLY\`
+If \`claim.stdout\` was non-empty, append one final line: \`[phase-5.5] scanned N, claimed M, errors E, spawned K\` (use the {action:"summary",...} JSON line).
+
+Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or any tool result verbatim. Do NOT call any tool beyond what is specified above. The whole reply must fit in ≤512 tokens.`;
 
 // --- Heartbeat tool allow-list ---
 // The heartbeat cron-job is a deterministic runner: it shells out to
@@ -341,6 +360,11 @@ const HEARTBEAT_TOOLS_ALLOW_CLI = HEARTBEAT_TOOLS_ALLOW.join(",");
 
 const NEW_PAYLOAD_MARKER_1 = "Step 1 — Run the heartbeat runner";
 const NEW_PAYLOAD_MARKER_2 = "Step 2 — Drain the subagent-spawn queue";
+// Marker for the 2026-06-23+ concise Step 4 (no echo, decision tree,
+// ≤512-token reply cap). Presence of this string confirms the cron
+// payload is on the current format; absence means an older echo-style
+// prompt and a cron edit is required to upgrade.
+const NEW_PAYLOAD_MARKER_3 = "Step 4 — Final reply (CONCISE, NO ECHO)";
 
 function buildPayloadMessage({ workspace, agentId, session, labelPrefix }) {
   return PROSE_TEMPLATE
@@ -355,6 +379,7 @@ function isOnNewFormat(payload) {
   return (
     payload.message.includes(NEW_PAYLOAD_MARKER_1) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_2) &&
+    payload.message.includes(NEW_PAYLOAD_MARKER_3) &&
     // toolsAllow must be present and match HEARTBEAT_TOOLS_ALLOW.
     // If absent (older install) or divergent, we re-apply via edit.
     Array.isArray(payload.toolsAllow) &&

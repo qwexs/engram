@@ -207,7 +207,20 @@ function envForFake(fake) {
 // --- Fixture helpers ---
 
 /** Build a cron-list job in the format openclaw cron list --json returns. */
-function cronListJob({ id, name, message }) {
+function cronListJob({ id, name, message, toolsAllow }) {
+  const payload = {
+    kind: "agentTurn",
+    message,
+    model: "sonnet-4-6",
+    thinking: "medium",
+    timeoutSeconds: 900,
+    lightContext: true,
+  };
+  // Omit toolsAllow by default so old-format fixtures stay old-format.
+  // Tests that need the new format pass `toolsAllow: [...]` explicitly.
+  if (Array.isArray(toolsAllow)) {
+    payload.toolsAllow = toolsAllow;
+  }
   return {
     id,
     name,
@@ -218,14 +231,7 @@ function cronListJob({ id, name, message }) {
     schedule: { kind: "every", everyMs: 1800000, anchorMs: 1781163973897 },
     sessionTarget: "isolated",
     wakeMode: "now",
-    payload: {
-      kind: "agentTurn",
-      message,
-      model: "sonnet-4-6",
-      thinking: "medium",
-      timeoutSeconds: 900,
-      lightContext: true,
-    },
+    payload,
     delivery: { mode: "none" },
     state: {},
   };
@@ -361,9 +367,16 @@ describe("install-cron.js", () => {
     expect(readCallLog(fake.logFile)).toEqual([]);
   });
 
-  test("6. install on existing job with new payload — 'already up to date'", async () => {
+  test("6. install on existing job with new payload + toolsAllow — 'already up to date'", async () => {
     fake.setCronList({
-      jobs: [cronListJob({ id: "job-new-1", name: "Heartbeat (Engram runner)", message: NEW_PAYLOAD })],
+      jobs: [
+        cronListJob({
+          id: "job-new-1",
+          name: "Heartbeat (Engram runner)",
+          message: NEW_PAYLOAD,
+          toolsAllow: ["exec", "sessions_spawn", "read"],
+        }),
+      ],
       total: 1,
     });
     const r = await runInstallCron({
@@ -383,6 +396,36 @@ describe("install-cron.js", () => {
       (c) => c.args[0] === "cron" && c.args[1] === "add"
     );
     expect(addCall).toBeUndefined();
+  });
+
+  test("6b. install on existing job with new payload but missing toolsAllow — emits 'cron edit' with --tools", async () => {
+    // Regression test for ISS-01 rollout: after we shipped the
+    // toolsAllow optimization, existing jobs in the wild still had
+    // the new message format but no toolsAllow. install-cron must
+    // detect the divergence and patch via `cron edit --tools`.
+    fake.setCronList({
+      jobs: [cronListJob({ id: "job-no-tools", name: "Heartbeat (Engram runner)", message: NEW_PAYLOAD })],
+      total: 1,
+    });
+    const r = await runInstallCron({
+      workspace: tmp,
+      args: ["install"],
+      extraEnv: envForFake(fake),
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("updated");
+    expect(r.stdout).toContain("tools allow-list");
+    expect(r.stdout).toContain("job-no-tools");
+    const calls = readCallLog(fake.logFile);
+    const editCall = calls.find(
+      (c) => c.args[0] === "cron" && c.args[1] === "edit"
+    );
+    expect(editCall).toBeDefined();
+    expect(editCall.args[2]).toBe("job-no-tools");
+    const toolsIdx = editCall.args.indexOf("--tools");
+    expect(toolsIdx).toBeGreaterThan(-1);
+    // Comma-separated canonical form per openclaw cron edit --help.
+    expect(editCall.args[toolsIdx + 1]).toBe("exec,sessions_spawn,read");
   });
 
   test("7. install on existing job with old payload — emits 'cron edit' call, prints 'updated'", async () => {
@@ -661,8 +704,8 @@ describe("install-cron.js", () => {
     fake.setCronList({
       jobs: [
         cronListJob({
-          id: "apriori-1",
-          name: "Heartbeat (Apriori Engram runner)",
+          id: "alpha-1",
+          name: "Heartbeat (Alpha Engram runner)",
           message: OLD_PAYLOAD,
         }),
       ],
@@ -673,19 +716,19 @@ describe("install-cron.js", () => {
       args: [
         "install",
         "--cron-name",
-        "Heartbeat (Apriori Engram runner)",
+        "Heartbeat (Alpha Engram runner)",
       ],
       extraEnv: envForFake(fake),
     });
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain("updated");
-    expect(r.stdout).toContain("apriori-1");
+    expect(r.stdout).toContain("alpha-1");
     const calls = readCallLog(fake.logFile);
     const editCall = calls.find(
       (c) => c.args[0] === "cron" && c.args[1] === "edit"
     );
     expect(editCall).toBeDefined();
-    expect(editCall.args[2]).toBe("apriori-1");
+    expect(editCall.args[2]).toBe("alpha-1");
   });
 
   test("21. workspace arg from --workspace flag (not ENGRAM_WORKSPACE)", async () => {

@@ -316,6 +316,29 @@ Call tools.sessions_spawn with task=<rec.task>, label=<rec.label>, model=<rec.mo
 Step 4 — Final reply:
 Reply with: the runner output (as text), then a one-line summary "[phase-5.5] scanned N, claimed M, errors E, spawned K" if claim.stdout was non-empty, then "HEARTBEAT_OK" (or NO_REPLY if runner exit_code != 0 and you did not proceed). Do not call any other tool beyond what's specified above.`;
 
+// --- Heartbeat tool allow-list ---
+// The heartbeat cron-job is a deterministic runner: it shells out to
+// heartbeat-runner.js / spawn-claim.js and may dispatch subagent spawns.
+// It does NOT need to write files, send messages, edit configs, or call
+// any other heavy tool — payload delivery is `mode: none`. Listing all
+// ~30+ agent tools in the system prompt burns thousands of input tokens
+// per tick (~1.7M/day across 6 workspaces per ISS-01). Restricting to
+// the minimum set cuts the system-prompt footprint drastically while
+// keeping every step the message asks for working.
+//
+//   exec           — run heartbeat-runner.js + spawn-claim.js (Step 1+2)
+//   sessions_spawn — dispatch Phase 5.5 subagents (Step 3)
+//   read           — diagnose failures (read heartbeat-state.json etc.)
+//
+// If a future heartbeat step needs a new tool (e.g. message for ALERT
+// delivery), add it here AND verify the heartbeat message template
+// still works under the new allow-list.
+const HEARTBEAT_TOOLS_ALLOW = ["exec", "sessions_spawn", "read"];
+
+// Format for `openclaw cron add --tools` / `cron edit --tools`: comma-
+// separated list is the canonical form (space-separated also accepted).
+const HEARTBEAT_TOOLS_ALLOW_CLI = HEARTBEAT_TOOLS_ALLOW.join(",");
+
 const NEW_PAYLOAD_MARKER_1 = "Step 1 — Run the heartbeat runner";
 const NEW_PAYLOAD_MARKER_2 = "Step 2 — Drain the subagent-spawn queue";
 
@@ -331,7 +354,12 @@ function isOnNewFormat(payload) {
   if (!payload || !payload.message) return false;
   return (
     payload.message.includes(NEW_PAYLOAD_MARKER_1) &&
-    payload.message.includes(NEW_PAYLOAD_MARKER_2)
+    payload.message.includes(NEW_PAYLOAD_MARKER_2) &&
+    // toolsAllow must be present and match HEARTBEAT_TOOLS_ALLOW.
+    // If absent (older install) or divergent, we re-apply via edit.
+    Array.isArray(payload.toolsAllow) &&
+    payload.toolsAllow.length === HEARTBEAT_TOOLS_ALLOW.length &&
+    payload.toolsAllow.every((t, i) => t === HEARTBEAT_TOOLS_ALLOW[i])
   );
 }
 
@@ -356,6 +384,7 @@ function buildCronSpec() {
       thinking: "medium",
       timeoutSeconds: 900,
       lightContext: true,
+      toolsAllow: [...HEARTBEAT_TOOLS_ALLOW],
     },
     delivery: {
       mode: "none",
@@ -431,9 +460,10 @@ function actionInstall() {
       console.log(`✅ already up to date (id=${existing.id})`);
       return;
     }
-    // Update only name + payload.message. agentId, schedule, model, thinking,
-    // timeoutSeconds, lightContext, sessionTarget, delivery, sessionKey are
-    // preserved from the existing job — we MUST NOT touch them.
+    // Update name + payload.message + tools allow-list. agentId, schedule,
+    // model, thinking, timeoutSeconds, lightContext, sessionTarget,
+    // delivery, sessionKey are preserved from the existing job — we MUST
+    // NOT touch them.
     runOpenclaw([
       "cron",
       "edit",
@@ -442,8 +472,10 @@ function actionInstall() {
       cronName,
       "--message",
       spec.payload.message,
+      "--tools",
+      HEARTBEAT_TOOLS_ALLOW_CLI,
     ]);
-    console.log(`✅ updated cron job ${existing.id}`);
+    console.log(`✅ updated cron job ${existing.id} (message + tools allow-list)`);
     return;
   }
 
@@ -468,6 +500,8 @@ function actionInstall() {
     "--timeout-seconds",
     "900",
     "--light-context",
+    "--tools",
+    HEARTBEAT_TOOLS_ALLOW_CLI,
     "--no-deliver",
     "--json",
   ];

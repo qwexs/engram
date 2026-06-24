@@ -29,6 +29,10 @@ function seedDomainRegistry(domains) {
 }
 
 function runRunner(args = []) {
+  return runRunnerRaw([...args, "--no-inline-noop"]);
+}
+
+function runRunnerRaw(args) {
   const proc = Bun.spawnSync([
     "bun",
     RUNNER,
@@ -467,5 +471,38 @@ Changelog-Entries: []`;
     );
     expect(result.status).toBe("noop");
     expect(result.idempotent).toBe(true);
+  });
+
+  test("inline-noop: due topic-thread domain with empty bound-session daily note applies noop without spawning", () => {
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    });
+    // No daily note seeded → empty events → inline noop.
+    const result = runRunnerRaw(["--spawn-hb-domains-write"]);
+    const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
+    expect(queued).toHaveLength(0);
+    expect(result.summary.oll).toContain("inlined-noop 1");
+    expect(result.summary.oll).toContain("suppressed 1");
+    // domainRuns should now have lastCheckedAt for engram.
+    const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+    expect(state.domainRuns?.engram?.lastCheckedAt).not.toBeNull();
+    expect(state.domainRuns?.engram?.lastCheckedAt).not.toBeUndefined();
+  });
+
+  test("inline-noop: topic-thread domain with non-empty daily note still spawns subagent", () => {
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    });
+    // Seed a daily note with real events under ## Events section.
+    const noteDir = join(root, "memory", "agent-main", "telegram-group--100-topic-1");
+    mkdirSync(noteDir, { recursive: true });
+    writeFileSync(
+      join(noteDir, DATE + ".md"),
+      "# " + DATE + "\n\n## Events\n\n- 09:30 Сергей обсудил важное решение про cadence.\n\n## Decisions\n"
+    );
+    const result = runRunnerRaw(["--spawn-hb-domains-write"]);
+    const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
+    expect(queued).toHaveLength(1);
+    expect(result.summary.oll).not.toContain("inlined-noop");
   });
 });

@@ -861,6 +861,7 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   // a typical topic with no recent updates fires after ~2 idle days.
   let deferred = 0;
   let suppressedCount = 0;
+  let inlinedNoop = 0;
   if (Boolean(opts["spawn-hb-domains-write"]) && domainScan && Array.isArray(domainScan.domains)) {
     // Read registry to get topic bindings (not exposed by scanDomains result).
     // Best-effort: if registry is missing or malformed, skip with a warning.
@@ -879,7 +880,73 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
     const batchSize = parseInt(opts["hb-domains-write-batch-size"], 10) || 1;
     const dueList = domainScan.domains.filter((d) => d && d.enabled && d.due);
     suppressedCount = dueList.filter((d) => d.suppressedByLastCheckedAt).length;
-    const activeList = dueList.filter((d) => !d.suppressedByLastCheckedAt);
+    let activeList = dueList.filter((d) => !d.suppressedByLastCheckedAt);
+
+    // Inline noop apply: for topic-thread domains whose bound-session daily note
+    // has an empty "## Events" section, advance lastCheckedAt via
+    // applyDomainWriteHandoff directly without spawning a subagent. This
+    // closes the gap where process-handoff is never invoked for hb-domains-write
+    // spawns in production (subagents write changelog files directly, but
+    // domainRuns.lastCheckedAt is never updated, so suppression never fires).
+    // Disabled by --no-inline-noop (used by tests and debugging).
+    const inlineNoopEnabled = !opts["no-inline-noop"];
+    for (const due of activeList) {
+      if (!inlineNoopEnabled) break;
+      const sessionKey = registryTopics[due.name];
+      if (!sessionKey) continue;
+      if (due.type !== "topic-thread") continue;
+      const dailyPath = notePathFor(sessionKey);
+      let isEmpty = false;
+      try {
+        const note = await readFile(dailyPath, "utf8");
+        const m = note.match(/## Events\s*\n([\s\S]*?)(?=\n## |\Z)/);
+        const events = (m ? m[1] : "").trim();
+        isEmpty = events.length < 30 || /^##\s/.test(events);
+      } catch {
+        // Missing daily note → safe to treat as empty (no events to write).
+        isEmpty = true;
+      }
+      if (!isEmpty) continue;
+      const noopHandoff = {
+        ok: true,
+        isOk: true,
+        type: "HB-DOMAINS",
+        body: [
+          "=== HB-DOMAINS HANDOFF ===",
+          "Status: ok",
+          "Summary: no domain-relevant events in " + sessionKey + " on " + today,
+          "Domain: " + due.name,
+          "Run-Id: inline-noop-" + today + "-" + randomUUID().slice(0, 8),
+          "Changelog-Entries: []",
+          "Promotions: []",
+          "=== END ===",
+        ].join("\n"),
+        summary: "noop",
+      };
+      try {
+        const applied = await applyDomainWriteHandoff(noopHandoff, {
+          workspace,
+          statePath: join(workspace, "memory", "heartbeat-state.json"),
+          now: new Date().toISOString(),
+          dryRun: false,
+          selectedDomain: due.name,
+        });
+        if (applied && applied.status === "noop") {
+          inlinedNoop++;
+          summary.warnings.push("hb-domains-write: inline noop applied for " + due.name);
+        }
+      } catch (err) {
+        summary.warnings.push("hb-domains-write: inline noop failed for " + due.name + ": " + (err && err.message ? err.message : String(err)));
+      }
+    }
+    if (inlinedNoop > 0) {
+      // Re-scan after inlining so suppression is reflected in activeList.
+      const rescanned = await scanDomains({ workspace, dryRun: true });
+      const stillDue = (rescanned && Array.isArray(rescanned.domains)) ? rescanned.domains.filter((d) => d && d.enabled && d.due && !d.suppressedByLastCheckedAt) : [];
+      suppressedCount = dueList.filter((d) => d.suppressedByLastCheckedAt).length + inlinedNoop;
+      activeList = stillDue;
+    }
+
     deferred = Math.max(0, activeList.length - batchSize);
     for (const due of activeList.slice(0, batchSize)) {
       const sessionKey = registryTopics[due.name] || null;
@@ -905,6 +972,7 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   const domainsWriteDueCount = domainScan && Array.isArray(domainScan.domains) ? domainScan.domains.filter((d) => d && d.enabled && d.due).length : 0;
   let domainsWriteText = domainsWriteQueued > 0 ? ("domains-write queued " + domainsWriteQueued) : (domainsWriteDueCount > 0 && Boolean(opts["spawn-hb-domains-write"]) ? ("domains-write due " + domainsWriteDueCount) : (domainsWriteDueCount > 0 ? ("domains-write due " + domainsWriteDueCount + " (flag off)") : "domains-write idle"));
   if (deferred > 0) domainsWriteText += "; domains-write deferred " + deferred;
+  if (inlinedNoop > 0) domainsWriteText += "; domains-write inlined-noop " + inlinedNoop;
   if (suppressedCount > 0) domainsWriteText += "; domains-write suppressed " + suppressedCount + " (no events, recently checked)";
   const rethinkText = rethinkQueued ? "rethink queued" : wouldRunRethink ? "rethink due" : rethinkInProgress ? (stale.rethink ? "rethink stale lock" : "rethink in progress") : "rethink idle";
   const autoresearchText = autoresearchQueued ? ("autoresearch queued " + (nextExperiment?.id || "")).trim() : wouldRunAutoresearch ? ("autoresearch due " + pendingAutoExperiments.length) : ("autoresearch pending " + pendingAutoExperiments.length);

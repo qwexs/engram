@@ -12,6 +12,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { loadEngramConfig, resolveSubagentModel } from "./config.js";
 import { parseHandoff } from "./process-handoff-core.js";
 import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary } from "./domains-runner.js";
@@ -173,7 +174,10 @@ async function readJson(path, fallback) {
 }
 
 async function atomicWrite(path, content) {
-  const tmp = path + ".tmp-" + process.pid + "-" + Date.now();
+  // crypto.randomUUID() guarantees uniqueness across processes and clock
+  // skew; Date.now()+pid could collide on concurrent runs (e.g., parallel
+  // cron ticks, manual + cron overlap).
+  const tmp = path + ".tmp-" + randomUUID();
   await writeFile(tmp, content);
   renameSync(tmp, path);
 }
@@ -343,7 +347,9 @@ function spawnLabel(phase) {
 }
 
 function spawnRunId(phase) {
-  return phase + "-" + today + "-" + Date.now();
+  // crypto.randomUUID() prevents collisions when two spawns fire in the same
+  // millisecond (Date.now() had this gap; review opencode-review-2026-06-24.md).
+  return phase + "-" + today + "-" + randomUUID().slice(0, 8);
 }
 
 // Normalize a filesystem path to forward-slash form for storage in JSON state.

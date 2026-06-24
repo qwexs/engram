@@ -97,25 +97,23 @@ const handler = async (event: any) => {
   appendFileSync(notePath, `<!-- session:start:${iso} -->\n`);
   console.log(`[engram-session-start] Wrote session:start to ${notePath}`);
 
-  // Move handoff .md files from memory/ root to memory/domains/{session}/YYYY-MM-DD/
+  // Move handoff .md files from memory/ root to memory/agent-{agentId}/{sessionKey}/YYYY-MM-DD/.
+  // The legacy layout (memory/domains/{session}/) conflated sessions and domains — domains are
+  // curated memory contours registered in memory/domains/registry.json, while sessions are
+  // runtime agent contexts. Handoff files belong to the session that produced them, so they
+  // now land next to daily notes in the agent-{id} subtree. See ISS-7 for history.
   try {
     const memoryDir = join(workspaceDir, "memory");
-    const domainsDir = join(memoryDir, "domains");
+    const agentSessionDir = join(memoryDir, `agent-${agentId}`, sessionKey);
     const files = readdirSync(memoryDir).filter(f => f.endsWith(".md") && /^\d{4}-\d{2}-\d{2}/.test(f));
     for (const file of files) {
       const dateMatch = file.match(/^(\d{4}-\d{2}-\d{2})/);
       if (!dateMatch) continue;
       const date = dateMatch[1];
-      let sess = "main";
-      try {
-        const content = readFileSync(join(memoryDir, file), "utf-8").slice(0, 500);
-        const m = content.match(/Session Key.*?agent:[\w-]+:([\w-]+)/);
-        if (m) sess = m[1];
-      } catch {}
-      const destDir = join(domainsDir, sess, date);
+      const destDir = join(agentSessionDir, date);
       mkdirSync(destDir, { recursive: true });
       renameSync(join(memoryDir, file), join(destDir, file));
-      console.log(`[engram-session-start] Moved ${file} -> domains/${sess}/${date}/`);
+      console.log(`[engram-session-start] Moved ${file} -> agent-${agentId}/${sessionKey}/${date}/`);
     }
   } catch (e) {
     console.error(`[engram-session-start] Handoff move error:`, e);

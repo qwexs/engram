@@ -338,8 +338,24 @@ if (topicBinding) {
   }
 }
 
+// Per-type defaults: cadenceDays (when hb-domains-write should fire) and
+// staleAfterDays (when the domain is flagged as stale and eligible for archive).
+// Per-type reasoning:
+//   topic-thread: reactive to chat activity; 2d catches work-day gaps without spam.
+//     60d archive threshold matches "dormant topic" lifetime.
+//   dev-project: longer natural cycles; 3d gap is enough to notice quiet periods.
+//   cron-task: schedule-driven; 1d ensures status is fresh; 30d archive (most aggressive).
+const DEFAULTS_BY_TYPE = {
+  "topic-thread": { cadenceDays: 2, staleAfterDays: 60 },
+  "dev-project":  { cadenceDays: 3, staleAfterDays: 60 },
+  "cron-task":    { cadenceDays: 1, staleAfterDays: 30 },
+};
+const typeDefaults = DEFAULTS_BY_TYPE[domainType] ?? { cadenceDays: 3, staleAfterDays: 60 };
+
 registry.domains[domain] = {
   type: domainType,
+  cadenceDays: typeDefaults.cadenceDays,
+  staleAfterDays: typeDefaults.staleAfterDays,
   ...(kgEntity ? { kgEntity } : {}),
   ...(topicBinding ? { topic: topicBinding } : {}),
   description,

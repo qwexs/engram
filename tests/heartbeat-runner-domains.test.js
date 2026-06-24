@@ -506,3 +506,119 @@ Changelog-Entries: []`;
     expect(result.summary.oll).not.toContain("inlined-noop");
   });
 });
+
+describe("heartbeat-runner hb-domains-write apply phase (ISS-9)", () => {
+  beforeEach(() => {
+    root = join(tmpdir(), "engram-hb-apply-" + Date.now() + "-" + Math.random().toString(16).slice(2));
+    mkdirSync(root, { recursive: true });
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main"],
+      subagentRuns: {},
+    });
+  });
+
+  afterEach(() => {
+    if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
+  });
+
+  function writeHandoffFile(runId, body) {
+    const dir = join(root, "workspace", "ops", "heartbeat-spawns", "handoff");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, runId + ".md"), body);
+    return join(dir, runId + ".md");
+  }
+
+  function noopHandoffBody(domain, runId, sessionKey = "telegram-group--100-topic-1", date = DATE) {
+    return [
+      "=== HB-DOMAINS HANDOFF ===",
+      "Status: ok",
+      "Summary: no domain-relevant events in " + sessionKey + " on " + date,
+      "Domain: " + domain,
+      "Run-Id: " + runId,
+      "Changelog-Entries: []",
+      "Promotions: []",
+      "=== END ===",
+    ].join("\n");
+  }
+
+  test("applies noop handoff file in handoff/ → file moved to done/, lastCheckedAt advanced", () => {
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    });
+    writeHandoffFile("hb-domains-write-" + DATE + "-test0001", noopHandoffBody("engram", "hb-domains-write-" + DATE + "-test0001"));
+    const result = runRunner(["--spawn-hb-domains-write"]);
+    const applyStats = result.summary.phases["hb-domains-write-apply"];
+    expect(applyStats).toBeDefined();
+    expect(applyStats.applied).toBe(1);
+    expect(applyStats.failed).toBe(0);
+    // handoff/ is empty after apply
+    const handoffDir = join(root, "workspace", "ops", "heartbeat-spawns", "handoff");
+    expect(readdirSync(handoffDir)).toEqual([]);
+    // done/ contains the file
+    const doneDir = join(root, "workspace", "ops", "heartbeat-spawns", "done");
+    const doneFiles = readdirSync(doneDir);
+    expect(doneFiles).toContain("hb-domains-write-" + DATE + "-test0001.md");
+    // domainRuns.engram.lastCheckedAt set
+    const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+    expect(state.domainRuns?.engram?.lastCheckedAt).not.toBeNull();
+    expect(state.domainRuns?.engram?.appliedRunIds).toContain("hb-domains-write-" + DATE + "-test0001");
+    // summary text mentions applied count
+    expect(result.summary.oll).toContain("applied 1");
+  });
+
+  test("invalid handoff (no HB-DOMAINS block) leaves file in place, warning added", () => {
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    });
+    writeHandoffFile("garbage-001", "this is not a valid handoff block\n");
+    const result = runRunner(["--spawn-hb-domains-write"]);
+    const applyStats = result.summary.phases["hb-domains-write-apply"];
+    expect(applyStats.failed).toBe(1);
+    expect(applyStats.applied).toBe(0);
+    // File still in handoff/
+    const handoffDir = join(root, "workspace", "ops", "heartbeat-spawns", "handoff");
+    expect(readdirSync(handoffDir)).toContain("garbage-001.md");
+    // Warning in summary
+    expect(result.summary.warnings.some((w) => /garbage-001/.test(w))).toBe(true);
+  });
+
+  test("--no-hb-domains-write-apply disables the apply phase", () => {
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    });
+    writeHandoffFile("hb-domains-write-" + DATE + "-test0002", noopHandoffBody("engram", "hb-domains-write-" + DATE + "-test0002"));
+    const result = runRunner(["--spawn-hb-domains-write", "--no-hb-domains-write-apply"]);
+    // No apply phase ran
+    expect(result.summary.phases["hb-domains-write-apply"]).toBeUndefined();
+    // File still in handoff/
+    const handoffDir = join(root, "workspace", "ops", "heartbeat-spawns", "handoff");
+    expect(readdirSync(handoffDir)).toContain("hb-domains-write-" + DATE + "-test0002.md");
+  });
+
+  test("applies multiple handoff files in lexicographic order, each advancing its own domain", () => {
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+      aicms: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "2" } },
+    });
+    writeHandoffFile("a-001.md", noopHandoffBody("aicms", "hb-domains-write-" + DATE + "-aaa-001"));
+    writeHandoffFile("b-002.md", noopHandoffBody("engram", "hb-domains-write-" + DATE + "-bbb-002"));
+    const result = runRunner(["--spawn-hb-domains-write"]);
+    const applyStats = result.summary.phases["hb-domains-write-apply"];
+    expect(applyStats.applied).toBe(2);
+    expect(applyStats.failed).toBe(0);
+    const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+    expect(state.domainRuns?.engram?.lastCheckedAt).not.toBeNull();
+    expect(state.domainRuns?.aicms?.lastCheckedAt).not.toBeNull();
+  });
+
+  test("apply phase runs by default when --spawn-hb-domains-write is set even without explicit --hb-domains-write-apply", () => {
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    });
+    writeHandoffFile("hb-domains-write-" + DATE + "-test0003", noopHandoffBody("engram", "hb-domains-write-" + DATE + "-test0003"));
+    const result = runRunner(["--spawn-hb-domains-write"]);
+    expect(result.summary.phases["hb-domains-write-apply"]).toBeDefined();
+    expect(result.summary.phases["hb-domains-write-apply"].applied).toBe(1);
+  });
+});

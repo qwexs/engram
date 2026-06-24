@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 
 const ENGRAM_DIR = join(import.meta.dir, "..");
 const RUNNER = join(ENGRAM_DIR, "scripts", "heartbeat-runner.js");
@@ -94,7 +95,7 @@ describe("heartbeat-runner hb-domains-write trigger", () => {
       aicms: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "2" } },
       disabled: { type: "topic-thread", enabled: false, cadenceDays: 2, topic: { chatId: "-100", topicId: "3" } },
     });
-    const result = runRunner(["--spawn-hb-domains-write"]);
+    const result = runRunner(["--spawn-hb-domains-write", "--hb-domains-write-batch-size", "10"]);
     const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
     expect(queued).toHaveLength(2);
     const queuedNames = queued.map((s) => s.runId).sort();
@@ -151,7 +152,7 @@ describe("heartbeat-runner hb-domains-write trigger", () => {
       domainNames["d" + i] = { type: "topic-thread", cadenceDays: 1, topic: { chatId: "-100", topicId: String(i + 1) } };
     }
     seedDomainRegistry(domainNames);
-    const result = runRunner(["--spawn-hb-domains-write"]);
+    const result = runRunner(["--spawn-hb-domains-write", "--hb-domains-write-batch-size", "20"]);
     const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
     expect(queued).toHaveLength(10);
     const ids = new Set(queued.map((s) => s.runId));
@@ -182,5 +183,165 @@ describe("heartbeat-runner hb-domains-write trigger", () => {
     // State file should still be valid JSON after both runs.
     const stateRaw = readFileSync(join(root, "memory", "heartbeat-state.json"), "utf-8");
     expect(() => JSON.parse(stateRaw)).not.toThrow();
+  });
+});
+
+describe("heartbeat-runner hb-domains-write batch size", () => {
+  beforeEach(() => {
+    root = join(tmpdir(), "engram-hb-batch-" + Date.now() + "-" + Math.random().toString(16).slice(2));
+    mkdirSync(root, { recursive: true });
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main"],
+      subagentRuns: {},
+    });
+  });
+
+  afterEach(() => {
+    if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
+  });
+
+  test("batch size=1 queues exactly 1 spawn even when 3 due", () => {
+    seedDomainRegistry({
+      d1: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+      d2: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "2" } },
+      d3: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "3" } },
+    });
+    const result = runRunner(["--spawn-hb-domains-write", "--hb-domains-write-batch-size", "1"]);
+    const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
+    expect(queued).toHaveLength(1);
+    expect(spawnFiles().filter((f) => f.startsWith("hb-domains-write"))).toHaveLength(1);
+  });
+
+  test("batch size=3 queues all 3 spawns", () => {
+    seedDomainRegistry({
+      d1: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+      d2: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "2" } },
+      d3: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "3" } },
+    });
+    const result = runRunner(["--spawn-hb-domains-write", "--hb-domains-write-batch-size", "3"]);
+    const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
+    expect(queued).toHaveLength(3);
+    expect(spawnFiles().filter((f) => f.startsWith("hb-domains-write"))).toHaveLength(3);
+  });
+
+  test("default (no flag) means batch size=1", () => {
+    seedDomainRegistry({
+      d1: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+      d2: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "2" } },
+      d3: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "3" } },
+    });
+    const result = runRunner(["--spawn-hb-domains-write"]);
+    const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
+    expect(queued).toHaveLength(1);
+  });
+
+  test("summary contains 'deferred 2' when batch size=1 and 3 due", () => {
+    seedDomainRegistry({
+      d1: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+      d2: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "2" } },
+      d3: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "3" } },
+    });
+    const result = runRunner(["--spawn-hb-domains-write", "--hb-domains-write-batch-size", "1"]);
+    expect(result.summary.oll).toContain("deferred 2");
+  });
+});
+
+describe("heartbeat-runner hb-domains-write lastCheckedAt suppression", () => {
+  beforeEach(() => {
+    root = join(tmpdir(), "engram-hb-suppress-" + Date.now() + "-" + Math.random().toString(16).slice(2));
+    mkdirSync(root, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
+  });
+
+  test("lastCheckedAt within cadenceDays suppresses trigger entirely", () => {
+    const recentChecked = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main"],
+      subagentRuns: {},
+      domainRuns: {
+        engram: { lastCheckedAt: recentChecked, lastRun: null, lastRunId: "prev" },
+      },
+    });
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    });
+    const result = runRunner(["--spawn-hb-domains-write"]);
+    const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
+    expect(queued).toHaveLength(0);
+    expect(result.summary.oll).toContain("suppressed 1");
+  });
+
+  test("lastCheckedAt older than cadenceDays does NOT suppress", () => {
+    const oldChecked = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main"],
+      subagentRuns: {},
+      domainRuns: {
+        engram: { lastCheckedAt: oldChecked, lastRun: null, lastRunId: "prev" },
+      },
+    });
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    });
+    const result = runRunner(["--spawn-hb-domains-write"]);
+    const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
+    expect(queued).toHaveLength(1);
+    expect(result.summary.oll).not.toContain("suppressed");
+  });
+
+  test("noop handoff advances lastCheckedAt, not lastRun", async () => {
+    const { applyDomainWriteHandoff } = await import(join(ENGRAM_DIR, "scripts", "domains-runner.js"));
+    const domainsRoot = join(root, "memory", "domains");
+    const domainRoot = join(domainsRoot, "engram");
+    mkdirSync(domainRoot, { recursive: true });
+    writeFileSync(join(domainRoot, "decisions.md"), "");
+    writeFileSync(join(domainRoot, "status.md"), "");
+    writeFileSync(join(domainRoot, "changelog.md"), "");
+    writeJson(join(domainsRoot, "registry.json"), {
+      domains: {
+        engram: { type: "topic-thread", cadenceDays: 2, enabled: true },
+      },
+    });
+    const oldLastRun = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main"],
+      subagentRuns: {},
+      domainRuns: {
+        engram: { lastRun: oldLastRun, lastRunId: "prev-run" },
+      },
+    });
+    const statusContent = readFileSync(join(domainRoot, "status.md"), "utf8");
+    const changelogContent = readFileSync(join(domainRoot, "changelog.md"), "utf8");
+    const statusHash = createHash("sha256").update(statusContent).digest("hex");
+    const changelogHash = createHash("sha256").update(changelogContent).digest("hex");
+    const baseHashesJson = JSON.stringify({
+      "status.md": statusHash,
+      "changelog.md": changelogHash,
+    });
+    const handoffBody = `Domain: engram
+Run-Id: test-run-001
+Status: ok
+Base-Hashes: ${baseHashesJson}
+Changelog-Entries: []`;
+    const handoff = { ok: true, isOk: true, type: "HB-DOMAINS", body: handoffBody, summary: "noop" };
+    await applyDomainWriteHandoff(handoff, {
+      workspace: root,
+      statePath: join(root, "memory", "heartbeat-state.json"),
+      now: new Date().toISOString(),
+      dryRun: false,
+      selectedDomain: "engram",
+    });
+    const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+    const domainRun = state.domainRuns?.engram;
+    expect(domainRun?.lastCheckedAt).not.toBeNull();
+    expect(domainRun?.lastCheckedAt).not.toBeUndefined();
+    expect(domainRun?.lastRun).toBe(oldLastRun);
   });
 });

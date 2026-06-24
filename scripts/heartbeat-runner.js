@@ -95,6 +95,7 @@ if (opts.help || opts.h) {
     "  --spawn-rethink          Queue hb-rethink when OLL trigger is due.",
     "  --spawn-autoresearch     Queue hb-autoresearch for the next pending auto experiment.",
     "  --spawn-rethink2         Queue hb-rethink2 when pendingRethink2 is set.",
+    "  --spawn-hb-domains-write Queue hb-domains-write per due domain (writes to memory/domains/<slug>/{changelog,status}.md via HB-DOMAINS HANDOFF).",
     "  --recover-stale-oll-locks",
     "                           Clear stale OLL worker locks before evaluating spawn flags.",
     "  --oll-stale-rethink-hours <n>",
@@ -371,7 +372,7 @@ async function readReferenceTemplate(name) {
 }
 
 async function buildOllTask(phase, context) {
-  const templateByPhase = { "hb-rethink": "HB-RETHINK.md", "hb-autoresearch": "HB-AUTORESEARCH.md", "hb-rethink2": "HB-RETHINK2.md" };
+  const templateByPhase = { "hb-rethink": "HB-RETHINK.md", "hb-autoresearch": "HB-AUTORESEARCH.md", "hb-rethink2": "HB-RETHINK2.md", "hb-domains-write": "HB-DOMAINS-WRITE.md" };
   let template = await readReferenceTemplate(templateByPhase[phase]);
 
   // Substitute {{key}} placeholders from context. Anything not in context
@@ -412,6 +413,18 @@ async function buildOllTask(phase, context) {
       .replace(/\{\{report_content\}\}/g, String(context.reportContent ?? "(report.md not yet loaded — fill from workspace/research/{id}/report.md)"))
       .replace(/\{\{spec_yaml\}\}/g, String(context.specYaml ?? "(spec.yaml not yet loaded — fill from workspace/research/{id}/spec.yaml)"))
       .replace(/\{\{delivery_config\}\}/g, JSON.stringify(context.deliveryConfig ?? {}, null, 2));
+  } else if (phase === "hb-domains-write") {
+    template = template
+      .replace(/\{\{domain\}\}/g, String(context.domain ?? ""))
+      .replace(/\{\{domain_type\}\}/g, String(context.domainType ?? ""))
+      .replace(/\{\{session_key\}\}/g, String(context.sessionKey ?? ""))
+      .replace(/\{\{date\}\}/g, context.date ?? new Date().toISOString().slice(0, 10))
+      .replace(/\{\{workspace\}\}/g, String(context.workspace ?? workspace))
+      .replace(/\{\{registry_path\}\}/g, String(context.registryPath ?? join(workspace, "memory", "domains", "registry.json")))
+      .replace(/\{\{domains_root\}\}/g, String(context.domainsRoot ?? join(workspace, "memory", "domains")))
+      .replace(/\{\{agent_id\}\}/g, String(context.agentId ?? agentDir))
+      .replace(/\{\{scan_summary\}\}/g, JSON.stringify(context.scanResult ?? {}, null, 2))
+      .replace(/\{\{daily_note_path\}\}/g, String(context.dailyNotePath ?? ""));
   }
 
   return [
@@ -628,7 +641,7 @@ async function runDomains() {
   if (!existsSync(registry)) {
     summary.domains = "skipped (no registry)";
     summary.phases.domains = { status: "skipped", reason: "no registry" };
-    return;
+    return null;
   }
   let scan;
   try {
@@ -645,7 +658,7 @@ async function runDomains() {
         reason: "domain scan failed",
       },
     });
-    return;
+    return null;
   }
   await patchState({
     lastDomainScan: localIso(),
@@ -664,8 +677,10 @@ async function runDomains() {
   });
   summary.domains = formatDomainScanSummary(scan);
   summary.phases.domains = { status: "ok", mode: "scan-only", scan };
-
-  if (!opts["domains-write"]) return;
+  // Always return the scan so runOllTriggerShell can use due/stale signals
+  // to queue hb-domains-write subagents. If --domains-write is passed,
+  // continue into the manual write-mode path below.
+  if (!opts["domains-write"]) return scan;
 
   const selectedDomain = opts.domain || null;
   const handoffFile = opts["domains-handoff-file"] || null;
@@ -746,9 +761,10 @@ async function runDomains() {
     summary.warnings.push(reason);
     await patchState({ "subagentRuns.hb-domains.status": "failed" });
   }
+  return scan;
 }
 
-async function runOllTriggerShell() {
+async function runOllTriggerShell({ domainScan = null } = {}) {
   let state = await readJson(statePath, DEFAULT_STATE);
   const obs = await countPendingObservationCategories();
   const tensions = await countPendingTensions();
@@ -808,7 +824,7 @@ async function runOllTriggerShell() {
     rethink2: { wouldRun: wouldRunRethink2, inProgress: rethink2InProgress, staleLock: stale.rethink2, pendingExperiment: state.pendingRethink2 || null },
     recovery: { enabled: Boolean(opts["recover-stale-oll-locks"]), recovered },
     spawns: [],
-    mode: (opts["spawn-rethink"] || opts["spawn-autoresearch"] || opts["spawn-rethink2"]) ? "spawn-queue" : "report-only",
+    mode: (opts["spawn-rethink"] || opts["spawn-autoresearch"] || opts["spawn-rethink2"] || opts["spawn-hb-domains-write"]) ? "spawn-queue" : "report-only",
   };
   summary.phases.oll = details;
 
@@ -829,13 +845,54 @@ async function runOllTriggerShell() {
   await maybeQueue("hb-autoresearch", Boolean(opts["spawn-autoresearch"]), wouldRunAutoresearch, { experimentId: nextExperiment?.id || null, experiment: nextExperiment });
   await maybeQueue("hb-rethink2", Boolean(opts["spawn-rethink2"]), wouldRunRethink2, { experimentId: state.pendingRethink2 || null });
 
+  // hb-domains-write: queue one spawn per due domain. We pass the per-domain
+  // context (domain name, type, bound sessionKey, daily note path) so the
+  // spawned subagent can read today's events for the bound topic and write
+  // a curated changelog entry. Per-domain spawning is safer than batched
+  // (no base-hash collision between domains). cadenceDays=2 default means
+  // a typical topic with no recent updates fires after ~2 idle days.
+  if (Boolean(opts["spawn-hb-domains-write"]) && domainScan && Array.isArray(domainScan.domains)) {
+    // Read registry to get topic bindings (not exposed by scanDomains result).
+    // Best-effort: if registry is missing or malformed, skip with a warning.
+    let registryTopics = {};
+    try {
+      const registryData = await readJson(join(workspace, "memory", "domains", "registry.json"), { domains: {} });
+      for (const [name, cfg] of Object.entries(registryData.domains || {})) {
+        if (cfg && cfg.topic && cfg.topic.chatId && cfg.topic.topicId) {
+          const absChatId = String(cfg.topic.chatId).replace(/^-/, "");
+          registryTopics[name] = "telegram-group--" + absChatId + "-topic-" + cfg.topic.topicId;
+        }
+      }
+    } catch (err) {
+      summary.warnings.push("hb-domains-write: failed to read registry: " + (err && err.message ? err.message : String(err)));
+    }
+    for (const due of domainScan.domains.filter((d) => d && d.enabled && d.due)) {
+      const sessionKey = registryTopics[due.name] || null;
+      const dailyNotePath = sessionKey ? notePathFor(sessionKey) : "";
+      await maybeQueue("hb-domains-write", true, true, {
+        domain: due.name,
+        domainType: due.type,
+        sessionKey,
+        dailyNotePath,
+        scanResult: { name: due.name, type: due.type, due: due.due, overdue: due.overdue, ageDays: due.ageDays, files: due.files },
+        registryPath: join(workspace, "memory", "domains", "registry.json"),
+        domainsRoot: join(workspace, "memory", "domains"),
+        agentId: agentId,
+        workspace,
+      });
+    }
+  }
+
   const rethinkQueued = details.spawns.some((spawn) => spawn.phase === "hb-rethink");
   const autoresearchQueued = details.spawns.some((spawn) => spawn.phase === "hb-autoresearch");
   const rethink2Queued = details.spawns.some((spawn) => spawn.phase === "hb-rethink2");
+  const domainsWriteQueued = details.spawns.filter((spawn) => spawn.phase === "hb-domains-write").length;
+  const domainsWriteDueCount = domainScan && Array.isArray(domainScan.domains) ? domainScan.domains.filter((d) => d && d.enabled && d.due).length : 0;
+  const domainsWriteText = domainsWriteQueued > 0 ? ("domains-write queued " + domainsWriteQueued) : (domainsWriteDueCount > 0 && Boolean(opts["spawn-hb-domains-write"]) ? ("domains-write due " + domainsWriteDueCount) : (domainsWriteDueCount > 0 ? ("domains-write due " + domainsWriteDueCount + " (flag off)") : "domains-write idle"));
   const rethinkText = rethinkQueued ? "rethink queued" : wouldRunRethink ? "rethink due" : rethinkInProgress ? (stale.rethink ? "rethink stale lock" : "rethink in progress") : "rethink idle";
   const autoresearchText = autoresearchQueued ? ("autoresearch queued " + (nextExperiment?.id || "")).trim() : wouldRunAutoresearch ? ("autoresearch due " + pendingAutoExperiments.length) : ("autoresearch pending " + pendingAutoExperiments.length);
   const rethink2Text = rethink2Queued ? ("rethink2 queued " + state.pendingRethink2) : wouldRunRethink2 ? ("rethink2 pending " + state.pendingRethink2) : rethink2InProgress ? (stale.rethink2 ? "rethink2 stale lock" : "rethink2 in progress") : "rethink2 idle";
-  summary.oll = `score ${score} (${obs.friction}f/${obs.surprise}s/${obs.pattern}p), tensions ${tensions}; ${rethinkText}; ${autoresearchText}; ${rethink2Text}`;
+  summary.oll = `score ${score} (${obs.friction}f/${obs.surprise}s/${obs.pattern}p), tensions ${tensions}; ${rethinkText}; ${autoresearchText}; ${rethink2Text}; ${domainsWriteText}`;
   if (recovered.length > 0) summary.oll += "; recovered " + recovered.join(",");
 }
 
@@ -1007,8 +1064,8 @@ async function main() {
       summary.extraction = activeSessions.map((targetSession) => `${targetSession}: ${extractionReports[targetSession]}`).join("; ");
     }
     await runSynthesis();
-    await runDomains();
-    await runOllTriggerShell();
+    const domainScan = await runDomains();
+    await runOllTriggerShell({ domainScan });
     if (opts["skip-maintenance"]) {
       summary.maintenance = "skipped";
       summary.phases.maintenance = { status: "skipped", reason: "skip-maintenance" };

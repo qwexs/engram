@@ -4,7 +4,7 @@
 // Usage: node scripts/validate.js [--fix] [--agent-id main]
 
 import { parseArgs } from 'node:util';
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, lstatSync, readlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, lstatSync, readlinkSync, statSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadEngramConfig } from './config.js';
@@ -367,9 +367,10 @@ if (existsSync(domainsDir)) {
     .filter(e => e.isDirectory());
   const registryPath = join(domainsDir, 'registry.json');
   let registeredDomainNames = null;
+  let registry = null;
   if (existsSync(registryPath)) {
     try {
-      const registry = JSON.parse(readFileSync(registryPath, 'utf-8'));
+      registry = JSON.parse(readFileSync(registryPath, 'utf-8'));
       registeredDomainNames = new Set(Object.keys(registry.domains || {}));
       // Build {name -> type} so per-type checks can skip non-applicable rules
       // (e.g. topic-thread does not need workflow.md).
@@ -432,6 +433,42 @@ if (existsSync(domainsDir)) {
   ok(registeredDomainNames
     ? `${domainEntries.length} registered domain(s) checked`
     : `${domainEntries.length} domain(s) checked`);
+
+  // Domain cadence + staleness check. Two warnings:
+  //   1. Legacy domains without cadenceDays field — hb-domains-write cannot
+  //      compute `due` for these, so they will never auto-update.
+  //   2. Domains with content-date older than staleAfterDays — surface as
+  //      informational even if runner hasn't reported them yet.
+  if (registeredDomainNames) {
+    const hbStatePath = join(WORKSPACE, 'memory', 'heartbeat-state.json');
+    let hbState = null;
+    try { hbState = JSON.parse(readFileSync(hbStatePath, 'utf-8')); } catch { /* optional */ }
+    for (const [name, cfg] of Object.entries(registry.domains || {})) {
+      if (!cfg || typeof cfg !== 'object') continue;
+      if (!cfg.cadenceDays) {
+        warn(`Domain "${name}" has no cadenceDays — hb-domains-write will never fire (legacy or pre-Phase-1 config)`);
+      }
+      const staleAfter = Number(cfg.staleAfterDays) > 0 ? Number(cfg.staleAfterDays) : 60;
+      // Read changelog.md content-date from lastRun in heartbeat-state, fallback to mtime.
+      const lastRun = hbState && hbState.domainRuns && hbState.domainRuns[name] && hbState.domainRuns[name].lastRun;
+      let lastActivityMs = null;
+      if (lastRun) {
+        lastActivityMs = new Date(lastRun).getTime();
+      } else {
+        const clPath = join(domainsDir, name, 'changelog.md');
+        if (existsSync(clPath)) {
+          const stat = statSync(clPath);
+          lastActivityMs = stat.mtimeMs;
+        }
+      }
+      if (lastActivityMs) {
+        const ageDays = Math.floor((Date.now() - lastActivityMs) / (1000 * 60 * 60 * 24));
+        if (ageDays > staleAfter) {
+          warn(`Domain "${name}" is stale: last activity ${ageDays}d ago > staleAfterDays=${staleAfter} (consider archive or update)`);
+        }
+      }
+    }
+  }
 } else {
   ok('No domains directory (optional)');
 }

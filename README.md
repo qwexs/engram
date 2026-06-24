@@ -7,6 +7,11 @@ turns an agent into a long-lived system: persistent knowledge graph,
 deterministic memory maintenance, and a domain layer that organizes
 multi-agent work.
 
+**One-command bootstrap** — `bun scripts/init.js --with-cron --auto-detect-sessions`
+creates the full memory structure, reads `openclaw.json` to set up
+sessions, installs hooks, restarts the gateway, and validates
+integrity. See [SKILL.md §Quick Start](SKILL.md#quick-start).
+
 > **Why Engram?** Naive memory = load everything every session. That's
 > `O(days)` — it grows forever. Engram flips this: summaries are
 > `O(entities)`, QMD queries are `O(relevance)`. The longer you run, the

@@ -22,23 +22,42 @@ Three-layer memory architecture for OpenClaw agents: curated long-term memory (M
 
 ## Quick Start
 
+A single `init.js` invocation bootstraps the full memory system
+(directories, templates, registry defaults, QMD collections, hooks,
+gateway restart, cron, validation). All flags are optional — defaults
+sensible for a fresh workspace.
+
 ```bash
 # 1. Install QMD (if not installed)
 bun skills/engram/scripts/install-qmd.js
 
-# 2. Initialize everything
-bun skills/engram/scripts/init.js
+# 2. Bootstrap a new workspace in one command (ISS-5):
+bun skills/engram/scripts/init.js --with-cron --auto-detect-sessions
 
-# 3. Install cron (optional): bun skills/engram/scripts/init.js --with-cron
-
-# Add a group session
-bun skills/engram/scripts/add-session.js --platform telegram --id 3382546134
+# Other useful flags:
+#   --dry-run                  preview the plan without executing
+#   --with-sample-domain       scaffold a 'getting-started' domain for onboarding
+#   --force                    merge with existing dirs (won't overwrite files)
+#   --skip-gateway-restart     skip 'openclaw gateway restart' (CI / test env)
+#   --cron-schedule <e>        override the cron schedule (e.g. "5m", "*/15 * * * *")
+#   --qmd-variant <v>          QMD variant: auto|local|jina (default: auto)
+#   --agent-id <id>            agent identifier (default: main)
 
 # Validate integrity
 bun skills/engram/scripts/validate.js
 
 # Migrate to v2 schema
 bun skills/engram/scripts/migrate-v2.js --dry-run
+```
+
+`--with-cron --auto-detect-sessions` reads `openclaw.json` → `bindings[]`,
+filters by the current `agentId`, and creates canonical session dirs and
+QMD collections for every group / forum-topic / direct binding. Without
+`--auto-detect-sessions`, sessions must still be created manually with
+`add-session.js`:
+
+```bash
+bun skills/engram/scripts/add-session.js --platform telegram --id 3382546134
 ```
 
 

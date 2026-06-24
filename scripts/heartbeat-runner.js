@@ -8,13 +8,13 @@
  */
 
 import { existsSync, mkdirSync, renameSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, readdir } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { loadEngramConfig, resolveSubagentModel } from "./config.js";
-import { parseHandoff } from "./process-handoff-core.js";
+import { parseHandoff, applyHandoff, defaultHandoffHandlers } from "./process-handoff-core.js";
 import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary } from "./domains-runner.js";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -98,7 +98,11 @@ if (opts.help || opts.h) {
     "  --spawn-rethink2         Queue hb-rethink2 when pendingRethink2 is set.",
     "  --spawn-hb-domains-write Queue hb-domains-write per due domain (writes to memory/domains/<slug>/{changelog,status}.md via HB-DOMAINS HANDOFF).",
     "  --hb-domains-write-batch-size <n>",
-    "                           Max hb-domains-write subagents to queue per tick. Default: 1 (sequential to avoid provider rate limits). Other phases stay parallel.",,
+    "                           Max hb-domains-write subagents to queue per tick. Default: 1 (sequential to avoid provider rate limits). Other phases stay parallel.",
+    "  --[no-]hb-domains-write-apply",
+    "                           Apply pending handoff files from workspace/ops/heartbeat-spawns/handoff/*.md",
+    "                           (written by previous ticks' hb-domains-write subagents). Default: enabled when",
+    "                           --spawn-hb-domains-write is set. Disable for tests/debug via --no-hb-domains-write-apply.",,
     "  --recover-stale-oll-locks",
     "                           Clear stale OLL worker locks before evaluating spawn flags.",
     "  --oll-stale-rethink-hours <n>",
@@ -644,6 +648,84 @@ async function runSynthesis() {
   }
 }
 
+// applyDomainHandoffs: scan workspace/ops/heartbeat-spawns/handoff/*.md for handoff
+// blocks written by previous ticks' hb-domains-write subagents, parse them, and
+// apply via applyDomainWriteHandoff (in-process, no subprocess). This closes the
+// ISS-9 architectural gap where subagents wrote changelog files directly via
+// file tools and the runner never advanced lastCheckedAt, so domains stayed due
+// forever. Per-tick: runs BEFORE scanDomains so the scan reflects freshly
+// applied state. Idempotent: applyDomainWriteHandoff checks appliedRunIds, so
+// retries are no-ops. On success: file is moved to done/. On error: file stays
+// for the next tick (warning added to summary).
+const HB_DOMAINS_APPLY_FLAG = "hb-domains-write-apply";
+async function applyDomainHandoffs() {
+  const spawnsDir = join(workspace, "workspace", "ops", "heartbeat-spawns");
+  const handoffDir = join(spawnsDir, "handoff");
+  const doneDir = join(spawnsDir, "done");
+  let applied = 0;
+  let failed = 0;
+  if (!existsSync(handoffDir)) return { applied, failed };
+  let files;
+  try {
+    files = await readdir(handoffDir);
+  } catch (err) {
+    summary.warnings.push("hb-domains-write apply: cannot read " + handoffDir + ": " + (err && err.message ? err.message : String(err)));
+    return { applied, failed };
+  }
+  files = files.filter((f) => typeof f === "string" && f.endsWith(".md")).sort();
+  if (files.length === 0) return { applied, failed };
+  try { mkdirSync(doneDir, { recursive: true }); } catch { /* ignore */ }
+  for (const file of files) {
+    const filePath = join(handoffDir, file);
+    let text = "";
+    try {
+      text = await readFile(filePath, "utf8");
+    } catch (err) {
+      failed++;
+      summary.warnings.push("hb-domains-write apply: cannot read " + file + ": " + (err && err.message ? err.message : String(err)));
+      continue;
+    }
+    const parsed = parseHandoff(text);
+    if (!parsed.ok) {
+      failed++;
+      summary.warnings.push("hb-domains-write apply: " + file + " — " + (parsed.error || "parse failed"));
+      continue;
+    }
+    if (parsed.type !== "HB-DOMAINS") {
+      failed++;
+      summary.warnings.push("hb-domains-write apply: " + file + " — wrong handoff type " + parsed.type);
+      continue;
+    }
+    try {
+      const handlers = defaultHandoffHandlers({
+        workspace,
+        session: "main",
+        date: today,
+        domainsWrite: true,
+      });
+      const result = await applyHandoff(parsed, handlers);
+      if (result.status === "error") {
+        failed++;
+        summary.warnings.push("hb-domains-write apply: " + file + " — " + (result.error || "apply error"));
+        continue;
+      }
+      const destPath = join(doneDir, file);
+      try {
+        renameSync(filePath, destPath);
+      } catch (err) {
+        failed++;
+        summary.warnings.push("hb-domains-write apply: " + file + " — moved to done failed: " + (err && err.message ? err.message : String(err)));
+        continue;
+      }
+      applied++;
+    } catch (err) {
+      failed++;
+      summary.warnings.push("hb-domains-write apply: " + file + " — " + (err && err.message ? err.message : String(err)));
+    }
+  }
+  return { applied, failed };
+}
+
 async function runDomains() {
   const registry = join(workspace, "memory", "domains", "registry.json");
   if (!existsSync(registry)) {
@@ -974,6 +1056,10 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   if (deferred > 0) domainsWriteText += "; domains-write deferred " + deferred;
   if (inlinedNoop > 0) domainsWriteText += "; domains-write inlined-noop " + inlinedNoop;
   if (suppressedCount > 0) domainsWriteText += "; domains-write suppressed " + suppressedCount + " (no events, recently checked)";
+  const applyStats = (summary.phases && summary.phases["hb-domains-write-apply"]) || null;
+  if (applyStats && (applyStats.applied > 0 || applyStats.failed > 0)) {
+    domainsWriteText += "; domains-write applied " + applyStats.applied + (applyStats.failed > 0 ? " (failed " + applyStats.failed + ")" : "");
+  }
   const rethinkText = rethinkQueued ? "rethink queued" : wouldRunRethink ? "rethink due" : rethinkInProgress ? (stale.rethink ? "rethink stale lock" : "rethink in progress") : "rethink idle";
   const autoresearchText = autoresearchQueued ? ("autoresearch queued " + (nextExperiment?.id || "")).trim() : wouldRunAutoresearch ? ("autoresearch due " + pendingAutoExperiments.length) : ("autoresearch pending " + pendingAutoExperiments.length);
   const rethink2Text = rethink2Queued ? ("rethink2 queued " + state.pendingRethink2) : wouldRunRethink2 ? ("rethink2 pending " + state.pendingRethink2) : rethink2InProgress ? (stale.rethink2 ? "rethink2 stale lock" : "rethink2 in progress") : "rethink2 idle";
@@ -1149,6 +1235,19 @@ async function main() {
       summary.extraction = activeSessions.map((targetSession) => `${targetSession}: ${extractionReports[targetSession]}`).join("; ");
     }
     await runSynthesis();
+    // Apply pending hb-domains-write handoff files BEFORE scanDomains so the
+    // domain scan reflects freshly advanced lastCheckedAt values. Default on
+    // when --spawn-hb-domains-write is set; --no-hb-domains-write-apply
+    // disables for tests/debug.
+    const applyEnabled = (Boolean(opts["spawn-hb-domains-write"]) || opts[HB_DOMAINS_APPLY_FLAG] === true) && !opts["no-" + HB_DOMAINS_APPLY_FLAG];
+    if (applyEnabled) {
+      const applyResult = await applyDomainHandoffs();
+      summary.phases = summary.phases || {};
+      summary.phases["hb-domains-write-apply"] = {
+        applied: applyResult.applied,
+        failed: applyResult.failed,
+      };
+    }
     const domainScan = await runDomains();
     await runOllTriggerShell({ domainScan });
     if (opts["skip-maintenance"]) {

@@ -3,7 +3,17 @@
 ## Prerequisites
 - OpenClaw installed and running
 - QMD installed (`bun skills/engram/scripts/install-qmd.js`)
-- Engram init run (`bun skills/engram/scripts/init.js`)
+- Engram init run:
+  ```bash
+  bun skills/engram/scripts/init.js --with-cron --auto-detect-sessions
+  ```
+  This single invocation creates the full memory structure (directories,
+  templates, registry defaults, QMD collections, hooks), auto-detects
+  sessions from `openclaw.json` → `bindings[]`, installs the heartbeat
+  cron job, restarts the gateway so new hooks take effect, and runs
+  `validate.js --quality` as a final integrity check. Use `--dry-run` to
+  preview the plan without executing. Use `--with-sample-domain` to also
+  scaffold a `getting-started` domain for onboarding.
 
 ## Heartbeat via Cron (Recommended)
 
@@ -176,8 +186,10 @@ After `openclaw gateway restart`, `openclaw hooks list` should report
 13 entries (5 bundled + 8 engram-workspace, 11 ready — `session-memory`
 and `engram-message-log` are disabled by config).
 
-`init.js` already calls `install-hooks.js` for you during first-time
-setup; you only need to run it manually after `git pull`, after editing
+`init.js --with-cron --auto-detect-sessions` already calls
+`install-hooks.js` for you during first-time setup (and restarts the
+gateway so new hooks take effect immediately). You only need to run
+`install-hooks.js` manually after `git pull`, after editing
 `handler.ts`, or after adding a new hook.
 
 ### Multi-workspace install

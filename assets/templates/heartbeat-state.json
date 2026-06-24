@@ -2,6 +2,7 @@
   "lastDailyNoteCreated": {
     "{{SESSION_KEY}}": null
   },
+  "activeSessions": [],
   "lastChecks": {
     "email": null,
     "calendar": null,

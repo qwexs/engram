@@ -97,6 +97,8 @@ if (opts.help || opts.h) {
     "  --spawn-autoresearch     Queue hb-autoresearch for the next pending auto experiment.",
     "  --spawn-rethink2         Queue hb-rethink2 when pendingRethink2 is set.",
     "  --spawn-hb-domains-write Queue hb-domains-write per due domain (writes to memory/domains/<slug>/{changelog,status}.md via HB-DOMAINS HANDOFF).",
+    "  --hb-domains-write-batch-size <n>",
+    "                           Max hb-domains-write subagents to queue per tick. Default: 1 (sequential to avoid provider rate limits). Other phases stay parallel.",,
     "  --recover-stale-oll-locks",
     "                           Clear stale OLL worker locks before evaluating spawn flags.",
     "  --oll-stale-rethink-hours <n>",
@@ -857,6 +859,8 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   // a curated changelog entry. Per-domain spawning is safer than batched
   // (no base-hash collision between domains). cadenceDays=2 default means
   // a typical topic with no recent updates fires after ~2 idle days.
+  let deferred = 0;
+  let suppressedCount = 0;
   if (Boolean(opts["spawn-hb-domains-write"]) && domainScan && Array.isArray(domainScan.domains)) {
     // Read registry to get topic bindings (not exposed by scanDomains result).
     // Best-effort: if registry is missing or malformed, skip with a warning.
@@ -872,7 +876,12 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
     } catch (err) {
       summary.warnings.push("hb-domains-write: failed to read registry: " + (err && err.message ? err.message : String(err)));
     }
-    for (const due of domainScan.domains.filter((d) => d && d.enabled && d.due)) {
+    const batchSize = parseInt(opts["hb-domains-write-batch-size"], 10) || 1;
+    const dueList = domainScan.domains.filter((d) => d && d.enabled && d.due);
+    suppressedCount = dueList.filter((d) => d.suppressedByLastCheckedAt).length;
+    const activeList = dueList.filter((d) => !d.suppressedByLastCheckedAt);
+    deferred = Math.max(0, activeList.length - batchSize);
+    for (const due of activeList.slice(0, batchSize)) {
       const sessionKey = registryTopics[due.name] || null;
       const dailyNotePath = sessionKey ? notePathFor(sessionKey) : "";
       await maybeQueue("hb-domains-write", true, true, {
@@ -894,7 +903,9 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   const rethink2Queued = details.spawns.some((spawn) => spawn.phase === "hb-rethink2");
   const domainsWriteQueued = details.spawns.filter((spawn) => spawn.phase === "hb-domains-write").length;
   const domainsWriteDueCount = domainScan && Array.isArray(domainScan.domains) ? domainScan.domains.filter((d) => d && d.enabled && d.due).length : 0;
-  const domainsWriteText = domainsWriteQueued > 0 ? ("domains-write queued " + domainsWriteQueued) : (domainsWriteDueCount > 0 && Boolean(opts["spawn-hb-domains-write"]) ? ("domains-write due " + domainsWriteDueCount) : (domainsWriteDueCount > 0 ? ("domains-write due " + domainsWriteDueCount + " (flag off)") : "domains-write idle"));
+  let domainsWriteText = domainsWriteQueued > 0 ? ("domains-write queued " + domainsWriteQueued) : (domainsWriteDueCount > 0 && Boolean(opts["spawn-hb-domains-write"]) ? ("domains-write due " + domainsWriteDueCount) : (domainsWriteDueCount > 0 ? ("domains-write due " + domainsWriteDueCount + " (flag off)") : "domains-write idle"));
+  if (deferred > 0) domainsWriteText += "; domains-write deferred " + deferred;
+  if (suppressedCount > 0) domainsWriteText += "; domains-write suppressed " + suppressedCount + " (no events, recently checked)";
   const rethinkText = rethinkQueued ? "rethink queued" : wouldRunRethink ? "rethink due" : rethinkInProgress ? (stale.rethink ? "rethink stale lock" : "rethink in progress") : "rethink idle";
   const autoresearchText = autoresearchQueued ? ("autoresearch queued " + (nextExperiment?.id || "")).trim() : wouldRunAutoresearch ? ("autoresearch due " + pendingAutoExperiments.length) : ("autoresearch pending " + pendingAutoExperiments.length);
   const rethink2Text = rethink2Queued ? ("rethink2 queued " + state.pendingRethink2) : wouldRunRethink2 ? ("rethink2 pending " + state.pendingRethink2) : rethink2InProgress ? (stale.rethink2 ? "rethink2 stale lock" : "rethink2 in progress") : "rethink2 idle";

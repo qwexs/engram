@@ -188,7 +188,7 @@ function parseJsonStrict(raw, fieldName) {
 }
 
 function parseHandoffField(body, name) {
-  const multi = body.match(new RegExp("^" + name + ":\\s*\\|\\n([\\s\\S]*?)(?=\\n[A-Za-z][A-Za-z-]*:|\\n===|$)", "m"));
+  const multi = body.match(new RegExp("^" + name + ":\\s*\\|\\n([\\s\\S]*?)(?=\\n[A-Za-z][A-Za-z-]*:|\\n===|\\Z)", "m"));
   if (multi) return multi[1].replace(/^ {2}/gm, "").replace(/\n$/, "");
   const single = body.match(new RegExp("^" + name + ":\\s*(.*)$", "m"));
   return single ? single[1].trim() : null;
@@ -352,16 +352,22 @@ export async function applyDomainWriteHandoff(handoff, {
     }
   }
 
+  const hasRealWork = entries.length > 0 || statusContent != null;
   if (!dryRun) {
     mkdirSync(domainDir, { recursive: true });
     if (statusContent != null) atomicWrite(statusPath, statusContent.endsWith("\n") ? statusContent : statusContent + "\n");
     if (appendText) writeFileSync(changelogPath, existingChangelog + appendText, "utf8");
     const updated = existsSync(stateFile) ? readJson(stateFile) : {};
     const existing = getPath(updated, "domainRuns." + domain + ".appliedRunIds") || [];
-    setPath(updated, "domainRuns." + domain + ".lastRun", now);
+    if (hasRealWork) {
+      setPath(updated, "domainRuns." + domain + ".lastRun", now);
+    }
+    setPath(updated, "domainRuns." + domain + ".lastCheckedAt", now);
     setPath(updated, "domainRuns." + domain + ".lastRunId", runId);
     setPath(updated, "domainRuns." + domain + ".appliedRunIds", [...new Set([...existing, runId])]);
-    setPath(updated, "domainRuns." + domain + ".lastBaseHashes", currentHashes);
+    if (hasRealWork) {
+      setPath(updated, "domainRuns." + domain + ".lastBaseHashes", currentHashes);
+    }
     writeJson(stateFile, updated);
   }
 
@@ -422,6 +428,7 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
     const lastRunMs =
       dateFromConfig(runtime, ["lastRun", "lastDomainRun", "lastChecked", "lastHeartbeat"]) ??
       dateFromConfig(config, ["lastRun", "lastDomainRun", "lastChecked", "lastHeartbeat"]);
+    const lastCheckedAtMs = dateFromConfig(runtime, ["lastCheckedAt"]) ?? null;
     const missingFiles = [];
     const staleFiles = [];
     const files = {};
@@ -469,6 +476,12 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
       }
     }
 
+    let suppressedByLastCheckedAt = false;
+    if (enabled && due && lastCheckedAtMs != null && cadenceDays != null) {
+      const checkedAgeDays = ageDays(lastCheckedAtMs, nowMs);
+      suppressedByLastCheckedAt = checkedAgeDays < cadenceDays;
+    }
+
     const domain = {
       name,
       enabled,
@@ -478,6 +491,8 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
       staleFiles,
       due,
       overdue,
+      suppressedByLastCheckedAt,
+      lastCheckedAt: lastCheckedAtMs ? new Date(lastCheckedAtMs).toISOString() : null,
       files,
     };
     // Dry-run archive check (always done; archived: false if not actually archived)

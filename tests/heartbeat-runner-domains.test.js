@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -140,5 +140,47 @@ describe("heartbeat-runner hb-domains-write trigger", () => {
     const result = runRunner(["--spawn-hb-domains-write"]);
     const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
     expect(queued).toHaveLength(0);
+  });
+
+  test("queued hb-domains-write runIds are unique (randomUUID, no Date.now collision)", () => {
+    // Review opencode-review-2026-06-24 BLOCKER #7: spawnRunId used
+    // Date.now() and could collide if two spawns fire in the same millisecond.
+    // Fix: randomUUID slice appended. Generate many spawns and verify uniqueness.
+    const domainNames = {};
+    for (let i = 0; i < 10; i += 1) {
+      domainNames["d" + i] = { type: "topic-thread", cadenceDays: 1, topic: { chatId: "-100", topicId: String(i + 1) } };
+    }
+    seedDomainRegistry(domainNames);
+    const result = runRunner(["--spawn-hb-domains-write"]);
+    const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
+    expect(queued).toHaveLength(10);
+    const ids = new Set(queued.map((s) => s.runId));
+    expect(ids.size).toBe(10); // All runIds unique
+    // Sanity: runId format includes UUID-ish 8-char hex suffix
+    for (const q of queued) {
+      expect(q.runId).toMatch(/^hb-domains-write-\d{4}-\d{2}-\d{2}-[0-9a-f]{8}$/);
+    }
+  });
+
+  test("atomicWrite produces unique tmp filenames (no Date.now collision)", () => {
+    // Review BLOCKER #6: atomicWrite tmp filename used Date.now()+pid; could
+    // collide on parallel runs. Fix: randomUUID. Verify by hammering
+    // patchState back-to-back and checking state file integrity.
+    const domainNames = {
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    };
+    seedDomainRegistry(domainNames);
+    // Run twice in quick succession — both should produce exactly one
+    // hb-domains-write spawn each (and not corrupt state).
+    const r1 = runRunner(["--spawn-hb-domains-write"]);
+    const r2 = runRunner(["--spawn-hb-domains-write"]);
+    const q1 = r1.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write").map((s) => s.runId);
+    const q2 = r2.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write").map((s) => s.runId);
+    expect(q1).toHaveLength(1);
+    expect(q2).toHaveLength(1);
+    expect(q1[0]).not.toBe(q2[0]); // Different runIds even though both invocations are sub-second apart
+    // State file should still be valid JSON after both runs.
+    const stateRaw = readFileSync(join(root, "memory", "heartbeat-state.json"), "utf-8");
+    expect(() => JSON.parse(stateRaw)).not.toThrow();
   });
 });

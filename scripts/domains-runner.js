@@ -308,7 +308,43 @@ export async function applyDomainWriteHandoff(handoff, {
     };
   }
 
-  const baseHashes = parseJsonStrict(parseHandoffField(handoff.body, "Base-Hashes"), "Base-Hashes");
+  // Detect noop handoff: no Base-Hashes AND no Status-Content AND no Changelog-Entries.
+  // Per HB-DOMAINS-WRITE.md Step 7, a subagent that finds nothing domain-relevant returns
+  // a minimal handoff without Base-Hashes. We treat that as a valid noop: advance
+  // lastCheckedAt (so the next scan suppresses this domain), but skip base-hash checks,
+  // file writes, and lastRun bump.
+  const rawBaseHashes = parseHandoffField(handoff.body, "Base-Hashes");
+  const rawStatusContent = parseHandoffField(handoff.body, "Status-Content");
+  const rawEntriesRaw = parseHandoffField(handoff.body, "Changelog-Entries") ?? "[]";
+  let rawEntries;
+  try { rawEntries = JSON.parse(rawEntriesRaw); } catch { rawEntries = null; }
+  const isNoopHandoff = rawBaseHashes == null && rawStatusContent == null && Array.isArray(rawEntries) && rawEntries.length === 0;
+  if (isNoopHandoff && !dryRun) {
+    const updated = existsSync(stateFile) ? readJson(stateFile) : {};
+    const existing = getPath(updated, "domainRuns." + domain + ".appliedRunIds") || [];
+    setPath(updated, "domainRuns." + domain + ".lastCheckedAt", now);
+    setPath(updated, "domainRuns." + domain + ".lastRunId", runId);
+    setPath(updated, "domainRuns." + domain + ".appliedRunIds", [...new Set([...existing, runId])]);
+    writeJson(stateFile, updated);
+  }
+  if (isNoopHandoff) {
+    return {
+      ok: true,
+      status: "noop",
+      domain,
+      runId,
+      changed: false,
+      idempotent: false,
+      dryRun,
+      wroteStatus: false,
+      appendedEntries: 0,
+      promotedFacts: 0,
+      proposedDecisionChanges: 0,
+      proposedWorkflowChanges: 0,
+    };
+  }
+
+  const baseHashes = parseJsonStrict(rawBaseHashes, "Base-Hashes");
   if (!baseHashes || typeof baseHashes !== "object") throw new Error("Base-Hashes is required");
   const currentHashes = {
     "status.md": existsSync(statusPath) ? sha256(readFileSync(statusPath, "utf8")) : null,

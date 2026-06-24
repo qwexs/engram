@@ -344,4 +344,128 @@ Changelog-Entries: []`;
     expect(domainRun?.lastCheckedAt).not.toBeUndefined();
     expect(domainRun?.lastRun).toBe(oldLastRun);
   });
+
+  test("applyDomainWriteHandoff accepts noop handoff (no Base-Hashes, empty entries)", async () => {
+    const { applyDomainWriteHandoff } = await import(join(ENGRAM_DIR, "scripts", "domains-runner.js"));
+    const domainsRoot = join(root, "memory", "domains");
+    const domainRoot = join(domainsRoot, "engram");
+    mkdirSync(domainRoot, { recursive: true });
+    writeFileSync(join(domainRoot, "decisions.md"), "");
+    writeFileSync(join(domainRoot, "status.md"), "## status v1\n");
+    writeFileSync(join(domainRoot, "changelog.md"), "## 2026-06-23 — bootstrap\n");
+    writeJson(join(domainsRoot, "registry.json"), {
+      domains: { engram: { type: "topic-thread", cadenceDays: 2, enabled: true } },
+    });
+    const oldLastRun = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main"],
+      subagentRuns: {},
+      domainRuns: { engram: { lastRun: oldLastRun, lastRunId: "prev-run" } },
+    });
+    const noopBody = [
+      "=== HB-DOMAINS HANDOFF ===",
+      "Status: ok",
+      "Summary: no domain-relevant events in topic-60 on 2026-06-24",
+      "Domain: engram",
+      "Run-Id: test-noop-001",
+      "Changelog-Entries: []",
+      "Promotions: []",
+      "=== END ===",
+    ].join("\n");
+    const result = await applyDomainWriteHandoff(
+      { ok: true, isOk: true, type: "HB-DOMAINS", body: noopBody, summary: "noop" },
+      {
+        workspace: root,
+        statePath: join(root, "memory", "heartbeat-state.json"),
+        now: new Date().toISOString(),
+        dryRun: false,
+        selectedDomain: "engram",
+      }
+    );
+    expect(result.status).toBe("noop");
+    expect(result.changed).toBe(false);
+    expect(result.appendedEntries).toBe(0);
+    const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+    const dr = state.domainRuns?.engram;
+    expect(dr.lastCheckedAt).not.toBeNull();
+    expect(dr.lastRunId).toBe("test-noop-001");
+    expect(dr.lastRun).toBe(oldLastRun);
+    // Files untouched
+    expect(readFileSync(join(domainRoot, "status.md"), "utf8")).toBe("## status v1\n");
+    expect(readFileSync(join(domainRoot, "changelog.md"), "utf8")).toBe("## 2026-06-23 — bootstrap\n");
+  });
+
+  test("applyDomainWriteHandoff rejects handoff with Status-Content but no Base-Hashes", async () => {
+    const { applyDomainWriteHandoff } = await import(join(ENGRAM_DIR, "scripts", "domains-runner.js"));
+    const domainsRoot = join(root, "memory", "domains");
+    const domainRoot = join(domainsRoot, "engram");
+    mkdirSync(domainRoot, { recursive: true });
+    writeFileSync(join(domainRoot, "decisions.md"), "");
+    writeFileSync(join(domainRoot, "status.md"), "");
+    writeFileSync(join(domainRoot, "changelog.md"), "");
+    writeJson(join(domainsRoot, "registry.json"), {
+      domains: { engram: { type: "topic-thread", cadenceDays: 2, enabled: true } },
+    });
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main"],
+      subagentRuns: {},
+    });
+    const badBody = [
+      "Domain: engram",
+      "Run-Id: test-bad-001",
+      "Status-Content: |",
+      "  new content",
+      "Changelog-Entries: []",
+    ].join("\n");
+    await expect(
+      applyDomainWriteHandoff(
+        { ok: true, isOk: true, type: "HB-DOMAINS", body: badBody, summary: "" },
+        {
+          workspace: root,
+          statePath: join(root, "memory", "heartbeat-state.json"),
+          now: new Date().toISOString(),
+          dryRun: false,
+          selectedDomain: "engram",
+        }
+      )
+    ).rejects.toThrow(/Base-Hashes is required/);
+  });
+
+  test("applyDomainWriteHandoff idempotency: re-applied runId is noop without re-applying changes", async () => {
+    const { applyDomainWriteHandoff } = await import(join(ENGRAM_DIR, "scripts", "domains-runner.js"));
+    const domainsRoot = join(root, "memory", "domains");
+    const domainRoot = join(domainsRoot, "engram");
+    mkdirSync(domainRoot, { recursive: true });
+    writeFileSync(join(domainRoot, "decisions.md"), "");
+    writeFileSync(join(domainRoot, "status.md"), "");
+    writeFileSync(join(domainRoot, "changelog.md"), "");
+    writeJson(join(domainsRoot, "registry.json"), {
+      domains: { engram: { type: "topic-thread", cadenceDays: 2, enabled: true } },
+    });
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main"],
+      subagentRuns: {},
+      domainRuns: { engram: { appliedRunIds: ["already-applied-001"] } },
+    });
+    const dupBody = [
+      "Domain: engram",
+      "Run-Id: already-applied-001",
+      "Changelog-Entries: []",
+    ].join("\n");
+    const result = await applyDomainWriteHandoff(
+      { ok: true, isOk: true, type: "HB-DOMAINS", body: dupBody, summary: "" },
+      {
+        workspace: root,
+        statePath: join(root, "memory", "heartbeat-state.json"),
+        now: new Date().toISOString(),
+        dryRun: false,
+        selectedDomain: "engram",
+      }
+    );
+    expect(result.status).toBe("noop");
+    expect(result.idempotent).toBe(true);
+  });
 });

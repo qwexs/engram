@@ -44,6 +44,28 @@ OPENAI_GENERATE_MODEL=gpt-4o-mini
 OPENAI_BASE_URL=https://your-provider.com/v1
 ```
 
+## Environment Variables (Ollama Provider)
+
+Use [Ollama Cloud](https://ollama.com/cloud) or a self-hosted Ollama instance.
+Same provider — flip `OLLAMA_BASE_URL` to point at the local server.
+
+```bash
+QMD_LLM_PROVIDER=ollama
+# Cloud (Ollama API key from https://ollama.com/settings/keys):
+OLLAMA_API_KEY=ollama_xxx
+# Self-hosted (default base URL is https://ollama.com; override for local instance):
+# OLLAMA_BASE_URL=http://localhost:11434
+# Optional:
+OLLAMA_EMBED_MODEL=nomic-embed-text      # default; also mxbai-embed-large, embeddinggemma, qwen3-embedding:0.6b
+OLLAMA_EMBED_DIMENSIONS=                 # default — model decides (nomic = 768)
+OLLAMA_PROXY_URL=                        # optional HTTP proxy
+```
+
+> **Search-only:** Ollama has no native `/api/rerank`. Rerank uses cosine
+> similarity over the embeddings (slightly different ranking from Jina's
+> trained reranker — usually fine for BM25-first hybrid search). Skip
+> Ollama if you depend on cross-encoder rerank quality.
+
 ## Collections
 
 The memory system uses these QMD collections:

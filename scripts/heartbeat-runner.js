@@ -1202,6 +1202,93 @@ function getActiveSessions(initialState) {
   return result.length > 0 ? result : [session];
 }
 
+// Silent-thread check: signal-only soft alert when an active topic-thread
+// session has had no significant event in the daily note for 4+ hours.
+// The agent decides whether to backfill; this never auto-writes.
+// Markers covered: topic-thread (chatId:topicId) + DM peer (accountId:id).
+async function runSilentThreadCheck(activeSessions) {
+  const SILENT_THRESHOLD_HOURS = 4;
+  const registryPath = join(workspace, "memory", "domains", "registry.json");
+  const registry = await readJsonIfExists(registryPath, { domains: {} });
+  const topicSessions = new Map();
+  for (const [slug, entry] of Object.entries(registry.domains || {})) {
+    if (!entry || !entry.topic) continue;
+    const sessionKey =
+      "telegram-group--" + String(entry.topic.chatId).replace(/^-/, "") +
+      "-topic-" + entry.topic.topicId;
+    topicSessions.set(sessionKey, slug);
+  }
+  const peerSessions = new Map();
+  for (const [slug, entry] of Object.entries(registry.domains || {})) {
+    if (!entry || !Array.isArray(entry.peers)) continue;
+    for (const peer of entry.peers) {
+      if (!peer || peer.kind !== "direct") continue;
+      const sessionKey =
+        "telegram-" + (peer.accountId || "sergey") + "-direct-" + peer.id;
+      peerSessions.set(sessionKey, slug);
+    }
+  }
+  const silent = [];
+  const checked = [];
+  for (const sessionKey of activeSessions) {
+    const slug = topicSessions.get(sessionKey) || peerSessions.get(sessionKey);
+    if (!slug) continue;
+    checked.push(sessionKey);
+    const notePath = join(workspace, "memory", agentDir, sessionKey, today + ".md");
+    let lastEventMs = null;
+    let reason = "stale-events";
+    try {
+      if (!existsSync(notePath)) {
+        silent.push({ sessionKey, slug, hoursSince: 24, reason: "no-daily-note" });
+        continue;
+      }
+      const content = await readFile(notePath, "utf8");
+      const lines = content.split(/\r?\n/);
+      let inEvents = false;
+      let lastEventLine = null;
+      for (const line of lines) {
+        if (/^## Events/.test(line)) { inEvents = true; continue; }
+        if (inEvents && /^## /.test(line)) break;
+        if (inEvents && /^-\s/.test(line)) lastEventLine = line;
+      }
+      if (!lastEventLine) {
+        silent.push({ sessionKey, slug, hoursSince: 24, reason: "no-events-today" });
+        continue;
+      }
+      const m = lastEventLine.match(/\[(\d{1,2}):(\d{2})\]/);
+      if (m) {
+        const hh = Number(m[1]);
+        const mm = Number(m[2]);
+        const now = new Date();
+        const eventLocal = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate(),
+          hh,
+          mm
+        );
+        lastEventMs = eventLocal.getTime();
+        if (lastEventMs > now.getTime() + 60000) lastEventMs -= 86400000;
+      } else {
+        lastEventMs = Date.now() - 86400000;
+        reason = "no-timestamp";
+      }
+    } catch {
+      silent.push({ sessionKey, slug, hoursSince: 24, reason: "read-failed" });
+      continue;
+    }
+    const hoursSince = Math.floor((Date.now() - lastEventMs) / 3600000);
+    if (hoursSince >= SILENT_THRESHOLD_HOURS) {
+      silent.push({ sessionKey, slug, hoursSince, reason });
+    }
+  }
+  return {
+    thresholdHours: SILENT_THRESHOLD_HOURS,
+    checked: checked.length,
+    silent,
+  };
+}
+
 async function main() {
   const initial = await readJson(statePath, DEFAULT_STATE);
   const activeSessions = allActiveSessions ? getActiveSessions(initial) : [session];
@@ -1249,6 +1336,17 @@ async function main() {
       };
     }
     const domainScan = await runDomains();
+    const silentThreads = await runSilentThreadCheck(activeSessions);
+    summary.phases = summary.phases || {};
+    summary.phases.silentThreads = silentThreads;
+    if (silentThreads.silent.length > 0) {
+      for (const item of silentThreads.silent) {
+        summary.warnings.push(
+          "silent-thread: " + item.sessionKey +
+            " (last event " + item.hoursSince + "h ago, " + item.reason + ")"
+        );
+      }
+    }
     await runOllTriggerShell({ domainScan });
     if (opts["skip-maintenance"]) {
       summary.maintenance = "skipped";

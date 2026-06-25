@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // engram/scripts/init.js
 // Initialize the complete memory system from scratch
-// Usage: bun skills/engram/scripts/init.js [--agent-id main] [--qmd-variant auto|local|jina] [--force] [--help]
+// Usage: bun skills/engram/scripts/init.js [--agent-id main] [--qmd-variant auto|local|jina|ollama] [--force] [--help]
 
 import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'node:fs';
@@ -34,7 +34,7 @@ Usage:
 
 Options:
   --agent-id <id>           Agent identifier (default: main)
-  --qmd-variant <v>         QMD variant: auto|local|jina (default: auto)
+  --qmd-variant <v>         QMD variant: auto|local|jina|ollama (default: auto)
   --force                   Merge with existing dirs (won't overwrite files)
   --with-cron               Also install the heartbeat cron job (idempotent)
   --cron-schedule <e>       Schedule for the cron job: "30m" (default), "5m", "1h", or cron expr
@@ -94,6 +94,8 @@ function detectQmdVariant() {
   if (explicit !== 'auto') return explicit;
   if (process.env.QMD_LLM_PROVIDER === 'jina') return 'jina';
   if (process.env.JINA_API_KEY) return 'jina';
+  if (process.env.QMD_LLM_PROVIDER === 'ollama') return 'ollama';
+  if (process.env.OLLAMA_API_KEY || process.env.OLLAMA_BASE_URL) return 'ollama';
   return 'local';
 }
 
@@ -664,8 +666,10 @@ if (hasQmd) {
   }
 } else {
   console.log('\nQMD not found. Install:');
-  console.log('  Local (GPU):  npm i -g @nicepkg/qmd');
-  console.log('  Jina (API):   npm i -g @qwexs/qmd');
+  console.log('  Local (GPU):         npm i -g @nicepkg/qmd');
+  console.log('  Jina (Cloud):        npm i -g @qwexs/qmd');
+  console.log('  Ollama (Cloud/local): npm i -g @qwexs/qmd  (then set QMD_LLM_PROVIDER=ollama');
+  console.log('                        + OLLAMA_API_KEY or OLLAMA_BASE_URL=http://localhost:11434)');
   console.log('  Memory structure created without search indexing.');
   recordWarn('QMD not installed');
 }

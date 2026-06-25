@@ -40,7 +40,7 @@ bun skills/engram/scripts/init.js --with-cron --auto-detect-sessions
 #   --force                    merge with existing dirs (won't overwrite files)
 #   --skip-gateway-restart     skip 'openclaw gateway restart' (CI / test env)
 #   --cron-schedule <e>        override the cron schedule (e.g. "5m", "*/15 * * * *")
-#   --qmd-variant <v>          QMD variant: auto|local|jina (default: auto)
+#   --qmd-variant <v>          QMD variant: auto|local|jina|ollama (default: auto)
 #   --agent-id <id>            agent identifier (default: main)
 
 # Validate integrity
@@ -807,7 +807,7 @@ Configured in OpenClaw (`agents.defaults.compaction.memoryFlush`). Before contex
 ### install-qmd.js — Install QMD search engine
 
 ```bash
-bun skills/engram/scripts/install-qmd.js [--variant local|jina] [--jina-key <key>]
+bun skills/engram/scripts/install-qmd.js [--variant local|jina|ollama] [--jina-key <key>] [--ollama-key <key>] [--ollama-url <url>]
 ```
 
 Interactive installer for QMD. Two variants:

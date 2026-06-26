@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { loadEngramConfig } from "./config.js";
 import { parseHandoff } from "./process-handoff-core.js";
+import { findSimilarFacts } from "./memory-dedup.js";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -240,8 +241,83 @@ function buildFact(candidate, date) {
   };
 }
 
-function runMemoryWrite(fact) {
-  if (noWrite) return { status: "dry-run", fact: { id: "dry-run" } };
+// Категории, для которых допустим auto-supersede. Milestone/context/status
+// пропускаются: слишком высокий риск false positive (сырые log-строки, тестовые
+// outputs, ранее зачёркнутые "milestones" из quality gates).
+const SUPERSEDE_CATEGORIES = new Set(["decision", "preference", "correction"]);
+
+// Порог Jaccard для auto-supersede. Должен быть выше skip-порога (0.65 в
+// memory-write.js), иначе auto-supersede будет конфликтовать с in-entity skip
+// на той же similarity. По умолчанию 0.75 — оставляем запас.
+const DEFAULT_SUPERSEDE_THRESHOLD = 0.75;
+
+// Допуск между top-1 и top-2 score для трактовки как "ambiguous".
+// Если разница меньше этого — считаем, что есть ничья и НЕ делаем supersede.
+// Защищает от false positives когда две похожие формулировки сосуществуют
+// легитимно (например, preference про разные подсистемы).
+const SUPERSEDE_AMBIGUITY_MARGIN = 0.05;
+
+/**
+ * Найти существующий active fact, который можно безопасно заменить новым.
+ * Только для high-confidence категорий (decision/preference/correction).
+ *
+ * Returns: { id, sim } | null
+ *   - null если категория не supersede-eligible
+ *   - null если нет кандидатов с sim >= threshold
+ *   - null если есть 2+ кандидатов в пределах AMBIGUITY_MARGIN (ничейная ситуация)
+ *   - { id, sim } если есть однозначный winner
+ */
+export async function findSupersedeTarget(fact, { workspace, threshold = DEFAULT_SUPERSEDE_THRESHOLD } = {}) {
+  if (!SUPERSEDE_CATEGORIES.has(fact.category)) return null;
+
+  const matches = await findSimilarFacts({
+    workspace,
+    entity: fact.entity,
+    factText: fact.fact,
+    threshold,
+  });
+
+  if (matches.length === 0) return null;
+
+  // Strict ambiguity: если top-1 и top-2 в пределах margin — отказываемся.
+  // Игнорируем category mismatch: если кандидат с тем же score — другая категория,
+  // это всё равно легитимный конфликт (например, old был preference, new — decision
+  // про то же самое), и решение должно быть ручным.
+  if (matches.length >= 2 && (matches[0].sim - matches[1].sim) < SUPERSEDE_AMBIGUITY_MARGIN) {
+    return { ambiguous: true, candidates: matches };
+  }
+
+  return { id: matches[0].id, sim: matches[0].sim };
+}
+
+/**
+ * Записать fact через memory-write.js с поддержкой auto-supersede.
+ * - Для decision/preference/correction: сначала проверяет, есть ли существующий
+ *   active fact, который можно заменить (Jaccard ≥ threshold, однозначный winner).
+ * - Если есть — добавляет --supersedes <id> в args memory-write.js.
+ * - Если ambiguous — логируем, но НЕ передаём --supersedes (memory-write.js
+ *   дальше сам решит: skip-on-jaccard или создать новый).
+ *
+ * Returns: { status, ..., supersede: { id, sim } | null, ambiguous: bool }
+ */
+async function runMemoryWriteWithSupersede(fact) {
+  if (noWrite) return { status: "dry-run", fact: { id: "dry-run" }, supersede: null, ambiguous: false };
+
+  let supersedeId = null;
+  let supersedeSim = null;
+  let ambiguous = false;
+
+  if (SUPERSEDE_CATEGORIES.has(fact.category)) {
+    const threshold = parseFloat(opts["supersede-threshold"]) || DEFAULT_SUPERSEDE_THRESHOLD;
+    const target = await findSupersedeTarget(fact, { workspace, threshold });
+    if (target && target.ambiguous) {
+      ambiguous = true;
+    } else if (target && target.id) {
+      supersedeId = target.id;
+      supersedeSim = target.sim;
+    }
+  }
+
   const args = [
     join(scriptDir, "memory-write.js"),
     "--entity", fact.entity,
@@ -254,14 +330,20 @@ function runMemoryWrite(fact) {
     "--source", fact.source,
     "--entity-create",
   ];
+  if (supersedeId) args.push("--supersedes", supersedeId);
   if (semanticCheck) args.push("--semantic-check", "--search-collections", "life");
-  if (["preference", "decision", "correction"].includes(fact.category)) args.push("--check-contradictions");
+  if (SUPERSEDE_CATEGORIES.has(fact.category)) args.push("--check-contradictions");
 
   const proc = spawnSync("bun", args, { cwd: workspace, env: { ...process.env, ENGRAM_WORKSPACE: workspace }, encoding: "utf8", shell: false, timeout: 300000 });
   if (proc.status !== 0) {
-    return { status: "error", error: proc.stderr || proc.stdout || proc.error?.message || "memory-write failed" };
+    return { status: "error", error: proc.stderr || proc.stdout || proc.error?.message || "memory-write failed", supersede: null, ambiguous: false };
   }
-  try { return JSON.parse(proc.stdout || "{}"); } catch { return { status: "unknown", stdout: proc.stdout }; }
+  try {
+    const result = JSON.parse(proc.stdout || "{}");
+    return { ...result, supersede: supersedeId ? { id: supersedeId, sim: supersedeSim } : null, ambiguous };
+  } catch {
+    return { status: "unknown", stdout: proc.stdout, supersede: null, ambiguous: false };
+  }
 }
 
 async function updateWatermark(notePath, processedLine) {
@@ -312,12 +394,24 @@ export async function runExtraction() {
   let factsWritten = 0;
   let factsSkipped = 0;
   let factsPlanned = 0;
+  let supersededCount = 0;
+  let supersedeAmbiguousCount = 0;
+  let supersedeMinSim = null;
   const tensions = [];
   const flags = [];
 
   for (const candidate of allCandidates) {
-    const result = runMemoryWrite(buildFact(candidate, date));
-    if (result.status === "created") factsWritten++;
+    const result = await runMemoryWriteWithSupersede(buildFact(candidate, date));
+    if (result.status === "created") {
+      factsWritten++;
+      if (result.supersede) {
+        supersededCount++;
+        if (supersedeMinSim === null || result.supersede.sim < supersedeMinSim) {
+          supersedeMinSim = result.supersede.sim;
+        }
+      }
+      if (result.ambiguous) supersedeAmbiguousCount++;
+    }
     else if (result.status === "dry-run") factsPlanned++;
     else if (result.status === "skipped") factsSkipped++;
     else {
@@ -342,6 +436,9 @@ export async function runExtraction() {
     facts_written: factsWritten,
     facts_skipped_dedup: factsSkipped,
     facts_planned: factsPlanned,
+    superseded_count: supersededCount,
+    supersede_ambiguous_count: supersedeAmbiguousCount,
+    supersede_min_jaccard: supersedeMinSim !== null ? Number(supersedeMinSim.toFixed(3)) : null,
     new_watermark: `L${newWatermark}`,
     previous_watermark: `L${daily.watermark?.watermark ?? 0}`,
     last_session_file: watermarkAdvanced ? lastSessionFile : null,
@@ -353,7 +450,7 @@ export async function runExtraction() {
   };
   const summary = noWrite
     ? `dry-run planned ${factsPlanned} facts (${factsSkipped} skipped), daily L${daily.watermark?.watermark ?? 0}->L${newWatermark}${watermarkAdvanced ? "" : " (watermark not advanced)"}, sessions ${sessions.files.length}`
-    : `extracted ${factsWritten} facts (${factsSkipped} skipped), daily L${daily.watermark?.watermark ?? 0}->L${newWatermark}, sessions ${sessions.files.length}`;
+    : `extracted ${factsWritten} facts (${factsSkipped} skipped, ${supersededCount} auto-superseded, ${supersedeAmbiguousCount} ambiguous), daily L${daily.watermark?.watermark ?? 0}->L${newWatermark}, sessions ${sessions.files.length}`;
   const block = handoffBlock({ status: "ok", summary, stats, flags, tensions });
   return { handoff: parseHandoff(block), block };
 }

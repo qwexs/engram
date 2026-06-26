@@ -66,6 +66,72 @@ export async function checkDedup(fact, entity) {
   return { duplicate: false };
 }
 
+// ============================================================================
+// Jaccard-based similarity helpers (shared by memory-write skip + extract-runner
+// auto-supersede). Pure functions — no I/O side effects, no early exit.
+// ============================================================================
+
+// Извлечение ключевых слов для Jaccard (нормализация: lower, strip punctuation,
+// drop tokens ≤3 chars). Используется и для skip, и для supersede.
+export function extractKeywordsJaccard(text) {
+  return String(text ?? '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .split(/\s+/)
+    .filter((w) => w.length > 3);
+}
+
+// Jaccard similarity по keyword overlap. Returns 0..1.
+export function jaccardSimilarity(words1, words2) {
+  const set1 = new Set(words1);
+  const set2 = new Set(words2);
+  const intersection = [...set1].filter((w) => set2.has(w));
+  const union = new Set([...set1, ...set2]);
+  return union.size > 0 ? intersection.length / union.size : 0;
+}
+
+// Найти похожие active facts в entity по Jaccard ≥ threshold.
+// Возвращает [{ id, fact, sim, category }], отсортировано по sim DESC.
+// Read-only: не пишет в items.json, не вызывает exit.
+// Используется:
+//   - memory-write.js для in-entity skip (threshold=0.65)
+//   - extract-runner.js для auto-supersede (threshold=0.75)
+export async function findSimilarFacts({ workspace, entity, factText, threshold = 0.65 }) {
+  const itemsPath = join(workspace, "life", entity, "items.json");
+  const file = Bun.file(itemsPath);
+  if (!(await file.exists())) return [];
+
+  let data;
+  try {
+    data = await file.json();
+  } catch {
+    return [];
+  }
+
+  const newKw = extractKeywordsJaccard(factText);
+  const matches = [];
+
+  for (const ef of data.facts || []) {
+    if (ef.status !== "active") continue;
+    const efText = ef.fact || ef.text;
+    if (!efText) continue;
+
+    const efKw = extractKeywordsJaccard(efText);
+    const sim = jaccardSimilarity(newKw, efKw);
+    if (sim >= threshold) {
+      matches.push({
+        id: ef.id,
+        fact: efText,
+        sim,
+        category: ef.category,
+      });
+    }
+  }
+
+  matches.sort((a, b) => b.sim - a.sim);
+  return matches;
+}
+
 // Seed — построить индекс из всех items.json в life/
 async function seed() {
   const { Glob } = await import("bun");

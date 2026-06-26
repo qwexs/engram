@@ -286,6 +286,43 @@ describe("memory-write — write flow", () => {
     expect(data.facts[2].fact).toBe("Replacement durable fact");
   });
 
+  test("--supersedes bypasses in-entity Jaccard dedup (explicit supersede wins over implicit skip)", async () => {
+    // Setup: existing preference fact that is a near-paraphrase of the new one.
+    // Without --supersedes, in-entity Jaccard would block this as "skipped".
+    // With --supersedes, explicit intent must win and the write must proceed.
+    createEntity([{
+      id: "__test_mw__-001",
+      fact: "Use cleanup keep for hb-extract subagents to preserve debug history forever",
+      category: "preference",
+      confidence: 0.85,
+      abstractionLevel: "pattern",
+      tags: [],
+      timestamp: "2026-05-21",
+      source: "test",
+      status: "active",
+      supersededBy: null,
+      relatedEntities: [],
+      lastAccessed: "2026-05-21",
+      accessCount: 1,
+    }]);
+
+    const { result, exitCode } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Use cleanup keep for hb-extract subagents to preserve debug history",
+      "--category", "preference",
+      "--supersedes", "__test_mw__-001",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(result.status).toBe("created");
+    expect(result.fact.id).toBe("__test_mw__-002");
+
+    const data = readItems();
+    expect(data.facts[0].status).toBe("superseded");
+    expect(data.facts[0].supersededBy).toBe("__test_mw__-002");
+    expect(data.facts[1].fact).toBe("Use cleanup keep for hb-extract subagents to preserve debug history");
+  });
+
   test("increments IDs correctly", async () => {
     createEntity();
 

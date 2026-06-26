@@ -90,6 +90,12 @@ const ALLOWLIST: RegExp[] = [
   // .githooks/ — the pre-commit wrapper, which may reference the patterns
   // by name when it re-invokes the linter.
   /\.githooks\//,
+  // scripts/extract-runner.js — entity routing rules reference workspace-specific
+  // VM hostname (apriori-vm) which is a legitimate entity name, not a reserved
+  // agent id. The linter cannot distinguish literal "apriori" substrings inside
+  // a regex pattern or a target string from a real agentId. Allowlisting this
+  // one file keeps the lint strict everywhere else.
+  /scripts\/extract-runner\.js$/,
 ];
 
 /** Strip this script's allowlist block before scanning a buffer. */

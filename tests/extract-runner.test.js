@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { collectDailyCandidates, collectSessionCandidates, collectSessionFiles, extractLastWatermark } from "../scripts/extract-runner.js";
+import { collectDailyCandidates, collectSessionCandidates, collectSessionFiles, extractLastWatermark, findSupersedeTarget } from "../scripts/extract-runner.js";
 
 function makeWorkspace() {
   const root = mkdtempSync(join(tmpdir(), "engram-extract-"));
@@ -90,6 +90,154 @@ describe("extract-runner dry run", () => {
       expect(stdout).toContain('"dry_run":true');
       expect(stdout).toContain('"watermark_advanced":false');
       expect(readFileSync(notePath, "utf8")).toContain("<!-- extracted:L4:2026-05-21T00:00:00+03:00 -->");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findSupersedeTarget — auto-supersede detection for high-confidence categories
+// ---------------------------------------------------------------------------
+
+function seedEntity(root, entity, facts) {
+  const entityPath = join(root, "life", entity);
+  mkdirSync(entityPath, { recursive: true });
+  const data = { entityId: entity, entityType: "project", facts };
+  writeFileSync(join(entityPath, "items.json"), JSON.stringify(data, null, 2));
+}
+
+function makeFact(overrides) {
+  return {
+    id: "test-001",
+    fact: "default fact text",
+    category: "preference",
+    status: "active",
+    confidence: 0.85,
+    ...overrides,
+  };
+}
+
+describe("findSupersedeTarget", () => {
+  test("returns null for non-supersede categories (milestone/context/status)", async () => {
+    const root = makeWorkspace();
+    try {
+      seedEntity(root, "projects/test", [
+        makeFact({ id: "test-001", fact: "Deploy completed in production environment", category: "milestone" }),
+      ]);
+      const result = await findSupersedeTarget(
+        { entity: "projects/test", category: "milestone", fact: "Deploy completed in production environment for second time" },
+        { workspace: root }
+      );
+      expect(result).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("returns {id, sim} for high-Jaccard preference replacement", async () => {
+    const root = makeWorkspace();
+    try {
+      seedEntity(root, "projects/test", [
+        makeFact({ id: "test-001", category: "preference", fact: "Use cleanup keep for hb-extract subagents to preserve debug history" }),
+      ]);
+      const result = await findSupersedeTarget(
+        { entity: "projects/test", category: "preference", fact: "Use cleanup keep for hb-extract subagents to preserve debug history forever" },
+        { workspace: root }
+      );
+      expect(result).not.toBeNull();
+      expect(result.ambiguous).toBeFalsy();
+      expect(result.id).toBe("test-001");
+      expect(result.sim).toBeGreaterThanOrEqual(0.75);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("returns null when Jaccard below threshold", async () => {
+    const root = makeWorkspace();
+    try {
+      seedEntity(root, "projects/test", [
+        makeFact({ id: "test-001", category: "preference", fact: "Prefer dark mode in code editors for late night work sessions" }),
+      ]);
+      const result = await findSupersedeTarget(
+        { entity: "projects/test", category: "preference", fact: "Always write tests before implementation in TDD strict style" },
+        { workspace: root }
+      );
+      expect(result).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("returns null when existing fact is already superseded", async () => {
+    const root = makeWorkspace();
+    try {
+      seedEntity(root, "projects/test", [
+        makeFact({ id: "test-001", category: "preference", status: "superseded", fact: "Use cleanup keep for hb-extract subagents to preserve debug history" }),
+      ]);
+      const result = await findSupersedeTarget(
+        { entity: "projects/test", category: "preference", fact: "Use cleanup keep for hb-extract subagents to preserve debug history forever" },
+        { workspace: root }
+      );
+      expect(result).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("marks ambiguous when two candidates within margin", async () => {
+    const root = makeWorkspace();
+    try {
+      seedEntity(root, "projects/test", [
+        makeFact({ id: "test-001", category: "preference", fact: "Use cleanup keep for hb-extract subagents to preserve debug history forever" }),
+        makeFact({ id: "test-002", category: "preference", fact: "Use cleanup keep for hb-extract subagents to preserve debug history always" }),
+      ]);
+      const result = await findSupersedeTarget(
+        { entity: "projects/test", category: "preference", fact: "Use cleanup keep for hb-extract subagents to preserve debug history completely" },
+        { workspace: root }
+      );
+      expect(result).not.toBeNull();
+      expect(result.ambiguous).toBe(true);
+      expect(result.candidates.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("returns null for missing entity", async () => {
+    const root = makeWorkspace();
+    try {
+      const result = await findSupersedeTarget(
+        { entity: "projects/does-not-exist", category: "preference", fact: "Anything at all about preference" },
+        { workspace: root }
+      );
+      expect(result).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("respects custom threshold via opts", async () => {
+    const root = makeWorkspace();
+    try {
+      seedEntity(root, "projects/test", [
+        makeFact({ id: "test-001", category: "preference", fact: "Use cleanup keep for hb-extract subagents to preserve debug history" }),
+      ]);
+      // Default threshold 0.75 → no match (texts differ enough to drop below)
+      const strictResult = await findSupersedeTarget(
+        { entity: "projects/test", category: "preference", fact: "Use cleanup keep for hb-extract subagents to preserve debug history forever" },
+        { workspace: root, threshold: 0.99 }
+      );
+      expect(strictResult).toBeNull();
+
+      // Loose threshold 0.5 → match
+      const looseResult = await findSupersedeTarget(
+        { entity: "projects/test", category: "preference", fact: "Use cleanup keep for hb-extract subagents to preserve debug history forever" },
+        { workspace: root, threshold: 0.5 }
+      );
+      expect(looseResult).not.toBeNull();
+      expect(looseResult.id).toBe("test-001");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

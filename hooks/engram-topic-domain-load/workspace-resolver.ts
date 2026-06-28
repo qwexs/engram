@@ -40,12 +40,10 @@ export function resolveWorkspaceByAgentId(
 /**
  * Extract the agentId from a sessionKey of the form
  * `agent:<id>:<channel>:<rest>`. Returns null if sessionKey is empty or does
- * not match the expected format. Exported for unit testing.
+ * not match the expected format.
+ *
+ * DEPRECATED: moved to `../_lib/parse-agent-id.ts` so all hooks share one
+ * implementation. This re-export is kept for backwards compatibility with
+ * any callers/tests that still import from `./workspace-resolver.js`.
  */
-export function parseAgentIdFromSessionKey(
-  sessionKey: string,
-): string | null {
-  if (!sessionKey) return null;
-  const m = sessionKey.match(/^agent:([^:]+):/);
-  return m ? m[1] : null;
-}
+export { parseAgentIdFromSessionKey } from "../_lib/parse-agent-id.js";

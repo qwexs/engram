@@ -2,7 +2,8 @@ import { existsSync, readFileSync, writeFileSync, statSync, renameSync, mkdtempS
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { parseAgentIdFromSessionKey, resolveWorkspaceByAgentId } from "./workspace-resolver.js";
+import { resolveWorkspaceByAgentId } from "./workspace-resolver.js";
+import { parseAgentIdFromSessionKey } from "../_lib/parse-agent-id.js";
 
 // Resolve TZ at call time, not module load time. This makes the hook testable:
 // the test can set process.env.ENGRAM_TZ after importing the module.
@@ -53,6 +54,9 @@ const handler = async (event: any) => {
   // Derive agentId from sessionKey (format: "agent:<id>:<channel>:<rest>").
   // Used as a third fallback for workspaceDir resolution and as the primary
   // agent id when building the sessionDir path on disk.
+  // Uses shared helper from _lib/parse-agent-id.ts to stay in sync with
+  // engram-session-start and other hooks. workspace-resolver.ts keeps
+  // its own copy for now (re-exported below for backwards compatibility).
   const resolvedAgentId = parseAgentIdFromSessionKey(sessionKey);
 
   const workspaceDir =

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 
@@ -48,10 +49,13 @@ const handler = async (event: any) => {
   const workspaceDir = event.context?.workspaceDir;
   if (!workspaceDir) return;
 
-  const agentId = event.context?.agentId || "main";
-  // sessionKey comes as "agent:main:main" — extract the session segment
-  const rawKey = event.context?.sessionKey || "main";
-  const sessionKey = rawKey.includes(":") ? rawKey.split(":").slice(2).join("-") || "main" : rawKey;
+  // Resolve agentId + session segment from the sessionKey. Single source of
+  // truth lives in _lib/parse-agent-id.ts; falls back to context.agentId
+  // (legacy) and finally "main" only when the sessionKey is unparseable.
+  const rawKey = event.context?.sessionKey || event.sessionKey || "main";
+  const split = splitAgentAndSession(rawKey);
+  const agentId = split?.agentId || event.context?.agentId || "main";
+  const sessionKey = split?.sessionKey || "main";
 
   // Skip ephemeral runtime sessions — they don't need daily notes.
   if (sessionKey.startsWith("subagent-")) return;

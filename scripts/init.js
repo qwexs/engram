@@ -295,11 +295,23 @@ function addSessionQmdCollection(sessionKey) {
     return;
   }
 
+  // Idempotent: skip if collection already exists (qmd rejects re-add with non-zero exit).
+  try {
+    execSync(`${QMD} collection show "${collectionName}"`, { stdio: 'pipe' });
+    recordSkip('qmd-collection', collectionName, 'already exists');
+    return;
+  } catch {
+    // Collection does not exist yet — proceed to add.
+  }
+
   try {
     execSync(`${QMD} collection add "${sessionPath}" --name ${collectionName} --mask "**/*.md"`, { stdio: 'pipe' });
     recordCreate('qmd-collection', collectionName);
-  } catch {
-    recordSkip('qmd-collection', collectionName, 'may already exist');
+  } catch (e) {
+    // Real failure (permission, broken qmd binary, full disk, etc.). Surface it
+    // as an error rather than silently masking it as "may already exist".
+    const stderr = (e.stderr ? e.stderr.toString() : '').trim().split('\n').slice(-3).join(' | ');
+    recordError(`qmd collection add failed for ${collectionName}${stderr ? `: ${stderr}` : ''}`);
   }
 }
 
@@ -631,6 +643,30 @@ if (detectedSessions.length > 0) {
   }
   // Batched update of heartbeat-state.json:activeSessions (AC4 fix C2).
   updateHeartbeatStateForSessions(detectedSessions.map(s => s.sessionKey));
+}
+
+// --- Reconcile orphan session dirs ---
+// Sessions whose dir exists in memory/agent-{id}/ but are not in openclaw.json
+// bindings (typically forum topics whose parent group is bound but the topic
+// itself has no explicit binding). Back-fill their QMD collections so daily
+// notes get indexed. Closes the gap that produced the topic-60
+// daily-note-not-indexed issue (2026-06-26).
+if (hasQmd) {
+  const memoryRoot = join(WORKSPACE, `memory/agent-${agentId}`);
+  if (existsSync(memoryRoot)) {
+    const detectedKeys = new Set(detectedSessions.map(s => s.sessionKey));
+    const orphanKeys = readdirSync(memoryRoot, { withFileTypes: true })
+      .filter(d => d.isDirectory() && d.name !== 'main')
+      .map(d => d.name)
+      .filter(name => !detectedKeys.has(name));
+    if (orphanKeys.length > 0) {
+      console.log(`\nReconciling ${orphanKeys.length} orphan session dir(s):`);
+      for (const key of orphanKeys) {
+        console.log(`  ${key}`);
+        addSessionQmdCollection(key);
+      }
+    }
+  }
 }
 
 // --- QMD collections ---

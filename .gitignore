@@ -7,3 +7,8 @@ docs
 # full filesystem paths and per-machine data. Workspace/memory-state/
 # is still tracked (only the fact-hashes.json file inside it).
 workspace/ops/
+
+# Local backups and runtime artifacts — never source.
+*.bak-*
+scripts/hb-runner-output.json
+scripts/spawn-claim-output.json

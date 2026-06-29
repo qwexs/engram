@@ -81,13 +81,24 @@ const handler = async (event: any) => {
   const daySentinel = `<!-- engram:auto-suggest-shown:${todayShort} -->`;
   if (noteContent.includes(daySentinel)) return;
 
-  // Count user messages: lines starting with "- " outside any auto-block
-  // (domain-context, auto-suggest, session markers, etc.)
-  let cleaned = noteContent;
-  cleaned = cleaned.replace(/<!-- domain-context:[\w-]+:[a-f0-9]+ -->[\s\S]*?<!-- \/domain-context -->\n?/g, "");
-  cleaned = cleaned.replace(/<!-- engram:auto-suggest:[a-f0-9]+ -->[\s\S]*?<!-- \/engram:auto-suggest -->\n?/g, "");
-  cleaned = cleaned.replace(/<!-- session:[a-z]+:[^>]+-->\n?/g, "");
-  const messageCount = (cleaned.match(/^- /gm) || []).length;
+  // Count inbound user messages via a per-session counter file. We can't use
+  // "- " lines in the daily note (those are agent-written events, and for an
+  // unbound topic there is no agent to write them — see the self-suppressing
+  // cycle bug this hook had pre-fix). The counter file lives in sessionDir,
+  // rotates naturally with daily notes, and is incremented before the
+  // threshold check so the *current* message counts.
+  const counterPath = join(sessionDir, `.engram-msg-count-${todayShort}`);
+  let messageCount = 1;
+  try {
+    if (existsSync(counterPath)) {
+      const raw = readFileSync(counterPath, "utf-8").trim();
+      const parsed = parseInt(raw, 10);
+      if (Number.isFinite(parsed) && parsed >= 1) messageCount = parsed + 1;
+    }
+  } catch { /* read best-effort, count this message as 1 */ }
+  try {
+    writeFileSync(counterPath, String(messageCount));
+  } catch { /* write best-effort, in-memory value still used */ }
 
   if (messageCount < SUGGEST_THRESHOLD) return;
 

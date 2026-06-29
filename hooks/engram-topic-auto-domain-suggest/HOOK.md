@@ -30,8 +30,11 @@ This hook is a **sibling** to `engram-topic-domain-load`:
 
 On `message:received` in a Telegram topic session, if:
 - the topic has no bound domain in `memory/domains/registry.json`, AND
-- the current daily note has ≥2 lines starting with `- ` (after stripping
-  Domain Context / session-marker / prior auto-suggest blocks), AND
+- ≥2 inbound user messages have been counted for today (via per-session
+  counter file `.engram-msg-count-YYYYMMDD` incremented on each fire;
+  intentionally **not** based on `- ` bullets in the daily note, since those
+  represent agent-written events and would never accumulate for unbound
+  topics with no agent memory), AND
 - no `<!-- engram:auto-suggest-shown:YYYYMMDD -->` sentinel exists in the note
   (one suggestion per UTC day, per topic).
 

@@ -19,6 +19,7 @@ const { values: args } = parseArgs({
     'create-telegram-topic': { type: 'boolean', default: false },
     'telegram-chat-id': { type: 'string', default: '' },
     'telegram-icon-color': { type: 'string', default: '0x6FB9F0' },
+    'pending': { type: 'boolean', default: false },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -50,6 +51,11 @@ Options:
   --telegram-icon-color <h> Цвет иконки топика в hex (по умолчанию 0x6FB9F0 - синий).
                              Telegram: 0x6FB9F0 blue, 0xFFD67E yellow, 0xCB86DB purple,
                              0x8EEE98 green, 0xFF93B2 pink, 0xFB6F5F red.
+  --pending                  Создать домен в статусе pending (только для type=topic-thread).
+                             pending: true в registry.json. Используется хуком
+                             engram-topic-auto-domain-suggest после подтверждения
+                             пользователя в чате. Идемпотентно: если для этого
+                             (chatId, topicId) уже есть домен — exit 0 no-op.
   -h, --help                 Показать справку
 
 Examples:
@@ -71,6 +77,13 @@ Examples:
     --topic -1001234567890:42 \\
     --kg-entity projects/engram \\
     --description "Engram memory architecture — дизайн, RFC, решения"
+
+  # Pending-режим (после подтверждения пользователя в чате, через хук)
+  bun skills/engram/scripts/add-domain.js --domain foo \\
+    --type topic-thread \\
+    --topic -1001234567890:42 \\
+    --pending \\
+    --description "Топик создан пользователем, ожидает промоушна"
 `);
   process.exit(args.help ? 0 : 1);
 }
@@ -83,6 +96,7 @@ const topicArg = args.topic;
 const createTelegramTopic = args['create-telegram-topic'];
 const telegramChatIdArg = args['telegram-chat-id'];
 const telegramIconColor = args['telegram-icon-color'];
+const pending = args.pending;
 const WORKSPACE = process.cwd();
 const QMD = resolveQmdCommand(WORKSPACE);
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
@@ -198,6 +212,35 @@ if (domainType === 'topic-thread') {
 
 const domainsDir = join(WORKSPACE, 'memory', 'domains');
 const domainDir = join(domainsDir, domain);
+
+// --pending идемпотентность: если для этого (chatId, topicId) уже есть домен —
+// no-op. Это критично для auto-bind flow, где хук может вызвать add-domain
+// несколько раз (service-message + первый user message, fast-track). Проверяем
+// ДО README.md check, чтобы повторный вызов с тем же именем и тем же
+// (chatId, topicId) не падал на name conflict.
+if (pending && topicBinding) {
+  // registryPath declared further down; reconstruct locally to keep this
+  // idempotency check self-contained at the top of the validation pipeline.
+  const earlyRegistryPath = join(domainsDir, 'registry.json');
+  try {
+    const earlyRegistryFile = Bun.file(earlyRegistryPath);
+    if (await earlyRegistryFile.exists()) {
+      const earlyRegistry = JSON.parse(await earlyRegistryFile.text());
+      const existingDomains = earlyRegistry?.domains && typeof earlyRegistry.domains === 'object' && !Array.isArray(earlyRegistry.domains)
+        ? earlyRegistry.domains
+        : {};
+      for (const [name, entry] of Object.entries(existingDomains)) {
+        if (entry?.topic &&
+            String(entry.topic.chatId).replace(/^-/, '') === String(topicBinding.chatId).replace(/^-/, '') &&
+            String(entry.topic.topicId) === String(topicBinding.topicId)) {
+          const isPending = entry.pending === true ? ' (pending)' : '';
+          console.log(`✅ Домен "${name}" уже привязан к ${topicBinding.chatId}:${topicBinding.topicId}${isPending} — no-op.`);
+          process.exit(0);
+        }
+      }
+    }
+  } catch { /* best-effort, fall through to normal create */ }
+}
 
 // Проверка: домен уже существует
 if (await Bun.file(join(domainDir, 'README.md')).exists()) {
@@ -358,6 +401,7 @@ registry.domains[domain] = {
   staleAfterDays: typeDefaults.staleAfterDays,
   ...(kgEntity ? { kgEntity } : {}),
   ...(topicBinding ? { topic: topicBinding } : {}),
+  ...(pending ? { pending: true } : {}),
   description,
   created: today,
 };
@@ -367,6 +411,7 @@ await Bun.write(registryPath, JSON.stringify(registry, null, 2) + '\n');
 const registryBits = [`тип: ${domainType}`];
 if (kgEntity) registryBits.push(`KG: ${kgEntity}`);
 if (topicBinding) registryBits.push(`топик: ${topicBinding.chatId}:${topicBinding.topicId}`);
+if (pending) registryBits.push('pending: true');
 console.log(`  ✅ registry.json (${registryBits.join(', ')})`);
 
 // Регистрация QMD коллекции domains (одна на все домены)
@@ -427,7 +472,7 @@ if (qmdAvailable()) {
 }
 
 console.log(`
-✅ Домен создан!
+✅ Домен создан!${pending ? ' (pending — требует promote для активации)' : ''}
    Домен:        ${domain}
    Тип:          ${domainType}${kgEntity ? `\n   KG Entity:    ${kgEntity}` : ''}${topicBinding ? `\n   Топик:        ${topicBinding.chatId}:${topicBinding.topicId}` : ''}
    Описание:     ${description}

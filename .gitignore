@@ -12,3 +12,8 @@ workspace/ops/
 *.bak-*
 scripts/hb-runner-output.json
 scripts/spawn-claim-output.json
+
+# Workspace-specific hooks — deployed locally via install-hooks.js, not committed.
+# Pattern uses the unique hook suffix, not the agent-id prefix, because the
+# pre-commit lint-no-personal-data reserves any literal agent id in staged content.
+hooks/*-peer-domain-load

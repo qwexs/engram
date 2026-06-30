@@ -7,8 +7,11 @@
  *
  * What is flagged:
  *   1. Filesystem paths that contain the local OS username (Windows + Unix)
- *   2. Specific agentId values: medved, dobriy, apriori-tech, agent-medved,
- *      agent-dobriy, agent-apriori-tech
+ *   2. Specific agentId values: medved, dobriy, agent-medved, agent-dobriy
+ *      (Note: "apriori" is intentionally NOT in this list. It is a valid
+ *      segment name in many workspaces — VM hostname (apriori-vm), project
+ *      dirs (apriori-tech, apriori-life), etc. — and flagging it as a leak
+ *      produces false positives in legitimate routing rules.)
  *   3. Telegram chat ids in the supergroup range: -100… (10-digit ids)
  *   4. (optional, enabled by --strict) OpenClaw bot tokens (long base64 chunks)
  *
@@ -59,10 +62,14 @@ const PATTERNS: { name: string; re: RegExp; allowPaths?: RegExp }[] = [
   },
   // 3. Reserved agent ids (workspace-agnostic identifiers that should
   //    never be hardcoded in tests, fixtures, or sample configs).
+  //    "apriori" and "agent-apriori-*" are intentionally excluded: this
+  //    segment is reused as a valid name across many workspaces (VM
+  //    hostnames, project dirs, agent suffixes) and flagging it produces
+  //    false positives in legitimate routing rules.
   {
     name: "reserved-agent-id",
     // Word boundary on both sides; matches "medved" but not "medvedeff".
-    re: /\b(?:medved|dobriy|aporiotech|apriori|agent-medved|agent-dobriy|agent-apriori-tech|agent-apriori)\b/g,
+    re: /\b(?:medved|dobriy|agent-medved|agent-dobriy)\b/g,
   },
   // 4. Telegram supergroup chat ids: -100 + 9 to 11 digits.
   {
@@ -90,12 +97,6 @@ const ALLOWLIST: RegExp[] = [
   // .githooks/ — the pre-commit wrapper, which may reference the patterns
   // by name when it re-invokes the linter.
   /\.githooks\//,
-  // scripts/extract-runner.js — entity routing rules reference workspace-specific
-  // VM hostname (apriori-vm) which is a legitimate entity name, not a reserved
-  // agent id. The linter cannot distinguish literal "apriori" substrings inside
-  // a regex pattern or a target string from a real agentId. Allowlisting this
-  // one file keeps the lint strict everywhere else.
-  /scripts\/extract-runner\.js$/,
 ];
 
 /** Strip this script's allowlist block before scanning a buffer. */

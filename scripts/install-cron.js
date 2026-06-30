@@ -315,7 +315,7 @@ function buildSchedule(s) {
 const PROSE_TEMPLATE = `You are the cron job for the Clawd engram heartbeat. Do these steps in order using your available tools (do not write or run any JavaScript or shell scripts; call the tools directly).
 
 Step 1 — Run the heartbeat runner:
-Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --timeout-ms 300000", workdir="<WORKSPACE>", timeout_ms=900000. Capture the output as \`runner\`.
+Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000", workdir="<WORKSPACE>", timeout_ms=900000. Capture the output as \`runner\`.
 
 Step 2 — Drain the subagent-spawn queue (Phase 5.5):
 The runner enqueues subagent spawn requests into workspace/ops/heartbeat-spawns/*.json (Bun scripts have no LLM tool access and cannot call sessions_spawn directly). You claim and dispatch them.
@@ -365,6 +365,10 @@ const NEW_PAYLOAD_MARKER_2 = "Step 2 — Drain the subagent-spawn queue";
 // payload is on the current format; absence means an older echo-style
 // prompt and a cron edit is required to upgrade.
 const NEW_PAYLOAD_MARKER_3 = "Step 4 — Final reply (CONCISE, NO ECHO)";
+// 2026-06-29+: --all-active-sessions flag in Step 1 command, for workspace-scope heartbeat
+// coverage (instead of session-only). Maintained by the engram team; absence means the cron
+// is on a pre-2026-06-29 payload and should be re-installed to upgrade.
+const NEW_PAYLOAD_MARKER_4 = "--all-active-sessions --timeout-ms 300000";
 
 function buildPayloadMessage({ workspace, agentId, session, labelPrefix }) {
   return PROSE_TEMPLATE
@@ -380,6 +384,7 @@ function isOnNewFormat(payload) {
     payload.message.includes(NEW_PAYLOAD_MARKER_1) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_2) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_3) &&
+    payload.message.includes(NEW_PAYLOAD_MARKER_4) &&
     // toolsAllow must be present and match HEARTBEAT_TOOLS_ALLOW.
     // If absent (older install) or divergent, we re-apply via edit.
     Array.isArray(payload.toolsAllow) &&

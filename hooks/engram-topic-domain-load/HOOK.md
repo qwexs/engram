@@ -82,8 +82,8 @@ AGENTS (ruleset).
 The hook uses a **built-in minimal fallback** so the topic-agent is never
 without QMD/write rules. The fallback includes:
 - Role declaration (Topic-agent of `{slug}`, session key)
-- Default QMD query: `qmd --index apriori query "<topic>" -c domain-{slug} -c openclaw-memory-agent-{agentId}-{sessionKey}`
-- Boundary rules (do NOT use `domains` or `apriori-life` without explicit OK)
+- Default QMD query: `qmd --index <workspace-index> query "<topic>" -c domain-{slug} -c openclaw-memory-agent-{agentId}-{sessionKey}`
+- Boundary rules (do NOT use `domains` or `life` without explicit OK)
 - Write rules summary
 
 The block shows a `⚠️` warning pointing at

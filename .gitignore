@@ -12,6 +12,9 @@ workspace/ops/
 *.bak-*
 scripts/hb-runner-output.json
 scripts/spawn-claim-output.json
+# Per-test temp workspaces created by bun test (e.g. ws-bootstrap-test/, ws1/, ws3/, ws5/).
+# Each test file's beforeEach mkdtempSync() drops a new directory here.
+.tmp/
 
 # Workspace-specific hooks — deployed locally via install-hooks.js, not committed.
 # Pattern uses the unique hook suffix, not the agent-id prefix, because the

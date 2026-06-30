@@ -41,13 +41,13 @@ Options:
                                topic-thread  — Telegram topic as memory contour
   --kg-entity <path>         Путь к KG entity (например "projects/engram")
   --topic <chatId:topicId>   Привязка к существующему Telegram-топику (только для type=topic-thread).
-                             Формат: "-1001234567890:42"
+                             Формат: "-100XXXXXXXXXX:NN"
   --create-telegram-topic   Создать новый Telegram-топик через Bot API и привязать к домену
                              (только для type=topic-thread, требует --telegram-chat-id).
                              Токен бота: ~/.openclaw/openclaw.json -> channels.telegram.accounts.sergey.botToken
                              (или env TELEGRAM_BOT_TOKEN).
   --telegram-chat-id <id>   Chat ID форум-группы для --create-telegram-topic
-                             (например "-1001234567890").
+                             (например "-100XXXXXXXXXX").
   --telegram-icon-color <h> Цвет иконки топика в hex (по умолчанию 0x6FB9F0 - синий).
                              Telegram: 0x6FB9F0 blue, 0xFFD67E yellow, 0xCB86DB purple,
                              0x8EEE98 green, 0xFF93B2 pink, 0xFB6F5F red.
@@ -67,21 +67,21 @@ Examples:
   bun skills/engram/scripts/add-domain.js --domain about \\
     --type topic-thread \\
     --create-telegram-topic \\
-    --telegram-chat-id -1001234567890 \\
+    --telegram-chat-id -100XXXXXXXXXX \\
     --kg-entity projects/professional-profile \\
     --description "Professional profile: CV, bio, личный бренд"
 
   # Telegram-топик как домен (привязать к существующему)
   bun skills/engram/scripts/add-domain.js --domain engram \\
     --type topic-thread \\
-    --topic -1001234567890:42 \\
+    --topic -100XXXXXXXXXX:NN \\
     --kg-entity projects/engram \\
     --description "Engram memory architecture — дизайн, RFC, решения"
 
   # Pending-режим (после подтверждения пользователя в чате, через хук)
   bun skills/engram/scripts/add-domain.js --domain foo \\
     --type topic-thread \\
-    --topic -1001234567890:42 \\
+    --topic -100XXXXXXXXXX:NN \\
     --pending \\
     --description "Топик создан пользователем, ожидает промоушна"
 `);
@@ -135,11 +135,11 @@ if (domainType === 'topic-thread') {
   if (createTelegramTopic) {
     if (!telegramChatIdArg) {
       console.error('❌ Для --create-telegram-topic обязателен --telegram-chat-id <id>');
-      console.error('   Пример: --telegram-chat-id -1001234567890');
+      console.error('   Пример: --telegram-chat-id -100XXXXXXXXXX');
       process.exit(1);
     }
     if (!/^-?\d+$/.test(telegramChatIdArg)) {
-      console.error(`❌ --telegram-chat-id должен быть числовым ID (например -1001234567890)`);
+      console.error(`❌ --telegram-chat-id должен быть числовым ID (например -100XXXXXXXXXX)`);
       console.error(`   Получено: "${telegramChatIdArg}"`);
       process.exit(1);
     }
@@ -195,12 +195,12 @@ if (domainType === 'topic-thread') {
   } else {
     if (!topicArg) {
       console.error('❌ Для type=topic-thread обязателен --topic <chatId:topicId> или --create-telegram-topic');
-      console.error('   Пример: --topic -1001234567890:42');
+      console.error('   Пример: --topic -100XXXXXXXXXX:NN');
       process.exit(1);
     }
     const m = topicArg.match(/^(-?\d+):(\d+)$/);
     if (!m) {
-      console.error(`❌ --topic должен быть в формате <chatId:topicId>, например "-1001234567890:42"`);
+      console.error(`❌ --topic должен быть в формате <chatId:topicId>, например "-100XXXXXXXXXX:NN"`);
       console.error(`   Получено: "${topicArg}"`);
       process.exit(1);
     }
@@ -282,15 +282,15 @@ function readEngramConfig() {
   try { return JSON.parse(readFileSync(p, 'utf-8')); } catch { return {}; }
 }
 const engramConfig = readEngramConfig();
-// AGENT_ID — суффикс без "agent-" префикса (например "apriori-tech" в нашем workspace).
-// engram.json хранит полный "agent-apriori-tech"; template использует литерал "agent-"
+// AGENT_ID — суффикс без "agent-" префикса (например "<agent-id>" в нашем workspace).
+// engram.json хранит полный "agent-<agent-id>"; template использует литерал "agent-"
 // перед {{AGENT_ID}} чтобы собрать правильный QMD collection name
 // "openclaw-memory-agent-{agentId}-{sessionKey}".
 const agentIdRaw = engramConfig.agent || engramConfig.agentId || process.env.ENGRAM_AGENT_ID || 'agent-main';
 const agentId = agentIdRaw.replace(/^agent-/, '');
 const workspaceName = engramConfig.workspace?.name || process.env.ENGRAM_WORKSPACE_NAME || basename(WORKSPACE);
 const operator = engramConfig.operator || process.env.ENGRAM_OPERATOR || 'Operator (см. workspace AGENTS.md)';
-const qmdIndex = engramConfig.qmd?.index || process.env.ENGRAM_QMD_INDEX || 'apriori';
+const qmdIndex = engramConfig.qmd?.index || process.env.ENGRAM_QMD_INDEX || 'default';
 const workspaceKgCollection = engramConfig.qmd?.workspaceKgCollection || process.env.ENGRAM_WORKSPACE_KG_COLLECTION || 'life';
 
 const replacements = {
@@ -445,7 +445,7 @@ if (qmdAvailable()) {
 
   // Per-KG-entity 'life-projects-{slug}' collection (opt-in, only if --kg-entity given).
   // Lets topic-agents run semantic search over their own KG entity without leaking
-  // into the broader apriori-life collection.
+  // into the broader workspace-life collection.
   if (kgEntity) {
     const entityPath = join(WORKSPACE, 'life', kgEntity);
     if (existsSync(entityPath)) {

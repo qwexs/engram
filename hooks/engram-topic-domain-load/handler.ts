@@ -198,12 +198,10 @@ const handler = async (event: any) => {
   // render a minimal placeholder rather than failing the injection.
   // These are NOT agentIds or workspace identifiers — they are the
   // generic qmd index and KG collection names that an OpenClaw
-  // installation might use by default. They are also workspace-agnostic
-  // by design, so we strip them from the personal-data linter's reserved
-  // set (the linter is configured to ignore this file via the
-  // scripts/lint-no-personal-data.ts allowlist).
+  // installation might use by default. Workspaces override them via
+  // engram.json → qmd.index / qmd.workspaceKgCollection.
   let qmdIndex = "default";
-  let kgCollection = "kg";
+  let kgCollection = "life";
   if (existsSync(engramConfigPath)) {
     try {
       const cfg = JSON.parse(readFileSync(engramConfigPath, "utf-8"));

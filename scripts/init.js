@@ -20,6 +20,9 @@ const { values: args } = parseArgs({
     'with-sample-domain': { type: 'boolean', default: false },
     'dry-run': { type: 'boolean', default: false },
     'skip-gateway-restart': { type: 'boolean', default: false },
+    'bootstrap-from-forum': { type: 'boolean', default: false },
+    'bootstrap-chat': { type: 'string', default: '' },
+    'bootstrap-yes': { type: 'boolean', default: false },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -43,6 +46,19 @@ Options:
   --auto-detect-sessions     Scan openclaw.json for Telegram group/forum sessions and auto-create them
                              (default: true when --with-cron is set, false otherwise)
   --with-sample-domain       Create a sample 'getting-started' domain via add-domain.js
+  --bootstrap-from-forum     Find unbound Telegram topics via openclaw state-cache and create
+                             pending domains for them (one-shot operator confirmation).
+                             Reads ~/.openclaw/state/openclaw.sqlite -> plugin_state_entries
+                             namespace 'telegram.topic-name-cache.*'. Skips topics already
+                             bound (registry.json hit or session dir exists). Spawns
+                             add-domain --pending for each (idempotent on (chatId, topicId)).
+                             Complements engram-topic-auto-domain-suggest hook for topics
+                             that existed before the bot saw them.
+  --bootstrap-chat <id>      With --bootstrap-from-forum, limit to one chat ID
+                             (e.g. "-100XXXXXXXXXX"). Default: all forum groups in cache.
+  --bootstrap-yes            Skip interactive confirmation (assume yes). For non-interactive
+                             CI/scripted use; otherwise init prints a preview and waits for
+                             a single y/N.
   --dry-run                  Print the full plan without executing
   --skip-gateway-restart      Do not run 'openclaw gateway restart' (CI / test env)
   -h, --help                Show this help
@@ -68,6 +84,9 @@ Examples:
   bun skills/engram/scripts/init.js --with-cron --auto-detect-sessions
   bun skills/engram/scripts/init.js --with-sample-domain
   bun skills/engram/scripts/init.js --dry-run
+  bun skills/engram/scripts/init.js --bootstrap-from-forum
+  bun skills/engram/scripts/init.js --bootstrap-from-forum --bootstrap-chat -100XXXXXXXXXX
+  bun skills/engram/scripts/init.js --bootstrap-from-forum --bootstrap-yes
 `);
   process.exit(0);
 }
@@ -258,6 +277,302 @@ function autoDetectSessions() {
   }
 
   return Array.from(sessionsByKey.values());
+}
+
+// --- AC11: Bootstrap pending domains for unbound Telegram topics ---
+// Reads openclaw state SQLite (plugin_state_entries, telegram.topic-name-cache.*)
+// to enumerate topics the bot has seen, filters out already-bound ones
+// (registry.json hit or session dir exists), previews the proposed bind for
+// operator confirmation, then spawns add-domain --pending for each.
+//
+// This complements engram-topic-auto-domain-suggest hook (which handles
+// topics created AFTER the hook is installed). Bootstrap covers topics that
+// already exist at install time — the same gap as "no retroactive auto-bind".
+//
+// Etalon-clean: no per-workspace config, no new hook, no new script
+// (reuses add-domain --pending). One-shot operator flow.
+async function bootstrapFromForum() {
+  const homeDir = process.env.USERPROFILE || process.env.HOME;
+  if (!homeDir) {
+    recordWarn('USERPROFILE or HOME not set, skipping --bootstrap-from-forum');
+    return;
+  }
+
+  const sqlitePath = join(homeDir, '.openclaw', 'state', 'openclaw.sqlite');
+  if (!existsSync(sqlitePath)) {
+    recordWarn(`openclaw state sqlite not found at ${sqlitePath}, skipping --bootstrap-from-forum`);
+    return;
+  }
+
+  // Openclaw state lives in sqlite. We prefer Bun's native bun:sqlite (which
+  // is what `bun` runs against); fall back to node:sqlite on Node v22+. If
+  // neither is available, --bootstrap-from-forum is a no-op with a warning.
+  let DatabaseSync;
+  let sqliteImportError = null;
+  if (typeof Bun !== 'undefined') {
+    try {
+      ({ Database: DatabaseSync } = require('bun:sqlite'));
+    } catch (e) {
+      sqliteImportError = `bun:sqlite failed: ${e.message}`;
+    }
+  }
+  if (!DatabaseSync) {
+    try {
+      ({ DatabaseSync } = require('node:sqlite'));
+    } catch (e) {
+      sqliteImportError = `node:sqlite failed: ${e.message}`;
+    }
+  }
+  if (!DatabaseSync) {
+    recordWarn(`no sqlite driver available (Bun + Node < 22?); cannot --bootstrap-from-forum: ${sqliteImportError}`);
+    return;
+  }
+
+  let db;
+  let topics;
+  try {
+    // bun:sqlite takes options differently; node:sqlite uses {readOnly:true}.
+    if (typeof Bun !== 'undefined') {
+      db = new DatabaseSync(sqlitePath, { readonly: true });
+    } else {
+      db = new DatabaseSync(sqlitePath, { readOnly: true });
+    }
+    topics = readTopicNameCacheEntries(db);
+  } catch (e) {
+    recordError(`failed to read openclaw state sqlite: ${e.message}`);
+    return;
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+
+  const chatFilter = args['bootstrap-chat'] ? String(args['bootstrap-chat']).replace(/^-/, '') : '';
+  const filtered = chatFilter
+    ? topics.filter(t => String(t.chatId).replace(/^-/, '') === chatFilter)
+    : topics;
+
+  if (filtered.length === 0) {
+    recordSkip('bootstrap-from-forum', 'no topics in topic-name-cache', chatFilter ? `chat=${chatFilter}` : 'cache empty');
+    return;
+  }
+
+  // Filter out topics that are already bound (registry.json hit or session
+  // dir exists). add-domain --pending is also idempotent but skipping here
+  // keeps the preview clean and avoids re-spawning for no reason.
+  const domainsDir = join(WORKSPACE, 'memory', 'domains');
+  const registryPath = join(domainsDir, 'registry.json');
+  let registry = { domains: {} };
+  if (existsSync(registryPath)) {
+    try {
+      registry = JSON.parse(readFileSync(registryPath, 'utf-8'));
+      if (!registry.domains || typeof registry.domains !== 'object' || Array.isArray(registry.domains)) {
+        registry.domains = {};
+      }
+    } catch {
+      registry = { domains: {} };
+    }
+  }
+
+  const agentRoot = join(WORKSPACE, `memory/agent-${agentId}`);
+  const bound = new Set(); // key = `${chatId}:${topicId}`
+  for (const [name, entry] of Object.entries(registry.domains)) {
+    if (entry?.topic?.chatId && entry?.topic?.topicId) {
+      const key = `${String(entry.topic.chatId).replace(/^-/, '')}:${entry.topic.topicId}`;
+      bound.add(key);
+    }
+  }
+  // Also check session-dir existence (covers domains bound before registry
+  // tracking, or external/manual creation paths).
+  if (existsSync(agentRoot)) {
+    try {
+      const sessionDirs = readdirSync(agentRoot, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => e.name);
+      const sessionRe = /^telegram-group--(\d+)-topic-(\d+)$/;
+      for (const d of sessionDirs) {
+        const m = d.match(sessionRe);
+        if (m) bound.add(`${m[1]}:${m[2]}`);
+      }
+    } catch { /* best-effort */ }
+  }
+
+  // Skip General topic (threadId === '1' in Telegram forums is the General
+  // pseudo-topic; not a real domain candidate).
+  const candidates = [];
+  const skippedBound = [];
+  const skippedGeneral = [];
+  for (const t of filtered) {
+    if (t.threadId === '1' || t.name.toLowerCase() === 'general') {
+      skippedGeneral.push(t);
+      continue;
+    }
+    const key = `${t.chatId}:${t.threadId}`;
+    if (bound.has(key)) {
+      skippedBound.push(t);
+      continue;
+    }
+    candidates.push(t);
+  }
+
+  // Build proposed slug per candidate. We do NOT call the hook lib (TypeScript)
+  // from a JS script — we re-implement the same algorithm here. Keeping them
+  // in sync is documented; the algorithm is small and stable.
+  const proposed = candidates.map(t => ({
+    ...t,
+    proposedSlug: computeTopicSlug(t.name, t.chatId, t.threadId),
+  }));
+
+  // Detect slug collisions in this batch (very rare; would happen if two
+  // topics collapse to the same slug, e.g. duplicate topic-name entries).
+  const slugCounts = new Map();
+  for (const p of proposed) {
+    slugCounts.set(p.proposedSlug, (slugCounts.get(p.proposedSlug) || 0) + 1);
+  }
+  const collisions = proposed.filter(p => (slugCounts.get(p.proposedSlug) || 0) > 1);
+
+  console.log(`\n=== Bootstrap preview (--bootstrap-from-forum) ===`);
+  console.log(`Agent: ${agentId}`);
+  console.log(`Source: ${sqlitePath}`);
+  console.log(`Total topics in cache: ${topics.length}`);
+  if (chatFilter) console.log(`Filter chat: ${chatFilter}`);
+  console.log(`  Bound (skip): ${skippedBound.length}`);
+  console.log(`  General (skip): ${skippedGeneral.length}`);
+  console.log(`  Will create pending: ${proposed.length}`);
+  if (collisions.length > 0) {
+    console.log(`  ⚠ Slug collisions in batch: ${collisions.map(c => c.proposedSlug).join(', ')}`);
+  }
+
+  if (proposed.length === 0) {
+    recordSkip('bootstrap-from-forum', 'no unbound topics', `${skippedBound.length} bound, ${skippedGeneral.length} general`);
+    return;
+  }
+
+  for (const p of proposed) {
+    console.log(`  • [${p.name}] ${p.chatId}:${p.threadId} → ${p.proposedSlug}${collisions.includes(p) ? '  ⚠ slug collision' : ''}`);
+  }
+
+  if (dryRun) {
+    recordCreate('bootstrap-from-forum', `${proposed.length} pending domain(s) (dry-run)`);
+    return;
+  }
+
+  // Confirmation gate. --bootstrap-yes skips the prompt for non-interactive
+  // / scripted use (CI, install hooks, etc.). Without it, init waits for a
+  // single y/N — no per-topic questions, by design (etalon: keep it simple).
+  if (!args['bootstrap-yes']) {
+    console.log(`\nCreate ${proposed.length} pending domain(s) via add-domain --pending? [y/N]`);
+    let answer = '';
+    try {
+      // Read from stdin synchronously. Use the script's own stdin if available;
+      // fall back to a no-op if piped to /dev/null or similar.
+      const buf = Buffer.alloc(16);
+      const fd = 0;
+      const n = require('node:fs').readSync(fd, buf, 0, 16, null);
+      if (n > 0) answer = buf.slice(0, n).toString('utf8').trim().toLowerCase();
+    } catch (e) {
+      recordWarn(`could not read confirmation from stdin (${e.message}); skipping --bootstrap-from-forum`);
+      return;
+    }
+    if (answer !== 'y' && answer !== 'yes') {
+      recordSkip('bootstrap-from-forum', 'cancelled by operator', `answer="${answer}"`);
+      return;
+    }
+  }
+
+  // Spawn add-domain --pending per topic. Sequential (not parallel) to keep
+  // logs readable and registry writes deterministic. Each call is idempotent
+  // on (chatId, topicId) — safe to re-run on retry.
+  let created = 0;
+  let failed = 0;
+  for (const p of proposed) {
+    const args = [
+      join(SKILL_DIR, 'scripts', 'add-domain.js'),
+      '--domain', p.proposedSlug,
+      '--type', 'topic-thread',
+      '--topic', `${p.chatId}:${p.threadId}`,
+      '--pending',
+      '--description', `Telegram topic "${p.name}" (auto-bound via --bootstrap-from-forum)`,
+    ];
+    const result = spawnSync('bun', args, { encoding: 'utf-8', cwd: WORKSPACE });
+    const stdout = (result.stdout || '').trim();
+    if (result.status === 0) {
+      console.log(`  ✓ ${p.proposedSlug} (${p.chatId}:${p.threadId})`);
+      if (stdout) console.log(`    ${stdout.split('\n').slice(-1)[0]}`);
+      created++;
+    } else {
+      const stderr = (result.stderr || '').trim().split('\n').slice(-2).join(' | ');
+      console.error(`  ✗ ${p.proposedSlug} (${p.chatId}:${p.threadId}): ${stderr || 'add-domain failed'}`);
+      failed++;
+    }
+  }
+
+  if (failed === 0) {
+    recordCreate('bootstrap-from-forum', `${created} pending domain(s) created`);
+  } else {
+    recordWarn(`bootstrap-from-forum: ${created} created, ${failed} failed`);
+  }
+}
+
+// Helper: read all telegram.topic-name-cache.* entries from openclaw state
+// sqlite. Returns [{chatId, threadId, name, updatedAt, ...}]. Pure read.
+// Works with both bun:sqlite and node:sqlite — the .prepare(...).all()
+// surface is compatible.
+function readTopicNameCacheEntries(db) {
+  const rows = db.prepare(
+    "SELECT namespace, entry_key, value_json FROM plugin_state_entries WHERE plugin_id='telegram' AND namespace LIKE 'telegram.topic-name-cache.%' ORDER BY namespace, entry_key"
+  ).all();
+  // Multiple bot accounts (default, sergey, etc.) maintain separate
+  // topic-name-cache namespaces and can record the same topic. Dedupe by
+  // (chatId, threadId), keeping the most-recent entry.
+  const byKey = new Map();
+  for (const r of rows) {
+    const m = String(r.entry_key).match(/^(-?\d+):(\d+)$/);
+    if (!m) continue;
+    let value;
+    try {
+      value = JSON.parse(r.value_json);
+    } catch {
+      continue;
+    }
+    if (!value || typeof value.name !== 'string') continue;
+    const key = `${m[1].replace(/^-/, '')}:${m[2]}`;
+    const existing = byKey.get(key);
+    const updatedAt = value.updatedAt ?? 0;
+    if (!existing || (existing.updatedAt ?? 0) < updatedAt) {
+      byKey.set(key, {
+        chatId: m[1].replace(/^-/, ''),
+        threadId: m[2],
+        name: value.name,
+        updatedAt,
+        iconColor: value.iconColor ?? null,
+        raw: value,
+      });
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+// Helper: pure-JS topic-name slugifier. Mirrors hooks/_lib/slugify.ts.
+// Kept in sync manually (no TS->JS build step for init.js).
+// Algorithm:
+//   1. Lowercase, replace [^\w-] with '-', collapse runs.
+//   2. If empty OR starts with non-[a-z] (cyrillic etc.) — fallback to
+//      `topic-${chatId}-${threadId}` (no transliteration lib; safe).
+//      Already includes the suffix, so don't append it again.
+//   3. Truncate at 50 chars (before suffix).
+//   4. Always append `-{chatId}-{threadId}` for cross-workspace uniqueness.
+function computeTopicSlug(name, chatId, threadId) {
+  let base = String(name || '').toLowerCase();
+  base = base.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const startsLatin = /^[a-z]/.test(base);
+  if (!base || !startsLatin) {
+    // Fallback: prefix-only slug; suffix is already part of the name for
+    // uniqueness, so we do NOT append it again (avoid `topic-X-X` collision).
+    return `topic-${chatId}-${threadId}`;
+  }
+  if (base.length > 50) {
+    base = base.slice(0, 50).replace(/-+$/, '');
+  }
+  return `${base}-${chatId}-${threadId}`;
 }
 
 function createSessionDir(sessionKey, platform, chatId) {
@@ -467,6 +782,38 @@ function restartGateway() {
   } catch (e) {
     recordWarn(`gateway restart failed (timeout or non-zero exit): ${e.message?.slice(0, 200) ?? 'unknown'}`);
   }
+}
+
+// --- AC11 short-circuit: --bootstrap-from-forum runs standalone ---
+// Bootstrap is a one-shot operator flow that makes sense on populated
+// workspaces (it specifically targets topics that pre-date the bot binding).
+// It needs `memory/domains/` to exist (add-domain requires it), so we ensure
+// the minimal skeleton before running, then exit before the strict init
+// pipeline that requires empty workspaces without --force.
+if (args['bootstrap-from-forum']) {
+  const minimalDirs = [
+    'memory',
+    `memory/agent-${agentId}`,
+    'memory/domains',
+  ];
+  if (!dryRun) {
+    for (const dir of minimalDirs) {
+      mkdirSync(join(WORKSPACE, dir), { recursive: true });
+    }
+  }
+  await bootstrapFromForum();
+
+  console.log('\n=== Summary ===');
+  console.log(`Created: ${plan.created.length}`);
+  console.log(`Skipped: ${plan.skipped.length}`);
+  console.log(`Warnings: ${plan.warnings.length}`);
+  console.log(`Errors: ${plan.errors.length}`);
+
+  if (plan.errors.length > 0) {
+    console.error('\nBootstrap completed with errors. Please review the output above.');
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 // --- Check existing ---

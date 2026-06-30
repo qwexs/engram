@@ -88,14 +88,14 @@ function renderTemplate(slug, topicBinding, kgEntity) {
     try { return JSON.parse(readFileSync(p, 'utf-8')); } catch { return {}; }
   }
   const cfg = readEngramConfig();
-  // AGENT_ID — суффикс без "agent-" префикса (например "apriori-tech" в нашем workspace).
-  // engram.json хранит полный "agent-apriori-tech"; template использует литерал "agent-"
+  // AGENT_ID — суффикс без "agent-" префикса (например "<agent-id>" в нашем workspace).
+  // engram.json хранит полный "agent-<agent-id>"; template использует литерал "agent-"
   // перед {{AGENT_ID}} чтобы собрать правильный QMD collection name.
   const agentIdRaw = cfg.agent || cfg.agentId || process.env.ENGRAM_AGENT_ID || 'agent-main';
   const agentId = agentIdRaw.replace(/^agent-/, '');
   const workspaceName = cfg.workspace?.name || process.env.ENGRAM_WORKSPACE_NAME || basename(WORKSPACE);
   const operator = cfg.operator || process.env.ENGRAM_OPERATOR || 'Operator (см. workspace AGENTS.md)';
-  const qmdIndex = cfg.qmd?.index || process.env.ENGRAM_QMD_INDEX || 'apriori';
+  const qmdIndex = cfg.qmd?.index || process.env.ENGRAM_QMD_INDEX || 'default';
   const workspaceKgCollection = cfg.qmd?.workspaceKgCollection || process.env.ENGRAM_WORKSPACE_KG_COLLECTION || 'life';
   return template
     .replaceAll('{{DOMAIN}}', slug)

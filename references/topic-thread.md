@@ -21,7 +21,7 @@ main sessions).
 
 ## How it works
 
-1. **Binding**: a topic-thread domain has `registry.domains[slug].topic = { chatId, topicId }`. The chatId is stored with the leading `-` (e.g. `"-1001234567890"`); topicId is the forum topic id.
+1. **Binding**: a topic-thread domain has `registry.domains[slug].topic = { chatId, topicId }`. The chatId is stored with the leading `-` (e.g. `"-100XXXXXXXXXX"`); topicId is the forum topic id.
 2. **Hook**: `engram-topic-domain-load` fires on `message:received`. It looks up the domain by matching the event's `chatId` and `topicId` (with three-way match for the leading-minus quirk). If found, it injects a `## Domain Context (auto)` block into today's daily note, just after the `# YYYY-MM-DD` line.
 3. **Idempotency**: the block is keyed by a content hash of `decisions.md` + `status.md` + `changelog.md` (using mtime + size + content). If the latest block in the daily note has the same hash, the hook does nothing. The block is replaced on every change.
 4. **QMD collections**: three collections are auto-created by `add-domain.js`:
@@ -63,7 +63,8 @@ qmd --index <index> query "<term>" -c life-projects-{slug}
 
 **Boundary rules** (enforced via `agents.md`):
 - Use `domain-{slug}` + own session notes for default queries. Do **not** use
-  `domains` (cross-topic) or `apriori-life` (cross-KG) without explicit OK.
+  `domains` (cross-topic) or `life` (cross-KG, the workspace-level KG collection)
+  without explicit OK.
 - Read access: own daily note + own domain files. Other domains and
   workspace-level `MEMORY.md`/`AGENTS.md` are off-limits in default flow.
 - Write access: own daily note + own domain files (`decisions.md` on explicit

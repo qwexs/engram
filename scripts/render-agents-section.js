@@ -8,10 +8,10 @@
 //   - templates/spawn-prompts/_shared/agents-section.template.md
 //   - {workspace}/engram.json (если есть) — agentId, qmd.index
 // Env vars (override):
-//   - ENGRAM_AGENT_ID        (default: "agent-apriori-tech" если в engram.json, иначе "agent-main")
+//   - ENGRAM_AGENT_ID        (default: "agent-<agent-id>" если в engram.json, иначе "agent-main")
 //   - ENGRAM_WORKSPACE_NAME  (default: basename cwd)
 //   - ENGRAM_OPERATOR        (default: "Operator (см. AGENTS.md workspace)")
-//   - ENGRAM_QMD_INDEX       (default: "apriori")
+//   - ENGRAM_QMD_INDEX       (default: "default")
 //   - ENGRAM_WORKSPACE_KG_COLLECTION (default: "life")
 //
 // Usage:
@@ -69,7 +69,7 @@ const agentIdRaw = cfg.agent || cfg.agentId || process.env.ENGRAM_AGENT_ID || 'a
 const agentId = agentIdRaw.replace(/^agent-/, '');
 const workspaceName = cfg.workspace?.name || process.env.ENGRAM_WORKSPACE_NAME || basename(workspace);
 const operator = cfg.operator || process.env.ENGRAM_OPERATOR || 'Operator (см. AGENTS.md workspace)';
-const qmdIndex = cfg.qmd?.index || process.env.ENGRAM_QMD_INDEX || 'apriori';
+const qmdIndex = cfg.qmd?.index || process.env.ENGRAM_QMD_INDEX || 'default';
 const workspaceKgCollection = cfg.qmd?.workspaceKgCollection || process.env.ENGRAM_WORKSPACE_KG_COLLECTION || 'life';
 
 const kgEntity = args.kgEntity || '';

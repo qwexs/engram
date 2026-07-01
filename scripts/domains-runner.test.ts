@@ -13,7 +13,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { newestContentDateMs, applyDomainWriteHandoff } from "./domains-runner.js";
+import {
+  newestContentDateMs, applyDomainWriteHandoff, scanDomains,
+  DEFAULT_CADENCE_DAYS,
+} from "./domains-runner.js";
 
 const SAMPLE_TZ = "Europe/Moscow";
 
@@ -314,5 +317,94 @@ describe("A3. ensureProcessTz — TZ consistency", () => {
     // New York is UTC-4 in July (EDT).
     const expected = Date.UTC(2026, 6, 1, 14, 30, 0) + 4 * 3600 * 1000;
     expect(ms).toBe(expected);
+  });
+});
+
+// ============================================================================
+// A4. cadenceDays default fallback — domains without explicit cadence
+//     should not be silent no-ops.
+// ============================================================================
+describe("A4. scanDomains — cadenceDays default fallback", () => {
+  test("DEFAULT_CADENCE_DAYS is exported and equals 2", () => {
+    expect(DEFAULT_CADENCE_DAYS).toBe(2);
+  });
+
+  test("domain without cadenceDays, never run → due=true, overdue=true (default 2)", () => {
+    setupRegistry();
+    const scan = scanDomains({ workspace });
+    expect(scan.domains).toHaveLength(1);
+    const d = scan.domains[0];
+    expect(d.enabled).toBe(true);
+    expect(d.due).toBe(true);
+    expect(d.overdue).toBe(true);
+  });
+
+  test("domain with explicit cadenceDays=0 → falls back to default 2 (not 'never')", () => {
+    setupRegistry();
+    const regPath = join(workspace, "memory", "domains", "registry.json");
+    const reg = JSON.parse(readFileSync(regPath, "utf-8"));
+    reg.domains["test-domain"].cadenceDays = 0;
+    writeFileSync(regPath, JSON.stringify(reg) + "\n");
+    const scan = scanDomains({ workspace });
+    expect(scan.domains[0].due).toBe(true);
+    expect(scan.domains[0].overdue).toBe(true);
+  });
+
+  test("domain with cadenceDays=1, lastRun 12h ago → not due (12h < 1 day)", () => {
+    setupRegistry();
+    const regPath = join(workspace, "memory", "domains", "registry.json");
+    const reg = JSON.parse(readFileSync(regPath, "utf-8"));
+    reg.domains["test-domain"].cadenceDays = 1;
+    writeFileSync(regPath, JSON.stringify(reg) + "\n");
+    // Last run 12 hours before scan-now.
+    const now = new Date("2026-07-04T12:00:00.000Z");
+    const statePath = join(workspace, "memory", "heartbeat-state.json");
+    writeFileSync(statePath, JSON.stringify({
+      domainRuns: { "test-domain": { lastRun: "2026-07-04T00:00:00.000Z" } },
+    }) + "\n");
+    const scan = scanDomains({ workspace, now });
+    expect(scan.domains[0].due).toBe(false);
+  });
+
+  test("domain with cadenceDays=1, lastRun 2 days ago → due=true", () => {
+    setupRegistry();
+    const regPath = join(workspace, "memory", "domains", "registry.json");
+    const reg = JSON.parse(readFileSync(regPath, "utf-8"));
+    reg.domains["test-domain"].cadenceDays = 1;
+    writeFileSync(regPath, JSON.stringify(reg) + "\n");
+    const now = new Date("2026-07-04T12:00:00.000Z");
+    const statePath = join(workspace, "memory", "heartbeat-state.json");
+    writeFileSync(statePath, JSON.stringify({
+      domainRuns: { "test-domain": { lastRun: "2026-07-02T12:00:00.000Z" } },
+    }) + "\n");
+    const scan = scanDomains({ workspace, now });
+    expect(scan.domains[0].due).toBe(true);
+  });
+
+  test("domain enabled=false → never due, regardless of cadenceDays", () => {
+    setupRegistry();
+    const regPath = join(workspace, "memory", "domains", "registry.json");
+    const reg = JSON.parse(readFileSync(regPath, "utf-8"));
+    reg.domains["test-domain"].enabled = false;
+    writeFileSync(regPath, JSON.stringify(reg) + "\n");
+    const scan = scanDomains({ workspace });
+    expect(scan.domains[0].due).toBe(false);
+  });
+
+  test("domain with default cadenceDays and lastCheckedAt within window → suppressed", () => {
+    setupRegistry();
+    const now = new Date("2026-07-04T12:00:00.000Z");
+    const statePath = join(workspace, "memory", "heartbeat-state.json");
+    writeFileSync(statePath, JSON.stringify({
+      domainRuns: {
+        "test-domain": {
+          lastRun: "2026-07-01T00:00:00.000Z",  // last real write 3.5 days ago
+          lastCheckedAt: "2026-07-04T11:00:00.000Z",  // recent check (1h ago)
+        },
+      },
+    }) + "\n");
+    const scan = scanDomains({ workspace, now });
+    expect(scan.domains[0].due).toBe(true);  // due by cadence
+    expect(scan.domains[0].suppressedByLastCheckedAt).toBe(true);  // but suppressed
   });
 });

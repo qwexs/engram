@@ -86,6 +86,13 @@ function expectedFilesFor(config) {
   return EXPECTED_FILES;
 }
 const DEFAULT_STALE_DAYS = 30;
+// ISS-9 fix A4: cadenceDays default. Without an explicit cadenceDays in the
+// registry entry, a domain silently never becomes due (runAgeDays gate stays
+// disabled). Mirrors the asymmetry with `staleAfterDays` (which already has
+// DEFAULT_STALE_DAYS = 30). Operators can override per-domain in registry.json.
+//
+// Exposed via export so tests can assert the contract without re-typing 2.
+export const DEFAULT_CADENCE_DAYS = 2;
 const MUTABLE_FILES = new Set(["status.md", "changelog.md"]);
 const MAX_STATUS_BYTES = 64 * 1024;
 const MAX_CHANGELOG_APPEND_BYTES = 64 * 1024;
@@ -635,7 +642,12 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
     const domainDir = join(domainsRoot, name);
     const enabled = isEnabled(config);
     const staleAfterDays = numberFromConfig(config, ["staleAfterDays", "statusStaleDays"]) ?? staleDays;
-    const cadenceDays = numberFromConfig(config, ["cadenceDays", "runEveryDays", "heartbeatCadenceDays"]);
+    const rawCadence = numberFromConfig(config, ["cadenceDays", "runEveryDays", "heartbeatCadenceDays"]);
+    // Treat null/undefined/0 as "not configured" → use DEFAULT_CADENCE_DAYS.
+    // Explicit cadenceDays = 0 historically meant "never run" in some scripts;
+    // we no longer honor that — operators who want "never" should set
+    // enabled: false in the registry.
+    const cadenceDays = rawCadence != null && rawCadence > 0 ? rawCadence : DEFAULT_CADENCE_DAYS;
     const runtime = state.domainRuns?.[name] || {};
     const lastRunMs =
       dateFromConfig(runtime, ["lastRun", "lastDomainRun", "lastChecked", "lastHeartbeat"]) ??
@@ -677,6 +689,9 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
 
     let due = false;
     let overdue = false;
+    // After ISS-9 A4 default, cadenceDays is always > 0 for enabled domains,
+    // so the `!= null` guards are no longer needed but kept for safety if a
+    // future operator explicitly disables a domain.
     if (enabled && cadenceDays != null) {
       if (lastRunMs == null) {
         due = true;

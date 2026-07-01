@@ -944,6 +944,15 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   let deferred = 0;
   let suppressedCount = 0;
   let inlinedNoop = 0;
+  // ISS-9 A5: cold-start backlog observability. When many domains are due for
+  // the first time (lastRunMs == null) the runner can only spawn one per tick
+  // (batch-size 1). Surface this so operators know to expect a long catch-up.
+  const neverRunDomainCount = (domainScan && Array.isArray(domainScan.domains))
+    ? domainScan.domains.filter((d) => d && d.enabled && d.due && d.overdue).length
+    : 0;
+  if (Boolean(opts["spawn-hb-domains-write"]) && neverRunDomainCount >= 3) {
+    summary.warnings.push("hb-domains-write backlog " + neverRunDomainCount + " (cold-start; batch-size " + (parseInt(opts["hb-domains-write-batch-size"], 10) || 1) + " per tick; expect ~" + neverRunDomainCount + " ticks to drain)");
+  }
   if (Boolean(opts["spawn-hb-domains-write"]) && domainScan && Array.isArray(domainScan.domains)) {
     // Read registry to get topic bindings (not exposed by scanDomains result).
     // Best-effort: if registry is missing or malformed, skip with a warning.

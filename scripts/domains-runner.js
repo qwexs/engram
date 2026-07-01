@@ -14,6 +14,70 @@ const EXPECTED_FILES_BY_TYPE = {
   "cron-task":   ["decisions.md", "workflow.md", "status.md", "changelog.md"],
   "topic-thread":["decisions.md", "status.md", "changelog.md"],
 };
+
+// === TZ contract =============================================================
+// ISS-9 fix A1+A3: every date computation in this file MUST go through
+// `getTz()` for time-zone identity, and date parsing MUST NOT rely on V8's
+// cached TZ (V8 reads `process.env.TZ` only once at startup, so mid-process
+// mutations have no effect on `new Date(...).getTime()`).
+//
+// Wall-clock dates without an explicit offset (e.g. `## 2026-07-01 14:30` in
+// Russian changelog) are interpreted as local time in the operator's declared
+// TZ via `parseWallClockInTz()` — an `Intl.DateTimeFormat(timeZone)` based
+// helper that does NOT depend on V8's TZ cache.
+function getTz() {
+  return process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
+}
+
+// Parse {y, mo, d, h, mi, s} as wall-clock time in `tz` → ms since epoch.
+// Robust against DST transitions because it uses the IANA TZ database via
+// `Intl.DateTimeFormat`.
+//
+// Sign convention: if `tz` is AHEAD of UTC by N hours, the wall-clock-at-
+// fakeUtc shows a LATER time than target. To find the actual UTC instant
+// when `tz` clock matches target, we SUBTRACT the wall-clock gap from fakeUtc.
+// Concretely: real_utc = fakeUtc + (targetMs - tzWallMs). This works for
+// both ahead-of-UTC (negative term) and behind-UTC (positive term) zones.
+function parseWallClockInTz(date, time, tz) {
+  const [y, mo, d] = date.split("-").map(Number);
+  let h = 0, mi = 0, s = 0;
+  if (time) {
+    const parts = time.split(":");
+    h = Number(parts[0]) || 0;
+    mi = Number(parts[1]) || 0;
+    s = Number(parts[2]) || 0;
+  }
+  // Validate ranges explicitly. JS Date.UTC overflows silently (e.g. month
+  // 13 → January next year) instead of returning NaN, so without these checks
+  // an impossible date like `2026-13-01` would be picked as "newest" by the
+  // freshness calc and corrupt the result.
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)
+    || mo < 1 || mo > 12 || d < 1 || d > 31
+    || h < 0 || h > 23 || mi < 0 || mi > 59 || s < 0 || s > 59) {
+    return NaN;
+  }
+  // Build a "fake UTC" instant representing the desired wall-clock time.
+  const fakeUtc = Date.UTC(y, mo - 1, d, h, mi, s);
+  // What does that instant actually look like in `tz`?
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = fmt.formatToParts(fakeUtc);
+  const tzWall = {
+    y: Number(parts.find((p) => p.type === "year").value),
+    mo: Number(parts.find((p) => p.type === "month").value),
+    d: Number(parts.find((p) => p.type === "day").value),
+    h: Number(parts.find((p) => p.type === "hour").value),
+    mi: Number(parts.find((p) => p.type === "minute").value),
+    s: Number(parts.find((p) => p.type === "second").value),
+  };
+  const targetMs = Date.UTC(y, mo - 1, d, h, mi, s);
+  const tzWallMs = Date.UTC(tzWall.y, tzWall.mo - 1, tzWall.d, tzWall.h, tzWall.mi, tzWall.s);
+  return fakeUtc + (targetMs - tzWallMs);
+}
 const EXPECTED_FILES = EXPECTED_FILES_BY_TYPE["dev-project"]; // default for legacy callers
 function expectedFilesFor(config) {
   if (config && config.type && EXPECTED_FILES_BY_TYPE[config.type]) {
@@ -153,10 +217,36 @@ function dateFromConfig(config, keys) {
   return null;
 }
 
-function newestContentDateMs(content) {
+export function newestContentDateMs(content) {
+  // ISS-9 fix A1+A3: parse content dates in the operator's declared TZ rather
+  // than UTC. Two passes:
+  //   1. Full ISO-like with explicit Z or ±HH:MM offset → parse as-is.
+  //   2. Date-only OR date+time-without-offset → parse via parseWallClockInTz()
+  //      so we don't depend on V8's TZ cache (V8 reads process.env.TZ only
+  //      once at process start).
   let newest = null;
-  for (const match of content.matchAll(/\b(\d{4}-\d{2}-\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?/g)) {
-    const ms = new Date(match[0]).getTime();
+  const tz = getTz();
+
+  const fullRe = /\b(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)(Z|[+-]\d{2}:?\d{2})\b/g;
+  for (const m of content.matchAll(fullRe)) {
+    const isoStr = m[1] + "T" + m[2] + m[3];
+    const ms = new Date(isoStr).getTime();
+    if (Number.isFinite(ms) && (newest == null || ms > newest)) newest = ms;
+  }
+
+  // Second pass: date-only OR date+time without explicit offset. Use
+  // parseWallClockInTz() so the operator's TZ is honored regardless of when
+  // the process started or what V8 cached initially.
+  const localRe = /\b(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2})?))?(?![+-Z0-9])/g;
+  for (const m of content.matchAll(localRe)) {
+    const date = m[1];
+    const time = m[2];
+    let ms;
+    try {
+      ms = parseWallClockInTz(date, time, tz);
+    } catch {
+      continue;
+    }
     if (Number.isFinite(ms) && (newest == null || ms > newest)) newest = ms;
   }
   return newest;
@@ -350,9 +440,89 @@ export async function applyDomainWriteHandoff(handoff, {
     "status.md": existsSync(statusPath) ? sha256(readFileSync(statusPath, "utf8")) : null,
     "changelog.md": existsSync(changelogPath) ? sha256(readFileSync(changelogPath, "utf8")) : null,
   };
+
+  // ISS-9 fix A2: race with agent writes.
+  // The subagent's Base-Hashes become stale if a human/agent edited the
+  // domain files between subagent-read and apply. Two recovery paths:
+  //   (a) If any proposed Entry-Id / Run-Id is already present in the
+  //       existing changelog, treat the handoff as idempotent-applied.
+  //   (b) Otherwise advance lastCheckedAt (preventing per-tick re-fire storm)
+  //       and return status: "stale" — the operator can re-enqueue manually.
+  //
+  // We need entries parsed early; the canonical parse lives below after
+  // status/promotions validation. To keep things tight, parse just the
+  // entry ids here for the idempotency check and re-use the canonical parse
+  // for the file write below.
+  let earlyEntries = [];
+  try {
+    const rawEntriesField = parseHandoffField(handoff.body, "Changelog-Entries") ?? "[]";
+    earlyEntries = normalizeChangelogEntries(parseJsonStrict(rawEntriesField, "Changelog-Entries"), runId);
+  } catch (err) {
+    // Malformed Changelog-Entries fall through to the canonical parse below
+    // which will re-throw with a cleaner error.
+    earlyEntries = [];
+  }
+  const proposedEntryIds = earlyEntries.map((e) => e.id);
+  const proposedRunIds = new Set([runId]);
+  const existingContent = existsSync(changelogPath) ? readFileSync(changelogPath, "utf8") : "";
+  const entryAlreadyApplied = proposedEntryIds.some((id) => existingContent.includes("Entry-Id: " + id))
+    || Array.from(proposedRunIds).some((id) => existingContent.includes("Run-Id: " + id));
+  if (entryAlreadyApplied) {
+    if (!dryRun) {
+      const updated = existsSync(stateFile) ? readJson(stateFile) : {};
+      const appliedList = getPath(updated, "domainRuns." + domain + ".appliedRunIds") || [];
+      setPath(updated, "domainRuns." + domain + ".lastCheckedAt", now);
+      setPath(updated, "domainRuns." + domain + ".lastRunId", runId);
+      setPath(updated, "domainRuns." + domain + ".appliedRunIds", [...new Set([...appliedList, runId])]);
+      writeJson(stateFile, updated);
+    }
+    return {
+      ok: true,
+      status: "noop",
+      domain,
+      runId,
+      idempotent: true,
+      externalWrite: true,
+      dryRun,
+      wroteStatus: false,
+      appendedEntries: 0,
+      promotedFacts: 0,
+      proposedDecisionChanges: 0,
+      proposedWorkflowChanges: 0,
+    };
+  }
+
+  const staleFiles = [];
   for (const file of MUTABLE_FILES) {
     if (baseHashes[file] == null) throw new Error("Base-Hashes missing " + file);
-    if (baseHashes[file] !== currentHashes[file]) throw new Error("Base hash mismatch for " + file);
+    if (baseHashes[file] !== currentHashes[file]) staleFiles.push(file);
+  }
+  if (staleFiles.length > 0) {
+    // Race detected: external write changed the file. Advance lastCheckedAt
+    // (prevent re-fire storm) but skip file writes.
+    if (!dryRun) {
+      const updated = existsSync(stateFile) ? readJson(stateFile) : {};
+      const appliedList = getPath(updated, "domainRuns." + domain + ".appliedRunIds") || [];
+      setPath(updated, "domainRuns." + domain + ".lastCheckedAt", now);
+      setPath(updated, "domainRuns." + domain + ".lastRunId", runId);
+      setPath(updated, "domainRuns." + domain + ".appliedRunIds", [...new Set([...appliedList, runId])]);
+      writeJson(stateFile, updated);
+    }
+    return {
+      ok: true,
+      status: "stale",
+      domain,
+      runId,
+      staleFiles,
+      idempotent: false,
+      advancedLastCheckedAt: !dryRun,
+      dryRun,
+      wroteStatus: false,
+      appendedEntries: 0,
+      promotedFacts: 0,
+      proposedDecisionChanges: 0,
+      proposedWorkflowChanges: 0,
+    };
   }
 
   const blockedFields = ["Decisions-Content", "Workflow-Content", "Decisions-Patch", "Workflow-Patch"];
@@ -368,7 +538,13 @@ export async function applyDomainWriteHandoff(handoff, {
     throw new Error("Status-Content exceeds size limit");
   }
 
-  const entries = normalizeChangelogEntries(parseJsonStrict(parseHandoffField(handoff.body, "Changelog-Entries") ?? "[]", "Changelog-Entries"), runId);
+  // Re-parse entries here; the early-parse above only feeds the idempotency
+  // check; the canonical re-parse runs after all field validation so any
+  // structural error surfaces with a clear message here rather than being
+  // swallowed as an "external write" noop.
+  const entries = earlyEntries.length === 0
+    ? normalizeChangelogEntries(parseJsonStrict(parseHandoffField(handoff.body, "Changelog-Entries") ?? "[]", "Changelog-Entries"), runId)
+    : earlyEntries;
   const promotions = validatePromotions(parseJsonStrict(parseHandoffField(handoff.body, "Promotions") ?? "[]", "Promotions"));
   const proposedDecisions = parseJsonStrict(parseHandoffField(handoff.body, "Proposed-Decisions") ?? "[]", "Proposed-Decisions");
   const proposedWorkflow = parseJsonStrict(parseHandoffField(handoff.body, "Proposed-Workflow") ?? "[]", "Proposed-Workflow");

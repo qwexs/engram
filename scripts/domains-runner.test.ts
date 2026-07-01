@@ -16,7 +16,8 @@ import { join } from "node:path";
 import {
   newestContentDateMs, applyDomainWriteHandoff, scanDomains,
   DEFAULT_CADENCE_DAYS, shouldInlineNoopDailyNote,
-  DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN,
+  DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN, computeAdaptiveCadence,
+  DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS,
 } from "./domains-runner.js";
 
 const SAMPLE_TZ = "Europe/Moscow";
@@ -484,5 +485,155 @@ describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
     const p = writeDailyNote(text);
     expect(shouldInlineNoopDailyNote({ dailyPath: p, minBytes: 30 })).toBe(true); // events < 30 → noop
     expect(shouldInlineNoopDailyNote({ dailyPath: p, minBytes: 200 })).toBe(true); // size < 200 → noop
+  });
+});
+
+// ============================================================================
+// A7. computeAdaptiveCadence — domain-aware cadence from event density
+// ============================================================================
+describe("A7. computeAdaptiveCadence — domain-aware cadence", () => {
+  function setupDailyNotes(sessionKey: string, dates: { date: string; events: string[] }[]) {
+    const agentDir = join(workspace, "memory", "agent-test", sessionKey);
+    mkdirSync(agentDir, { recursive: true });
+    for (const { date, events } of dates) {
+      const notePath = join(agentDir, date + ".md");
+      const content = `# ${date}\n\n## Events\n\n${events.map((e) => `- ${e}`).join("\n")}\n\n## Decisions\n\n`;
+      writeFileSync(notePath, content);
+    }
+  }
+
+  // Build 7 valid consecutive dates ending at (today - 1 day) so all 7
+  // fall inside the windowDays=7 trailing window (today-7..today-1).
+  function sevenDatesEndingYesterday(today: Date): string[] {
+    const out: string[] = [];
+    for (let i = 1; i <= 7; i++) {
+      const d = new Date(today.getTime() - i * 86400000);
+      out.push(d.toISOString().slice(0, 10));
+    }
+    return out.reverse(); // chronological order
+  }
+
+  test("DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS is exported and equals 7", () => {
+    expect(DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS).toBe(7);
+  });
+
+  test("no daily notes → effectiveCadenceDays == windowDays (coldest)", () => {
+    const result = computeAdaptiveCadence({
+      workspace,
+      sessionKey: "telegram-group--1-topic-1",
+      windowDays: 7,
+      defaultCadenceDays: 5,
+      today: new Date("2026-07-04T12:00:00.000Z"),
+    });
+    expect(result.eventsPerDay).toBe(0);
+    expect(result.totalEvents).toBe(0);
+    expect(result.daysWithNotes).toBe(0);
+    // raw = windowDays = 7, but clamp(7, 1, 5) = 5.
+    expect(result.raw).toBe(7);
+    expect(result.effectiveCadenceDays).toBe(5);
+  });
+
+  test("1 event per day over 7 days → effectiveCadenceDays = 7, clamped to default", () => {
+    const today = new Date("2026-07-05T12:00:00.000Z");
+    const dates = sevenDatesEndingYesterday(today).map((date) => ({ date, events: ["event"] }));
+    setupDailyNotes("telegram-group--1-topic-2", dates);
+    const result = computeAdaptiveCadence({
+      workspace,
+      sessionKey: "telegram-group--1-topic-2",
+      windowDays: 7,
+      defaultCadenceDays: 7,
+      today,
+    });
+    expect(result.totalEvents).toBe(7);
+    expect(result.eventsPerDay).toBe(1);
+    expect(result.raw).toBe(7);  // 7 / 1
+    expect(result.effectiveCadenceDays).toBe(7);
+  });
+
+  test("7 events per day over 7 days → effectiveCadenceDays = 1 (very active)", () => {
+    const today = new Date("2026-07-05T12:00:00.000Z");
+    const dates = sevenDatesEndingYesterday(today).map((date) => ({
+      date,
+      events: ["e1", "e2", "e3", "e4", "e5", "e6", "e7"],
+    }));
+    setupDailyNotes("telegram-group--1-topic-3", dates);
+    const result = computeAdaptiveCadence({
+      workspace,
+      sessionKey: "telegram-group--1-topic-3",
+      windowDays: 7,
+      defaultCadenceDays: 14,
+      today,
+    });
+    expect(result.eventsPerDay).toBe(7);
+    expect(result.raw).toBe(1);  // 7 / 7 = 1
+    expect(result.effectiveCadenceDays).toBe(1);
+  });
+
+  test("0.5 events per day → raw=14, clamped to defaultCadenceDays=10", () => {
+    // 3 events over 7 days = 0.43 per day, round(7/0.43) ≈ 16 → clamp to 10.
+    const dates = [
+      { date: "2026-06-29", events: ["a"] },
+      { date: "2026-06-30", events: ["a"] },
+      { date: "2026-07-01", events: ["a"] },
+    ];
+    setupDailyNotes("telegram-group--1-topic-4", dates);
+    const result = computeAdaptiveCadence({
+      workspace,
+      sessionKey: "telegram-group--1-topic-4",
+      windowDays: 7,
+      defaultCadenceDays: 10,
+      today: new Date("2026-07-04T12:00:00.000Z"),
+    });
+    expect(result.totalEvents).toBe(3);
+    // 3 / 7 = 0.4286 events/day, round(7 / 0.4286) = round(16.33) = 16 → clamp to 10
+    expect(result.raw).toBeGreaterThanOrEqual(15);
+    expect(result.raw).toBeLessThanOrEqual(17);
+    expect(result.effectiveCadenceDays).toBe(10);
+  });
+
+  test("integration: scanDomains with cadenceAdaptive + topic binding + cold topic", () => {
+    // Cold topic → effectiveCadenceDays = 5 (clamped from 7 to defaultCadenceDays=5).
+    const sessionKey = "telegram-group--1001000001-topic-60";
+    // No daily notes → eventsPerDay=0 → raw=windowDays=7 → clamp to defaultCadenceDays=5.
+    const regPath = join(workspace, "memory", "domains", "registry.json");
+    writeFileSync(regPath, JSON.stringify({
+      domains: {
+        engram: {
+          type: "topic-thread",
+          topic: { chatId: "-1001000001", topicId: 60 },
+          cadenceDays: 5,
+          cadenceAdaptive: true,
+          cadenceAdaptiveWindowDays: 7,
+        },
+      },
+    }) + "\n");
+    mkdirSync(join(workspace, "memory", "domains", "engram"), { recursive: true });
+    const scan = scanDomains({
+      workspace,
+      now: new Date("2026-07-04T12:00:00.000Z"),
+    });
+    const d = scan.domains[0];
+    expect(d.due).toBe(true); // lastRunMs is null → due
+    expect(d.cadenceDays).toBe(5); // clamped from 7 to defaultCadenceDays=5
+    expect(d.cadenceAdaptive).not.toBeNull();
+    expect(d.cadenceAdaptive.totalEvents).toBe(0);
+    expect(d.cadenceAdaptive.eventsPerDay).toBe(0);
+  });
+
+  test("integration: scanDomains without cadenceAdaptive flag → uses raw cadenceDays", () => {
+    const regPath = join(workspace, "memory", "domains", "registry.json");
+    writeFileSync(regPath, JSON.stringify({
+      domains: {
+        engram: {
+          type: "topic-thread",
+          topic: { chatId: "-1001000001", topicId: 60 },
+          cadenceDays: 4,
+        },
+      },
+    }) + "\n");
+    mkdirSync(join(workspace, "memory", "domains", "engram"), { recursive: true });
+    const scan = scanDomains({ workspace });
+    expect(scan.domains[0].cadenceDays).toBe(4);
+    expect(scan.domains[0].cadenceAdaptive).toBeNull();
   });
 });

@@ -5,7 +5,7 @@
  * Scan domain continuity memory without mutating domain files.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -93,6 +93,96 @@ const DEFAULT_STALE_DAYS = 30;
 //
 // Exposed via export so tests can assert the contract without re-typing 2.
 export const DEFAULT_CADENCE_DAYS = 2;
+// ISS-9 fix A7: window for domain-aware cadence (events/day over the last N days).
+// Default 7 days — typical weekly cadence for a topic.
+export const DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS = 7;
+
+// ISS-9 fix A7: compute adaptive cadence from bound-session daily-note density.
+//
+// Returns { effectiveCadenceDays, eventsPerDay, totalEvents, daysWithNotes,
+// windowDays } so the caller can log/display the rationale.
+//
+// Algorithm:
+//   1. Walk the last `windowDays` daily notes under `sessionDir`
+//      (workspace/memory/<any-agent>/<sessionKey>/YYYY-MM-DD.md).
+//   2. For each present note, count bullet items (`- `) in the `## Events`
+//      section.
+//   3. eventsPerDay = totalEvents / windowDays.
+//   4. effective = round(windowDays / eventsPerDay) for eventsPerDay > 0, else windowDays.
+//   5. Clamp to [1, defaultCadenceDays] so the adaptive value never exceeds
+//      what the operator explicitly configured.
+//
+// We scan ALL agent-* subdirs of `workspace/memory/` because the bound
+// sessionKey doesn't carry the agentId — for topic-thread domains the daily
+// notes live in `memory/agent-${agentId}/${sessionKey}/` and we don't know
+// agentId from scanDomains's pure signature.
+export function computeAdaptiveCadence({
+  workspace,
+  sessionKey,
+  windowDays = DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS,
+  defaultCadenceDays,
+  today = new Date(),
+} = {}) {
+  const root = resolve(workspace || process.env.ENGRAM_WORKSPACE || process.cwd());
+  const memoryRoot = join(root, "memory");
+  const agentDirs = existsSync(memoryRoot)
+    ? readdirSync(memoryRoot, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith("agent-"))
+    : [];
+
+  let totalEvents = 0;
+  let daysWithNotes = 0;
+  // Exclude today from the window — today's daily note is mid-flight and its
+  // event count is partial. Use the last `windowDays` *completed* days
+  // (i.e., today-1, today-2, ..., today-windowDays).
+  for (let i = 1; i <= windowDays; i++) {
+    const d = new Date(today.getTime() - i * 86400000);
+    const dateStr = formatDailyNoteDate(d);
+    let dayEvents = 0;
+    for (const agentDirent of agentDirs) {
+      const notePath = join(memoryRoot, agentDirent.name, sessionKey, dateStr + ".md");
+      try {
+        const note = readFileSync(notePath, "utf8");
+        const m = note.match(/## Events\s*\n([\s\S]*?)(?=\n## |$)/);
+        const events = (m ? m[1] : "").trim();
+        // Count lines starting with "- " (bullet items).
+        dayEvents += (events.match(/^- /gm) || []).length;
+      } catch {
+        // Missing note → 0 events for this agent-dir on this day.
+      }
+    }
+    totalEvents += dayEvents;
+    if (dayEvents > 0) daysWithNotes++;
+  }
+
+  const eventsPerDay = totalEvents / windowDays;
+  let effective;
+  if (eventsPerDay <= 0) {
+    effective = windowDays; // no activity → use slowest cadence (== windowDays)
+  } else {
+    effective = Math.round(windowDays / eventsPerDay);
+  }
+  const clamped = Math.max(1, Math.min(effective, defaultCadenceDays));
+  return {
+    effectiveCadenceDays: clamped,
+    eventsPerDay,
+    totalEvents,
+    daysWithNotes,
+    windowDays,
+    raw: effective,
+  };
+}
+
+// Format a Date as YYYY-MM-DD in the operator's declared TZ (consistent with
+// notePathFor in heartbeat-runner.js). Defaults to UTC if no TZ env is set.
+function formatDailyNoteDate(d) {
+  const tz = getTz();
+  try {
+    return d.toLocaleDateString("sv-SE", { timeZone: tz });
+  } catch {
+    // Fallback: UTC ISO date prefix.
+    return d.toISOString().slice(0, 10);
+  }
+}
 // ISS-9 fix A6: pre-spawn daily-note peek. Below this byte size, runner treats
 // the daily note as "not real" and inline-noops the hb-domains-write spawn
 // (saves an LLM-call when the bound session has no real content yet).
@@ -775,21 +865,48 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
     // After ISS-9 A4 default, cadenceDays is always > 0 for enabled domains,
     // so the `!= null` guards are no longer needed but kept for safety if a
     // future operator explicitly disables a domain.
-    if (enabled && cadenceDays != null) {
+    // ISS-9 fix A7: domain-aware cadence. If `cadenceAdaptive: true` is set
+    // on this domain, derive effective cadence from event density in the
+    // bound session's daily notes (last N days).
+    let effectiveCadenceDays = cadenceDays;
+    let adaptiveCadence = null;
+    if (enabled && config?.cadenceAdaptive === true) {
+      const topicBinding = config.topic;
+      if (topicBinding && topicBinding.chatId && topicBinding.topicId) {
+        const absChatId = String(topicBinding.chatId).replace(/^-/, "");
+        const sessionKey = "telegram-group--" + absChatId + "-topic-" + topicBinding.topicId;
+        const windowDays = Number(config.cadenceAdaptiveWindowDays) > 0
+          ? Number(config.cadenceAdaptiveWindowDays)
+          : DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS;
+        try {
+          adaptiveCadence = computeAdaptiveCadence({
+            workspace: root,
+            sessionKey,
+            windowDays,
+            defaultCadenceDays: cadenceDays,
+            today: new Date(nowMs),
+          });
+          effectiveCadenceDays = adaptiveCadence.effectiveCadenceDays;
+        } catch {
+          adaptiveCadence = null; // best-effort; fall back to cadenceDays
+        }
+      }
+    }
+    if (enabled && effectiveCadenceDays != null) {
       if (lastRunMs == null) {
         due = true;
         overdue = true;
       } else {
         const runAgeDays = ageDays(lastRunMs, nowMs);
-        due = runAgeDays >= cadenceDays;
-        overdue = runAgeDays > cadenceDays * 2;
+        due = runAgeDays >= effectiveCadenceDays;
+        overdue = runAgeDays > effectiveCadenceDays * 2;
       }
     }
 
     let suppressedByLastCheckedAt = false;
-    if (enabled && due && lastCheckedAtMs != null && cadenceDays != null) {
+    if (enabled && due && lastCheckedAtMs != null && effectiveCadenceDays != null) {
       const checkedAgeDays = ageDays(lastCheckedAtMs, nowMs);
-      suppressedByLastCheckedAt = checkedAgeDays < cadenceDays;
+      suppressedByLastCheckedAt = checkedAgeDays < effectiveCadenceDays;
     }
 
     const domain = {
@@ -803,6 +920,14 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
       overdue,
       suppressedByLastCheckedAt,
       lastCheckedAt: lastCheckedAtMs ? new Date(lastCheckedAtMs).toISOString() : null,
+      cadenceDays: effectiveCadenceDays,
+      cadenceAdaptive: adaptiveCadence ? {
+        windowDays: adaptiveCadence.windowDays,
+        totalEvents: adaptiveCadence.totalEvents,
+        daysWithNotes: adaptiveCadence.daysWithNotes,
+        eventsPerDay: adaptiveCadence.eventsPerDay,
+        raw: adaptiveCadence.raw,
+      } : null,
       files,
     };
     // Dry-run archive check (always done; archived: false if not actually archived)

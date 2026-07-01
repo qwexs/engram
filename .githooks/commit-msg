@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# engram/.githooks/commit-msg
+#
+# Local commit-msg guard for the engram repo. Runs the personal-data
+# linter against the commit message itself (not just staged files), so
+# `Refs: outline.apriori.tech/...` style leaks in commit footers are
+# caught before they land in history.
+#
+# The staged-files path is already covered by pre-commit; this hook
+# covers the commit message text. The linter itself supports
+# `--text-file <path>` for single-file text scanning, which is what we
+# invoke here.
+#
+# Git passes the path to the commit message file as $1. See githooks(5).
+#
+# Install once per clone (alongside the pre-commit hook):
+#   git config core.hooksPath .githooks
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+MSG_FILE="${1:-}"
+
+if [ -z "$MSG_FILE" ] || [ ! -f "$MSG_FILE" ]; then
+  echo "commit-msg: no message file passed (got: '$MSG_FILE'); skipping." >&2
+  exit 0
+fi
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "commit-msg: 'bun' not on PATH; cannot continue." >&2
+  echo "           Install bun (https://bun.sh) or commit --no-verify." >&2
+  exit 1
+fi
+
+LINTER="${REPO_ROOT}/scripts/lint-no-personal-data.ts"
+if [ ! -f "$LINTER" ]; then
+  echo "commit-msg: linter not found at $LINTER; skipping." >&2
+  exit 0
+fi
+
+echo "commit-msg: running lint-no-personal-data on commit message…"
+if ! bun "$LINTER" --text-file "$MSG_FILE"; then
+  cat >&2 <<'EOF'
+
+Personal-data linter failed. Your commit message contains patterns that
+look like local filesystem paths, reserved agentIds, Telegram chatIds,
+bot tokens, or workspace-specific FQDNs (e.g. outline.apriori.tech).
+None of those belong in the public engram repo.
+
+What to do:
+  1. Read the linter output above — it shows the line and pattern.
+  2. Replace the leaked value with a synthetic placeholder
+     (e.g. /workspaces/alpha, agent id "alpha", chat id "-1001",
+     path-relative URL "/doc/iss-9-...-ZbRqyMpDKu" without the host).
+  3. Re-stage the message and try the commit again.
+
+To skip this check (NOT recommended):
+  git commit --no-verify
+EOF
+  exit 1
+fi

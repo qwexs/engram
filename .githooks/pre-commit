@@ -34,13 +34,15 @@ if [ -f "$LINTER" ]; then
     cat >&2 <<'EOF'
 
 Personal-data linter failed. Your staged files contain patterns that look
-like local filesystem paths, reserved agentIds, Telegram chatIds, or bot
-tokens. None of those belong in the public engram repo.
+like local filesystem paths, reserved agentIds, Telegram chatIds, bot
+tokens, or workspace-specific FQDNs (e.g. outline.apriori.tech). None of
+those belong in the public engram repo.
 
 What to do:
   1. Read the linter output above — it shows the file:line and pattern.
   2. Replace the leaked value with a synthetic placeholder
-     (e.g. "/workspaces/alpha", agent id "alpha", chat id "-1001").
+     (e.g. "/workspaces/alpha", agent id "alpha", chat id "-1001",
+     path-relative URL "/doc/iss-9-...-ZbRqyMpDKu" without the host).
   3. Re-stage and try the commit again.
 
 To skip this check (NOT recommended):

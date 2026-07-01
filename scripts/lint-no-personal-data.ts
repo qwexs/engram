@@ -2,8 +2,9 @@
 /**
  * lint-no-personal-data.ts
  *
- * Pre-commit / pre-push guard that scans staged files for accidental leaks
- * of personal or workspace-identifying data into the public engram repo.
+ * Pre-commit / commit-msg guard that scans staged files (and, when invoked
+ * with --text-file, the commit message itself) for accidental leaks of
+ * personal or workspace-identifying data into the public engram repo.
  *
  * What is flagged:
  *   1. Filesystem paths that contain the local OS username (Windows + Unix)
@@ -14,6 +15,10 @@
  *      produces false positives in legitimate routing rules.)
  *   3. Telegram chat ids in the supergroup range: -100… (10-digit ids)
  *   4. (optional, enabled by --strict) OpenClaw bot tokens (long base64 chunks)
+ *   5. Workspace-specific FQDNs (default: any subdomain of apriori.tech).
+ *      Catches URLs like `https://outline.apriori.tech/...` in commit
+ *      messages or sample configs. Override the host list via env
+ *      `ENGRAM_LINT_HOSTS=host1.tld,host2.tld`.
  *
  * What is NOT flagged:
  *   - Empty / missing matches
@@ -22,6 +27,8 @@
  *   - Comments or strings that quote the allowlist itself (we strip
  *     those lines before scanning, so this script's own matches do not
  *     self-trigger)
+ *   - Bare segment names like "apriori-tech" or "apriori-vm" — only full
+ *     FQDNs with a dot (e.g. outline.apriori.tech) are matched.
  *
  * Usage:
  *   bun scripts/lint-no-personal-data.ts [path-to-file ...]
@@ -30,6 +37,10 @@
  *   mode for use as a pre-commit hook.
  *
  *   With one or more paths, scans those files instead.
+ *
+ *   With --text-file <path>, scans a single text file as a "message" and
+ *   reports issues keyed to that file path. This is how the commit-msg
+ *   hook invokes the linter.
  *
  * Exit code:
  *   0 — clean
@@ -42,6 +53,30 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+
+// Default hosts flagged by the workspace-host rule. Extend at runtime via
+// the ENGRAM_LINT_HOSTS env var (comma-separated, e.g.
+// `ENGRAM_LINT_HOSTS=foo.example.com,bar.io`).
+const DEFAULT_WORKSPACE_HOSTS: string[] = ["apriori.tech"];
+
+/** Build a regex matching any FQDN whose apex is one of the given hosts. */
+export function workspaceHostRegex(): RegExp {
+  const envHosts = (process.env.ENGRAM_LINT_HOSTS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const hosts = [...DEFAULT_WORKSPACE_HOSTS, ...envHosts].map((h) =>
+    h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  );
+  if (hosts.length === 0) {
+    // Match nothing — a placeholder that never matches a real input.
+    return /^\bNO_WORKSPACE_HOSTS_CONFIGURED\b$/i;
+  }
+  // Match `(<sub>.)*<host>` with a word boundary on the right so we
+  // don't accidentally match e.g. `outline.apriori.techy/`. Word
+  // boundary on the left is implicit in `\b(?:[a-z0-9-]+\.)*`.
+  return new RegExp(`\\b(?:[a-z0-9-]+\\.)*(?:${hosts.join("|")})\\b`, "gi");
+}
 
 /**
  * Patterns that, if matched in a staged file, are treated as leaks.
@@ -83,6 +118,16 @@ const PATTERNS: { name: string; re: RegExp; allowPaths?: RegExp }[] = [
     name: "telegram-bot-token",
     re: /\b\d{8,12}:[A-Za-z0-9_-]{35,}\b/g,
   },
+  // 6. Workspace-specific FQDNs (default: any subdomain of apriori.tech).
+  //    Catches URLs like `https://outline.apriori.tech/...` in commit
+  //    messages, sample configs, or test fixtures. The bare word "apriori"
+  //    in segment names like `apriori-tech/`, `apriori-vm` is intentionally
+  //    NOT matched — we require a full FQDN form (host with a dot).
+  //    Override the host list via env `ENGRAM_LINT_HOSTS=host1.tld,host2.tld`.
+  {
+    name: "workspace-host",
+    re: workspaceHostRegex(),
+  },
 ];
 
 /**
@@ -94,21 +139,26 @@ const ALLOWLIST: RegExp[] = [
   /scripts\/lint-no-personal-data\.ts$/,
   // The corresponding test file.
   /scripts\/lint-no-personal-data\.test\.ts$/,
-  // .githooks/ — the pre-commit wrapper, which may reference the patterns
-  // by name when it re-invokes the linter.
+  // .githooks/ — the pre-commit/commit-msg wrappers, which may reference
+  // the patterns by name when they re-invoke the linter.
   /\.githooks\//,
 ];
 
 /** Strip this script's allowlist block before scanning a buffer. */
 function stripAllowlistComments(src: string): string {
-  // Drop any line that contains the literal token "ALLOWLIST" or the
-  // pattern definitions themselves. Prevents the linter from matching
-  // its own source.
+  // Drop any line that contains the literal token "ALLOWLIST", any of the
+  // pattern names, or any of the workspace-host code tokens. We
+  // intentionally do NOT strip lines just because they contain
+  // `apriori.tech` itself — that's the very thing the workspace-host
+  // pattern is supposed to catch in user input. The linter's own source
+  // (which DOES contain `apriori.tech` as a default value) is
+  // short-circuited by the ALLOWLIST path check in `scanFile` before this
+  // function ever runs, so we don't need to strip it here.
   return src
     .split(/\r?\n/)
     .filter(
       (line) =>
-        !/ALLOWLIST|reserved-agent-id|telegram-supergroup|telegram-bot-token|windows-user-path|unix-home-path/.test(
+        !/ALLOWLIST|reserved-agent-id|telegram-supergroup|telegram-bot-token|windows-user-path|unix-home-path|workspace-host|workspaceHostRegex|DEFAULT_WORKSPACE_HOSTS|ENGRAM_LINT_HOSTS/.test(
           line,
         ),
     )
@@ -154,15 +204,15 @@ export interface LintResult {
 }
 
 /**
- * Scan a single file buffer and return all issues.
+ * Run all configured patterns against a single text buffer and return
+ * matching issues keyed to `sourceLabel`. This is the pure pattern-matcher
+ * — no filesystem I/O. `scanFile` calls this internally; the commit-msg
+ * hook calls it directly on the commit message text.
+ *
  * Exported for unit testing.
  */
-export function scanFile(filePath: string, src: string): LintIssue[] {
-  // Allowlist check: short-circuit before any pattern matching.
-  for (const allow of ALLOWLIST) {
-    if (allow.test(filePath)) return [];
-  }
-  const cleaned = stripAllowlistComments(src);
+export function scanText(text: string, sourceLabel: string): LintIssue[] {
+  const cleaned = stripAllowlistComments(text);
   const out: LintIssue[] = [];
   for (const { name, re } of PATTERNS) {
     // Re-create a fresh, non-stateful RegExp from the pattern source.
@@ -177,10 +227,24 @@ export function scanFile(filePath: string, src: string): LintIssue[] {
       const lastNl = upto.lastIndexOf("\n");
       const column = m.index - (lastNl + 1) + 1;
       const snippet = m[0].slice(0, 80);
-      out.push({ file: filePath, line, column, pattern: name, snippet });
+      out.push({ file: sourceLabel, line, column, pattern: name, snippet });
     }
   }
   return out;
+}
+
+/**
+ * Scan a single file buffer and return all issues.
+ * Exported for unit testing. Wraps `scanText` with an allowlist check on
+ * the file path (so the linter's own source and the githooks wrappers
+ * don't self-trigger).
+ */
+export function scanFile(filePath: string, src: string): LintIssue[] {
+  // Allowlist check: short-circuit before any pattern matching.
+  for (const allow of ALLOWLIST) {
+    if (allow.test(filePath)) return [];
+  }
+  return scanText(src, filePath);
 }
 
 /** Scan the given files (or the git index if none) and report. */
@@ -202,8 +266,40 @@ function formatIssue(i: LintIssue): string {
 // CLI entry. Skipped when imported as a module.
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  const files = args;
-  const { issues, scanned } = runScan(files);
+  let textFile: string | null = null;
+  const fileArgs: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--text-file" && i + 1 < args.length) {
+      textFile = args[++i];
+    } else {
+      fileArgs.push(args[i]);
+    }
+  }
+  if (textFile) {
+    // Single-file "message" mode — used by the commit-msg hook to scan
+    // the commit message text without indexing the whole repo.
+    const src = readSafe(textFile);
+    if (!src) {
+      process.stdout.write(
+        `lint-no-personal-data: ok (no content in ${textFile})\n`,
+      );
+      process.exit(0);
+    }
+    const issues = scanFile(textFile, src);
+    if (issues.length === 0) {
+      process.stdout.write(
+        `lint-no-personal-data: ok (1 message file scanned: ${textFile})\n`,
+      );
+      process.exit(0);
+    }
+    process.stderr.write(
+      `lint-no-personal-data: ${issues.length} issue(s) in ${textFile}:\n` +
+        issues.map(formatIssue).join("\n") +
+        "\n",
+    );
+    process.exit(1);
+  }
+  const { issues, scanned } = runScan(fileArgs);
   if (issues.length === 0) {
     process.stdout.write(`lint-no-personal-data: ok (${scanned} file(s) scanned)\n`);
     process.exit(0);

@@ -15,7 +15,8 @@ import { join } from "node:path";
 
 import {
   newestContentDateMs, applyDomainWriteHandoff, scanDomains,
-  DEFAULT_CADENCE_DAYS,
+  DEFAULT_CADENCE_DAYS, shouldInlineNoopDailyNote,
+  DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN,
 } from "./domains-runner.js";
 
 const SAMPLE_TZ = "Europe/Moscow";
@@ -406,5 +407,82 @@ describe("A4. scanDomains — cadenceDays default fallback", () => {
     const scan = scanDomains({ workspace, now });
     expect(scan.domains[0].due).toBe(true);  // due by cadence
     expect(scan.domains[0].suppressedByLastCheckedAt).toBe(true);  // but suppressed
+  });
+});
+
+// ============================================================================
+// A6. shouldInlineNoopDailyNote — pre-spawn daily-note peek
+// ============================================================================
+describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
+  function writeDailyNote(text: string) {
+    const dir = join(workspace, "memory", "agent-test", "telegram-test-topic-1");
+    mkdirSync(dir, { recursive: true });
+    const p = join(dir, "2026-07-01.md");
+    writeFileSync(p, text);
+    return p;
+  }
+
+  function writeDecisions(text: string) {
+    setupRegistry();
+    const p = join(workspace, "memory", "domains", "test-domain", "decisions.md");
+    writeFileSync(p, text);
+    return p;
+  }
+
+  test("DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN is exported and equals 100", () => {
+    expect(DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN).toBe(100);
+  });
+
+  test("missing daily note → inline-noop", () => {
+    const p = join(workspace, "memory", "agent-test", "telegram-test-topic-1", "2026-07-01.md");
+    // Don't create the file.
+    expect(shouldInlineNoopDailyNote({ dailyPath: p })).toBe(true);
+  });
+
+  test("daily note smaller than threshold → inline-noop", () => {
+    const p = writeDailyNote("# 2026-07-01\n\n## Events\n\n## Decisions\n");
+    expect(shouldInlineNoopDailyNote({ dailyPath: p })).toBe(true);
+  });
+
+  test("daily note large with empty `## Events` (whitespace-only) → inline-noop (existing v3.3)", () => {
+    // Padding lives BEFORE `## Events` so the Events section itself is
+    // whitespace-only (< 30 chars after trim) → existing v3.3 gate fires.
+    const padding = "# 2026-07-01\n\n" + ("x".repeat(150)) + "\n\n## Events\n   \n\n## Decisions\n\n";
+    const p = writeDailyNote(padding);
+    expect(shouldInlineNoopDailyNote({ dailyPath: p })).toBe(true);
+  });
+
+  test("daily note with real events, no decisions.md → spawn (existing v3.3)", () => {
+    const text = "# 2026-07-01\n\n## Events\n\n- 12:00 обсудили важное решение по архитектуре runner.\n- 12:05 также протестировали новый pipeline.\n\n";
+    const p = writeDailyNote(text);
+    expect(shouldInlineNoopDailyNote({ dailyPath: p })).toBe(false);
+  });
+
+  test("daily note with real events + matching decision keyword → spawn", () => {
+    writeDecisions("# Решения: test-domain\n\n## Принятые решения\n\n### 2026-06-30 — Архитектура runner\n\n**Решение**: использовать событийный pipeline с retry.\n");
+    const text = "# 2026-07-01\n\n## Events\n\n- 12:00 утвердили событийный pipeline, проверили retry.\n\n";
+    const p = writeDailyNote(text);
+    expect(shouldInlineNoopDailyNote({ dailyPath: p, decisionsPath: join(workspace, "memory", "domains", "test-domain", "decisions.md") })).toBe(false);
+  });
+
+  test("daily note with real events + no matching keyword → inline-noop (A6 key-words gate)", () => {
+    writeDecisions("# Решения: test-domain\n\n## Принятые решения\n\n### 2026-06-30 — База данных\n\n**Решение**: мигрировать на postgres.\n");
+    const text = "# 2026-07-01\n\n## Events\n\n- 12:00 обсудили новый UI для runner, выбрали цвета.\n\n";
+    const p = writeDailyNote(text);
+    expect(shouldInlineNoopDailyNote({ dailyPath: p, decisionsPath: join(workspace, "memory", "domains", "test-domain", "decisions.md") })).toBe(true);
+  });
+
+  test("pinned: marker counts as keyword", () => {
+    writeDecisions("# Решения: test-domain\n\n## Принятые решения\n\npinned: обязательно использовать token-bucket для rate-limit.\n");
+    const text = "# 2026-07-01\n\n## Events\n\n- 12:00 решено применить rate-limit подход token-bucket на новой задаче.\n\n";
+    const p = writeDailyNote(text);
+    expect(shouldInlineNoopDailyNote({ dailyPath: p, decisionsPath: join(workspace, "memory", "domains", "test-domain", "decisions.md") })).toBe(false);
+  });
+
+  test("custom minBytes threshold is respected", () => {
+    const text = "# 2026-07-01\n\n## Events\n\n- событие\n";  // ~50 bytes
+    const p = writeDailyNote(text);
+    expect(shouldInlineNoopDailyNote({ dailyPath: p, minBytes: 30 })).toBe(true); // events < 30 → noop
+    expect(shouldInlineNoopDailyNote({ dailyPath: p, minBytes: 200 })).toBe(true); // size < 200 → noop
   });
 });

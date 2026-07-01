@@ -93,6 +93,89 @@ const DEFAULT_STALE_DAYS = 30;
 //
 // Exposed via export so tests can assert the contract without re-typing 2.
 export const DEFAULT_CADENCE_DAYS = 2;
+// ISS-9 fix A6: pre-spawn daily-note peek. Below this byte size, runner treats
+// the daily note as "not real" and inline-noops the hb-domains-write spawn
+// (saves an LLM-call when the bound session has no real content yet).
+// Configurable via opts.min-daily-bytes-for-spawn in heartbeat-runner.js.
+export const DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN = 100;
+
+// ISS-9 fix A6: should the inline-noop fast-path trigger for this domain?
+// Returns true when the daily note is unambiguously empty:
+//   1. file missing (ENOENT → safe to noop)
+//   2. `## Events` section missing or shorter than 30 chars (existing v3.3
+//      behavior, preserved for backward compatibility)
+//   3. (A6) file size below DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN (default 100)
+//   4. (A6) `## Events` exists, file is reasonably-sized, but no token from
+//      `decisions.md` keywords matches the events content — the subagent
+//      would noop anyway, so we save the LLM-call.
+//
+// `decisionsPath` is optional; when null/missing, condition 4 is skipped
+// (preserves v3.3 behavior for domains without decisions.md yet).
+export function shouldInlineNoopDailyNote({ dailyPath, decisionsPath = null, minBytes = DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN } = {}) {
+  let noteBytes = 0;
+  let noteContent = "";
+  try {
+    noteBytes = statSync(dailyPath).size;
+    noteContent = readFileSync(dailyPath, "utf8");
+  } catch {
+    // Missing daily note → safe to noop (no events to write).
+    return true;
+  }
+  // (A6 #3) Below size threshold → noop. Catches the common "agent created
+  // the daily-note template but hasn't written anything" case.
+  if (noteBytes < minBytes) {
+    return true;
+  }
+  // (existing v3.3) Parse `## Events` section. Empty/truncated → noop.
+  const m = noteContent.match(/## Events\s*\n([\s\S]*?)(?=\n## |$)/);
+  const events = (m ? m[1] : "").trim();
+  if (events.length < 30 || /^##\s/.test(events)) {
+    return true;
+  }
+  // (A6 #4) Try key-words check against decisions.md. Skip if decisions is
+  // absent/empty (preserves v3.3 default behavior).
+  let keywords = null;
+  try {
+    if (decisionsPath && existsSync(decisionsPath)) {
+      keywords = extractDecisionKeywords(readFileSync(decisionsPath, "utf8"));
+    }
+  } catch {
+    keywords = null;
+  }
+  if (!keywords || keywords.size === 0) {
+    return false; // No keywords → spawn (existing behavior).
+  }
+  const eventsLower = events.toLowerCase();
+  for (const kw of keywords) {
+    if (eventsLower.includes(kw)) {
+      return false; // Match found → spawn.
+    }
+  }
+  return true; // No keyword overlap → noop.
+}
+
+// Extract lowercase tokens (length >= 4) from decisions.md that mark
+// domain-relevant topics: **Решение**: ... lines and `pinned: ...` markers.
+// Used by shouldInlineNoopDailyNote to decide whether the bound-session
+// events touch a known decision.
+function extractDecisionKeywords(decisionsContent) {
+  const tokens = new Set();
+  if (!decisionsContent) return tokens;
+  for (const line of decisionsContent.split(/\r?\n/)) {
+    let target = null;
+    if (/^\*\*Решение\*\*\s*:/u.test(line)) {
+      target = line.replace(/^\*\*Решение\*\*\s*:\s*/u, "");
+    } else if (/^\s*pinned\s*:/iu.test(line)) {
+      target = line.replace(/^\s*pinned\s*:\s*/iu, "");
+    }
+    if (!target) continue;
+    // Tokenize on non-letter/non-digit, keep cyrillic + latin + digits.
+    for (const tok of target.toLowerCase().split(/[^a-zа-я0-9ё]+/u)) {
+      if (tok.length >= 4) tokens.add(tok);
+    }
+  }
+  return tokens;
+}
 const MUTABLE_FILES = new Set(["status.md", "changelog.md"]);
 const MAX_STATUS_BYTES = 64 * 1024;
 const MAX_CHANGELOG_APPEND_BYTES = 64 * 1024;

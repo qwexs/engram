@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { loadEngramConfig, resolveSubagentModel } from "./config.js";
 import { parseHandoff, applyHandoff, defaultHandoffHandlers } from "./process-handoff-core.js";
-import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary } from "./domains-runner.js";
+import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary, shouldInlineNoopDailyNote, DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN } from "./domains-runner.js";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -987,16 +987,13 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
       if (!sessionKey) continue;
       if (due.type !== "topic-thread") continue;
       const dailyPath = notePathFor(sessionKey);
-      let isEmpty = false;
-      try {
-        const note = await readFile(dailyPath, "utf8");
-        const m = note.match(/## Events\s*\n([\s\S]*?)(?=\n## |\Z)/);
-        const events = (m ? m[1] : "").trim();
-        isEmpty = events.length < 30 || /^##\s/.test(events);
-      } catch {
-        // Missing daily note → safe to treat as empty (no events to write).
-        isEmpty = true;
-      }
+      // ISS-9 fix A6: pre-spawn daily-note peek. Use the exported helper so
+      // the same logic can be unit-tested in domains-runner.test.ts and the
+      // A6 spec (size threshold + key-words from decisions.md) lives in one
+      // place.
+      const minBytes = Number(opts["min-daily-bytes-for-spawn"] || DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN);
+      const decisionsPath = join(workspace, "memory", "domains", due.name, "decisions.md");
+      const isEmpty = shouldInlineNoopDailyNote({ dailyPath, decisionsPath, minBytes });
       if (!isEmpty) continue;
       const noopHandoff = {
         ok: true,

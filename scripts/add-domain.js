@@ -388,31 +388,29 @@ if (topicBinding) {
 //     60d archive threshold matches "dormant topic" lifetime.
 //   dev-project: longer natural cycles; 3d gap is enough to notice quiet periods.
 //   cron-task: schedule-driven; 1d ensures status is fresh; 30d archive (most aggressive).
-// ISS-9 A7 (pilot → default): all new domains opt into cadenceAdaptive so the
-// runner computes effective cadenceDays from bound-session daily-note event
-// density instead of a static value. The flag is a no-op without a `topic`
-// binding (computeAdaptiveCadence early-returns when topicBinding is missing),
-// so it's safe to default on for dev-project / cron-task too. Window defaults
-// to 7 days and is overridable per-domain in registry.json.
+// ISS-9 A7 (topic-thread-only): cadenceAdaptive defaults ON for topic-thread
+// (the only type with a `topic` binding — computeAdaptiveCadence consumes
+// event density from the bound-session daily note). dev-project / cron-task
+// do NOT get the flag by default: they have no chat session by design, so
+// adaptive is a permanent no-op there. Operators can flip it manually in
+// registry.json if a non-topic domain ever gains a topic binding.
+// Window defaults to 7 days and is overridable per-domain in registry.json.
 const DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS = 7;
 const DEFAULTS_BY_TYPE = {
   "topic-thread": { cadenceDays: 2, staleAfterDays: 60, cadenceAdaptive: true, cadenceAdaptiveWindowDays: DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS },
-  "dev-project":  { cadenceDays: 3, staleAfterDays: 60, cadenceAdaptive: true, cadenceAdaptiveWindowDays: DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS },
-  "cron-task":    { cadenceDays: 1, staleAfterDays: 30, cadenceAdaptive: true, cadenceAdaptiveWindowDays: DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS },
+  "dev-project":  { cadenceDays: 3, staleAfterDays: 60 },
+  "cron-task":    { cadenceDays: 1, staleAfterDays: 30 },
 };
 const typeDefaults = DEFAULTS_BY_TYPE[domainType] ?? {
   cadenceDays: 3,
   staleAfterDays: 60,
-  cadenceAdaptive: true,
-  cadenceAdaptiveWindowDays: DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS,
 };
 
 registry.domains[domain] = {
   type: domainType,
   cadenceDays: typeDefaults.cadenceDays,
   staleAfterDays: typeDefaults.staleAfterDays,
-  cadenceAdaptive: typeDefaults.cadenceAdaptive,
-  cadenceAdaptiveWindowDays: typeDefaults.cadenceAdaptiveWindowDays,
+  ...(typeDefaults.cadenceAdaptive != null ? { cadenceAdaptive: typeDefaults.cadenceAdaptive, cadenceAdaptiveWindowDays: typeDefaults.cadenceAdaptiveWindowDays } : {}),
   ...(kgEntity ? { kgEntity } : {}),
   ...(topicBinding ? { topic: topicBinding } : {}),
   ...(pending ? { pending: true } : {}),

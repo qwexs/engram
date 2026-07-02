@@ -61,8 +61,12 @@ describe("add-domain.js — ISS-9 A7 cadenceAdaptive default", () => {
     expect(registry.domains["test-topic"].cadenceAdaptiveWindowDays).toBe(7);
   });
 
-  test("dev-project domain gets cadenceAdaptive:true by default", () => {
-    const { exitCode } = runAddDomain([
+  // ISS-9 audit 2026-07-02 — cadenceAdaptive is now topic-thread-only.
+  // dev-project / cron-task have no chat session by design, so the flag would
+  // be a permanent no-op there. Operators can flip it manually in registry.json
+  // if a non-topic domain ever gains a topic binding.
+  test("dev-project domain does NOT get cadenceAdaptive by default", () => {
+    const { exitCode, stdout } = runAddDomain([
       "--domain", "test-dev",
       "--type", "dev-project",
       "--description", "Test dev-project domain",
@@ -72,12 +76,14 @@ describe("add-domain.js — ISS-9 A7 cadenceAdaptive default", () => {
     const registry = readRegistry();
     expect(registry.domains["test-dev"].type).toBe("dev-project");
     expect(registry.domains["test-dev"].cadenceDays).toBe(3);
-    expect(registry.domains["test-dev"].cadenceAdaptive).toBe(true);
-    expect(registry.domains["test-dev"].cadenceAdaptiveWindowDays).toBe(7);
+    expect(registry.domains["test-dev"].cadenceAdaptive).toBeUndefined();
+    expect(registry.domains["test-dev"].cadenceAdaptiveWindowDays).toBeUndefined();
+    // Output line should NOT mention cadenceAdaptive for non-topic types
+    expect(stdout).not.toContain("cadenceAdaptive");
   });
 
-  test("cron-task domain gets cadenceAdaptive:true by default", () => {
-    const { exitCode } = runAddDomain([
+  test("cron-task domain does NOT get cadenceAdaptive by default", () => {
+    const { exitCode, stdout } = runAddDomain([
       "--domain", "test-cron",
       "--type", "cron-task",
       "--description", "Test cron-task domain",
@@ -87,11 +93,12 @@ describe("add-domain.js — ISS-9 A7 cadenceAdaptive default", () => {
     const registry = readRegistry();
     expect(registry.domains["test-cron"].type).toBe("cron-task");
     expect(registry.domains["test-cron"].cadenceDays).toBe(1);
-    expect(registry.domains["test-cron"].cadenceAdaptive).toBe(true);
-    expect(registry.domains["test-cron"].cadenceAdaptiveWindowDays).toBe(7);
+    expect(registry.domains["test-cron"].cadenceAdaptive).toBeUndefined();
+    expect(registry.domains["test-cron"].cadenceAdaptiveWindowDays).toBeUndefined();
+    expect(stdout).not.toContain("cadenceAdaptive");
   });
 
-  test("output advertises cadenceAdaptive in registry summary line", () => {
+  test("output advertises cadenceAdaptive in registry summary line (topic-thread only)", () => {
     const { exitCode, stdout } = runAddDomain([
       "--domain", "test-advert",
       "--type", "topic-thread",

@@ -136,7 +136,11 @@ describe("domains-runner write handoff", () => {
     }
   });
 
-  test("rejects stale base hashes before writing", async () => {
+  // ISS-9 A2: base-hash mismatch returns status:"stale" (NOT throw) and advances
+  // lastCheckedAt — closes the re-fire-every-tick storm. Full unit coverage of the
+  // new contract lives in scripts/domains-runner.test.ts (A2 race recovery block).
+  // This integration test pins the runner-level behavior end-to-end.
+  test("on stale base hashes returns status:stale and does not write", async () => {
     const root = makeWorkspace();
     try {
       writeFileSync(join(root, "memory", "domains", "registry.json"), JSON.stringify({
@@ -156,8 +160,13 @@ describe("domains-runner write handoff", () => {
           "Promotions: []",
         ].join("\n"),
       };
-      await expect(applyDomainWriteHandoff(handoff, { workspace: root })).rejects.toThrow("Base hash mismatch");
+      const result = await applyDomainWriteHandoff(handoff, { workspace: root });
+      expect(result.status).toBe("stale");
+      expect(result.idempotent).toBe(false);
+      expect(result.staleFiles).toEqual(["status.md", "changelog.md"]);
       expect(readFileSync(join(root, "memory", "domains", "engram", "status.md"), "utf8")).toBe("# status\n");
+      // lastCheckedAt MUST advance so the domain does not re-fire every tick.
+      expect(result.advancedLastCheckedAt).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

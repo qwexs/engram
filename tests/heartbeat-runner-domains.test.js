@@ -117,14 +117,18 @@ describe("heartbeat-runner hb-domains-write trigger", () => {
     expect(queued).toHaveLength(1);
   });
 
-  test("does not queue when cadenceDays is unset (legacy domain)", () => {
+  // ISS-9 A4: null/undefined cadenceDays → DEFAULT_CADENCE_DAYS=2 fallback.
+  // The legacy contract (silent never-due) is gone — see domains-runner.test.ts
+  // for full unit coverage of the fallback. This integration test pins the
+  // runner-level behavior end-to-end.
+  test("queues domain with no cadenceDays using A4 default (2 days)", () => {
     seedDomainRegistry({
       legacy: { type: "topic-thread" },
     });
     const result = runRunner(["--spawn-hb-domains-write"]);
     const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
-    expect(queued).toHaveLength(0);
-    expect(result.summary.domains).toContain("0 due");
+    expect(queued).toHaveLength(1);
+    expect(result.summary.domains).toContain("1 due");
   });
 
   test("does not queue when lastRun is fresh (within cadenceDays)", () => {

@@ -1,12 +1,24 @@
+// hooks/engram-session-start/handler.ts
 import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
 
-const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
+// hooks/_lib/parse-agent-id.ts
+function splitAgentAndSession(sessionKey) {
+  if (!sessionKey)
+    return null;
+  const m = sessionKey.match(/^agent:([^:]+):(.+)$/);
+  if (!m)
+    return null;
+  const agentId = m[1];
+  const sessionKeySeg = m[2].replace(/:/g, "-") || "main";
+  return { agentId, sessionKey: sessionKeySeg };
+}
 
-const TEMPLATE = (date: string) => `# ${date}
+// hooks/engram-session-start/handler.ts
+var TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
+var TEMPLATE = (date) => `# ${date}
 
 ## Events
 
@@ -18,22 +30,20 @@ const TEMPLATE = (date: string) => `# ${date}
 
 ## Next
 `;
-
-/** Get current ISO timestamp with timezone offset */
-function localISO(tz: string): string {
-  const now = new Date();
-  // Format with timezone to get the local representation
+function localISO(tz) {
+  const now = new Date;
   const parts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: tz,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
   }).formatToParts(now);
-
-  const get = (t: string) => parts.find(p => p.type === t)?.value || "00";
+  const get = (t) => parts.find((p) => p.type === t)?.value || "00";
   const local = `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
-
-  // Calculate offset
   const utc = new Date(now.toLocaleString("en-US", { timeZone: "UTC" }));
   const loc = new Date(now.toLocaleString("en-US", { timeZone: tz }));
   const diffMin = Math.round((loc.getTime() - utc.getTime()) / 60000);
@@ -41,32 +51,22 @@ function localISO(tz: string): string {
   const absMin = Math.abs(diffMin);
   const offH = String(Math.floor(absMin / 60)).padStart(2, "0");
   const offM = String(absMin % 60).padStart(2, "0");
-
   return `${local}${sign}${offH}:${offM}`;
 }
-
-const handler = async (event: any) => {
-  if (event.type !== "agent" || event.action !== "bootstrap") return;
-
+var handler = async (event) => {
+  if (event.type !== "agent" || event.action !== "bootstrap")
+    return;
   const workspaceDir = event.context?.workspaceDir;
-  if (!workspaceDir) return;
-
-  // Resolve agentId + session segment from the sessionKey. Single source of
-  // truth lives in _lib/parse-agent-id.ts; falls back to context.agentId
-  // (legacy) and finally "main" only when the sessionKey is unparseable.
+  if (!workspaceDir)
+    return;
   const rawKey = event.context?.sessionKey || event.sessionKey || "main";
   const split = splitAgentAndSession(rawKey);
   const agentId = split?.agentId || event.context?.agentId || "main";
   const sessionKey = split?.sessionKey || "main";
-
-  // Skip ephemeral runtime sessions — they don't need daily notes.
-  if (sessionKey.startsWith("subagent-")) return;
-  if (/^cron-.+-run-/.test(sessionKey)) return;
-
-  // ISS-10: silent auto-create domain for unbound Telegram topics on first bootstrap.
-  // Runs BEFORE the debounce/skip checks so it always fires for new topics even
-  // when the daily note already has a recent session:start watermark.
-  // Session key shape for group topics: `telegram-group-<chatId>-topic-<topicId>`.
+  if (sessionKey.startsWith("subagent-"))
+    return;
+  if (/^cron-.+-run-/.test(sessionKey))
+    return;
   const TAG = "[engram-session-start:auto-domain]";
   const topicMatch = sessionKey.match(/^telegram-group-(-?\d+)-topic-(\d+)$/);
   if (topicMatch) {
@@ -76,60 +76,53 @@ const handler = async (event: any) => {
     let alreadyBound = false;
     try {
       const raw = readFileSync(registryPath, "utf-8");
-      const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+      const text = raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw;
       const reg = JSON.parse(text);
       const abs = chatId.replace(/^-/, "");
-      alreadyBound = Object.values(reg.domains || {}).some((e: any) =>
-        e && e.topic &&
-        String(e.topic.chatId).replace(/^-/, "") === abs &&
-        String(e.topic.topicId) === topicId
-      );
-    } catch {
-      // missing or corrupt registry → treat as unbound, proceed to create
-    }
+      alreadyBound = Object.values(reg.domains || {}).some((e) => e && e.topic && String(e.topic.chatId).replace(/^-/, "") === abs && String(e.topic.topicId) === topicId);
+    } catch {}
     if (!alreadyBound) {
-      const addDomain = process.env.ENGRAM_ADD_DOMAIN_SCRIPT
-        || join(homedir(), "clawd", "skills", "engram", "scripts", "add-domain.js");
+      const addDomain = process.env.ENGRAM_ADD_DOMAIN_SCRIPT || join(homedir(), "clawd", "skills", "engram", "scripts", "add-domain.js");
       const slug = `topic-${chatId}-${topicId}`;
       const res = spawnSync("bun", [
-        addDomain, "--type", "topic-thread", "--domain", slug,
-        "--topic", `${chatId}:${topicId}`, "--description", "auto-bound",
-      ], { encoding: "utf-8", timeout: 30_000, cwd: workspaceDir });
-      if (res.error || (typeof res.status === "number" && res.status !== 0)) {
+        addDomain,
+        "--type",
+        "topic-thread",
+        "--domain",
+        slug,
+        "--topic",
+        `${chatId}:${topicId}`,
+        "--description",
+        "auto-bound"
+      ], { encoding: "utf-8", timeout: 30000, cwd: workspaceDir });
+      if (res.error || typeof res.status === "number" && res.status !== 0) {
         console.warn(`${TAG} add-domain.js failed: ${res.error?.message || `exit ${res.status}`}`);
       } else {
         try {
-          Array.isArray(event.messages) && event.messages.push(
-            `🧠 Домен \`${slug}\` создан автоматически для этого топика.`
-          );
+          Array.isArray(event.messages) && event.messages.push(`\uD83E\uDDE0 Домен \`${slug}\` создан автоматически для этого топика.`);
         } catch {}
       }
     }
   }
-
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
   const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey);
   const notePath = join(sessionDir, `${today}.md`);
-
-  // Create daily note if missing (fallback — normally engram-daily-note handles this)
   if (!existsSync(notePath)) {
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(notePath, TEMPLATE(today));
     console.log(`[engram-session-start] Created daily note ${notePath}`);
   }
-
-  // Skip if there's already a session:start within the last 15 minutes (debounce repeated bootstraps)
   const content = existsSync(notePath) ? readFileSync(notePath, "utf-8") : "";
-  const lines = content.trimEnd().split("\n");
+  const lines = content.trimEnd().split(`
+`);
   const lastLine = lines[lines.length - 1]?.trim() || "";
   if (lastLine.startsWith("<!-- session:start:")) {
     console.log(`[engram-session-start] Skipped (last line already session:start)`);
     return;
   }
-  // Also skip if any session:start was written in the last 15 minutes
   const debounceMs = 15 * 60 * 1000;
   const now = Date.now();
-  const recentStart = lines.slice().reverse().find(l => l.trim().startsWith("<!-- session:start:"));
+  const recentStart = lines.slice().reverse().find((l) => l.trim().startsWith("<!-- session:start:"));
   if (recentStart) {
     const m = recentStart.match(/<!-- session:start:(.+?) -->/);
     if (m) {
@@ -142,23 +135,18 @@ const handler = async (event: any) => {
       } catch {}
     }
   }
-
   const iso = localISO(TZ);
-  appendFileSync(notePath, `<!-- session:start:${iso} -->\n`);
+  appendFileSync(notePath, `<!-- session:start:${iso} -->
+`);
   console.log(`[engram-session-start] Wrote session:start to ${notePath}`);
-
-  // Move handoff .md files from memory/ root to memory/agent-{agentId}/{sessionKey}/YYYY-MM-DD/.
-  // The legacy layout (memory/domains/{session}/) conflated sessions and domains — domains are
-  // curated memory contours registered in memory/domains/registry.json, while sessions are
-  // runtime agent contexts. Handoff files belong to the session that produced them, so they
-  // now land next to daily notes in the agent-{id} subtree. See ISS-7 for history.
   try {
     const memoryDir = join(workspaceDir, "memory");
     const agentSessionDir = join(memoryDir, `agent-${agentId}`, sessionKey);
-    const files = readdirSync(memoryDir).filter(f => f.endsWith(".md") && /^\d{4}-\d{2}-\d{2}/.test(f));
+    const files = readdirSync(memoryDir).filter((f) => f.endsWith(".md") && /^\d{4}-\d{2}-\d{2}/.test(f));
     for (const file of files) {
       const dateMatch = file.match(/^(\d{4}-\d{2}-\d{2})/);
-      if (!dateMatch) continue;
+      if (!dateMatch)
+        continue;
       const date = dateMatch[1];
       const destDir = join(agentSessionDir, date);
       mkdirSync(destDir, { recursive: true });
@@ -169,5 +157,7 @@ const handler = async (event: any) => {
     console.error(`[engram-session-start] Handoff move error:`, e);
   }
 };
-
-export default handler;
+var handler_default = handler;
+export {
+  handler_default as default
+};

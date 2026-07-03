@@ -269,11 +269,12 @@ function autoDetectUnixBinary() {
   }
   // Honor ENGRAM_OPENCLAW override on Unix, but reject Windows shims
   // (e.g. when a dev sets ENGRAM_OPENCLAW=/mnt/c/.../npm/openclaw
-  // expecting it to work).
-  if (process.env.ENGRAM_OPENCLAW) {
-    return isWindowsOpenclawShim(process.env.ENGRAM_OPENCLAW)
-      ? null
-      : process.env.ENGRAM_OPENCLAW;
+  // expecting it to work). Note: empty string is treated as "unset" so
+  // test 29 (which sets ENGRAM_OPENCLAW="" + an empty PATH) can exercise
+  // the no-binary case instead of getting exe="" passed to spawnSync.
+  const override = process.env.ENGRAM_OPENCLAW || null;
+  if (override) {
+    return isWindowsOpenclawShim(override) ? null : override;
   }
   // Resolve via Bun.which (preferred) or `command -v` (POSIX fallback).
   // Bun.which returns the absolute path or null — no shell, no quoting.

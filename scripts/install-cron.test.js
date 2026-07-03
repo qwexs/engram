@@ -879,22 +879,34 @@ describe("install-cron.js", () => {
 
   test("29. no openclaw on PATH and no ENGRAM_OPENCLAW → exit 3 (Unix only)", async () => {
     if (process.platform === "win32") return;
-    // Empty PATH (plus /bin for shell builtins) means Bun.which("openclaw")
-    // returns null, so OPENCLAW_UNIX is null. We also need bun itself on
-    // PATH so runInstallCron can spawn `bun <script>` — without it the
-    // runner subprocess fails before the script even runs.
+    // Goal: install-cron.js sees no openclaw binary anywhere on PATH so
+    // openclawAvailable() returns false and the script exits 3.
+    // Tricky on hosts where bun and openclaw share a bin dir (e.g. bun's
+    // global bin /opt/bun/bin has both). We invoke bun via its absolute
+    // path and pass a PATH that excludes the bun bin dir entirely, so
+    // Bun.which("openclaw") inside the spawned install-cron.js returns
+    // null.
     const bunPath = Bun.which("bun") || "/opt/bun/bin/bun";
-    const bunDir = dirname(bunPath);
-    const r = await runInstallCron({
-      workspace: tmp,
-      args: ["install"],
-      extraEnv: {
-        ENGRAM_OPENCLAW_NODE_SCRIPT: "",
-        ENGRAM_OPENCLAW: "",
-        PATH: `${bunDir}:/usr/bin:/bin`,
-      },
+    const cmd = [bunPath, SCRIPT, ...(["install"])];
+    const env = {
+      ...process.env,
+      ENGRAM_WORKSPACE: tmp,
+      ENGRAM_OPENCLAW_NODE_SCRIPT: "",
+      ENGRAM_OPENCLAW: "",
+      PATH: "/usr/bin:/bin",
+    };
+    const proc = Bun.spawn({
+      cmd,
+      cwd: CWD,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
     });
-    expect(r.exitCode).toBe(3);
-    expect(r.stderr).toMatch(/No Unix openclaw binary found/);
+    const [stderr, exitCode] = await Promise.all([
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(exitCode).toBe(3);
+    expect(stderr).toMatch(/No Unix openclaw binary found/);
   });
 });

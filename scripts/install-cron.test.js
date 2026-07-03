@@ -61,10 +61,16 @@ const SCRIPT = "scripts/install-cron.js";
 // so we import the extracted helper instead.
 import { findNodeScriptForCmdDir } from "./lib/find-openclaw-mjs.js";
 
-/** Unique tmp dir per test, forward-slash normalized. */
+/** Unique tmp dir per test, forward-slash normalized. Creates the dir
+ *  eagerly so callers can writeFileSync into it without a separate
+ *  mkdirSync — some tests (e.g. 27, 28) write a fake shim directly into
+ *  the tmp dir without going through setupFakeOpenclaw() which would
+ *  mkdirSync bin/ as a side effect. */
 function makeTmp() {
   const base = tmpdir().replace(/\\/g, "/").replace(/\/$/, "");
-  return `${base}/${crypto.randomUUID()}`;
+  const dir = `${base}/${crypto.randomUUID()}`;
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 /**
@@ -873,15 +879,19 @@ describe("install-cron.js", () => {
 
   test("29. no openclaw on PATH and no ENGRAM_OPENCLAW → exit 3 (Unix only)", async () => {
     if (process.platform === "win32") return;
-    // Empty PATH (plus a /bin that exists for shell builtins) means
-    // Bun.which("openclaw") returns null, so OPENCLAW_UNIX is null.
+    // Empty PATH (plus /bin for shell builtins) means Bun.which("openclaw")
+    // returns null, so OPENCLAW_UNIX is null. We also need bun itself on
+    // PATH so runInstallCron can spawn `bun <script>` — without it the
+    // runner subprocess fails before the script even runs.
+    const bunPath = Bun.which("bun") || "/opt/bun/bin/bun";
+    const bunDir = dirname(bunPath);
     const r = await runInstallCron({
       workspace: tmp,
       args: ["install"],
       extraEnv: {
         ENGRAM_OPENCLAW_NODE_SCRIPT: "",
         ENGRAM_OPENCLAW: "",
-        PATH: "/usr/bin:/bin",
+        PATH: `${bunDir}:/usr/bin:/bin`,
       },
     });
     expect(r.exitCode).toBe(3);

@@ -260,6 +260,13 @@ function isWindowsOpenclawShim(path) {
 
 function autoDetectUnixBinary() {
   if (process.platform === "win32") return null;
+  // Sentinel: caller forces the node-script path on Unix too (used by
+  // tests via envForFake() to skip the Bun.which("openclaw") resolution
+  // entirely). Returning null signals resolveInvocation() to fall back to
+  // the node-direct path when OPENCLAW_NODE_SCRIPT is available.
+  if (process.env.ENGRAM_OPENCLAW === "__use_node_script_only__") {
+    return null;
+  }
   // Honor ENGRAM_OPENCLAW override on Unix, but reject Windows shims
   // (e.g. when a dev sets ENGRAM_OPENCLAW=/mnt/c/.../npm/openclaw
   // expecting it to work).
@@ -317,6 +324,18 @@ function resolveInvocation() {
     return { exe: "node", prefixArgs: [OPENCLAW_NODE_SCRIPT] };
   }
   if (process.platform !== "win32") {
+    // Sentinel from envForFake(): on Unix, prefer the node-direct path
+    // (with the fake .mjs) over a real Unix-binary resolution. Without
+    // this branch, tests 1-26 would resolveInvocation() to
+    // { exe: "__use_node_script_only__", prefixArgs: [] } and fail
+    // openclawAvailable() with exit 3 because that string isn't a real
+    // binary. Same role as the Windows branch above — dual compatibility.
+    if (
+      process.env.ENGRAM_OPENCLAW === "__use_node_script_only__" &&
+      OPENCLAW_NODE_SCRIPT
+    ) {
+      return { exe: "node", prefixArgs: [OPENCLAW_NODE_SCRIPT] };
+    }
     return { exe: OPENCLAW_UNIX, prefixArgs: [] };
   }
   return { exe: OPENCLAW_CMD, prefixArgs: [] };

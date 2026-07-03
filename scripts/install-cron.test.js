@@ -821,4 +821,70 @@ describe("install-cron.js", () => {
     writeFileSync(join(binDir, "node_modules", "openclaw", "openclaw.mjs"), "");
     expect(findNodeScriptForCmdDir(binDir)).toBe(join(tmp, "node_modules", "openclaw", "openclaw.mjs"));
   });
+
+  // 27–29: WSL / Windows-shim safety for the non-Windows openclaw
+  // resolution path. Skipped on Windows hosts since the Unix branch is
+  // platform-gated (process.platform !== "win32"). See the WSL/Windows-shim
+  // safety section in scripts/install-cron.js for the bug context.
+  test("27. ENGRAM_OPENCLAW=/mnt/c/.../openclaw.cmd → exit 3 with WSL hint (Unix only)", async () => {
+    if (process.platform === "win32") return;
+    const shimTmp = makeTmp();
+    const fakeShim = join(shimTmp, "openclaw.cmd");
+    writeFileSync(fakeShim, "@echo off\r\n");
+    try {
+      const r = await runInstallCron({
+        workspace: shimTmp,
+        args: ["install"],
+        extraEnv: {
+          // Force the Unix code path: no Windows .mjs auto-detection
+          ENGRAM_OPENCLAW_NODE_SCRIPT: "",
+          ENGRAM_OPENCLAW: fakeShim,
+        },
+      });
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toMatch(/Windows binary/);
+      expect(r.stderr).toMatch(/WSL/);
+      expect(r.stderr).toMatch(/npm install -g openclaw/);
+    } finally {
+      rmSync(shimTmp, { recursive: true, force: true });
+    }
+  });
+
+  test("28. ENGRAM_OPENCLAW=/cygdrive/.../openclaw → exit 3 with WSL hint (Unix only)", async () => {
+    if (process.platform === "win32") return;
+    const shimTmp = makeTmp();
+    const fakeShim = join(shimTmp, "openclaw");
+    writeFileSync(fakeShim, "#!/bin/sh\nexec /no/such/node\n");
+    try {
+      const r = await runInstallCron({
+        workspace: shimTmp,
+        args: ["install"],
+        extraEnv: {
+          ENGRAM_OPENCLAW_NODE_SCRIPT: "",
+          ENGRAM_OPENCLAW: "/cygdrive/c/Users/x/npm/openclaw",
+        },
+      });
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toMatch(/Windows binary/);
+    } finally {
+      rmSync(shimTmp, { recursive: true, force: true });
+    }
+  });
+
+  test("29. no openclaw on PATH and no ENGRAM_OPENCLAW → exit 3 (Unix only)", async () => {
+    if (process.platform === "win32") return;
+    // Empty PATH (plus a /bin that exists for shell builtins) means
+    // Bun.which("openclaw") returns null, so OPENCLAW_UNIX is null.
+    const r = await runInstallCron({
+      workspace: tmp,
+      args: ["install"],
+      extraEnv: {
+        ENGRAM_OPENCLAW_NODE_SCRIPT: "",
+        ENGRAM_OPENCLAW: "",
+        PATH: "/usr/bin:/bin",
+      },
+    });
+    expect(r.exitCode).toBe(3);
+    expect(r.stderr).toMatch(/No Unix openclaw binary found/);
+  });
 });

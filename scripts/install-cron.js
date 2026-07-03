@@ -35,6 +35,24 @@
  * On POSIX, the .cmd wrapper does not exist; we use `openclaw` directly
  * via PATH and multi-line args are preserved by the OS.
  *
+ * ## WSL / Windows-shim safety
+ *
+ * On WSL specifically, the Windows .cmd shim from
+ * `/mnt/c/.../npm/openclaw` is exposed via WSL interop in $PATH. The
+ * shim is a `#!/bin/sh` script that does `exec node "$basedir/.../openclaw.mjs"`.
+ * The inner `exec node` fails silently when WSL cannot find the Windows
+ * `node` in its own PATH, so the outer `Bun.spawn` returns exit 0 without
+ * actually invoking openclaw. install-cron.js would then proceed to call
+ * `openclaw cron add ...` — and that call ALSO returns exit 0 with no
+ * output, so the cron job is never created and the script exits 0.
+ *
+ * To prevent this silent failure, `isWindowsOpenclawShim()` rejects any
+ * resolved path that looks like a Windows artifact (`.cmd`, `.bat`, `.exe`,
+ * `.ps1`, `/mnt/c/...`, `/cygdrive/...`). On non-Windows, we resolve the
+ * `openclaw` binary via `Bun.which()` first; if the result is a Windows
+ * shim, the script exits 3 with a WSL-specific hint instead of silently
+ * no-op'ing the install.
+ *
  * Usage:
  *   bun skills/engram/scripts/install-cron.js [action] [options]
  *
@@ -224,6 +242,54 @@ function autoDetectNodeScript() {
 const OPENCLAW_NODE_SCRIPT =
   process.env.ENGRAM_OPENCLAW_NODE_SCRIPT || autoDetectNodeScript();
 
+// --- Resolve openclaw on non-Windows (Linux / macOS / WSL) ---
+// WSL interop can surface Windows .cmd shims from /mnt/c/.../npm/openclaw
+// in $PATH. From the Unix side, the shim appears to spawnSync as exit 0
+// (the inner `exec node` fails silently when WSL can't find Windows
+// `node` in its own PATH) but never actually invokes openclaw. We must
+// reject these explicitly. See isWindowsOpenclawShim() for the full
+// rejection rule and the WSL/Windows-shim safety section in the file
+// header for context.
+function isWindowsOpenclawShim(path) {
+  if (!path) return false;
+  if (/\.(cmd|bat|exe|ps1|cmd\.exe)$/i.test(path)) return true;
+  if (/^\/mnt\/[a-z]\//i.test(path)) return true;
+  if (/^\/cygdrive\//i.test(path)) return true;
+  return false;
+}
+
+function autoDetectUnixBinary() {
+  if (process.platform === "win32") return null;
+  // Honor ENGRAM_OPENCLAW override on Unix, but reject Windows shims
+  // (e.g. when a dev sets ENGRAM_OPENCLAW=/mnt/c/.../npm/openclaw
+  // expecting it to work).
+  if (process.env.ENGRAM_OPENCLAW) {
+    return isWindowsOpenclawShim(process.env.ENGRAM_OPENCLAW)
+      ? null
+      : process.env.ENGRAM_OPENCLAW;
+  }
+  // Resolve via Bun.which (preferred) or `command -v` (POSIX fallback).
+  // Bun.which returns the absolute path or null — no shell, no quoting.
+  let resolved = null;
+  if (typeof Bun !== "undefined" && typeof Bun.which === "function") {
+    resolved = Bun.which("openclaw");
+  } else {
+    try {
+      const out = execSync("command -v openclaw", {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "ignore"],
+      }).trim();
+      resolved = out.split(/\r?\n/)[0] || null;
+    } catch {
+      resolved = null;
+    }
+  }
+  if (!resolved) return null;
+  return isWindowsOpenclawShim(resolved) ? null : resolved;
+}
+
+const OPENCLAW_UNIX = autoDetectUnixBinary();
+
 /**
  * Returns { exe, prefixArgs } such that running
  *   spawnSync(exe, [...prefixArgs, ...userArgs])
@@ -239,11 +305,19 @@ const OPENCLAW_NODE_SCRIPT =
  * openclaw package dir. The .cmd wrapper is only used as a fallback when
  * auto-detection can't find the .mjs.
  *
- * On POSIX, we use `openclaw` via PATH directly.
+ * On POSIX (Linux / macOS / WSL), we resolve the absolute path of the
+ * `openclaw` binary via `Bun.which()` and reject Windows shims (see
+ * isWindowsOpenclawShim). If the only `openclaw` on PATH is a Windows
+ * .cmd shim surfaced by WSL interop, OPENCLAW_UNIX is null and
+ * openclawAvailable() returns false — install-cron.js then exits 3
+ * with a WSL-specific hint instead of silently no-op'ing the install.
  */
 function resolveInvocation() {
   if (process.platform === "win32" && OPENCLAW_NODE_SCRIPT) {
     return { exe: "node", prefixArgs: [OPENCLAW_NODE_SCRIPT] };
+  }
+  if (process.platform !== "win32") {
+    return { exe: OPENCLAW_UNIX, prefixArgs: [] };
   }
   return { exe: OPENCLAW_CMD, prefixArgs: [] };
 }
@@ -252,6 +326,7 @@ function resolveInvocation() {
 function openclawAvailable() {
   try {
     const { exe, prefixArgs } = resolveInvocation();
+    if (!exe) return false;
     const proc = spawnSync(exe, [...prefixArgs, "--version"], {
       encoding: "utf-8",
       stdio: "pipe",
@@ -265,7 +340,16 @@ function openclawAvailable() {
 if (!dryRun && !openclawAvailable()) {
   console.error(`❌ openclaw binary not found on PATH.`);
   console.error(`   Looking for: ${OPENCLAW_CMD}`);
-  if (process.platform === "win32" && !OPENCLAW_NODE_SCRIPT) {
+  if (process.platform !== "win32") {
+    if (process.env.ENGRAM_OPENCLAW && isWindowsOpenclawShim(process.env.ENGRAM_OPENCLAW)) {
+      console.error(`   ENGRAM_OPENCLAW points to a Windows binary: ${process.env.ENGRAM_OPENCLAW}`);
+      console.error(`   WSL interop surfaces Windows .cmd shims in $PATH that look valid but can't be invoked.`);
+      console.error(`   Install openclaw natively on Linux: npm install -g openclaw`);
+      console.error(`   Or unset ENGRAM_OPENCLAW and ensure a Unix openclaw is in $PATH.`);
+    } else if (OPENCLAW_UNIX === null) {
+      console.error(`   No Unix openclaw binary found. Install: npm install -g openclaw`);
+    }
+  } else if (process.platform === "win32" && !OPENCLAW_NODE_SCRIPT) {
     console.error(`   (Could not auto-detect openclaw.mjs to bypass the .cmd wrapper.)`);
     console.error(`   Set ENGRAM_OPENCLAW_NODE_SCRIPT=<path-to-openclaw.mjs> to override.`);
   }

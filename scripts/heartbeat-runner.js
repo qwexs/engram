@@ -947,8 +947,15 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   // ISS-9 A5: cold-start backlog observability. When many domains are due for
   // the first time (lastRunMs == null) the runner can only spawn one per tick
   // (batch-size 1). Surface this so operators know to expect a long catch-up.
+  //
+  // ISS-9 hygiene follow-up: also exclude domains already suppressed by a
+  // recent inline-noop via lastCheckedAt. Without this, a neverRun domain
+  // becomes structurally due+overdue forever (lastRun never gets set by the
+  // noop path) and the warning repeats on every tick — turning a one-off
+  // cold-start signal into persistent noise. The filter surfaces only the
+  // domains that actually need a subagent spawn to make progress.
   const neverRunDomainCount = (domainScan && Array.isArray(domainScan.domains))
-    ? domainScan.domains.filter((d) => d && d.enabled && d.due && d.overdue).length
+    ? domainScan.domains.filter((d) => d && d.enabled && d.due && d.overdue && !d.suppressedByLastCheckedAt).length
     : 0;
   if (Boolean(opts["spawn-hb-domains-write"]) && neverRunDomainCount >= 3) {
     summary.warnings.push("hb-domains-write backlog " + neverRunDomainCount + " (cold-start; batch-size " + (parseInt(opts["hb-domains-write-batch-size"], 10) || 1) + " per tick; expect ~" + neverRunDomainCount + " ticks to drain)");

@@ -246,11 +246,10 @@ function cronListJob({ id, name, message, toolsAllow }) {
 const NEW_PAYLOAD = `You are the cron job for the Clawd engram heartbeat.
 
 Step 1 — Run the heartbeat runner:
-Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js ..."
-workdir="/tmp/ws" timeout_ms=900000.
+Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace /tmp/ws --agent-id work --session main --all-active-sessions --timeout-ms 300000 --label-prefix work-hb"
 
 Step 2 — Drain the subagent-spawn queue (Phase 5.5):
-Call tools.shell_command with command="bun ./skills/engram/scripts/spawn-claim.js ..."
+Call tools.shell_command with command="bun ./skills/engram/scripts/spawn-claim.js --workspace /tmp/ws --agent-id work"
 workdir="/tmp/ws" timeout_ms=60000.
 
 Step 3 — For each line in claim.stdout that parses as JSON with action="spawn":

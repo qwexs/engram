@@ -509,6 +509,41 @@ Changelog-Entries: []`;
     expect(queued).toHaveLength(1);
     expect(result.summary.oll).not.toContain("inlined-noop");
   });
+
+  // ISS-9 hygiene follow-up: A5 cold-start warning must not repeat on every
+  // tick just because lastRun never gets set by the inline-noop path. A
+  // neverRun domain that is already suppressed by lastCheckedAt should not
+  // count toward the backlog count.
+  test("cold-start backlog warning suppressed when neverRun domains are already lastCheckedAt-suppressed (ISS-9 hygiene)", () => {
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+      archive: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "2" } },
+      docs: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "3" } },
+    });
+    // All three domains have NO events in their bound-session daily notes.
+    // The runner will inline-noop all of them and advance lastCheckedAt.
+    // The second tick should report NO cold-start backlog because every
+    // neverRun domain is now lastCheckedAt-suppressed.
+    runRunnerRaw(["--spawn-hb-domains-write"]);
+    const result = runRunnerRaw(["--spawn-hb-domains-write"]);
+    const backlogWarning = (result.summary.warnings || []).find((w) => w.includes("hb-domains-write backlog"));
+    expect(backlogWarning).toBeUndefined();
+  });
+
+  test("cold-start backlog warning fires only for neverRun domains not yet lastCheckedAt-suppressed (ISS-9 hygiene)", () => {
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+      archive: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "2" } },
+      docs: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "3" } },
+    });
+    // First tick: nothing has been noop'd yet — every domain is genuinely
+    // neverRun and unsuppressed, so backlog warning MUST fire.
+    const result = runRunnerRaw(["--spawn-hb-domains-write"]);
+    const backlogWarning = (result.summary.warnings || []).find((w) => w.includes("hb-domains-write backlog"));
+    expect(backlogWarning).toBeDefined();
+    expect(backlogWarning).toContain("cold-start");
+    expect(backlogWarning).toMatch(/backlog\s*3\b/);
+  });
 });
 
 describe("heartbeat-runner hb-domains-write apply phase (ISS-9)", () => {

@@ -1345,6 +1345,22 @@ async function main() {
     if (allActiveSessions) {
       summary.extraction = activeSessions.map((targetSession) => `${targetSession}: ${extractionReports[targetSession]}`).join("; ");
     }
+    // ISS-10: domain changelog rotation check. Single global call (not
+    // per-session) — domains are workspace-scoped. Exits 10 if any domain
+    // changelog.md exceeds LINE_THRESHOLD; runner warns but does not auto-
+    // rotate (agent must run rotate-notes.js --rotate explicitly, by design
+    // — same MVP gate as the per-session daily-note check above).
+    const domainsRotateCheck = run("bun", [
+      scriptPath("rotate-notes.js"),
+      "--check-domains",
+      "--domains-root",
+      join(workspace, "memory", "domains"),
+    ]);
+    if (domainsRotateCheck.status === 10) {
+      summary.warnings.push("rotation needed for one or more domain changelogs (not performed by runner MVP; run `bun skills/engram/scripts/rotate-notes.js --rotate --file <path> --type changelog` per domain)");
+    } else if (domainsRotateCheck.status !== 0) {
+      summary.warnings.push(domainsRotateCheck.stderr || domainsRotateCheck.stdout || `domains rotate check failed (status ${domainsRotateCheck.status})`);
+    }
     await runSynthesis();
     // Apply pending hb-domains-write handoff files BEFORE scanDomains so the
     // domain scan reflects freshly advanced lastCheckedAt values. Always on

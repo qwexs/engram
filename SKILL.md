@@ -339,6 +339,12 @@ required the model to re-emit the full runner output (~38kB) into its
 final reply, which burned ~11k output tokens/tick and frequently clipped
 at the Anthropic `max_tokens=8192` default.
 
+Since 2026-07-05 the canonical payload includes `--spawn-rethink
+--spawn-rethink2` so fresh installs bootstrap the OLL loop without
+manual seeding. `install-cron.js` detects old payloads via
+`NEW_PAYLOAD_MARKER_5` (`"--spawn-rethink --spawn-rethink2"`) in
+`isOnNewFormat()` and patches them on `install`.
+
 For a new workspace:
 
 ```bash
@@ -475,6 +481,15 @@ Phase 5 computes weighted score and spawns `hb-rethink` when triggered:
 | Weighted score (f×3 + s×2 + p×1) | ≥ 15 |
 | Pending tensions | ≥ 3 |
 | Days since last rethink | ≥ 14 |
+| `--force-rethink-once` flag (manual bootstrap path, one tick only) | bypasses days gate |
+
+**Etalon default**: cron payload includes `--spawn-rethink --spawn-rethink2` so the OLL loop bootstraps end-to-end on fresh installs without manual seeding. `install-cron.js` migrates existing crons via `NEW_PAYLOAD_MARKER_5` check in `isOnNewFormat()`. Cost is zero on ticks where triggers don't fire because `maybeQueue` filters by `wouldRunRethink` / `wouldRunRethink2`.
+
+`--force-rethink-once` is a one-shot escape hatch — bypasses `daysSinceRethink>=14` for a single run when the days gate isn't satisfied, queues hb-rethink anyway. Used during init / cold-start or for ad-hoc reviews.
+
+### Auto-seed from Maintenance (closes P2 bootstrap loop)
+
+When `validate.js` produces ≥1 `❌` error or `⚠️` warning AND no auto-seed fired in the last 24h (`lastAutoSeedAt` in `heartbeat-state.json`), `hb-runner` writes a low-confidence friction observation via `memory-observe.js`. This converts maintenance warnings into observation signal so the OLL loop has continuous input on quiet workspaces.
 
 `hb-rethink` (sonnet-4-6) reviews observations + tensions, identifies patterns, generates proposals, and returns a `HB-RETHINK HANDOFF` block. `process-handoff.js` auto-executes low-risk actions (archive noise, promote facts) and surfaces an ALERT.
 

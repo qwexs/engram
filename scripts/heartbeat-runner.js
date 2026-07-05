@@ -96,6 +96,8 @@ if (opts.help || opts.h) {
     "  --spawn-rethink          Queue hb-rethink when OLL trigger is due.",
     "  --spawn-autoresearch     Queue hb-autoresearch for the next pending auto experiment.",
     "  --spawn-rethink2         Queue hb-rethink2 when pendingRethink2 is set.",
+    "  --force-rethink-once     Bootstrap path: queue hb-rethink even if no trigger is due",
+    "                           (forces the daysSinceRethink>=14 gate to fire for this tick only).",
     "  --spawn-hb-domains-write Queue hb-domains-write per due domain (writes to memory/domains/<slug>/{changelog,status}.md via HB-DOMAINS HANDOFF).",
     "  --hb-domains-write-batch-size <n>",
     "                           Max hb-domains-write subagents to queue per tick. Default: 1 (sequential to avoid provider rate limits). Other phases stay parallel.",
@@ -877,6 +879,13 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   if (score >= 15) rethinkReasons.push("score>=15");
   if (tensions >= 3) rethinkReasons.push("tensions>=3");
   if (daysSinceRethink >= 14) rethinkReasons.push("lastRethink>=14d");
+  // 2026-07-05: --force-rethink-once bypasses the daysSinceRethink gate for
+  // a single tick. Bootstrap path on fresh installs / post-init cold-start.
+  // Does NOT modify state.lastRethink — it persists the bootstrap timestamp
+  // via the actual hb-rethink handoff apply path (applyRethinkHandoff).
+  if (opts["force-rethink-once"] && daysSinceRethink < 14) {
+    rethinkReasons.push("force-rethink-once");
+  }
 
   const stale = {
     rethink: staleWorker(state, "hb-rethink", "rethinkStartedAt", ollStale.rethinkHours),
@@ -1098,6 +1107,16 @@ async function runMaintenance() {
 
   const validate = run("bun", validateArgs);
 
+  // 2026-07-05: auto-seed observation из validate warnings/errors (closes
+  // P2 OLL bootstrap chicken-and-egg loop). Закрывает дыру, где validate.js
+  // выдаёт warnings, но никто их не конвертирует в workspace/ops/observations/*.json,
+  // поэтому observations directory stays lastId=0.
+  // Throttle: 1 auto-seed / 24h через heartbeat-state.json.lastAutoSeedAt.
+  // Skip если 0 errors И 0 warnings. Skip если --skip-maintenance.
+  if (!opts["skip-maintenance"]) {
+    await maybeAutoSeedFromValidate(validate);
+  }
+
   // Regenerate derived facts-active.md (BEFORE qmd update, so qmd picks it up).
   // Закрывает backburner "QMD индексирует *.md, а не items.json" (см. v3.3 §3.5).
   const deriveFacts = run("node", [scriptPath("derive-facts.js")]);
@@ -1124,6 +1143,50 @@ async function runMaintenance() {
 
   for (const result of [validate, deriveFacts, qmdUpdate, qmdEmbed]) {
     if (result.status !== 0) summary.warnings.push(result.stderr || result.stdout || result.error || result.command + " failed");
+  }
+}
+
+// 2026-07-05: P2 — auto-seed observation из validate.js warnings/errors.
+// Trigger: validate.js produced >= 1 ❌ или ⚠️ AND no auto-seed in last 24h.
+// Создаёт friction observation через memory-observe.js, помечает lastAutoSeedAt.
+// Закрывает OLL bootstrap chicken-and-egg: пустой observations dir не блокирует OLL,
+// потому что validate.js warnings становятся signal.
+async function maybeAutoSeedFromValidate(validateResult) {
+  if (!validateResult) return;
+  const out = `${validateResult.stdout ?? ""}\n${validateResult.stderr ?? ""}`;
+  const errorCount = (out.match(/❌/g) || []).length;
+  const warnCount = (out.match(/⚠️/g) || []).length;
+  if (errorCount === 0 && warnCount === 0) return;
+
+  const state = await readJson(statePath, {});
+  const last = state.lastAutoSeedAt ? new Date(state.lastAutoSeedAt).getTime() : 0;
+  const sinceMs = Date.now() - last;
+  if (sinceMs < 24 * 60 * 60 * 1000) return; // throttle 24h
+
+  // Берём первые 3 distinct warning/error строки для контекста
+  const sample = out
+    .split("\n")
+    .filter((l) => /❌|⚠️/.test(l))
+    .slice(0, 3)
+    .map((l) => l.replace(/^.*?(❌|⚠️)\s*/, "$1 "))
+    .join(" | ")
+    .replace(/[❌⚠️]/g, "")
+    .trim()
+    .slice(0, 400);
+
+  const text = `validate.js выдал ${errorCount} errors и ${warnCount} warnings: ${sample}`;
+  const obsResult = run("bun", [
+    scriptPath("memory-observe.js"),
+    "--observation", text,
+    "--category", "friction",
+    "--description", "auto-seeded из heartbeat maintenance (validate warnings)",
+  ]);
+
+  if (obsResult.status === 0) {
+    await patchState({ lastAutoSeedAt: nowIso() });
+    summary.warnings.push(`auto-seeded friction observation from validate (${errorCount}e/${warnCount}w)`);
+  } else {
+    summary.warnings.push(`auto-seed from validate failed: exit ${obsResult.status}`);
   }
 }
 

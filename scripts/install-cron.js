@@ -419,7 +419,9 @@ function buildSchedule(s) {
 const PROSE_TEMPLATE = `You are the cron job for the Clawd engram heartbeat. Do these steps in order using your available tools (do not write or run any JavaScript or shell scripts; call the tools directly).
 
 Step 1 — Run the heartbeat runner:
-Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000", workdir="<WORKSPACE>", timeout_ms=900000. Capture the output as \`runner\`.
+Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --spawn-hb-domains-write --spawn-rethink --spawn-rethink2", workdir="<WORKSPACE>", timeout_ms=900000. Capture the output as \`runner\`.
+
+Note on spawn flags: --spawn-hb-domains-write, --spawn-rethink, --spawn-rethink2 only open the gate for hb-rethink/rethink2/domains-write to be queued when their respective triggers fire. heartbeat-runner.js filters internally (wouldRunRethink, wouldRunRethink2, domainsWriteDue); cost is zero on ticks where triggers don't fire. This is the etalon default — fresh installs bootstrap the OLL loop end-to-end without manual seeding.
 
 Step 2 — Drain the subagent-spawn queue (Phase 5.5):
 The runner enqueues subagent spawn requests into workspace/ops/heartbeat-spawns/*.json (Bun scripts have no LLM tool access and cannot call sessions_spawn directly). You claim and dispatch them.
@@ -473,6 +475,11 @@ const NEW_PAYLOAD_MARKER_3 = "Step 4 — Final reply (CONCISE, NO ECHO)";
 // coverage (instead of session-only). Maintained by the engram team; absence means the cron
 // is on a pre-2026-06-29 payload and should be re-installed to upgrade.
 const NEW_PAYLOAD_MARKER_4 = "--all-active-sessions --timeout-ms 300000";
+// 2026-07-05+: --spawn-rethink --spawn-rethink2 в Step 1 command. Etalon default
+// открывает gate для OLL-фаз; runner сам фильтрует по wouldRunRethink/wouldRunRethink2,
+// цена нулевая пока триггеры не сработали. Закрывает OLL bootstrap chicken-and-egg loop
+// на свежих установках.
+const NEW_PAYLOAD_MARKER_5 = "--spawn-rethink --spawn-rethink2";
 
 function buildPayloadMessage({ workspace, agentId, session, labelPrefix }) {
   return PROSE_TEMPLATE
@@ -489,6 +496,7 @@ function isOnNewFormat(payload) {
     payload.message.includes(NEW_PAYLOAD_MARKER_2) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_3) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_4) &&
+    payload.message.includes(NEW_PAYLOAD_MARKER_5) &&
     // toolsAllow must be present and match HEARTBEAT_TOOLS_ALLOW.
     // If absent (older install) or divergent, we re-apply via edit.
     Array.isArray(payload.toolsAllow) &&

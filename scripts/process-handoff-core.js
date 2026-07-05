@@ -212,8 +212,20 @@ function processFlags(ctx, flags) {
   return logged;
 }
 function parseMultilineField(body, name) {
-  const match = body.match(new RegExp(`^${name}:\\s*\\|\\n([\\s\\S]*?)(?=\\n\\w[\\w-]*:|\\n?$)`, "m"));
-  return match ? match[1].replace(/^ {2}/gm, "") : "";
+  // Fix 2026-07-05:
+  //   1) было `(?=\n\w[\w-]*:|\n?$)`. Под флагом `m` ветка `\n?$` матчилась
+  //      на конец ЛЮБОЙ строки, из-за чего non-greedy [\s\S]*? обрывался
+  //      на первом `\n` после заголовка поля → ## OLL Rethink никогда не аппендился.
+  //      Меняем на `(?![\s\S])` — negative lookahead «нет ни одного символа» = true
+  //      только на конце строки независимо от флага `m`.
+  //   2) было `\\n` в начале и `\n` в lookahead. Не работало с CRLF (\r\n) line
+  //      endings, которые приходят из stdin на Windows. Меняем на `\\r?\\n` чтобы
+  //      работало на обоих.
+  const match = body.match(new RegExp(`^${name}:\\s*\\|\\r?\\n([\\s\\S]*?)(?=\\r?\\n\\w[\\w-]*:|(?![\\s\\S]))`, "m"));
+  if (!match) return "";
+  // Dedent: strip the two-space indent that handoff blocks use for readability.
+  // Also strip leading \r on lines so the result is consistent regardless of CRLF/LF.
+  return match[1].replace(/\r/g, "").replace(/^ {2}/gm, "");
 }
 
 export async function applyExtractHandoff(handoff, context = {}) {

@@ -43,6 +43,8 @@ const DEFAULT_STATE = {
   currentExperiment: null,
   lastAutoresearch: null,
   pendingRethink2: null,
+  // 2026-07-05: throttle для auto-seed observation из validate maintenance
+  lastAutoSeedAt: null,
   subagentRuns: {},
 };
 

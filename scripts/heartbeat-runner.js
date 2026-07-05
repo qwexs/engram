@@ -101,8 +101,8 @@ if (opts.help || opts.h) {
     "                           Max hb-domains-write subagents to queue per tick. Default: 1 (sequential to avoid provider rate limits). Other phases stay parallel.",
     "  --[no-]hb-domains-write-apply",
     "                           Apply pending handoff files from workspace/ops/heartbeat-spawns/handoff/*.md",
-    "                           (written by previous ticks' hb-domains-write subagents). Default: enabled when",
-    "                           --spawn-hb-domains-write is set. Disable for tests/debug via --no-hb-domains-write-apply.",,
+    "                           (written by previous ticks' hb-domains-write subagents). Default: enabled.",
+    "                           Disable for tests/debug via --no-hb-domains-write-apply.",,
     "  --recover-stale-oll-locks",
     "                           Clear stale OLL worker locks before evaluating spawn flags.",
     "  --oll-stale-rethink-hours <n>",
@@ -658,6 +658,17 @@ async function runSynthesis() {
 // retries are no-ops. On success: file is moved to done/. On error: file stays
 // for the next tick (warning added to summary).
 const HB_DOMAINS_APPLY_FLAG = "hb-domains-write-apply";
+// shouldApplyDomainHandoffs: drain-queue gate for hb-domains-write handoff
+// files in workspace/ops/heartbeat-spawns/handoff/*.md. Always on by
+// default — draining is the natural counterpart to spawning, and
+// suppressing it when no spawn happens leaves handoffs to pile up
+// indefinitely (regression fixed in ISS-14: previously gated on
+// --spawn-hb-domains-write, which the cron tick never sets). Idempotent
+// in either case (applyDomainHandoffs no-ops on an empty handoff/ dir).
+// --no-hb-domains-write-apply disables for tests/debug. Exported for tests.
+function shouldApplyDomainHandoffs(opts = {}) {
+  return !opts["no-" + HB_DOMAINS_APPLY_FLAG];
+}
 async function applyDomainHandoffs() {
   const spawnsDir = join(workspace, "workspace", "ops", "heartbeat-spawns");
   const handoffDir = join(spawnsDir, "handoff");
@@ -1336,11 +1347,11 @@ async function main() {
     }
     await runSynthesis();
     // Apply pending hb-domains-write handoff files BEFORE scanDomains so the
-    // domain scan reflects freshly advanced lastCheckedAt values. Default on
-    // when --spawn-hb-domains-write is set; --no-hb-domains-write-apply
+    // domain scan reflects freshly advanced lastCheckedAt values. Always on
+    // by default — see shouldApplyDomainHandoffs() for the rationale and
+    // ISS-14 for the regression history. --no-hb-domains-write-apply
     // disables for tests/debug.
-    const applyEnabled = (Boolean(opts["spawn-hb-domains-write"]) || opts[HB_DOMAINS_APPLY_FLAG] === true) && !opts["no-" + HB_DOMAINS_APPLY_FLAG];
-    if (applyEnabled) {
+    if (shouldApplyDomainHandoffs(opts)) {
       const applyResult = await applyDomainHandoffs();
       summary.phases = summary.phases || {};
       summary.phases["hb-domains-write-apply"] = {
@@ -1397,5 +1408,6 @@ if (!import.meta.main) {
     parseQmdCollectionList,
     discoverQmdCollections,
     qmdCommandArgs,
+    shouldApplyDomainHandoffs,
   };
 }

@@ -4,7 +4,8 @@
 // Usage: bun skills/engram/scripts/add-domain.js --domain <name> [options]
 
 import { parseArgs } from 'node:util';
-import { mkdirSync, readdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerivedStatus } from './_lib/auto-derive-status.js';
 import { join, resolve, dirname, basename } from 'node:path';
 import { execSync } from 'node:child_process';
 import { resolveQmdCommand } from './config.js';
@@ -24,6 +25,11 @@ const { values: args } = parseArgs({
   },
   strict: false,
 });
+
+// Helpers findLatestDailyNoteWithContent / parseMarkdownSections /
+// buildAutoDerivedStatus / hasAutoDerivedMarker импортируются из
+// _lib/auto-derive-status.js — shared между add-domain.js (Layer 1,
+// cold-start) и heartbeat-runner.js (Layer 2, maintenance).
 
 if (args.help || !args.domain) {
   console.log(`
@@ -349,6 +355,28 @@ if (domainType === 'topic-thread' && topicBinding) {
   const topicBlock = `\n## Привязка к топику\n\n- **Chat ID**: \`${topicBinding.chatId}\`\n- **Topic ID**: \`${topicBinding.topicId}\`\n- **Session**: \`telegram-group--${sessionChatId}-topic-${topicBinding.topicId}\`\n`;
   if (!readme.includes('## Привязка к топику')) {
     await Bun.write(readmePath, readme.trimEnd() + topicBlock);
+  }
+
+  // === Cold-start auto-derive для status.md ===
+  // Если в сессии уже есть daily note с контентом (типичный случай для
+  // --topic <chatId:topicId> и для auto-bind), заполняем status.md реальным
+  // handover'ом вместо пустого placeholder'а. Маркер auto-derived даёт
+  // heartbeat-runner'у (Layer 2, опционально) право перегенерить.
+  const sessionDir = join(WORKSPACE, 'memory', `agent-${agentId}`, sessionKey);
+  const latest = findLatestDailyNoteWithContent(sessionDir);
+  if (latest) {
+    try {
+      const content = readFileSync(latest.path, 'utf-8');
+      const sections = parseMarkdownSections(content);
+      const derived = buildAutoDerivedStatus(domain, latest.date, today, sections);
+      const statusPath = join(domainDir, 'status.md');
+      writeFileSync(statusPath, derived);
+      console.log(`  🔄 status.md auto-derived from ${latest.date}.md (${latest.size} bytes)`);
+    } catch (e) {
+      console.warn(`  ⚠️  status.md auto-derive failed: ${e.message}`);
+    }
+  } else {
+    console.log(`  ℹ️  status.md: empty template (нет prior daily notes в ${sessionDir})`);
   }
 }
 

@@ -7,7 +7,7 @@
  * interpret HEARTBEAT.md correctly.
  */
 
-import { existsSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import { loadEngramConfig, resolveSubagentModel } from "./config.js";
 import { parseHandoff, applyHandoff, defaultHandoffHandlers } from "./process-handoff-core.js";
 import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary, shouldInlineNoopDailyNote, DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN } from "./domains-runner.js";
+import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerivedStatus, hasAutoDerivedMarker } from "./_lib/auto-derive-status.js";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -1376,6 +1377,96 @@ async function runSilentThreadCheck(activeSessions) {
   };
 }
 
+// refreshAutoDerivedStatus: для каждого topic-thread домена проверяет,
+// что status.md с маркером `<!-- auto-derived from ... -->` не устарел
+// относительно latest daily note. Если daily note свежее — перегенерит.
+// Никогда не трогает agent-curated status.md (без маркера).
+//
+// Это Layer 2 из дизайна «cold-start + heartbeat maintenance»:
+//   - Layer 1 (cold-start, add-domain.js) — заполняет status.md при создании домена
+//   - Layer 2 (эта функция) — поддерживает актуальность по мере накопления daily notes
+//
+// Маркер `<!-- auto-derived ... -->` — критичный invariant:
+//   - Agent-curated status.md → НЕТ маркера → никогда не перетирается
+//   - Auto-derived → ЕСТЬ маркер → обновляется при drift
+async function refreshAutoDerivedStatus() {
+  const registryPath = join(workspace, "memory", "domains", "registry.json");
+  const registry = await readJsonIfExists(registryPath, { domains: {} });
+  let refreshed = 0;
+  let skipped = 0;
+  let errors = 0;
+  const detail = [];
+
+  for (const [slug, entry] of Object.entries(registry.domains || {})) {
+    if (!entry || entry.type !== "topic-thread" || !entry.topic) continue;
+
+    const statusPath = join(workspace, "memory", "domains", slug, "status.md");
+    if (!existsSync(statusPath)) {
+      skipped++;
+      continue;
+    }
+
+    let statusContent;
+    try {
+      statusContent = await readFile(statusPath, "utf8");
+    } catch (err) {
+      summary.warnings.push("auto-derive-status: " + slug + " read failed — " + (err && err.message ? err.message : String(err)));
+      errors++;
+      continue;
+    }
+
+    // Agent-curated status.md (без маркера) — никогда не трогаем. Это
+    // сознательный design choice: если агент вручную переписал status.md,
+    // heartbeat не должен затирать его синтетикой.
+    if (!hasAutoDerivedMarker(statusContent)) {
+      skipped++;
+      continue;
+    }
+
+    // Compute sessionDir из registry binding.
+    const absChatId = String(entry.topic.chatId).replace(/^-/, "");
+    const sessionKey = "telegram-group--" + absChatId + "-topic-" + entry.topic.topicId;
+    const sessionDir = join(workspace, "memory", "agent-" + agentId, sessionKey);
+
+    const latest = findLatestDailyNoteWithContent(sessionDir);
+    if (!latest) {
+      skipped++;
+      continue;
+    }
+
+    // Drift check: только если daily note свежее status.md.
+    let statusMtime;
+    let latestMtime;
+    try {
+      statusMtime = statSync(statusPath).mtimeMs;
+      latestMtime = statSync(latest.path).mtimeMs;
+    } catch (err) {
+      summary.warnings.push("auto-derive-status: " + slug + " stat failed — " + (err && err.message ? err.message : String(err)));
+      errors++;
+      continue;
+    }
+    if (statusMtime >= latestMtime) {
+      skipped++;
+      continue;
+    }
+
+    // Regenerate.
+    try {
+      const latestContent = await readFile(latest.path, "utf-8");
+      const sections = parseMarkdownSections(latestContent);
+      const derived = buildAutoDerivedStatus(slug, latest.date, today, sections);
+      await atomicWrite(statusPath, derived);
+      refreshed++;
+      detail.push({ slug, source: latest.date, size: latest.size });
+    } catch (err) {
+      summary.warnings.push("auto-derive-status: " + slug + " write failed — " + (err && err.message ? err.message : String(err)));
+      errors++;
+    }
+  }
+
+  return { refreshed, skipped, errors, detail };
+}
+
 async function main() {
   const initial = await readJson(statePath, DEFAULT_STATE);
   const activeSessions = allActiveSessions ? getActiveSessions(initial) : [session];
@@ -1449,6 +1540,19 @@ async function main() {
             " (last event " + item.hoursSince + "h ago, " + item.reason + ")"
         );
       }
+    }
+    // Layer 2: refresh auto-derived status.md for topic-thread domains
+    // whose latest daily note is newer than their status.md. Runs BEFORE
+    // runOllTriggerShell so hb-domains-write spawns see fresh status.
+    // Runs BEFORE runMaintenance so qmd update picks up the change.
+    const autoDerive = await refreshAutoDerivedStatus();
+    summary.phases = summary.phases || {};
+    summary.phases.autoDeriveStatus = autoDerive;
+    if (autoDerive.refreshed > 0) {
+      summary.warnings.push(
+        "auto-derive-status: refreshed " + autoDerive.refreshed + " (" +
+          autoDerive.detail.map((d) => d.slug + " from " + d.source).join(", ") + ")"
+      );
     }
     await runOllTriggerShell({ domainScan });
     if (opts["skip-maintenance"]) {

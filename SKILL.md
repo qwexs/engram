@@ -438,7 +438,7 @@ Example `engram.json` override:
 }
 ```
 
-**Why configurable, not hardcoded:** Engram is model-agnostic. The protocol docs use `<your-model-id>` as a placeholder so behavior is reproducible across deployments, but hardcoding deployment-specific aliases (e.g. `m3`, `m2.7`) in the protocol would leak private infra and break for other users.
+**Why configurable, not hardcoded:** Engram is model-agnostic. Models are configured per-workspace in `engram.json` (see `models.default` and `models.heartbeat.subagents`). Hardcoding deployment-specific aliases (e.g. `m3`, `m2.7`) in the protocol would leak private infra and break for other users.
 
 ## Memory Decay
 
@@ -532,7 +532,7 @@ Phase 5 пытается direct spawn через `sessions_spawn`; если не
 
 When `validate.js` produces ≥1 `❌` error or `⚠️` warning AND no auto-seed fired in the last 24h (`lastAutoSeedAt` in `heartbeat-state.json`), `hb-runner` writes a low-confidence friction observation via `memory-observe.js`. This converts maintenance warnings into observation signal so the OLL loop has continuous input on quiet workspaces.
 
-`hb-rethink` (`<your-model-id>`) reviews observations + tensions, identifies patterns, generates proposals, and returns a `HB-RETHINK HANDOFF` block. `process-handoff.js` auto-executes low-risk actions (archive noise, promote facts) and surfaces an ALERT.
+`hb-rethink` (model from `engram.json → models.heartbeat.subagents["hb-rethink"]`) reviews observations + tensions, identifies patterns, generates proposals, and returns a `HB-RETHINK HANDOFF` block. `process-handoff.js` auto-executes low-risk actions (archive noise, promote facts) and surfaces an ALERT.
 
 ### Resolving Tensions
 

@@ -3,7 +3,7 @@ name: engram
 description: Etalon memory architecture with Knowledge Graph, session isolation, memory decay, and QMD hybrid search (Local/Jina/Ollama)
 ---
 
-> **Spec sync v3.4**: 2026-07-10. Изменения: 9 hooks (было 7) + `apriori-peer-domain-load`, race-condition guard `ensureSessionReady()`, side-effect-delivered pattern, 10 фаз heartbeat (0, 0.5, 1, 1.5, 2, 3, 3.5, 4, 5, 5.5, 6), 7 hb-* subagents (было 6, добавлен `hb-domains-write` split), minimax models per subagent (был `sonnet-4-6` placeholder), Ollama QMD provider, +12 v3.4 скриптов. Спека живёт в workspace, не в этом репо.
+> **Spec sync v3.4**: 2026-07-10. Изменения: 9 hooks (было 7) + `engram-peer-domain-load`, race-condition guard `ensureSessionReady()`, side-effect-delivered pattern, 10 фаз heartbeat (0, 0.5, 1, 1.5, 2, 3, 3.5, 4, 5, 5.5, 6), 7 hb-* subagents (было 6, добавлен `hb-domains-write` split), minimax models per subagent (был `sonnet-4-6` placeholder), Ollama QMD provider, +12 v3.4 скриптов. Спека живёт в workspace, не в этом репо.
 
 > ⚠️ **READ-ONLY SKILL**: This skill is a reference implementation. Do not edit files directly.
 > When installing, copy scripts to your workspace folder:
@@ -1236,7 +1236,6 @@ Engram ships **9 OpenClaw hooks** that automate mechanical session tasks: **8 `e
 | `engram-topic-domain-load` | `message:received` | On Telegram topic, resolve domain via `entry.topic = {chatId, topicId}` and inject Domain Context + AGENTS via `openclaw system event`. v3.5 — side-effect-delivered (was file-then-hope). |
 | `engram-peer-domain-load` | `message:received` | On Telegram DM (`peer-direct`) or group without topics (`group-direct`), resolve domain via `entry.peer` or `entry.group` and inject Domain Context + AGENTS via `openclaw system event`. v3.5 — new hook, same pipeline as topic-domain-load. |
 | `engram-topic-auto-domain-suggest` | `message:received` | Sibling of `engram-topic-domain-load`. In unbound topics, after ≥2 user messages, inject `## engram:auto-suggest` block offering domain creation. 🔄 **v3.9 deployed, side-effect-delivered via Telegram inline_keyboard** (E2E verified). |
-| `apriori-peer-domain-load` | `message:received` | Same as `engram-peer-domain-load`, but agent-specific for `apriori-tech` workspace. ⚠️ race-fix pending. |
 
 > **Note:** Disable the built-in `session-memory` hook when enabling `engram-session-memory` — they serve the same purpose but write to different locations.
 
@@ -1250,7 +1249,7 @@ Engram ships **9 OpenClaw hooks** that automate mechanical session tasks: **8 `e
 * (b) сам создать stub sessionDir сенсорно, чтобы не блокировать;
 * (c) skip + alert в `heartbeat-state.json`.
 
-**Anti-pattern:** хук пишет блок в daily note + sentinel + pointer в `MEMORY.md`, надеясь что LLM-агент прочтёт и вызовет `message` tool. **Не работает в production** — нарушители v3.3 era: `engram-topic-domain-load`, `engram-topic-auto-domain-suggest`, `apriori-peer-domain-load`. Полная история — спека §10.9 в workspace.
+**Anti-pattern:** хук пишет блок в daily note + sentinel + pointer в `MEMORY.md`, надеясь что LLM-агент прочтёт и вызовет `message` tool. **Не работает в production** — нарушители v3.3 era: `engram-topic-domain-load`, `engram-topic-auto-domain-suggest`. Полная история — спека §10.9 в workspace.
 
 ### Side-effect-delivered hook pattern (новое в v3.4)
 

@@ -3,7 +3,7 @@
  *
  * Wraps `child_process.spawnSync("openclaw", ["system","event",...])` to
  * deliver a one-shot prompt fragment into a named session. Used by all v2+
- * engram domain-load hooks (`engram-topic-domain-load`, `apriori-peer-domain-load`,
+ * engram domain-load hooks (`engram-topic-domain-load`, `engram-peer-domain-load`,
  * and any future `*-domain-load` hook that follows the system-event pattern).
  *
  * Why system events instead of writing to the daily note on `message:received`:

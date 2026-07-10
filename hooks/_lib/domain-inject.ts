@@ -7,7 +7,7 @@
  *
  *   - `engram-topic-domain-load` (Telegram topic-thread bindings)
  *   - `engram-peer-domain-load` (Telegram DM + group-without-topics bindings)
- *   - `apriori-peer-domain-load` (Telegram direct-peer bindings, apriori-tech)
+ *   - `engram-peer-domain-load` (Telegram DM + group-without-topics bindings)
  *   - any future `*-domain-load` hook matching the system-event pattern
  *
  * Pipeline:

@@ -66,10 +66,13 @@ Options:
                              Telegram: 0x6FB9F0 blue, 0xFFD67E yellow, 0xCB86DB purple,
                              0x8EEE98 green, 0xFF93B2 pink, 0xFB6F5F red.
   --pending                  Создать домен в статусе pending (только для type=topic-thread).
-                             pending: true в registry.json. Используется хуком
-                             engram-topic-auto-domain-suggest после подтверждения
-                             пользователя в чате. Идемпотентно: если для этого
-                             (chatId, topicId) уже есть домен — exit 0 no-op.
+                             pending: true в registry.json. Используется
+                             bootstrap-from-forum (`init.js --bootstrap-from-forum`)
+                             для one-shot operator-bind темпов, созданных ДО
+                             установки `engram-session-start`. Идемпотентно: если
+                             для этого (chatId, topicId) уже есть домен — exit 0
+                             no-op. Для новых топиков auto-bind делается silently
+                             в `engram-session-start` (ISS-10) без pending.
   -h, --help                 Показать справку
 
 Examples:

@@ -92,13 +92,14 @@ observations become KG facts (with backlink); archived ones drop.
 |----------------|--------------------------------------------------|------------------------------------|
 | `dev-project`  | Development project, spawned on demand           | Long-lived, hand-managed           |
 | `cron-task`    | Periodic background task                         | Long-lived, re-spawned by cron     |
-| `topic-thread` | Telegram forum topic as a long-lived session     | Auto-suggested, idle-archived      |
+| `topic-thread` | Telegram forum topic as a long-lived session     | Auto-bound on first bootstrap (ISS-10), idle-archived |
 
 A **topic-thread** domain gives a Telegram topic its own memory
 contour (decisions, status, changelog) and QMD collection — no bleed
-with other topics or main sessions. Unbound topics are auto-suggested
-once they accumulate enough context, and idle ones are archived after
-`staleAfterDays` (default 60).
+with other topics or main sessions. Unbound topics are auto-bound
+silently on first `agent:bootstrap` (ISS-10 piggy-back in
+`engram-session-start` — spawns `add-domain.js --description auto-bound`),
+and idle ones are archived after `staleAfterDays` (default 60).
 
 ### Configurable subagent models
 
@@ -127,7 +128,6 @@ Engram ships 8 hooks that automate mechanical session tasks. Agents do
 | `engram-message-log`                | `message:received`             | Log raw messages to `workspace/message-log/`           |
 | `engram-session-memory`             | `command:new`, `command:reset` | Save session transcript (QMD-indexed)                  |
 | `engram-topic-domain-load`          | `message:received`             | Inject `## Domain Context` for bound topic-thread      |
-| `engram-topic-auto-domain-suggest`  | `message:received`             | Suggest creating a domain for unbound topics (≥2 msgs) |
 
 Disable the built-in `session-memory` hook when enabling
 `engram-session-memory` — they write to different locations.

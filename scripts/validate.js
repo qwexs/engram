@@ -592,11 +592,10 @@ if (!cronCfg || !cronCfg.expectedJobName) {
 
 // 9. Hooks sync drift guard (catches skill/hooks/ ↔ ~/clawd/hooks/ drift).
 // Skill is the source of truth; OpenClaw loads from `~/clawd/hooks/`. If
-// `engram-topic-domain-load` and `engram-topic-auto-domain-suggest` are in
-// the skill but missing as junctions in the OpenClaw hooks dir, OpenClaw
-// silently skips them. install-hooks.js creates the junctions; this check
-// surfaces drift before runtime hits it. Idempotent install: this does not
-// run install-hooks.js itself, just reports.
+// any `engram-*` hook is in the skill but missing as a directory in the
+// OpenClaw hooks dir, OpenClaw silently skips it. install-hooks.js creates
+// the directories; this check surfaces drift before runtime hits it.
+// Idempotent install: this does not run install-hooks.js itself, just reports.
 console.log('\n--- Hooks Sync ---');
 {
   // Skill hooks dir = <skill>/hooks. resolveDir is the workspace-specific

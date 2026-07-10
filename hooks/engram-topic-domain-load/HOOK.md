@@ -95,8 +95,9 @@ auto-injected by engram v2 (system-event delivery) · hash=abc12345 · source=fi
 
 ## Pair with
 
-- `engram-topic-auto-domain-suggest` (sibling — suggests domain creation
-  for unbound topics)
+- `engram-session-start` (sibling — silent auto-bind for unbound topics
+  on first bootstrap, ISS-10 piggy-back; replaces the removed
+  `engram-topic-auto-domain-suggest` hook)
 - `engram-peer-domain-load` (sister — peer-DM + group-direct bindings; same pipeline)
 - `engram-daily-note` (creates the daily note the agent may receive the
   hash marker in; this hook no longer writes to it)

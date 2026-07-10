@@ -136,7 +136,7 @@ Engram ships 8 hooks under `skills/engram/hooks/`:
 
 - `engram-bootstrap-qmd`, `engram-daily-note`, `engram-message-log`
 - `engram-session-start`, `engram-session-end`, `engram-session-memory`
-- `engram-topic-auto-domain-suggest`, `engram-topic-domain-load`
+- `engram-topic-domain-load`, `engram-peer-domain-load`
 
 OpenClaw 2026.6.6 loads hooks from its **managed hooks directory** —
 `~/clawd/hooks/` on Windows (`%USERPROFILE%\clawd\hooks\`,

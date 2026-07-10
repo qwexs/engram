@@ -52,7 +52,7 @@ Options:
                              namespace 'telegram.topic-name-cache.*'. Skips topics already
                              bound (registry.json hit or session dir exists). Spawns
                              add-domain --pending for each (idempotent on (chatId, topicId)).
-                             Complements engram-topic-auto-domain-suggest hook for topics
+                             Complements engram-session-start ISS-10 piggy-back for topics
                              that existed before the bot saw them.
   --bootstrap-chat <id>      With --bootstrap-from-forum, limit to one chat ID
                              (e.g. "-100XXXXXXXXXX"). Default: all forum groups in cache.
@@ -285,7 +285,7 @@ function autoDetectSessions() {
 // (registry.json hit or session dir exists), previews the proposed bind for
 // operator confirmation, then spawns add-domain --pending for each.
 //
-// This complements engram-topic-auto-domain-suggest hook (which handles
+// This complements engram-session-start ISS-10 piggy-back (which handles
 // topics created AFTER the hook is installed). Bootstrap covers topics that
 // already exist at install time — the same gap as "no retroactive auto-bind".
 //

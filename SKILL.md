@@ -8,7 +8,7 @@ description: Etalon memory architecture with Knowledge Graph, session isolation,
 > - **ISS-15 (write-then-hope → system-event delivery)**: `engram-topic-domain-load` переписан на `enqueueSystemEventToSession()` через `_lib/system-event.ts`. Убраны `writeFileSync`/`mkdtempSync`/`renameSync` в daily note, sentinels `<!-- domain-context:* -->` заменены на `<!-- engram-system-event-hash:[a-f0-9]{8} -->`. Source `_lib/domain-inject.ts` + `_lib/system-event.ts` восстановлены из prod bundle (R1 HIGH закрыт). 79 unit/integration тестов.
 > - **ISS-16 (peer-direct + group-direct домены)**: новый хук `engram-peer-domain-load` для Telegram DM и group-without-topics. Shared resolver `_lib/domain-resolve.ts` (3 fallback layers, sessionKind determination, sign-symmetric chatId lookup, archive reactivation). `add-domain.js` получил `--peer <chatId>` и `--group <chatId>`. 3 типа доменов: `topic-thread` / `peer-direct` / `group-direct` (registry: `entry.topic` / `entry.peer` / `entry.group`).
 > - **ISS-16 follow-up (red-gap)**: Layer 1 в `domain-resolve.ts` split на 2 независимых проверки (была AND, ломавшая peer-direct); handler.js bundle регенерированы с `--no-bundle --target=bun --format=esm`. 28 новых тестов resolveDomainFromEvent. Итого 119/119 в `hooks/`.
-> - **Chore (8b473c0)**: удалён `apriori-peer-domain-load` (workspace-specific, поглощён `engram-peer-domain-load`). Теперь 9 `engram-*` хуков, без `apriori-*`.
+> - **Chore (8b473c0)**: удалён `apriori-peer-domain-load` (workspace-specific, поглощён `engram-peer-domain-load`). `engram-topic-auto-domain-suggest` поглощён в `engram-session-start` через ISS-10 piggy-back (silent auto-bind на first bootstrap). Теперь 8 `engram-*` хуков, без `apriori-*` и без отдельного auto-suggest.
 >
 > Спека живёт в workspace, не в этом репо. v3.5 детали: `memory/tmp/engram-v35-addendum.md` (30221 bytes, рабочий draft от 2026-07-11). v3.4 baseline: `memory/tmp/engram-v34-addendum.md`.
 
@@ -703,7 +703,7 @@ The binding is defined via the domain registry (`memory/domains/registry.json`):
 **Domain types:**
 - `dev-project` — development, linked to KG entity, subagent on demand
 - `cron-task` — periodic tasks, subagent on schedule
-- `topic-thread` — Telegram topic as memory contour (not a subagent; the topic itself is the long-lived OpenClaw session), bound via `registry.domains[slug].topic = { chatId, topicId }`. Hook `engram-topic-domain-load` injects Domain Context + AGENTS via system-event on `message:received`. Hook `engram-topic-auto-domain-suggest` injects a `## engram:auto-suggest` block in unbound topics once a topic accumulates ≥2 user messages. See `references/topic-thread.md` for the full contract. Heartbeat-runner archives stale topic-thread domains after `staleAfterDays` (default 60) to `memory/domains/archives/{slug}/` and sets `archived: true` + `archivedAt` + `archivePath` in the registry. Hook `engram-topic-domain-load` re-activates an archived domain automatically on the next `message:received` in its topic.
+- `topic-thread` — Telegram topic as memory contour (not a subagent; the topic itself is the long-lived OpenClaw session), bound via `registry.domains[slug].topic = { chatId, topicId }`. Hook `engram-topic-domain-load` injects Domain Context + AGENTS via system-event on `message:received`. **Auto-bind for unbound topics** is piggy-backed into `engram-session-start` (ISS-10): on first `agent:bootstrap` for an unbound Telegram topic, the hook spawns `add-domain.js --type topic-thread --description auto-bound` and pushes a status string into `event.messages`. See `references/topic-thread.md` for the full contract. Heartbeat-runner archives stale topic-thread domains after `staleAfterDays` (default 60) to `memory/domains/archives/{slug}/` and sets `archived: true` + `archivedAt` + `archivePath` in the registry. Hook `engram-topic-domain-load` re-activates an archived domain automatically on the next `message:received` in its topic.
 - `peer-direct` — Telegram DM chat as memory contour, bound via `registry.domains[slug].peer = { chatId }`. Hook `engram-peer-domain-load` injects Domain Context + AGENTS via system-event on `message:received`. Same pipeline as topic-thread, but without topicId. Useful for personal assistant sessions (Ур.0).
 - `group-direct` — Telegram group without topics as memory contour, bound via `registry.domains[slug].group = { chatId }`. Hook `engram-peer-domain-load` handles this kind too. Useful for company-wide groups (Ур.2).
 
@@ -955,7 +955,7 @@ Idempotent: skips existing files unless `--force` is passed. Archival-archived d
 bun skills/engram/scripts/promote-domain.js --domain <slug> [--dry-run]
 ```
 
-Promote pending auto-suggested topic (created via `add-domain.js --pending` или `engram-topic-auto-domain-suggest` accept) → permanent `topic-thread` в registry. Удаляет флаг `pending: true`, добавляет полные domain files.
+Promote pending auto-suggested topic (created via `add-domain.js --pending`) → permanent `topic-thread` в registry. Удаляет флаг `pending: true`, добавляет полные domain files.
 
 ### list-pending.js — Список pending topic suggestions
 
@@ -963,7 +963,7 @@ Promote pending auto-suggested topic (created via `add-domain.js --pending` ил
 bun skills/engram/scripts/list-pending.js [--json]
 ```
 
-Список unbound topics с `pending: true` в registry, ожидающих accept/reject decision. Для review после `engram-topic-auto-domain-suggest` waves.
+Список unbound topics с `pending: true` в registry, ожидающих accept/reject decision. Для review после bootstrap-from-forum waves (`init.js --bootstrap-from-forum`).
 
 ### render-agents-section.js — Render agents.md из shared template
 
@@ -1230,19 +1230,19 @@ Processes `=== HB-* HANDOFF ===` blocks from subagent results. Handles HB-EXTRAC
 
 ## OpenClaw Hooks
 
-Engram ships **9 OpenClaw hooks** that automate mechanical session tasks: **9 `engram-*`** (canonical, in this repo). Workspace-specific `apriori-*` hooks were removed in v3.5 (8b473c0) — `apriori-peer-domain-load` is now `engram-peer-domain-load`, shared across all workspaces. Hooks run automatically — agents do NOT need to repeat these steps manually.
+Engram ships **8 OpenClaw hooks** that automate mechanical session tasks: **8 `engram-*`** (canonical, in this repo). Workspace-specific `apriori-*` hooks were removed in v3.5 (8b473c0) — `apriori-peer-domain-load` is now `engram-peer-domain-load`, shared across all workspaces. Hooks run automatically — agents do NOT need to repeat these steps manually.
 
 | Hook | Event | What it does |
 |------|-------|--------------|
 | `engram-daily-note` | `gateway:startup` | Creates today's daily note for all sessions. Contract clarifying (spec §8.1, ISS-7 AC#4). |
-| `engram-session-start` | `agent:bootstrap` | Appends `<!-- session:start:{ISO} -->` to daily note. ✅ race-fix в v3.4. |
+| `engram-session-start` | `agent:bootstrap` | Appends `<!-- session:start:{ISO} -->` to daily note. ✅ race-fix в v3.4. **ISS-10 piggy-back**: silently auto-creates a `topic-thread` domain (description `auto-bound`) on first bootstrap for an unbound Telegram topic. |
 | `engram-session-end` | `command:new`, `command:reset` | Appends `<!-- session:end:{ISO} -->` to daily note. |
 | `engram-session-memory` | `command:new`, `command:reset` | Save session transcript to `sessions/` subdir (QMD-indexed). Replaces native `session-memory`. |
 | `engram-bootstrap-qmd` | `agent:bootstrap` | Runs `qmd update` (15s timeout, silent skip if unavailable). |
 | `engram-message-log` | `message:received` | Logs messages to `workspace/message-log/YYYY-MM-DD.jsonl`. **Disabled by default** (opt-in). |
 | `engram-topic-domain-load` | `message:received` | On Telegram topic, resolve domain via `entry.topic = {chatId, topicId}` and inject Domain Context + AGENTS via `openclaw system event`. v3.5 — side-effect-delivered (was file-then-hope). |
 | `engram-peer-domain-load` | `message:received` | On Telegram DM (`peer-direct`) or group without topics (`group-direct`), resolve domain via `entry.peer` or `entry.group` and inject Domain Context + AGENTS via `openclaw system event`. v3.5 — new hook, same pipeline as topic-domain-load. |
-| `engram-topic-auto-domain-suggest` | `message:received` | Sibling of `engram-topic-domain-load`. In unbound topics, after ≥2 user messages, inject `## engram:auto-suggest` block offering domain creation. 🔄 **v3.9 deployed, side-effect-delivered via Telegram inline_keyboard** (E2E verified). |
+| (no auto-suggest hook) | — | `engram-topic-auto-domain-suggest` was merged into `engram-session-start` in ISS-10 (commit `38757e7`). Auto-bind now happens silently on first `agent:bootstrap` — no ask-first flow, no Telegram inline_keyboard, no daily-note sentinel. See `engram-session-start` row above. |
 
 > **Note:** Disable the built-in `session-memory` hook when enabling `engram-session-memory` — they serve the same purpose but write to different locations.
 
@@ -1256,13 +1256,13 @@ Engram ships **9 OpenClaw hooks** that automate mechanical session tasks: **9 `e
 * (b) сам создать stub sessionDir сенсорно, чтобы не блокировать;
 * (c) skip + alert в `heartbeat-state.json`.
 
-**Anti-pattern:** хук пишет блок в daily note + sentinel + pointer в `MEMORY.md`, надеясь что LLM-агент прочтёт и вызовет `message` tool. **Не работает в production** — нарушители v3.3 era: `engram-topic-domain-load`, `engram-topic-auto-domain-suggest`. Полная история — спека §10.9 в workspace.
+**Anti-pattern:** хук пишет блок в daily note + sentinel + pointer в `MEMORY.md`, надеясь что LLM-агент прочтёт и вызовет `message` tool. **Не работает в production** — нарушитель v3.3 era: `engram-topic-domain-load` (until v3.5 ISS-15 rewrite). Полная история — спека §10.9 в workspace.
 
 ### Side-effect-delivered hook pattern (новое в v3.4)
 
 User-facing flows должны использовать **детерминистический канал доставки**, не «записать в файл и надеяться». Три допустимых канала (по убыванию предпочтения, spec §10.9):
 
-1. **Telegram Bot API inline-buttons** — `fetch('https://api.telegram.org/bot{TOKEN}/sendMessage')` с `reply_markup={inline_keyboard: [...]}`. Channel completion = Telegram, не модель. Применён в `engram-topic-auto-domain-suggest` v3.9.
+1. **Telegram Bot API inline-buttons** — `fetch('https://api.telegram.org/bot{TOKEN}/sendMessage')` с `reply_markup={inline_keyboard: [...]}`. Channel completion = Telegram, не модель. Канал доступен, но в engram сейчас не используется (auto-bind делается silently через `engram-session-start` + ISS-10).
 2. **OpenClaw gateway system event injection** — `openclaw system event --mode now|next-heartbeat --session-key <key> --text <msg>`. Для tell-the-agent-X flows («домен загружен», «сессия возобновлена»).
 3. **Workspace-root transient file** — fallback при недоступности #2. Whitelist имён в OpenClaw `bootstrap-extra-files`: AGENTS.md / SOUL.md / TOOLS.md / IDENTITY.md / USER.md / HEARTBEAT.md / BOOTSTRAP.md / MEMORY.md.
 
@@ -1281,8 +1281,9 @@ User-facing flows должны использовать **детерминист
 
 1. `engram-message-log` fires on `message:received` → logs to `workspace/message-log/`
 2. `engram-topic-domain-load` fires on `message:received` → injects Domain Context + Domain AGENTS via system-event (idempotent per hash)
-3. `engram-topic-auto-domain-suggest` fires on `message:received` (sibling) → if topic is unbound and ≥2 user messages, sends Telegram `inline_keyboard` via Bot API (side-effect-delivered, v3.9+)
-4. `engram-peer-domain-load` fires on `message:received` → same as #2 for DM (`peer-direct`) and group-without-topics (`group-direct`) sessions
+3. `engram-peer-domain-load` fires on `message:received` → same as #2 for DM (`peer-direct`) and group-without-topics (`group-direct`) sessions
+
+Note: auto-bind for unbound topics happens in `engram-session-start` on `agent:bootstrap` (ISS-10 piggy-back), not in the `message:received` hot path. There is no separate auto-suggest hook.
 
 ### Installation
 

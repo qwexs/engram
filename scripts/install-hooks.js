@@ -65,7 +65,7 @@ import {
   copyFileSync,
 } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 const { values: args } = parseArgs({
@@ -129,11 +129,32 @@ const SOURCE_HOOKS = join(SKILL_DIR, 'hooks');
 
 const GATEWAY_HOOKS = args['hooks-dir'] || discoverOpenclawHooksDir();
 
+// Resolve the OpenClaw-managed hooks directory using a layered strategy.
+//
+// Designed for three deployment scenarios on a single machine:
+//   1. Existing instance with managedHooksDir populated — use it. Canonical,
+//      shared across ALL gateway processes on this machine (each gateway
+//      shares the same OpenClaw state dir, so they all scan CONFIG_DIR/hooks).
+//   2. Existing instance with workspace-local hooks (legacy, pre-managed
+//      install) — keep using those so existing setups don't break. Migrate
+//      to managed on next reinstall by deleting the workspace-local entries.
+//   3. Fresh instance (gateway not yet running, or no hooks registered yet) —
+//      compute OpenClaw's canonical default (CONFIG_DIR/hooks, mirroring
+//      resolveConfigDir in dist/utils-BTODJbcN.js) and CREATE it. This is
+//      the same path OpenClaw uses internally as its managedHooksDir default.
+//
+// Reference: dist/workspace-Bgbs2XIH.js discoverWorkspaceHookEntries(workspaceDir, opts)
+// scans BOTH managedHooksDir AND workspaceHooksDir (path.join(workspaceDir, "hooks")).
+// resolveHookEntries() ignores the workspace entry when names collide with managed
+// (workspace cannot override managed code). So putting hooks in managed is
+// always safe even if workspace-local exists with the same names.
+//
+// Removed: `~/clawd/hooks` convention candidate. It was the source of the
+// "hooks copied to the wrong place" bug — on machines where workspaceDir is
+// not `~/clawd`, the script silently created a fresh `~/clawd/hooks` directory
+// that the gateway never scanned.
 function discoverOpenclawHooksDir() {
-  // Strategy 0: ask OpenClaw CLI for managedHooksDir via `hooks list --json`.
-  // This is the most reliable source — the gateway reports the exact directory
-  // it scans for managed hooks, regardless of platform or install layout.
-  // Works even when no engram hooks are registered yet (unlike Strategy 1).
+  // Strategy 0: query OpenClaw gateway via `hooks list --json` (authoritative).
   try {
     const r = spawnSync('openclaw', ['hooks', 'list', '--json'], {
       encoding: 'utf-8',
@@ -141,29 +162,44 @@ function discoverOpenclawHooksDir() {
     });
     if (r.status === 0) {
       const data = JSON.parse(r.stdout);
-      const dir = data?.managedHooksDir;
-      if (typeof dir === 'string' && dir.length > 0 && existsSync(dir)) {
-        return dir;
+      const managed = typeof data?.managedHooksDir === 'string' ? data.managedHooksDir : null;
+      const workspace = typeof data?.workspaceDir === 'string' ? data.workspaceDir : null;
+
+      // (a) managedHooksDir exists — canonical, shared by every gateway on this machine.
+      if (managed && existsSync(managed)) return managed;
+
+      // (b) workspaceDir/hooks exists — legacy workspace-local install. Keep working.
+      if (workspace) {
+        const wsHooks = join(workspace, 'hooks');
+        if (existsSync(wsHooks)) return wsHooks;
+      }
+
+      // (c) Bootstrap: neither exists. Create managed so every future gateway on
+      //     this machine finds hooks here after restart.
+      if (managed) {
+        try { mkdirSync(managed, { recursive: true }); return managed; } catch {}
       }
     }
   } catch {
-    // fall through
+    // gateway probably down — fall through to env-based defaults
   }
-  // Strategy 1: ask OpenClaw CLI for a specific registered hook path.
-  // Works while gateway is running and at least one engram hook is already
-  // registered. Capture the directory by stripping the trailing hook name.
+
+  // Strategy 1: gateway not running. Compute CONFIG_DIR/hooks the same way
+  // OpenClaw does (resolveConfigDir in dist/utils-BTODJbcN.js), then create it.
+  const computed = computeDefaultManagedHooksDir();
+  if (computed) {
+    if (existsSync(computed)) return computed;
+    try { mkdirSync(computed, { recursive: true }); return computed; } catch {}
+  }
+
+  // Strategy 2: legacy `openclaw hooks info <name>` regex. Safety net for edge
+  // cases where Strategy 0 returns malformed JSON but `hooks info` still works.
   try {
     const r = spawnSync('openclaw', ['hooks', 'info', 'engram-daily-note'], {
       encoding: 'utf-8',
       shell: true,
     });
     if (r.status === 0) {
-      // Accept either Windows (C:\…\hooks\engram-daily-note\HOOK.md) or POSIX
-      // (/…/hooks/engram-daily-note/HOOK.md) output, and both / and \ separators.
-      // Lazy-match the prefix up to "/hooks/engram-daily-note/HOOK.md" so we
-      // can reattach "hooks" and get the gateway hooks dir directly without
-      // relying on dirname (which would give us the per-hook dir, not the
-      // gateway hooks dir, when given the full path).
       const m = r.stdout.match(/Path:\s+(.*?[/\\])hooks[/\\]engram-daily-note[/\\]HOOK\.md/);
       if (m) {
         const prefix = m[1].replace(/^~/, process.env.USERPROFILE || process.env.HOME || '');
@@ -171,21 +207,35 @@ function discoverOpenclawHooksDir() {
         if (existsSync(candidate)) return candidate;
       }
     }
-  } catch {
-    // fall through
-  }
-  // Strategy 2: convention-based fallback. Check known candidate directories.
+  } catch {}
+
+  // Strategy 3: last-resort convention candidates (no creation). Reached only on
+  // truly broken setups where gateway is down AND env vars yielded no path.
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  const candidates = [
-    join(home, 'clawd', 'hooks'),
-    join(home, '.openclaw', 'hooks'),
-    join(home, '.openclaw', 'state', 'hooks'),
-  ];
-  for (const c of candidates) {
+  for (const c of [join(home, '.openclaw', 'state', 'hooks')]) {
     if (existsSync(c)) return c;
   }
-  // Last resort: create the conventional path.
-  return join(home, 'clawd', 'hooks');
+  // Absolute last resort. Caller will mkdirSync(this, { recursive: true }) later.
+  return computed || join(home, '.openclaw', 'hooks');
+}
+
+// Mirror OpenClaw's resolveConfigDir(env, homedir) from dist/utils-BTODJbcN.js:
+//   1. env.OPENCLAW_STATE_DIR (full state dir override)
+//   2. dirname(env.OPENCLAW_CONFIG_PATH)
+//   3. ~/.openclaw (or %USERPROFILE%/.openclaw on Windows)
+// Returns absolute path to <state-dir>/hooks, or null if home is undetermined.
+function computeDefaultManagedHooksDir() {
+  const env = process.env;
+  let home;
+  try { home = homedir(); } catch {}
+  home = home || env.USERPROFILE || env.HOME || '';
+  if (!home) return null;
+  const stateDir = env.OPENCLAW_STATE_DIR?.trim()
+    || (env.OPENCLAW_CONFIG_PATH?.trim()
+      ? dirname(env.OPENCLAW_CONFIG_PATH.trim())
+      : null)
+    || join(home, '.openclaw');
+  return join(stateDir, 'hooks');
 }
 
 // --- Validate source ---

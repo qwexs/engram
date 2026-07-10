@@ -17,6 +17,8 @@ const { values: args } = parseArgs({
     'type': { type: 'string', default: 'dev-project' },
     'kg-entity': { type: 'string', default: '' },
     'topic': { type: 'string', default: '' },
+    'peer': { type: 'string', default: '' },
+    'group': { type: 'string', default: '' },
     'create-telegram-topic': { type: 'boolean', default: false },
     'telegram-chat-id': { type: 'string', default: '' },
     'telegram-icon-color': { type: 'string', default: '0x6FB9F0' },
@@ -42,12 +44,18 @@ Options:
   --domain <name>            Имя домена (латиница, дефисы)
   --description <text>       Описание домена
   --type <type>              Тип домена:
-                               dev-project   — development project (default)
-                               cron-task     — periodic task
-                               topic-thread  — Telegram topic as memory contour
+                               dev-project    — development project (default)
+                               cron-task      — periodic task
+                               topic-thread   — Telegram topic as memory contour
+                               peer-direct    — Telegram DM chat as memory contour
+                               group-direct   — Telegram group (no topics) as memory contour
   --kg-entity <path>         Путь к KG entity (например "projects/engram")
   --topic <chatId:topicId>   Привязка к существующему Telegram-топику (только для type=topic-thread).
                              Формат: "-100XXXXXXXXXX:NN"
+  --peer <chatId>            Привязка к DM-чату (только для type=peer-direct).
+                             Формат: userId (например "205075873")
+  --group <chatId>           Привязка к группе без топиков (только для type=group-direct).
+                             Формат: "-100XXXXXXXXXX"
   --create-telegram-topic   Создать новый Telegram-топик через Bot API и привязать к домену
                              (только для type=topic-thread, требует --telegram-chat-id).
                              Токен бота: ~/.openclaw/openclaw.json -> channels.telegram.accounts.sergey.botToken
@@ -130,8 +138,8 @@ if (!/^[a-z][a-z0-9-]*$/.test(domain)) {
 }
 
 // Валидация типа домена
-if (!['dev-project', 'cron-task', 'topic-thread'].includes(domainType)) {
-  console.error('❌ Тип домена должен быть dev-project, cron-task или topic-thread');
+if (!['dev-project', 'cron-task', 'topic-thread', 'peer-direct', 'group-direct'].includes(domainType)) {
+  console.error('❌ Тип домена должен быть dev-project, cron-task, topic-thread, peer-direct или group-direct');
   process.exit(1);
 }
 
@@ -216,6 +224,45 @@ if (domainType === 'topic-thread') {
   console.warn(`⚠️  --topic указан, но тип домена ${domainType} (не topic-thread). Игнорирую.`);
 }
 
+const peerArg = args.peer;
+const groupArg = args.group;
+
+// --- peer-direct binding ---
+let peerBinding = null;
+if (domainType === 'peer-direct') {
+  if (!peerArg) {
+    console.error('❌ Для type=peer-direct обязателен --peer <chatId>');
+    console.error('   Пример: --peer 205075873');
+    process.exit(1);
+  }
+  if (!/^\d+$/.test(peerArg)) {
+    console.error(`❌ --peer должен быть числовым userId (например 205075873)`);
+    console.error(`   Получено: "${peerArg}"`);
+    process.exit(1);
+  }
+  peerBinding = { chatId: peerArg };
+} else if (peerArg) {
+  console.warn(`⚠️  --peer указан, но тип домена ${domainType} (не peer-direct). Игнорирую.`);
+}
+
+// --- group-direct binding ---
+let groupBinding = null;
+if (domainType === 'group-direct') {
+  if (!groupArg) {
+    console.error('❌ Для type=group-direct обязателен --group <chatId>');
+    console.error('   Пример: --group -100XXXXXXXXXX');
+    process.exit(1);
+  }
+  if (!/^-?\d+$/.test(groupArg)) {
+    console.error(`❌ --group должен быть числовым chat ID (например -100XXXXXXXXXX)`);
+    console.error(`   Получено: "${groupArg}"`);
+    process.exit(1);
+  }
+  groupBinding = { chatId: groupArg };
+} else if (groupArg) {
+  console.warn(`⚠️  --group указан, но тип домена ${domainType} (не group-direct). Игнорирую.`);
+}
+
 const domainsDir = join(WORKSPACE, 'memory', 'domains');
 const domainDir = join(domainsDir, domain);
 
@@ -269,11 +316,17 @@ console.log(`📁 Создан: memory/domains/${domain}/`);
 
 // Копирование шаблонов с подстановками
 const today = new Date().toISOString().split('T')[0];
-// Session key для topic-thread: OpenClaw хранит chatId с ведущим минусом для групп;
-// в session key используется абсолютное значение (без минуса).
+// Session key для topic-thread/peer-direct/group-direct:
+// topic-thread:  telegram-group--{absChatId}-topic-{topicId}
+// peer-direct:   telegram-direct--{chatId}
+// group-direct:  telegram-group--{absChatId}
 const sessionKey = topicBinding
   ? `telegram-group--${topicBinding.chatId.replace(/^-/, '')}-topic-${topicBinding.topicId}`
-  : '';
+  : peerBinding
+    ? `telegram-direct--${peerBinding.chatId}`
+    : groupBinding
+      ? `telegram-group--${groupBinding.chatId.replace(/^-/, '')}`
+      : '';
 const kgEntityPath = kgEntity || '';
 const kgEntityDisplay = kgEntity
   ? `\`${kgEntity}\` (QMD collection: \`life-projects-${domain}\`, FS: \`life/${kgEntity}/\`)`
@@ -325,9 +378,9 @@ const templates = ['decisions.md', 'status.md', 'changelog.md', 'README.md'];
 if (domainType !== 'topic-thread') {
   templates.push('workflow.md');
 }
-// agents.md — для topic-thread. Per-domain operational ruleset, инжектится хуком
-// engram-topic-domain-load вторым блоком в daily note.
-if (domainType === 'topic-thread') {
+// agents.md — для topic-thread, peer-direct и group-direct.
+// Per-domain operational ruleset, инжектится хуком *-domain-load.
+if (domainType === 'topic-thread' || domainType === 'peer-direct' || domainType === 'group-direct') {
   templates.push('agents.md');
 }
 
@@ -346,15 +399,23 @@ for (const tmpl of templates) {
   console.log(`  ✅ ${tmpl}`);
 }
 
-// Для topic-thread дописываем секцию привязки в README
-if (domainType === 'topic-thread' && topicBinding) {
+// Для topic-thread / peer-direct / group-direct дописываем секцию привязки в README
+if ((domainType === 'topic-thread' || domainType === 'peer-direct' || domainType === 'group-direct') && (topicBinding || peerBinding || groupBinding)) {
   const readmePath = join(domainDir, 'README.md');
   let readme = await Bun.file(readmePath).text();
-  // Session: chatId в OpenClaw хранится с ведущим минусом для групп; в session key используется абсолютное значение
-  const sessionChatId = topicBinding.chatId.startsWith('-') ? topicBinding.chatId.slice(1) : topicBinding.chatId;
-  const topicBlock = `\n## Привязка к топику\n\n- **Chat ID**: \`${topicBinding.chatId}\`\n- **Topic ID**: \`${topicBinding.topicId}\`\n- **Session**: \`telegram-group--${sessionChatId}-topic-${topicBinding.topicId}\`\n`;
-  if (!readme.includes('## Привязка к топику')) {
-    await Bun.write(readmePath, readme.trimEnd() + topicBlock);
+  let bindingBlock = '';
+  if (topicBinding) {
+    const sessionChatId = topicBinding.chatId.startsWith('-') ? topicBinding.chatId.slice(1) : topicBinding.chatId;
+    bindingBlock = `\n## Привязка к топику\n\n- **Chat ID**: \`${topicBinding.chatId}\`\n- **Topic ID**: \`${topicBinding.topicId}\`\n- **Session**: \`telegram-group--${sessionChatId}-topic-${topicBinding.topicId}\`\n`;
+  } else if (peerBinding) {
+    bindingBlock = `\n## Привязка к DM-чату\n\n- **User ID**: \`${peerBinding.chatId}\`\n- **Session**: \`telegram-direct--${peerBinding.chatId}\`\n`;
+  } else if (groupBinding) {
+    const sessionChatId = groupBinding.chatId.startsWith('-') ? groupBinding.chatId.slice(1) : groupBinding.chatId;
+    bindingBlock = `\n## Привязка к группе\n\n- **Chat ID**: \`${groupBinding.chatId}\`\n- **Session**: \`telegram-group--${sessionChatId}\`\n`;
+  }
+  const sectionTitle = topicBinding ? '## Привязка к топику' : peerBinding ? '## Привязка к DM-чату' : '## Привязка к группе';
+  if (bindingBlock && !readme.includes(sectionTitle)) {
+    await Bun.write(readmePath, readme.trimEnd() + bindingBlock);
   }
 
   // === Cold-start auto-derive для status.md ===
@@ -408,6 +469,24 @@ if (topicBinding) {
     }
   }
 }
+// Проверка дублей peer-привязки: один DM = один домен
+if (peerBinding) {
+  for (const [name, entry] of Object.entries(registry.domains || {})) {
+    if (entry.peer && String(entry.peer.chatId).replace(/^-/, '') === String(peerBinding.chatId).replace(/^-/, '')) {
+      console.error(`❌ DM ${peerBinding.chatId} уже привязан к домену "${name}"`);
+      process.exit(1);
+    }
+  }
+}
+// Проверка дублей group-привязки: одна группа = один домен
+if (groupBinding) {
+  for (const [name, entry] of Object.entries(registry.domains || {})) {
+    if (entry.group && String(entry.group.chatId).replace(/^-/, '') === String(groupBinding.chatId).replace(/^-/, '')) {
+      console.error(`❌ Группа ${groupBinding.chatId} уже привязан к домену "${name}"`);
+      process.exit(1);
+    }
+  }
+}
 
 // Per-type defaults: cadenceDays (when hb-domains-write should fire) and
 // staleAfterDays (when the domain is flagged as stale and eligible for archive).
@@ -428,6 +507,8 @@ const DEFAULTS_BY_TYPE = {
   "topic-thread": { cadenceDays: 2, staleAfterDays: 60, cadenceAdaptive: true, cadenceAdaptiveWindowDays: DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS },
   "dev-project":  { cadenceDays: 3, staleAfterDays: 60 },
   "cron-task":    { cadenceDays: 1, staleAfterDays: 30 },
+  "peer-direct":  { cadenceDays: 2, staleAfterDays: 90 },
+  "group-direct": { cadenceDays: 2, staleAfterDays: 90 },
 };
 const typeDefaults = DEFAULTS_BY_TYPE[domainType] ?? {
   cadenceDays: 3,
@@ -441,6 +522,8 @@ registry.domains[domain] = {
   ...(typeDefaults.cadenceAdaptive != null ? { cadenceAdaptive: typeDefaults.cadenceAdaptive, cadenceAdaptiveWindowDays: typeDefaults.cadenceAdaptiveWindowDays } : {}),
   ...(kgEntity ? { kgEntity } : {}),
   ...(topicBinding ? { topic: topicBinding } : {}),
+  ...(peerBinding ? { peer: peerBinding } : {}),
+  ...(groupBinding ? { group: groupBinding } : {}),
   ...(pending ? { pending: true } : {}),
   description,
   created: today,
@@ -451,6 +534,8 @@ await Bun.write(registryPath, JSON.stringify(registry, null, 2) + '\n');
 const registryBits = [`тип: ${domainType}`];
 if (kgEntity) registryBits.push(`KG: ${kgEntity}`);
 if (topicBinding) registryBits.push(`топик: ${topicBinding.chatId}:${topicBinding.topicId}`);
+if (peerBinding) registryBits.push(`DM: ${peerBinding.chatId}`);
+if (groupBinding) registryBits.push(`группа: ${groupBinding.chatId}`);
 if (pending) registryBits.push('pending: true');
 if (typeDefaults.cadenceAdaptive) {
   registryBits.push(`cadenceAdaptive=${typeDefaults.cadenceAdaptiveWindowDays}d`);
@@ -517,7 +602,7 @@ if (qmdAvailable()) {
 console.log(`
 ✅ Домен создан!${pending ? ' (pending — требует promote для активации)' : ''}
    Домен:        ${domain}
-   Тип:          ${domainType}${kgEntity ? `\n   KG Entity:    ${kgEntity}` : ''}${topicBinding ? `\n   Топик:        ${topicBinding.chatId}:${topicBinding.topicId}` : ''}
+   Тип:          ${domainType}${kgEntity ? `\n   KG Entity:    ${kgEntity}` : ''}${topicBinding ? `\n   Топик:        ${topicBinding.chatId}:${topicBinding.topicId}` : ''}${peerBinding ? `\n   DM:           ${peerBinding.chatId}` : ''}${groupBinding ? `\n   Группа:       ${groupBinding.chatId}` : ''}
    Описание:     ${description}
    Путь:         memory/domains/${domain}/
    QMD:          qmd query "запрос" -c domains
@@ -530,6 +615,12 @@ ${domainType === 'topic-thread'
   4. Операционные правила топик-агента → agents.md (auto-inject в daily note, ручной override)
   5. Хук engram-topic-domain-load автоматически подгружает контекст в daily note при заходе в топик
   6. Heartbeat: liveness, changelog rotation, KG extraction`
+  : (domainType === 'peer-direct' || domainType === 'group-direct')
+    ? `  1. Решения и pinned-факты → decisions.md (агент обновляет по «решили X» в чате)
+  2. Текущее состояние → status.md (обновляется агентом при завершении блока)
+  3. Лог значимых событий → changelog.md
+  4. Операционные правила → agents.md (auto-inject через system-event, ручной override)
+  5. Хук engram-peer-domain-load автоматически подгружает контекст при каждом новом сообщении`
   : `  1. Настрой правила в decisions.md
   2. Запусти субагент с промптом из templates/spawn-prompt.md
   3. Субагент обновит status.md и changelog.md`}

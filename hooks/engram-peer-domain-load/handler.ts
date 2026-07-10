@@ -11,23 +11,30 @@ import {
 import { enqueueSystemEventToSession } from "../_lib/system-event.js";
 
 /**
- * engram-topic-domain-load (v3.5 — system-event delivery)
+ * engram-peer-domain-load (v3.5 — system-event delivery)
  *
- * On `message:received`, if the message is in a Telegram topic session,
- * look up the domain bound to that topic and inject Domain Context + AGENTS
- * via the OpenClaw gateway `system event` channel.
+ * On `message:received`, if the message is in a Telegram direct (DM) chat
+ * or a group without topics, look up the domain bound to that chat and
+ * inject Domain Context + AGENTS via the OpenClaw gateway `system event`
+ * channel.
  *
- * This hook is a thin wrapper around `_lib/domain-resolve` (resolution) +
- * `_lib/domain-inject` (payload) + `_lib/system-event` (delivery).
- * Only `topic-thread` sessions are handled here; peer-direct and
- * group-direct are handled by `engram-peer-domain-load`.
+ * Handles two session kinds:
+ *   - `peer-direct`  — DM chats (positive chatId = user id)
+ *   - `group-direct` — groups without topic structure (negative chatId, no topicId)
+ *
+ * Topic-thread sessions (groups with topics) are handled by the sibling
+ * `engram-topic-domain-load` hook.
+ *
+ * Registry bindings:
+ *   - peer-direct:  `entry.peer  = { chatId }`
+ *   - group-direct: `entry.group = { chatId }`
  *
  * See HOOK.md for full documentation.
  */
 const handler = async (event: any) => {
-  // Only handle topic-thread sessions
+  // Only handle peer-direct and group-direct sessions
   const resolved = resolveDomainFromEvent(event, {
-    kinds: ["topic-thread"],
+    kinds: ["peer-direct", "group-direct"],
   });
   if (!resolved) return;
 
@@ -38,7 +45,7 @@ const handler = async (event: any) => {
     sessionSegment,
     sessionLocation,
     absChatId,
-    topicId,
+    chatId,
     agentId,
     workspaceDir,
     sessionKey,
@@ -108,13 +115,13 @@ const handler = async (event: any) => {
 
   if (!result.ok) {
     console.warn(
-      `[engram-topic-domain-load] system-event injection failed for "${domainName}" (chat=${absChatId}, topic=${topicId}): ${result.error}; next message will retry`,
+      `[engram-peer-domain-load] system-event injection failed for "${domainName}" (chat=${chatId}, kind=${sessionKind}): ${result.error}; next message will retry`,
     );
     return;
   }
 
   console.log(
-    `[engram-topic-domain-load] Injected domain context + agents for "${domainName}" → chat ${absChatId}/topic ${topicId} via system-event (hash ${contentHash}, agents ${agents.source}, ${result.bytesSent} bytes)`,
+    `[engram-peer-domain-load] Injected domain context + agents for "${domainName}" → ${sessionKind} ${absChatId} via system-event (hash ${contentHash}, agents ${agents.source}, ${result.bytesSent} bytes)`,
   );
 };
 

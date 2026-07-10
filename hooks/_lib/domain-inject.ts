@@ -6,7 +6,8 @@
  * agents body) into a session. Used by:
  *
  *   - `engram-topic-domain-load` (Telegram topic-thread bindings)
- *   - `apriori-peer-domain-load` (Telegram direct-peer bindings)
+ *   - `engram-peer-domain-load` (Telegram DM + group-without-topics bindings)
+ *   - `apriori-peer-domain-load` (Telegram direct-peer bindings, apriori-tech)
  *   - any future `*-domain-load` hook matching the system-event pattern
  *
  * Pipeline:
@@ -60,8 +61,8 @@ export type ResolveAgentsCfg = {
 export type BuildDomainPayloadOpts = {
   domainName: string;
   domainEntry: { type: string; kgEntity?: string | null; [k: string]: unknown };
-  sessionKind: "topic-thread" | "peer-direct";
-  /** For topic-thread: "<chatId>:<topicId>". For peer-direct: just the accountId. */
+  sessionKind: "topic-thread" | "peer-direct" | "group-direct";
+  /** For topic-thread: "<chatId>:<topicId>". For peer-direct: "<userId>". For group-direct: "<chatId>". */
   sessionLocation: string;
   /** 8-hex hash from `computeContextHash`. Also stamped into the marker. */
   contentHash: string;
@@ -142,11 +143,13 @@ export function buildDomainPayload(params: BuildDomainPayloadOpts): string {
 
   // For topic-thread the sessionLocation is "<chatId>:<topicId>"; split on
   // the first ":" only (chat ids are always "-<digits>"). For peer-direct
-  // it is just the accountId — no split needed.
+  // it is just the userId. For group-direct it is the chatId.
   const sessionLabel =
     sessionKind === "topic-thread"
       ? `chat \`${sessionLocation.split(":")[0]}\`, topic \`${sessionLocation.split(":")[1]}\``
-      : `accountId \`${sessionLocation}\``;
+      : sessionKind === "peer-direct"
+        ? `DM \`${sessionLocation}\``
+        : `group \`${sessionLocation}\``;
 
   return `🧠 <b>Engram Domain Context (auto)</b> · <code>${sessionKind}</code>
 <!-- engram-system-event-hash:${contentHash} -->

@@ -696,7 +696,9 @@ The binding is defined via the domain registry (`memory/domains/registry.json`):
 **Domain types:**
 - `dev-project` — development, linked to KG entity, subagent on demand
 - `cron-task` — periodic tasks, subagent on schedule
-- `topic-thread` — Telegram topic as memory contour (not a subagent; the topic itself is the long-lived OpenClaw session), bound via `registry.domains[slug].topic = { chatId, topicId }`. Hook `engram-topic-domain-load` injects `## Domain Context` block into the topic session's daily note on `message:received`. Hook `engram-topic-auto-domain-suggest` injects a `## engram:auto-suggest` block in unbound topics once a topic accumulates ≥2 user messages. See `references/topic-thread.md` for the full contract. Heartbeat-runner archives stale topic-thread domains after `staleAfterDays` (default 60) to `memory/domains/archives/{slug}/` and sets `archived: true` + `archivedAt` + `archivePath` in the registry. Hook `engram-topic-domain-load` re-activates an archived domain automatically on the next `message:received` in its topic.
+- `topic-thread` — Telegram topic as memory contour (not a subagent; the topic itself is the long-lived OpenClaw session), bound via `registry.domains[slug].topic = { chatId, topicId }`. Hook `engram-topic-domain-load` injects Domain Context + AGENTS via system-event on `message:received`. Hook `engram-topic-auto-domain-suggest` injects a `## engram:auto-suggest` block in unbound topics once a topic accumulates ≥2 user messages. See `references/topic-thread.md` for the full contract. Heartbeat-runner archives stale topic-thread domains after `staleAfterDays` (default 60) to `memory/domains/archives/{slug}/` and sets `archived: true` + `archivedAt` + `archivePath` in the registry. Hook `engram-topic-domain-load` re-activates an archived domain automatically on the next `message:received` in its topic.
+- `peer-direct` — Telegram DM chat as memory contour, bound via `registry.domains[slug].peer = { chatId }`. Hook `engram-peer-domain-load` injects Domain Context + AGENTS via system-event on `message:received`. Same pipeline as topic-thread, but without topicId. Useful for personal assistant sessions (Ур.0).
+- `group-direct` — Telegram group without topics as memory contour, bound via `registry.domains[slug].group = { chatId }`. Hook `engram-peer-domain-load` handles this kind too. Useful for company-wide groups (Ур.2).
 
 ### Spawn Templates
 
@@ -1231,9 +1233,10 @@ Engram ships **9 OpenClaw hooks** that automate mechanical session tasks: **8 `e
 | `engram-session-memory` | `command:new`, `command:reset` | Save session transcript to `sessions/` subdir (QMD-indexed). Replaces native `session-memory`. |
 | `engram-bootstrap-qmd` | `agent:bootstrap` | Runs `qmd update` (15s timeout, silent skip if unavailable). |
 | `engram-message-log` | `message:received` | Logs messages to `workspace/message-log/YYYY-MM-DD.jsonl`. **Disabled by default** (opt-in). |
-| `engram-topic-domain-load` | `message:received` | On Telegram topic, inject `## Domain Context (auto)` (decisions/status/changelog) **and** `## Domain AGENTS (auto)` (per-domain ruleset) blocks at the top of today's daily note. ⚠️ file-then-hope — race-fix + side-effect-delivered pending. |
+| `engram-topic-domain-load` | `message:received` | On Telegram topic, resolve domain via `entry.topic = {chatId, topicId}` and inject Domain Context + AGENTS via `openclaw system event`. v3.5 — side-effect-delivered (was file-then-hope). |
+| `engram-peer-domain-load` | `message:received` | On Telegram DM (`peer-direct`) or group without topics (`group-direct`), resolve domain via `entry.peer` or `entry.group` and inject Domain Context + AGENTS via `openclaw system event`. v3.5 — new hook, same pipeline as topic-domain-load. |
 | `engram-topic-auto-domain-suggest` | `message:received` | Sibling of `engram-topic-domain-load`. In unbound topics, after ≥2 user messages, inject `## engram:auto-suggest` block offering domain creation. 🔄 **v3.9 deployed, side-effect-delivered via Telegram inline_keyboard** (E2E verified). |
-| `apriori-peer-domain-load` | `message:received` | Same as `engram-topic-domain-load`, but for DM peers (not Telegram topics). Agent-specific for `apriori-tech` workspace. ⚠️ race-fix pending. |
+| `apriori-peer-domain-load` | `message:received` | Same as `engram-peer-domain-load`, but agent-specific for `apriori-tech` workspace. ⚠️ race-fix pending. |
 
 > **Note:** Disable the built-in `session-memory` hook when enabling `engram-session-memory` — they serve the same purpose but write to different locations.
 
@@ -1271,9 +1274,9 @@ User-facing flows должны использовать **детерминист
 ### Topic-thread message flow
 
 1. `engram-message-log` fires on `message:received` → logs to `workspace/message-log/`
-2. `engram-topic-domain-load` fires on `message:received` → injects Domain Context + Domain AGENTS blocks (idempotent per-block)
+2. `engram-topic-domain-load` fires on `message:received` → injects Domain Context + Domain AGENTS via system-event (idempotent per hash)
 3. `engram-topic-auto-domain-suggest` fires on `message:received` (sibling) → if topic is unbound and ≥2 user messages, sends Telegram `inline_keyboard` via Bot API (side-effect-delivered, v3.9+)
-4. `apriori-peer-domain-load` fires on `message:received` → same as #2 для DM peers (apriori-tech only)
+4. `engram-peer-domain-load` fires on `message:received` → same as #2 for DM (`peer-direct`) and group-without-topics (`group-direct`) sessions
 
 ### Installation
 

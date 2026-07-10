@@ -20,4 +20,5 @@ scripts/spawn-claim-output.json
 # Pattern uses the unique hook suffix (`-peer-domain-load`), not the agent-id
 # prefix, so a hook directory like `apriori-peer-domain-load/` can live in the
 # skill tree as a workspace-only artifact without being tracked.
-hooks/*-peer-domain-load
+# Exception: `engram-peer-domain-load` is a first-class engram hook (not workspace-specific).
+hooks/apriori-peer-domain-load

@@ -3,7 +3,14 @@ name: engram
 description: Etalon memory architecture with Knowledge Graph, session isolation, memory decay, and QMD hybrid search (Local/Jina/Ollama)
 ---
 
-> **Spec sync v3.4**: 2026-07-10. Изменения: 9 hooks (было 7) + `engram-peer-domain-load`, race-condition guard `ensureSessionReady()`, side-effect-delivered pattern, 10 фаз heartbeat (0, 0.5, 1, 1.5, 2, 3, 3.5, 4, 5, 5.5, 6), 7 hb-* subagents (было 6, добавлен `hb-domains-write` split), minimax models per subagent (был `sonnet-4-6` placeholder), Ollama QMD provider, +12 v3.4 скриптов. Спека живёт в workspace, не в этом репо.
+> **Spec sync v3.5**: 2026-07-11. Изменения vs v3.4:
+>
+> - **ISS-15 (write-then-hope → system-event delivery)**: `engram-topic-domain-load` переписан на `enqueueSystemEventToSession()` через `_lib/system-event.ts`. Убраны `writeFileSync`/`mkdtempSync`/`renameSync` в daily note, sentinels `<!-- domain-context:* -->` заменены на `<!-- engram-system-event-hash:[a-f0-9]{8} -->`. Source `_lib/domain-inject.ts` + `_lib/system-event.ts` восстановлены из prod bundle (R1 HIGH закрыт). 79 unit/integration тестов.
+> - **ISS-16 (peer-direct + group-direct домены)**: новый хук `engram-peer-domain-load` для Telegram DM и group-without-topics. Shared resolver `_lib/domain-resolve.ts` (3 fallback layers, sessionKind determination, sign-symmetric chatId lookup, archive reactivation). `add-domain.js` получил `--peer <chatId>` и `--group <chatId>`. 3 типа доменов: `topic-thread` / `peer-direct` / `group-direct` (registry: `entry.topic` / `entry.peer` / `entry.group`).
+> - **ISS-16 follow-up (red-gap)**: Layer 1 в `domain-resolve.ts` split на 2 независимых проверки (была AND, ломавшая peer-direct); handler.js bundle регенерированы с `--no-bundle --target=bun --format=esm`. 28 новых тестов resolveDomainFromEvent. Итого 119/119 в `hooks/`.
+> - **Chore (8b473c0)**: удалён `apriori-peer-domain-load` (workspace-specific, поглощён `engram-peer-domain-load`). Теперь 9 `engram-*` хуков, без `apriori-*`.
+>
+> Спека живёт в workspace, не в этом репо. v3.5 детали: `memory/tmp/engram-v35-addendum.md` (30221 bytes, рабочий draft от 2026-07-11). v3.4 baseline: `memory/tmp/engram-v34-addendum.md`.
 
 > ⚠️ **READ-ONLY SKILL**: This skill is a reference implementation. Do not edit files directly.
 > When installing, copy scripts to your workspace folder:
@@ -1223,7 +1230,7 @@ Processes `=== HB-* HANDOFF ===` blocks from subagent results. Handles HB-EXTRAC
 
 ## OpenClaw Hooks
 
-Engram ships **9 OpenClaw hooks** that automate mechanical session tasks: **8 `engram-*`** (canonical, in this repo) + **1 `apriori-*`** (agent-specific for `apriori-tech`, ships alongside engram in that workspace). Hooks run automatically — agents do NOT need to repeat these steps manually.
+Engram ships **9 OpenClaw hooks** that automate mechanical session tasks: **9 `engram-*`** (canonical, in this repo). Workspace-specific `apriori-*` hooks were removed in v3.5 (8b473c0) — `apriori-peer-domain-load` is now `engram-peer-domain-load`, shared across all workspaces. Hooks run automatically — agents do NOT need to repeat these steps manually.
 
 | Hook | Event | What it does |
 |------|-------|--------------|

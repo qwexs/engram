@@ -14,8 +14,9 @@
  * Resolution order for subagent models (e.g. `hb-extract`, `hb-synthesis`):
  *   1. process.env.ENGRAM_MODEL_<LABEL_UPPER>  (explicit override)
  *   2. engram.json -> models.heartbeat.subagents[label]
- *   3. SUBAGENT_MODEL_DEFAULTS[label]  (per-label sensible default)
- *   4. generic fallback: "sonnet-4-6"
+ *   3. engram.json -> models.default  (workspace-wide default)
+ *   4. engram.json -> models.subagents_default  (legacy alias)
+ *   5. hardcoded fallback: "sonnet-4-6"  (OSS default, last resort)
  */
 
 import { join } from "path";
@@ -71,34 +72,81 @@ export function resolveQmdCommand(workspace) {
 }
 
 /**
- * Sensible defaults for known heartbeat subagent labels. The OSS default is
- * `sonnet-4-6` for every phase; deployments can override per-label via
- * `engram.json` -> `models.heartbeat.subagents.<label>` or the
- * `ENGRAM_MODEL_<LABEL_UPPER>` env var.
+ * Known heartbeat subagent labels and their reasoning class.
+ * The actual model ids are NOT hardcoded here — they come from engram.json.
  */
-const SUBAGENT_MODEL_DEFAULTS = {
-  "hb-extract": "sonnet-4-6",
-  "hb-synthesis": "sonnet-4-6",
-  "hb-domains": "sonnet-4-6",
-  "hb-rethink": "sonnet-4-6",
-  "hb-autoresearch": "sonnet-4-6",
-  "hb-rethink2": "sonnet-4-6",
-};
+const HB_SUBAGENT_LABELS = [
+  "hb-extract",
+  "hb-synthesis",
+  "hb-domains",
+  "hb-domains-write",
+  "hb-rethink",
+  "hb-rethink2",
+  "hb-autoresearch",
+];
+
+// Labels that require full-reasoning (capable model). All others default to
+// the cheaper model. This classification is task-intrinsic: synthesis/OLL
+// needs reasoning; extract/domains/autoresearch are grinding/regex.
+const FULL_REASONING_LABELS = new Set([
+  "hb-synthesis",
+  "hb-rethink",
+  "hb-rethink2",
+]);
+
+// OSS fallback — only used if engram.json has no model config at all.
+// This ensures a fresh OSS install (without engram.json) still works.
+const OSS_FALLBACK_MODEL = "sonnet-4-6";
 
 /**
  * Resolve the model name for a heartbeat subagent by its spawn label.
- * Always non-empty string; falls back to SUBAGENT_MODEL_DEFAULTS[label]
- * or "sonnet-4-6" for unknown labels.
+ * Resolution order (no hardcoded deployment model ids):
+ *
+ *   1. process.env.ENGRAM_MODEL_<LABEL_UPPER>  (explicit env override)
+ *   2. engram.json -> models.heartbeat.subagents[label]  (per-label)
+ *   3. engram.json -> models.default  (workspace-wide default for all subagents)
+ *   4. engram.json -> models.subagents_default  (legacy alias for models.default)
+ *   5. OSS_FALLBACK_MODEL  ("sonnet-4-6", last resort)
+ *
+ * A fresh install only needs `models.default` (or `models.subagents_default`)
+ * in engram.json — per-label overrides in `models.heartbeat.subagents` are
+ * optional and only needed when some labels should use a different model.
  */
 export function resolveSubagentModel(workspace, label) {
-  if (!label) return "sonnet-4-6";
+  if (!label) return OSS_FALLBACK_MODEL;
+
   // 1. explicit env override: ENGRAM_MODEL_HB_EXTRACT, ENGRAM_MODEL_HB_RETHINK, ...
   const envKey = `ENGRAM_MODEL_${String(label).toUpperCase().replace(/-/g, "_")}`;
   if (process.env[envKey]) return String(process.env[envKey]);
-  // 2. engram.json override
+
+  // 2. engram.json per-label override
   const config = loadEngramConfig(workspace);
   const fromConfig = config?.models?.heartbeat?.subagents?.[label];
   if (fromConfig) return String(fromConfig);
-  // 3. per-label default
-  return SUBAGENT_MODEL_DEFAULTS[label] || "sonnet-4-6";
+
+  // 3. engram.json -> models.default (workspace-wide default for all subagents)
+  const modelsDefault = config?.models?.default;
+  if (modelsDefault) return String(modelsDefault);
+
+  // 4. engram.json -> models.subagents_default (legacy alias)
+  const subagentsDefault = config?.models?.subagents_default;
+  if (subagentsDefault) return String(subagentsDefault);
+
+  // 5. OSS fallback
+  return OSS_FALLBACK_MODEL;
+}
+
+/**
+ * Returns the list of known heartbeat subagent labels.
+ * Useful for validation, templates, and init scripts.
+ */
+export function getHbSubagentLabels() {
+  return [...HB_SUBAGENT_LABELS];
+}
+
+/**
+ * Returns whether a label requires full-reasoning (capable model).
+ */
+export function isFullReasoningLabel(label) {
+  return FULL_REASONING_LABELS.has(label);
 }

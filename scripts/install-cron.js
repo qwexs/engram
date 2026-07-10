@@ -203,13 +203,16 @@ const cronName = args["cron-name"] || "Heartbeat (Engram runner)";
 const schedule = args.schedule || "30m";
 const dryRun = !!args["dry-run"];
 
-// Sub-agent model: prefer engram.json -> models.subagents_default, then
-// models.heartbeat.subagents.hb-extract (closest analog for the cron agent
-// itself), then hardcoded sonnet-4-6 OSS default. Never hardcode
-// deployment-specific aliases in this script.
+// Sub-agent model: prefer engram.json -> models.subagents_default,
+// then models.default, then models.heartbeat.subagents.hb-extract,
+// then OSS fallback "sonnet-4-6". Never hardcode deployment-specific
+// model aliases in this script.
 const subagentModel = (() => {
   if (config?.models?.subagents_default) {
     return String(config.models.subagents_default);
+  }
+  if (config?.models?.default) {
+    return String(config.models.default);
   }
   if (config?.models?.heartbeat?.subagents?.["hb-extract"]) {
     return String(config.models.heartbeat.subagents["hb-extract"]);

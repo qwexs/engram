@@ -935,6 +935,55 @@ copyTemplate('life-readme.md', 'life/README.md', replacements);
 copyTemplate('index.md', 'life/index.md', replacements);
 copyTemplate('daily-note.md', `memory/agent-${agentId}/main/${today}.md`, { ...replacements, DATE: today });
 
+// --- Detect default model from openclaw.json (agents.defaults.model.primary) ---
+function detectDefaultModel() {
+  const homeDir = process.env.USERPROFILE || process.env.HOME;
+  if (!homeDir) return null;
+  const openclawConfigPath = join(homeDir, '.openclaw', 'openclaw.json');
+  if (!existsSync(openclawConfigPath)) return null;
+  try {
+    const ocConfig = JSON.parse(readFileSync(openclawConfigPath, 'utf-8'));
+    const model = ocConfig?.agents?.defaults?.model;
+    if (typeof model === 'string') return model;
+    if (typeof model === 'object' && model?.primary) return String(model.primary);
+  } catch {
+    // best-effort
+  }
+  return null;
+}
+
+// --- Ensure engram.json exists (copy from template, with auto-detected model) ---
+{
+  const engramJsonPath = join(WORKSPACE, 'engram.json');
+  const engramTemplatePath = join(TEMPLATES, 'engram.json');
+  if (!existsSync(engramJsonPath)) {
+    if (existsSync(engramTemplatePath)) {
+      let tpl = readFileSync(engramTemplatePath, 'utf-8');
+      // Replace template placeholders
+      tpl = tpl.replaceAll('{AGENT_ID}', agentId);
+      tpl = tpl.replaceAll('{COLLECTION_NAME}', `${agentId}-memory`);
+      
+      // Auto-detect model from openclaw.json and replace sonnet-4-6 placeholder
+      const detectedModel = detectDefaultModel();
+      if (detectedModel) {
+        tpl = tpl.replaceAll('"sonnet-4-6"', `"${detectedModel}"`);
+        recordCreate('engram.json', `created from template (agent=${agentId}, collection=${agentId}-memory, model=${detectedModel})`);
+        console.log(`  ✓ engram.json created from template — model auto-detected: ${detectedModel}`);
+      } else {
+        recordCreate('engram.json', `created from template (agent=${agentId}, collection=${agentId}-memory) — using OSS fallback sonnet-4-6`);
+        console.log(`  ✓ engram.json created from template — edit models.* to match your deployment`);
+        console.log(`  ⚠ No model found in openclaw.json (agents.defaults.model.primary) — using sonnet-4-6 fallback`);
+      }
+      
+      if (!dryRun) writeFileSync(engramJsonPath, tpl);
+    } else {
+      recordWarn('engram.json template not found in assets/templates/ — skipping creation');
+    }
+  } else {
+    recordSkip('template', 'engram.json', 'exists');
+  }
+}
+
 // --- Inject engram rules into AGENTS.md ---
 {
   const snippetPath = join(TEMPLATES, 'agents-snippet.md');

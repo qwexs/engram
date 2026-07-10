@@ -27,7 +27,7 @@ const DEFAULT_STATE = {
   heartbeatInProgress: false,
   heartbeatLockedAt: null,
   subagentExtraction: false,
-  extractionModel: "minimax",
+  extractionModel: null, // populated from engram.json -> models.default at runtime
   lastExtraction: {},
   lastDomainScan: null,
   lastWeeklySynthesis: null,

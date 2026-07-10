@@ -1,0 +1,31 @@
+{
+  "_comment": "Engram configuration. Replace {AGENT_ID} and {COLLECTION_NAME} with your values. Replace sonnet-4-6 with your model ids. See SKILL.md for full docs.",
+  "agent": "agent-{AGENT_ID}",
+  "qmd": {
+    "command": "qmd",
+    "localIndex": true,
+    "collection": "{COLLECTION_NAME}"
+  },
+  "models": {
+    "_comment": "Model ids for heartbeat subagents. Set 'default' to your preferred model — all subagents will use it unless overridden in heartbeat.subagents.",
+    "default": "sonnet-4-6",
+    "subagents_default": "sonnet-4-6",
+    "heartbeat": {
+      "_comment": "Per-label overrides. Only set labels that need a different model from 'default'. Labels: hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch",
+      "subagents": {
+        "hb-extract": "sonnet-4-6",
+        "hb-synthesis": "sonnet-4-6",
+        "hb-domains": "sonnet-4-6",
+        "hb-domains-write": "sonnet-4-6",
+        "hb-rethink": "sonnet-4-6",
+        "hb-rethink2": "sonnet-4-6",
+        "hb-autoresearch": "sonnet-4-6"
+      }
+    }
+  },
+  "cron": {
+    "_comment": "Heartbeat schedule. Use cron expression (UTC). Avoid overlapping slots if running multiple workspaces. See AGENTS.md §5 for slot table.",
+    "schedule": "*/30 * * * *",
+    "staggerMinutes": 30
+  }
+}

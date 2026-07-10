@@ -158,9 +158,14 @@ describe("buildDomainPayload", () => {
     expect(out).toContain("chat `1003971800777`, topic `60`");
   });
 
-  test("peer-direct session label is `accountId X`", () => {
+  test("peer-direct session label is `DM X`", () => {
     const out = buildDomainPayload({ ...baseOpts(), sessionKind: "peer-direct", sessionLocation: "sergey" });
-    expect(out).toContain("accountId `sergey`");
+    expect(out).toContain("DM `sergey`");
+  });
+
+  test("group-direct session label is `group X`", () => {
+    const out = buildDomainPayload({ ...baseOpts(), sessionKind: "group-direct", sessionLocation: "1003971800777" });
+    expect(out).toContain("group `1003971800777`");
   });
 
   test("kgEntity render", () => {

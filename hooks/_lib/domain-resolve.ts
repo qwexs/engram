@@ -102,14 +102,18 @@ export function resolveDomainFromEvent(
   let topicId: string | null = null;
   let chatId: string | null = null;
 
-  // Layer 1: direct context fields
-  if (event.context?.topicId && event.context?.chatId) {
-    topicId = String(event.context.topicId);
+  // Layer 1: direct context fields (each independent — peer-direct /
+  // group-direct events carry chatId only, no topicId; topic-thread
+  // events carry both).
+  if (event.context?.chatId) {
     chatId = String(event.context.chatId);
+  }
+  if (event.context?.topicId) {
+    topicId = String(event.context.topicId);
   }
 
   // Layer 2: conversationId regex
-  if (!topicId || !chatId) {
+  if (!chatId || !topicId) {
     const m = conversationId.match(/^telegram:(-?\d+)(?::topic:(\d+))?$/);
     if (m) {
       if (!chatId) chatId = m[1];

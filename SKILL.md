@@ -1,7 +1,9 @@
 ---
 name: engram
-description: Etalon memory architecture with Knowledge Graph, session isolation, memory decay, and QMD hybrid search
+description: Etalon memory architecture with Knowledge Graph, session isolation, memory decay, and QMD hybrid search (Local/Jina/Ollama)
 ---
+
+> **Spec sync v3.4**: 2026-07-10. Изменения: 9 hooks (было 7) + `apriori-peer-domain-load`, race-condition guard `ensureSessionReady()`, side-effect-delivered pattern, 10 фаз heartbeat (0, 0.5, 1, 1.5, 2, 3, 3.5, 4, 5, 5.5, 6), 7 hb-* subagents (было 6, добавлен `hb-domains-write` split), minimax models per subagent (был `sonnet-4-6` placeholder), Ollama QMD provider, +12 v3.4 скриптов. Спека живёт в workspace, не в этом репо.
 
 > ⚠️ **READ-ONLY SKILL**: This skill is a reference implementation. Do not edit files directly.
 > When installing, copy scripts to your workspace folder:
@@ -273,6 +275,14 @@ qmd update          # BM25 (instant)
 qmd embed           # Vectors (heartbeat only)
 ```
 
+**Three providers** (выбор через `engram.json:qmd.variant` или env vars, по умолчанию `auto`):
+
+* **Local** (`@nicepkg/qmd`) — GPU Vulkan/CUDA, embeddings локально. Zero API calls. Рекомендован для desktop.
+* **Jina** (`@qwexs/qmd`) — Jina AI API, free tier 1M tokens/month. Рекомендован для Docker/VPS без GPU.
+* **Ollama** (добавлен в v3.4) — Ollama embeddings локально через REST, no external API. Альтернатива Local если Vulkan/CUDA недоступен.
+
+Установка: `bun skills/engram/scripts/install-qmd.js --variant local|jina|ollama`.
+
 **Strategy:**
 - Always use `-c` flag for session isolation
 - Multi-collection (`-c col1 -c col2`) for cross-cutting searches (e.g., KG + daily notes)
@@ -285,17 +295,38 @@ For QMD installation and configuration, see [references/qmd-setup.md](references
 
 ## Heartbeat Integration
 
+v3.4 = **10 фаз** оркестратора (было 7 в v3.3 — добавлены 0.5 rotation, 1.5 stub summary, 3.5 domains-write split, 5.5 OLL spawn queue). Механические фазы (0, 0.5, 1.5, 4, 5, 5.5, 6) выполняются inline в `heartbeat-runner.js`; LLM-фазы (1, 2, 3, 3.5) spawn'ят subagent'ов.
+
+| Phase | Kind | Назначение | Где |
+|-------|------|-----------|-----|
+| 0 | inline | Fast Init: read state, lock, check what to run | `heartbeat-runner.js` |
+| 0.5 | inline | Rotation Check: daily notes >1000 lines → rotate | `rotate-notes.js` |
+| 1 | subagent | Extraction: hb-extract (daily note → KG) | `extract-runner.js` |
+| 1.5 | inline | Stub Summary: summarize rotated archive into stub | `heartbeat-runner.js` |
+| 2 | subagent | Synthesis: hb-synthesis (weekly summary, Mon only) | spawn `hb-synthesis` |
+| 3 | subagent | Domains Status: hb-domains (check status of all domains) | spawn `hb-domains` |
+| 3.5 | subagent | Domains Write: hb-domains-write (apply pending changelog writes, ISS-14) | spawn `hb-domains-write` |
+| 4 | inline | Maintenance: `validate-kg.js --fix` → `qmd update` → `qmd embed` | `heartbeat-runner.js` |
+| 5 | inline | OLL Check: weighted scoring + rethink/autoresearch triggers | `heartbeat-runner.js` |
+| 5.5 | inline | OLL Spawn Queue: `spawn-pump.js` + `spawn-claim.js` (queued subagents) | `spawn-pump.js`, `spawn-claim.js` |
+| 6 | inline | Report + Unlock: `heartbeat-report.js` → release lock → HEARTBEAT_OK | `heartbeat-report.js` |
+
 Add to your HEARTBEAT.md:
 
 ```
 ## Heartbeat Flow (every 30 minutes)
 
-0. Three-Layer Rotation check (daily note creation → handled by engram-daily-note hook)
-1. Monday? → Weekly Synthesis
-2. Knowledge Graph Extraction (if notes changed)
-3. Memory Maintenance (every few days)
-3.5. Domain Supervisor Scan (if domains exist)
-4. QMD Index Update (qmd update + qmd embed)
+0. Fast Init (state, lock, what to run) — heartbeat-runner.js
+0.5. Three-Layer Rotation check (daily note >1000 lines) — rotate-notes.js
+1. Knowledge Graph Extraction (if notes changed) — hb-extract subagent
+1.5. Stub Summary (rotated archives) — inline
+2. Monday? → Weekly Synthesis — hb-synthesis (Mon only)
+3. Domain Status check — hb-domains (if domains exist)
+3.5. Domain Apply Phase — hb-domains-write (every tick since ISS-14)
+4. Memory Maintenance (every few days) — validate-kg.js → qmd update → qmd embed
+5. OLL Check (weighted scoring, rethink triggers)
+5.5. OLL Spawn Queue — spawn-pump + spawn-claim (queued subagents)
+6. Heartbeat Report + unlock — heartbeat-report.js → HEARTBEAT_OK
 ```
 
 ### Weekly Synthesis (Mondays)
@@ -377,12 +408,14 @@ For full details, see [references/HEARTBEAT.md](references/HEARTBEAT.md) and [re
 
 ### Subagent Model Resolution
 
-The heartbeat spawns subagents (hb-extract, hb-synthesis, hb-domains, hb-rethink, hb-autoresearch, hb-rethink2). The model for each is **not hardcoded** in the protocol — it is resolved at spawn time by `scripts/config.js → resolveSubagentModel(workspace, label)`. Resolution order:
+The heartbeat spawns **7 subagents** (hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch). Note: `hb-domains` was split into status + write в v3.4 (ISS-14) — see [v3.4 spec §6.5](#) for rationale. The model for each is **not hardcoded** in the protocol — it is resolved at spawn time by `scripts/config.js → resolveSubagentModel(workspace, label)`. Resolution order:
 
 1. `process.env.ENGRAM_MODEL_<LABEL_UPPER>` (e.g. `ENGRAM_MODEL_HB_EXTRACT`)
 2. `engram.json → models.heartbeat.subagents[<label>]` (e.g. `"hb-extract": "<model-id>"`)
-3. Per-label default in `SUBAGENT_MODEL_DEFAULTS` (currently `sonnet-4-6` for all phases)
-4. Generic fallback: `sonnet-4-6`
+3. Per-label default in `SUBAGENT_MODEL_DEFAULTS` (v3.4 = minimax models, обновлено 2026-07-09):
+   * `minimax-portal/MiniMax-M3` — `hb-synthesis`, `hb-rethink`, `hb-rethink2` (full-reasoning: weekly synthesis + OLL review)
+   * `MiniMax-M2.7-highspeed` — `hb-extract`, `hb-domains`, `hb-domains-write`, `hb-autoresearch` (high-throughput: regex/grinding tasks)
+4. Generic fallback: `MiniMax-M2.7-highspeed`
 
 Example `engram.json` override:
 ```json
@@ -472,16 +505,17 @@ bun skills/engram/scripts/memory-promote.js --archive \
 
 **Backlink:** promoted KG fact gets `source: obs-id`; obs file gets `kgFactId`.
 
-### OLL Rethink Trigger (Heartbeat Phase 5)
+### OLL Rethink Trigger (Heartbeat Phase 5 + Phase 5.5)
 
-Phase 5 computes weighted score and spawns `hb-rethink` when triggered:
+Phase 5 computes weighted score и решает, какой subagent spawn'ить:
 
-| Condition | Threshold |
-|-----------|-----------|
-| Weighted score (f×3 + s×2 + p×1) | ≥ 15 |
-| Pending tensions | ≥ 3 |
-| Days since last rethink | ≥ 14 |
-| `--force-rethink-once` flag (manual bootstrap path, one tick only) | bypasses days gate |
+| Subagent | Trigger condition | Phase |
+|----------|-------------------|-------|
+| `hb-rethink` | weighted≥15 OR pending tensions≥3 OR ≥14 days since last rethink | 5 (direct spawn) |
+| `hb-rethink2` | hb-rethink returned alert OR weights не распустились | 5.5 (queued) |
+| `hb-autoresearch` | после успешного rethink, для self-experiment PROPOSAL | 5.5 (queued) |
+
+Phase 5 пытается direct spawn через `sessions_spawn`; если не получилось (concurrent spawn, другой heartbeat держит claim) — ставит в очередь через `spawn-pump.js`. Phase 5.5 drain'ит queue через `spawn-claim.js`.
 
 **Etalon default**: cron payload includes `--spawn-rethink --spawn-rethink2` so the OLL loop bootstraps end-to-end on fresh installs without manual seeding. `install-cron.js` migrates existing crons via `NEW_PAYLOAD_MARKER_5` check in `isOnNewFormat()`. Cost is zero on ticks where triggers don't fire because `maybeQueue` filters by `wouldRunRethink` / `wouldRunRethink2`.
 
@@ -819,15 +853,26 @@ Configured in OpenClaw (`agents.defaults.compaction.memoryFlush`). Before contex
 
 ## Scripts
 
+v3.4 = **\~54 скрипта** в `skills/engram/scripts/` (44 `.js`, 6 `.test.{js,ts}`, `_lib/`, `lib/`). Запуск — `bun skills/engram/scripts/<name>.js [args]`. Path resolution — `join(import.meta.dir, "..", "..", "..")` (3 уровня вверх до workspace root).
+
+### install-hooks.js — Build + install OpenClaw hooks
+
+```bash
+bun skills/engram/scripts/install-hooks.js [--force] [--hooks-dir <path>]
+```
+
+Build (TypeScript → handler.js bun bundle) and install hooks из `skills/engram/hooks/<name>/` → `~/clawd/hooks/<name>/handler.js`. Per-skill junction, backup до overwrite. После install нужен `openclaw gateway restart`. Идемпотентно; --force для повторного билда.
+
 ### install-qmd.js — Install QMD search engine
 
 ```bash
 bun skills/engram/scripts/install-qmd.js [--variant local|jina|ollama] [--jina-key <key>] [--ollama-key <key>] [--ollama-url <url>]
 ```
 
-Interactive installer for QMD. Two variants:
+Interactive installer for QMD. Three variants (выбор через `--variant` или env vars):
 - **local** — GPU/CPU embeddings via Vulkan/llama.cpp (recommended for desktop)
 - **jina** — Cloud embeddings via Jina AI API, free tier 1M tokens/month (recommended for Docker/VPS)
+- **ollama** — Ollama embeddings локально через REST (добавлен в v3.4). Альтернатива Local если Vulkan/CUDA недоступен.
 
 Handles npm install, API key configuration, .env file creation, and verification.
 
@@ -894,6 +939,54 @@ Renders `templates/domain/topic-thread/agents.md` with substitutions and writes 
 - Pre-create a single domain's agents.md (with `--domain`).
 
 Idempotent: skips existing files unless `--force` is passed. Archival-archived domains are skipped unless explicitly named.
+
+### promote-domain.js — Promote pending → permanent topic-thread
+
+```bash
+bun skills/engram/scripts/promote-domain.js --domain <slug> [--dry-run]
+```
+
+Promote pending auto-suggested topic (created via `add-domain.js --pending` или `engram-topic-auto-domain-suggest` accept) → permanent `topic-thread` в registry. Удаляет флаг `pending: true`, добавляет полные domain files.
+
+### list-pending.js — Список pending topic suggestions
+
+```bash
+bun skills/engram/scripts/list-pending.js [--json]
+```
+
+Список unbound topics с `pending: true` в registry, ожидающих accept/reject decision. Для review после `engram-topic-auto-domain-suggest` waves.
+
+### render-agents-section.js — Render agents.md из shared template
+
+```bash
+bun skills/engram/scripts/render-agents-section.js --domain <slug> [--kg-entity <path>] [--spawn-type dev-project|cron-task]
+```
+
+Render `memory/domains/{slug}/agents.md` из `templates/spawn-prompts/_shared/agents-section.template.md` + per-domain context (QMD index, agentId, operator). Обязательная часть spawn pipeline (§7.5 шаг 6) — subagent без `{{agents}}` блока может дрифтить в cross-topic/cross-KG поиск.
+
+### memory-repair.js — Repair corrupted items.json
+
+```bash
+bun skills/engram/scripts/memory-repair.js [--dry-run] [--entity <path>]
+```
+
+**Новое в v3.4.** Repair corrupted `items.json`: orphaned `supersedeBy`, broken date, missing confidence/abstractionLevel/tags. Backfill v2 schema defaults. Idempotent.
+
+### derive-facts.js — Build Derived Facts Layer
+
+```bash
+bun skills/engram/scripts/derive-facts.js [--dry-run]
+```
+
+**v3.3+, активно в v3.4.** Собрать все активные факты из `life/**/items.json` → `life/_derived/facts-active.md` для QMD индексации. ≈1 сек / 112 сущностей. Фильтрует superseded. Автоматически вызывается `memory-write.js` (шаг 8) и Phase 4 maintenance.
+
+### audit-superseded.js — Audit supersede chain integrity
+
+```bash
+bun skills/engram/scripts/audit-superseded.js [--fix] [--quiet]
+```
+
+Detect orphan `supersedeBy` (target не существует), broken chains (A→B→C где C не active), mismatched dates. `--fix` ремонтирует мягкие cases (заменяет broken `supersedeBy` на null + отмечает как mismatch).
 
 ### validate.js — Check integrity
 
@@ -1074,6 +1167,49 @@ bun skills/engram/scripts/heartbeat-report.js --session main --date 2026-02-27 \
 
 Creates or updates `## Heartbeat Report` section in a daily note. Called by heartbeat orchestrator in Phase 6 (initial write) and by `process-handoff.js` (status update after subagent handoff). Omit any flag to preserve its current value.
 
+### extract-runner.js — hb-extract spawn helper
+
+```bash
+bun skills/engram/scripts/extract-runner.js --session <id> --date <YYYY-MM-DD> [--watermark <line>]
+```
+
+Spawn `hb-extract` subagent с templated prompt + watermark context. Используется heartbeat-runner Phase 1. Returns the spawn task + tracking id for process-handoff-core.js.
+
+### domains-runner.js — hb-domains + hb-domains-write spawn helper
+
+```bash
+bun skills/engram/scripts/domains-runner.js --phase status|write|both
+```
+
+Phase 3 spawns `hb-domains` (status check); Phase 3.5 spawns `hb-domains-write` (apply pending changelog writes, с ISS-14 каждый cron tick). `--phase both` запускает обе подряд с idempotency по entry-id.
+
+### process-handoff-core.js — Importable handoff handler
+
+```js
+import { processHandoff } from "skills/engram/scripts/process-handoff-core.js";
+await processHandoff(handoffBlock, { session: "main", date: "2026-02-27" });
+```
+
+Importable версия `process-handoff.js`: parse handoff block → update heartbeat-state → write watermark (HB-EXTRACT) → write report → handle observations/tensions → resolve tensions. `process-handoff.js` (CLI) — thin wrapper вокруг этой core. Используется `heartbeat-runner.js` напрямую.
+
+### spawn-pump.js — Claim-based spawn token queue
+
+```bash
+bun skills/engram/scripts/spawn-pump.js --enqueue '<payload-json>'  # добавить в очередь
+bun skills/engram/scripts/spawn-pump.js --drain [--max <N>]           # drain с claim-токеном
+bun skills/engram/scripts/spawn-pump.js --status                       # показать очередь
+```
+
+OLL Phase 5.5 ставит в очередь `hb-rethink2` / `hb-autoresearch` если не получилось direct spawn. Claim-токен TTL = 60 сек; один активный spawn at a time per workspace. Документация — references/HB-PUMP.md (если есть).
+
+### spawn-claim.js — Drain spawn-pump queue → sessions_spawn
+
+```bash
+bun skills/engram/scripts/spawn-claim.js [--max <N>] [--label-prefix hb]
+```
+
+Drain `spawn-pump` queue, для каждого claim'а запускает queued subagent через OpenClaw `sessions_spawn`. Claim-токен TTL предотвращает duplicate spawn. Used by Phase 5.5 orchestrator.
+
 ### process-handoff.js — HB subagent handoff processor
 
 ```bash
@@ -1085,33 +1221,59 @@ Processes `=== HB-* HANDOFF ===` blocks from subagent results. Handles HB-EXTRAC
 
 ## OpenClaw Hooks
 
-Engram ships 7 OpenClaw hooks that automate mechanical session tasks. Hooks run automatically — agents do NOT need to repeat these steps manually.
+Engram ships **9 OpenClaw hooks** that automate mechanical session tasks: **8 `engram-*`** (canonical, in this repo) + **1 `apriori-*`** (agent-specific for `apriori-tech`, ships alongside engram in that workspace). Hooks run automatically — agents do NOT need to repeat these steps manually.
 
 | Hook | Event | What it does |
 |------|-------|--------------|
-| `engram-daily-note` | `gateway:startup` | Creates today's daily note for all sessions |
-| `engram-session-start` | `agent:bootstrap` | Appends `<!-- session:start:{ISO} -->` to daily note |
-| `engram-session-end` | `command:new`, `command:reset` | Appends `<!-- session:end:{ISO} -->` to daily note |
-| `engram-bootstrap-qmd` | `agent:bootstrap` | Runs `qmd update` (15s timeout, silent skip if unavailable) |
-| `engram-message-log` | `message:received` | Logs messages to `workspace/message-log/YYYY-MM-DD.jsonl` |
+| `engram-daily-note` | `gateway:startup` | Creates today's daily note for all sessions. Contract clarifying (spec §8.1, ISS-7 AC#4). |
+| `engram-session-start` | `agent:bootstrap` | Appends `<!-- session:start:{ISO} -->` to daily note. ✅ race-fix в v3.4. |
+| `engram-session-end` | `command:new`, `command:reset` | Appends `<!-- session:end:{ISO} -->` to daily note. |
 | `engram-session-memory` | `command:new`, `command:reset` | Save session transcript to `sessions/` subdir (QMD-indexed). Replaces native `session-memory`. |
-| `engram-topic-domain-load` | `message:received` | On Telegram topic, inject `## Domain Context (auto)` (decisions/status/changelog) **and** `## Domain AGENTS (auto)` (per-domain ruleset) blocks at the top of today's daily note. |
-| `engram-topic-auto-domain-suggest` | `message:received` | Sibling of `engram-topic-domain-load`. In unbound topics, after ≥2 user messages, inject `## engram:auto-suggest` block offering domain creation. |
+| `engram-bootstrap-qmd` | `agent:bootstrap` | Runs `qmd update` (15s timeout, silent skip if unavailable). |
+| `engram-message-log` | `message:received` | Logs messages to `workspace/message-log/YYYY-MM-DD.jsonl`. **Disabled by default** (opt-in). |
+| `engram-topic-domain-load` | `message:received` | On Telegram topic, inject `## Domain Context (auto)` (decisions/status/changelog) **and** `## Domain AGENTS (auto)` (per-domain ruleset) blocks at the top of today's daily note. ⚠️ file-then-hope — race-fix + side-effect-delivered pending. |
+| `engram-topic-auto-domain-suggest` | `message:received` | Sibling of `engram-topic-domain-load`. In unbound topics, after ≥2 user messages, inject `## engram:auto-suggest` block offering domain creation. 🔄 **v3.9 deployed, side-effect-delivered via Telegram inline_keyboard** (E2E verified). |
+| `apriori-peer-domain-load` | `message:received` | Same as `engram-topic-domain-load`, but for DM peers (not Telegram topics). Agent-specific for `apriori-tech` workspace. ⚠️ race-fix pending. |
 
 > **Note:** Disable the built-in `session-memory` hook when enabling `engram-session-memory` — they serve the same purpose but write to different locations.
+
+### Race-condition guard (`ensureSessionReady()` — new in v3.4)
+
+**Правило для hook-author'ов:** все `message:received`-хуки в v3.4 должны начинать работу с `ensureSessionReady()` — идемпотентная гарантия, что `sessionDir`/daily note существует **до** любой работы с ними (spec §10.10, источник: prod-debug сессии 2026-07-01, 5+ часов).
+
+`ensureSessionReady()` три стратегии если session not ready:
+
+* (a) дождаться `engram-session-start` через таймаут 50–100 ms;
+* (b) сам создать stub sessionDir сенсорно, чтобы не блокировать;
+* (c) skip + alert в `heartbeat-state.json`.
+
+**Anti-pattern:** хук пишет блок в daily note + sentinel + pointer в `MEMORY.md`, надеясь что LLM-агент прочтёт и вызовет `message` tool. **Не работает в production** — нарушители v3.3 era: `engram-topic-domain-load`, `engram-topic-auto-domain-suggest`, `apriori-peer-domain-load`. Полная история — спека §10.9 в workspace.
+
+### Side-effect-delivered hook pattern (новое в v3.4)
+
+User-facing flows должны использовать **детерминистический канал доставки**, не «записать в файл и надеяться». Три допустимых канала (по убыванию предпочтения, spec §10.9):
+
+1. **Telegram Bot API inline-buttons** — `fetch('https://api.telegram.org/bot{TOKEN}/sendMessage')` с `reply_markup={inline_keyboard: [...]}`. Channel completion = Telegram, не модель. Применён в `engram-topic-auto-domain-suggest` v3.9.
+2. **OpenClaw gateway system event injection** — `openclaw system event --mode now|next-heartbeat --session-key <key> --text <msg>`. Для tell-the-agent-X flows («домен загружен», «сессия возобновлена»).
+3. **Workspace-root transient file** — fallback при недоступности #2. Whitelist имён в OpenClaw `bootstrap-extra-files`: AGENTS.md / SOUL.md / TOOLS.md / IDENTITY.md / USER.md / HEARTBEAT.md / BOOTSTRAP.md / MEMORY.md.
+
+**Не канал:** write-then-hope через daily note / MEMORY.md pointer / sentinel.
 
 ### Execution order on `/new`
 
 1. `engram-session-end` fires on `command:new` → writes `<!-- session:end -->`
-2. New agent session starts → `agent:bootstrap` fires
-3. `engram-session-start` → writes `<!-- session:start -->`
-4. `engram-bootstrap-qmd` → refreshes QMD index
+2. `engram-session-memory` fires on `command:new` → archive session transcript (QMD-indexed)
+3. New agent session starts → `agent:bootstrap` fires
+4. `engram-session-start` → writes `<!-- session:start -->` (creates sessionDir + daily note)
+5. `engram-daily-note` fires on `gateway:startup` → create daily note template
+6. `engram-bootstrap-qmd` → refreshes QMD index (TTL+lock, silent skip)
 
 ### Topic-thread message flow
 
 1. `engram-message-log` fires on `message:received` → logs to `workspace/message-log/`
 2. `engram-topic-domain-load` fires on `message:received` → injects Domain Context + Domain AGENTS blocks (idempotent per-block)
-3. `engram-topic-auto-domain-suggest` fires on `message:received` (sibling) → if topic is unbound and ≥2 user messages, injects `## engram:auto-suggest` block
+3. `engram-topic-auto-domain-suggest` fires on `message:received` (sibling) → if topic is unbound and ≥2 user messages, sends Telegram `inline_keyboard` via Bot API (side-effect-delivered, v3.9+)
+4. `apriori-peer-domain-load` fires on `message:received` → same as #2 для DM peers (apriori-tech only)
 
 ### Installation
 

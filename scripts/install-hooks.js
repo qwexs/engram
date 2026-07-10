@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 // engram/scripts/install-hooks.js
 // Install OpenClaw workspace hooks from the engram skill into the gateway
-// hooks directory (managedHooksDir = `~/clawd/hooks/`).
+// hooks directory (managedHooksDir — auto-detected from `openclaw hooks list --json`).
 //
 // Why regular copy (default) and not junction?
 //   The skill is the source of truth (lives in git at qwexs/engram/hooks/).
-//   OpenClaw loads hooks from `~/clawd/hooks/` (see `openclaw hooks info
+//   OpenClaw loads hooks from managedHooksDir (see `openclaw hooks list --json` —
 //   <name>` — the reported Handler path is the runtime source). Junctions
 //   are a great idea in theory (zero copy, single source of truth) but
 //   OpenClaw 2026.6.6 fails to load hook entries that are NTFS junctions on
@@ -15,7 +15,7 @@
 //   `openclaw hooks list` shows them as "registered".
 //
 //   Empirically verified: copying `handler.js + handler.ts + HOOK.md` from
-//   `clawd/skills/engram/hooks/engram-*/` into `~/clawd/hooks/engram-*/` as
+//   `skills/engram/hooks/engram-*/` into managedHooksDir/engram-*/ as
 //   regular directories makes OpenClaw load all 8 hooks as
 //   `openclaw-workspace` source. After `openclaw gateway restart`:
 //     Hooks (11/13 ready) — 5 bundled + 8 engram.
@@ -90,7 +90,7 @@ Usage:
 
 Options:
   --skill-dir <path>     Skill directory (default: derived from this script)
-  --hooks-dir <path>     OpenClaw hooks directory (default: auto-detect or ~/clawd/hooks)
+  --hooks-dir <path>     OpenClaw hooks directory (default: auto-detect via openclaw hooks list --json)
   --force                Replace existing entries that point elsewhere
   --no-backup            Skip backup of non-junction entries (dangerous)
   --dry-run              Preview only, no filesystem changes
@@ -130,9 +130,28 @@ const SOURCE_HOOKS = join(SKILL_DIR, 'hooks');
 const GATEWAY_HOOKS = args['hooks-dir'] || discoverOpenclawHooksDir();
 
 function discoverOpenclawHooksDir() {
-  // Strategy 1: ask OpenClaw CLI. Works while gateway is running and any
-  // working hook (engram-daily-note) is registered. Capture the directory
-  // by stripping the trailing hook name.
+  // Strategy 0: ask OpenClaw CLI for managedHooksDir via `hooks list --json`.
+  // This is the most reliable source — the gateway reports the exact directory
+  // it scans for managed hooks, regardless of platform or install layout.
+  // Works even when no engram hooks are registered yet (unlike Strategy 1).
+  try {
+    const r = spawnSync('openclaw', ['hooks', 'list', '--json'], {
+      encoding: 'utf-8',
+      shell: true,
+    });
+    if (r.status === 0) {
+      const data = JSON.parse(r.stdout);
+      const dir = data?.managedHooksDir;
+      if (typeof dir === 'string' && dir.length > 0 && existsSync(dir)) {
+        return dir;
+      }
+    }
+  } catch {
+    // fall through
+  }
+  // Strategy 1: ask OpenClaw CLI for a specific registered hook path.
+  // Works while gateway is running and at least one engram hook is already
+  // registered. Capture the directory by stripping the trailing hook name.
   try {
     const r = spawnSync('openclaw', ['hooks', 'info', 'engram-daily-note'], {
       encoding: 'utf-8',
@@ -155,13 +174,12 @@ function discoverOpenclawHooksDir() {
   } catch {
     // fall through
   }
-  // Strategy 2: convention. The workspace charter documents this:
-  // workspace-level hooks/ is symlinked to skills/engram/hooks/, but
-  // OpenClaw loads from a sibling location — historically ~/clawd/hooks/.
+  // Strategy 2: convention-based fallback. Check known candidate directories.
   const home = process.env.USERPROFILE || process.env.HOME || '';
   const candidates = [
     join(home, 'clawd', 'hooks'),
     join(home, '.openclaw', 'hooks'),
+    join(home, '.openclaw', 'state', 'hooks'),
   ];
   for (const c of candidates) {
     if (existsSync(c)) return c;

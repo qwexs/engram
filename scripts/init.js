@@ -98,6 +98,7 @@ const agentId = args['agent-id'] || config.agent.replace(/^agent-/, '') || 'main
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'assets', 'templates');
+const OSS_FALLBACK_MODEL = 'sonnet-4-6';
 
 // --- Dry-run mode tracking ---
 const dryRun = !!args['dry-run'];
@@ -963,16 +964,18 @@ function detectDefaultModel() {
       tpl = tpl.replaceAll('{AGENT_ID}', agentId);
       tpl = tpl.replaceAll('{COLLECTION_NAME}', `${agentId}-memory`);
       
-      // Auto-detect model from openclaw.json and replace sonnet-4-6 placeholder
+      // Auto-detect model from openclaw.json and replace {MODEL_ID} placeholder
       const detectedModel = detectDefaultModel();
       if (detectedModel) {
-        tpl = tpl.replaceAll('"sonnet-4-6"', `"${detectedModel}"`);
+        tpl = tpl.replaceAll('"{MODEL_ID}"', `"${detectedModel}"`);
         recordCreate('engram.json', `created from template (agent=${agentId}, collection=${agentId}-memory, model=${detectedModel})`);
         console.log(`  ✓ engram.json created from template — model auto-detected: ${detectedModel}`);
       } else {
-        recordCreate('engram.json', `created from template (agent=${agentId}, collection=${agentId}-memory) — using OSS fallback sonnet-4-6`);
+        // No model detected — replace {MODEL_ID} with OSS fallback so file is valid
+        tpl = tpl.replaceAll('"{MODEL_ID}"', `"${OSS_FALLBACK_MODEL}"`);
+        recordCreate('engram.json', `created from template (agent=${agentId}, collection=${agentId}-memory) — using OSS fallback ${OSS_FALLBACK_MODEL}`);
         console.log(`  ✓ engram.json created from template — edit models.* to match your deployment`);
-        console.log(`  ⚠ No model found in openclaw.json (agents.defaults.model.primary) — using sonnet-4-6 fallback`);
+        console.log(`  ⚠ No model found in openclaw.json (agents.defaults.model.primary) — using ${OSS_FALLBACK_MODEL} fallback`);
       }
       
       if (!dryRun) writeFileSync(engramJsonPath, tpl);

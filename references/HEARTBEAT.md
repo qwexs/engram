@@ -17,8 +17,8 @@ Each `sessions_spawn` call below says `model=<resolved via engram.json>`. The ac
 
 1. `process.env.ENGRAM_MODEL_<LABEL_UPPER>` (e.g. `ENGRAM_MODEL_HB_EXTRACT`)
 2. `engram.json → models.heartbeat.subagents[<label>]` (e.g. `"hb-extract": "<model-id>"`)
-3. Per-label default in `SUBAGENT_MODEL_DEFAULTS` (currently `sonnet-4-6` for all phases)
-4. Generic fallback: `sonnet-4-6`
+3. Per-label default in `SUBAGENT_MODEL_DEFAULTS` (currently `<your-model-id>` for all phases)
+4. Generic fallback: `<your-model-id>`
 
 Example `engram.json` override:
 ```json
@@ -34,7 +34,7 @@ Example `engram.json` override:
 }
 ```
 
-**Why this is configurable, not hardcoded:** Engram itself is model-agnostic — the docs above use a sensible default (`sonnet-4-6`) so the protocol is reproducible, but deployments pick their own models. Hardcoding deployment-specific aliases (e.g. `m3`, `m2.7`) in the protocol would leak private infra and break for other users.
+**Why this is configurable, not hardcoded:** Engram itself is model-agnostic — the docs above use `<your-model-id>` as a placeholder so the protocol is reproducible, but deployments pick their own models. Hardcoding deployment-specific aliases (e.g. `m3`, `m2.7`) in the protocol would leak private infra and break for other users.
 
 ---
 
@@ -119,7 +119,7 @@ If the heartbeat model is too weak for summarization, defer to next interactive 
   2. Replace `{{life_root}}` with the absolute path to `life/`
   3. Replace `{{now_iso}}` with the current ISO timestamp
   4. Replace `{{session}}` with the current session key
-  5. Call `sessions_spawn(task=<filled template>, label="hb-synthesis", model="sonnet-4-6", cleanup="delete")`
+  5. Call `sessions_spawn(task=<filled template>, label="hb-synthesis", model="<your-model-id>", cleanup="delete")`
   **Do not wait — result arrives via system message.**
 
 ## Phase 3: Domains
@@ -167,7 +167,7 @@ If the heartbeat model is too weak for summarization, defer to next interactive 
 6. If trigger AND `rethinkInProgress !== true`:
    - Spawn hb-rethink subagent:
      ```
-     sessions_spawn(task: HB-RETHINK.md with injected context, label: "hb-rethink", model: "sonnet-4-6", cleanup: "delete")
+     sessions_spawn(task: HB-RETHINK.md with injected context, label: "hb-rethink", model: "<your-model-id>", cleanup: "delete")
      ```
    - Set state:
      ```bash
@@ -209,7 +209,7 @@ Runs when there are approved experiments waiting to execute.
      - `{{spec_yaml}}` → contents of spec.yaml
    - Spawn subagent:
      ```
-     sessions_spawn(task: filled template, label: "hb-autoresearch", model: "sonnet-4-6", cleanup: "delete")
+     sessions_spawn(task: filled template, label: "hb-autoresearch", model: "<your-model-id>", cleanup: "delete")
      ```
    - Update experiment status to "running":
      ```bash
@@ -250,7 +250,7 @@ After HB-AUTORESEARCH completes (detected via handoff), the orchestrator spawns 
      - `{{report_content}}` → contents of report.md
      - `{{spec_yaml}}` → contents of spec.yaml
      - `{{delivery_config}}` → JSON.stringify(spec.delivery)
-   - Spawn: `sessions_spawn(task: filled template, label: "hb-rethink2", model: "sonnet-4-6", cleanup: "delete")`
+   - Spawn: `sessions_spawn(task: filled template, label: "hb-rethink2", model: "<your-model-id>", cleanup: "delete")`
    - Clear flag: `--set pendingRethink2 null`
 3. Do not wait — result arrives via handoff
 

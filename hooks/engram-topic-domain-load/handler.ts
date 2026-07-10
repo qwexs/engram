@@ -1,74 +1,66 @@
-import { existsSync, readFileSync, writeFileSync, statSync, renameSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
-import { resolveWorkspaceByAgentId } from "./workspace-resolver.js";
-import { parseAgentIdFromSessionKey } from "../_lib/parse-agent-id.js";
+import { parseAgentIdFromSessionKey, resolveWorkspaceByAgentId } from "./workspace-resolver.js";
+import {
+  computeContextHash,
+  resolveAgentsBody,
+  buildDomainPayload,
+  readLatestHashFromNote,
+  type DomainSourceFiles,
+} from "../_lib/domain-inject.js";
+import { enqueueSystemEventToSession } from "../_lib/system-event.js";
 
-// Resolve TZ at call time, not module load time. This makes the hook testable:
-// the test can set process.env.ENGRAM_TZ after importing the module.
-// (ES `import` is hoisted, so `const TZ = process.env...` at module top would
-// capture the value before the test's env setup runs.)
-const NEWLINE = /\r?\n/;
 function resolveTz(): string {
   return process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 }
 
 /**
- * engram-topic-domain-load
+ * engram-topic-domain-load (v3.5 — system-event delivery)
  *
- * On message:received, if the message is in a Telegram topic session, look up a
- * domain bound to that topic in memory/domains/registry.json and inject TWO blocks
- * into today's daily note:
- *   1. "## Domain Context (auto)" — decisions + status + last changelog entry.
- *      Content hash from decisions.md + status.md + changelog.md.
- *   2. "## Domain AGENTS (auto)" — operational ruleset from agents.md.
- *      Content hash from agents.md only. If agents.md is missing, a built-in
- *      minimal fallback is used and a warning note is added to the block.
+ * On `message:received`, if the inbound message is in a Telegram topic
+ * session, look up the domain bound to that topic in
+ * `memory/domains/registry.json` and inject a Domain Context + AGENTS payload
+ * via the OpenClaw gateway `system event` channel — *not* into the daily note.
  *
- * Idempotency: each block has its own hash. If the latest context marker AND
- * the latest agents marker both match their respective hashes, the hook does
- * nothing. Otherwise, both existing blocks are removed and re-injected fresh.
+ * Refactored in ISS-15 from "write blocks to daily note" to system-event
+ * delivery. The old approach (v3.3) was the canonical write-then-hope
+ * anti-pattern: the hook wrote `<!-- domain-context:{slug}:{hash} -->` blocks
+ * to today's daily note and relied on the LLM to read the file and call
+ * `message`. Production repeatedly showed agents finishing on filesystem
+ * state and forgetting to call `message` — symptom "обновлял engram, но в тред
+ * не отправил". v3.5 hands the payload directly to the gateway so the
+ * injection cannot be missed.
  *
- * Block formats:
- *   <!-- domain-context:{name}:{hash} -->
- *   ## Domain Context (auto)
- *   ...
- *   <!-- /domain-context -->
+ * Shares `_lib/domain-inject.ts` and `_lib/system-event.ts` with the peer
+ * hook (`apriori-peer-domain-load`). Idempotency: the marker
+ * `<!-- engram-system-event-hash:<8-hex> -->` is written by the receiver
+ * (the agent) via the system event itself, so the hook can read the last
+ * marker from the daily note and short-circuit on match.
  *
- *   <!-- domain-agents:{name}:{hash} -->
- *   ## Domain AGENTS (auto)
- *   ...
- *   <!-- /domain-agents -->
+ * No file writes. No Telegram API. No daily-note mutation. Pure hook that
+ * builds a payload and asks the gateway to deliver it.
  */
 const handler = async (event: any) => {
   const TZ = resolveTz();
-  if (event.type !== "message" || event.action !== "received") {
-    return;
-  }
+  if (event.type !== "message" || event.action !== "received") return;
 
   // OpenClaw puts sessionKey on the top-level event, not in `context` —
   // fall back to context for any legacy callers that still set it there.
   const sessionKey: string = event.sessionKey || event.context?.sessionKey || "";
 
-  // Derive agentId from sessionKey (format: "agent:<id>:<channel>:<rest>").
-  // Used as a third fallback for workspaceDir resolution and as the primary
-  // agent id when building the sessionDir path on disk.
-  // Uses shared helper from _lib/parse-agent-id.ts to stay in sync with
-  // engram-session-start and other hooks. workspace-resolver.ts keeps
-  // its own copy for now (re-exported below for backwards compatibility).
   const resolvedAgentId = parseAgentIdFromSessionKey(sessionKey);
 
   const workspaceDir =
     event.context?.workspaceDir ||
     process.env.OPENCLAW_WORKSPACE ||
     (resolvedAgentId ? resolveWorkspaceByAgentId(resolvedAgentId) : null);
-  if (!workspaceDir) {
-    return;
-  }
+  if (!workspaceDir) return;
 
+  // --- Resolve chatId + topicId ---
+  // OpenClaw's `message:received` event has them in different places across
+  //   versions (top-level vs context vs metadata). Cover all known shapes
+  //   and bail if either is missing or empty.
   const conversationId: string = event.context?.conversationId || "";
-
   let topicId: string | null = null;
   let chatId: string | null = null;
 
@@ -84,8 +76,8 @@ const handler = async (event: any) => {
     }
   }
   // OpenClaw 2026.6.6 fallback chain.
-  //   - topicId: legacy context.topicId already handled above; for OC66 the
-  //     value lands in context.metadata.threadId (internal event) or as a
+  //   - topicId: legacy context.topicId handled above; for OC66 the value
+  //     lands in context.metadata.threadId (internal event) or as a
   //     top-level event.threadId (plugin event).
   //   - chatId: in OC66 conversationId arrives as "telegram:{chatId}" (no
   //     :topic: suffix), so the regex above only catches chatId. When
@@ -111,25 +103,23 @@ const handler = async (event: any) => {
       }
     }
   }
-  if (!topicId || !chatId) {
-    return;
-  }
+  if (!topicId || !chatId) return;
 
+  // Symmetric unsigned chatId: registry may store -100xxx and the event may
+  // ship +100xxx (or vice versa). Strip the leading dash for comparison.
   const absChatId = chatId.replace(/^-/, "");
   const sessionSegment = `telegram-group--${absChatId}-topic-${topicId}`;
 
+  // --- Domain registry lookup ---
   const registryPath = join(workspaceDir, "memory", "domains", "registry.json");
-  if (!existsSync(registryPath)) {
-    return;
-  }
-
+  if (!existsSync(registryPath)) return;
   let registry: any;
   try {
     registry = JSON.parse(readFileSync(registryPath, "utf-8"));
-  } catch { return; }
-  if (!registry.domains || typeof registry.domains !== "object") {
+  } catch {
     return;
   }
+  if (!registry.domains || typeof registry.domains !== "object") return;
 
   let domainName: string | null = null;
   let domainEntry: any = null;
@@ -147,17 +137,13 @@ const handler = async (event: any) => {
       break;
     }
   }
-  if (!domainName || !domainEntry) {
-    return;
-  }
+  if (!domainName || !domainEntry) return;
 
   // Unarchive-on-message: if the domain is archived, restore it before injection.
   if (domainEntry.archived === true) {
     delete domainEntry.archived;
     const archivesDir = join(workspaceDir, "memory", "domains", "archives", domainName);
-    const liveDir = join(workspaceDir, "memory", "domains", domainName);
     if (existsSync(archivesDir)) {
-      // Best-effort: just clear the archived flag and let ops re-link files later.
       console.log(`[engram-topic-domain-load] Reactivating archived domain "${domainName}"`);
     }
     registry.domains[domainName] = domainEntry;
@@ -166,239 +152,79 @@ const handler = async (event: any) => {
     } catch {}
   }
 
-  const domainDir = join(workspaceDir, "memory", "domains", domainName);
-  const decisionsPath = join(domainDir, "decisions.md");
-  const statusPath = join(domainDir, "status.md");
-  const changelogPath = join(domainDir, "changelog.md");
-  const agentsPath = join(domainDir, "agents.md");
-
-  // --- Hash 1: context (decisions + status + changelog) ---
-  const contextHasher = createHash("sha256");
-  for (const p of [decisionsPath, statusPath, changelogPath]) {
-    if (existsSync(p)) {
-      const st = statSync(p);
-      contextHasher.update(`${p}:${st.mtimeMs}:${st.size};`);
-      contextHasher.update(readFileSync(p, "utf-8"));
-    } else {
-      contextHasher.update(`${p}:missing;`);
-    }
-  }
-  const contentHash = contextHasher.digest("hex").slice(0, 12);
-
-  // --- Resolve workspace-agnostic identifiers for the fallback body ---
-  // The fallback is rendered when agents.md is missing, so it must not
-  // hardcode apriotech-specific values like qmd index, agent id, or KG
-  // collection. Read them from the workspace's engram.json when available.
+  // --- Source files & workspace config ---
   // Prefer the agentId we just resolved from sessionKey; fall back to
   // event.context.agentId (legacy) and finally "main" (last-resort).
   const agentId = resolvedAgentId || event.context?.agentId || "main";
-  const engramConfigPath = join(workspaceDir, "engram.json");
-  // Default values for the fallback body. They are only used if the
-  // workspace's engram.json is missing or malformed; in that case we
-  // render a minimal placeholder rather than failing the injection.
-  // These are NOT agentIds or workspace identifiers — they are the
-  // generic qmd index and KG collection names that an OpenClaw
-  // installation might use by default. Workspaces override them via
-  // engram.json → qmd.index / qmd.workspaceKgCollection.
+  const domainDir = join(workspaceDir, "memory", "domains", domainName);
+  const files: DomainSourceFiles = {
+    decisionsPath: join(domainDir, "decisions.md"),
+    statusPath: join(domainDir, "status.md"),
+    changelogPath: join(domainDir, "changelog.md"),
+    agentsPath: join(domainDir, "agents.md"),
+  };
+
+  // Workspace-agnostic identifiers for the agents fallback body. Read from
+  // the workspace's engram.json when available; fall back to OpenClaw
+  // defaults ("default" for qmdIndex, "life" for kgCollection).
   let qmdIndex = "default";
   let kgCollection = "life";
+  const engramConfigPath = join(workspaceDir, "engram.json");
   if (existsSync(engramConfigPath)) {
     try {
       const cfg = JSON.parse(readFileSync(engramConfigPath, "utf-8"));
       qmdIndex = cfg.qmd?.index || qmdIndex;
       kgCollection = cfg.qmd?.workspaceKgCollection || kgCollection;
     } catch {
-      // engram.json exists but is malformed — keep defaults. Better to inject
-      // a slightly off-config fallback than to skip injection entirely.
+      // Keep defaults — better to inject slightly-off-config fallback than
+      // to skip injection entirely.
     }
   }
 
-  // --- Hash 2: agents (agents.md, or built-in fallback) ---
-  let agentsBody: string;
-  let agentsSource: "file" | "fallback";
-  if (existsSync(agentsPath)) {
-    agentsBody = readFileSync(agentsPath, "utf-8");
-    agentsSource = "file";
-  } else {
-    agentsBody = buildFallbackAgentsMd(
-      domainName,
-      sessionSegment,
-      qmdIndex,
-      agentId,
-      kgCollection,
-      domainEntry.kgEntity,
-    );
-    agentsSource = "fallback";
-  }
-  // Stable hash: domain + source (file/fallback) + body. Prevents hash churn
-  // when fallback body is rebuilt every call (since buildFallbackAgentsMd is
-  // deterministic for a given input, this is also stable across calls).
-  const agentsHashInput = `${domainName}|${agentsSource}|${agentsBody}`;
-  const agentsHash = createHash("sha256").update(agentsHashInput).digest("hex").slice(0, 12);
+  // --- Hash + agents + idempotency ---
+  const contentHash = computeContextHash(files);
+  const agents = resolveAgentsBody(files, {
+    qmdIndex, kgCollection, agentId, domainName, sessionSegment,
+    kgEntity: domainEntry.kgEntity,
+  });
 
-  function head(p: string, maxLines: number): string {
-    if (!existsSync(p)) return "";
-    // CRLF-safe: split on either \n or \r\n, join with \n for output consistency.
-    return readFileSync(p, "utf-8").split(NEWLINE).slice(0, maxLines).join("\n");
-  }
-  function countDecisions(p: string): number {
-    if (!existsSync(p)) return 0;
-    // match() with /m flag treats \r as part of line; strip CR defensively before counting.
-    const normalized = readFileSync(p, "utf-8").replace(/\r/g, "");
-    return (normalized.match(/^###\s+/gm) || []).length;
-  }
-  function lastChangelogEntry(p: string): string {
-    if (!existsSync(p)) return "";
-    const content = readFileSync(p, "utf-8");
-    // CRLF-safe split — no trailing \r in lines[i] after this.
-    const lines = content.split(NEWLINE);
-    const entryStarts: number[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      if (/^##\s+\d{4}-\d{2}-\d{2}/.test(lines[i])) entryStarts.push(i);
-    }
-    if (entryStarts.length === 0) return "";
-    const start = entryStarts[entryStarts.length - 1];
-    return lines.slice(start).join("\n").trim();
-  }
-
-  const decisionsCount = countDecisions(decisionsPath);
-  const statusBody = head(statusPath, 40);
-  const changelogLast = lastChangelogEntry(changelogPath);
-
-  // --- Build context block (decisions + status + last changelog) ---
-  const contextBlock = `<!-- domain-context:${domainName}:${contentHash} -->
-## Domain Context (auto)
-
-**Domain**: \`${domainName}\` (${domainEntry.type})
-**Topic**: chat \`${chatId}\`, topic \`${topicId}\`
-**KG entity**: ${domainEntry.kgEntity ? `\`${domainEntry.kgEntity}\`` : "—"}
-
-<details>
-<summary><b>Status</b> (${decisionsCount} принятых решений в decisions.md)</summary>
-
-${statusBody.trim() || "_status.md пуст_"}
-
-</details>
-
-<details>
-<summary><b>Последняя запись changelog.md</b></summary>
-
-${changelogLast || "_changelog.md пуст_"}
-
-</details>
-<!-- /domain-context -->
-`;
-
-  // --- Build agents block (operational ruleset) ---
-  const fallbackNote = agentsSource === "fallback"
-    ? `\n\n> ⚠️ \`memory/domains/${domainName}/agents.md\` не найден — используется встроенный fallback. Создай файл из шаблона \`templates/domain/topic-thread/agents.md\` или запусти \`bun skills/engram/scripts/backfill-domain-agents.js\`.\n`
-    : "";
-
-  const agentsBlock = `<!-- domain-agents:${domainName}:${agentsHash} -->
-## Domain AGENTS (auto)${fallbackNote}
-${agentsBody.trim()}
-<!-- /domain-agents -->
-`;
-
-  const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionSegment);
-  if (!existsSync(sessionDir)) {
-    return;
-  }
-
+  // Idempotency: read the latest `engram-system-event-hash` from today's
+  // daily note (if it exists). Missing note → null → always inject. This is
+  // intentional — system-event delivery doesn't require the daily note to
+  // exist (this is the whole point of v3.5 vs the v3.3 write-then-hope).
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
+  const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionSegment);
   const notePath = join(sessionDir, `${today}.md`);
-  if (!existsSync(notePath)) {
+  const lastHash = readLatestHashFromNote(notePath);
+  if (lastHash === contentHash) return;
+
+  // --- Build payload + inject via system event ---
+  const payload = buildDomainPayload({
+    domainName,
+    domainEntry,
+    sessionKind: "topic-thread",
+    sessionLocation: `${absChatId}:${topicId}`, // canonical; chatId minus sign
+    contentHash,
+    agents,
+    files,
+  });
+
+  const result = enqueueSystemEventToSession({
+    sessionKey,
+    text: payload,
+    spawnFn: (globalThis as any).__ENGRAM_TEST_SPAWN_FN__,
+  });
+
+  if (!result.ok) {
+    console.warn(
+      `[engram-topic-domain-load] system-event injection failed for "${domainName}" (chat=${absChatId}, topic=${topicId}): ${result.error}; next message will retry`,
+    );
     return;
   }
 
-  const noteContent = readFileSync(notePath, "utf-8");
-
-  // Idempotency: each block checked independently. If both latest markers match
-  // their hashes, skip the write entirely.
-  function findLatestHash(content: string, marker: "context" | "agents"): string | null {
-    const re = new RegExp(`<!-- domain-${marker}:[\\w-]+:([a-f0-9]+) -->`, "g");
-    let last: string | null = null;
-    let mm: RegExpExecArray | null;
-    while ((mm = re.exec(content)) !== null) {
-      last = mm[1];
-    }
-    return last;
-  }
-  const lastContextHash = findLatestHash(noteContent, "context");
-  const lastAgentsHash = findLatestHash(noteContent, "agents");
-  if (lastContextHash === contentHash && lastAgentsHash === agentsHash) return;
-
-  // Remove all existing domain-* blocks (context + agents) using sentinels.
-  const blockRe = /<!-- domain-(?:context|agents):[\w-]+:[a-f0-9]+ -->[\s\S]*?<!-- \/domain-(?:context|agents) -->\n?/g;
-  let cleaned = noteContent.replace(blockRe, "").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
-
-  // Inject both blocks at the top, right after the "# YYYY-MM-DD" line.
-  // Order: Domain Context first (state), then Domain AGENTS (rules).
-  const combinedBlock = `${contextBlock.trimEnd()}\n\n${agentsBlock.trimEnd()}`;
-  const lines = cleaned.split(NEWLINE);
-  const dateLineIdx = lines.findIndex(l => /^# \d{4}-\d{2}-\d{2}/.test(l));
-  if (dateLineIdx < 0) {
-    cleaned = cleaned + "\n" + combinedBlock;
-  } else {
-    lines.splice(dateLineIdx + 1, 0, "", combinedBlock);
-    cleaned = lines.join("\n");
-  }
-
-  // Atomic write: temp file + rename, to avoid races with engram-session-start
-  // (which also writes to the same daily note via append).
-  const tmpDir = mkdtempSync(join(tmpdir(), "engram-topic-"));
-  const tmpPath = join(tmpDir, "note.md");
-  try {
-    writeFileSync(tmpPath, cleaned);
-    renameSync(tmpPath, notePath);
-  } finally {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-  }
-  console.log(`[engram-topic-domain-load] Injected domain context + agents for "${domainName}" → ${notePath} (context ${contentHash}, agents ${agentsHash}${agentsSource === "fallback" ? ", fallback" : ""})`);
+  console.log(
+    `[engram-topic-domain-load] Injected domain context + agents for "${domainName}" → chat ${absChatId}/topic ${topicId} via system-event (hash ${contentHash}, agents ${agents.source}, ${result.bytesSent} bytes)`,
+  );
 };
-
-/**
- * Build a minimal inline fallback for the agents block when `memory/domains/{slug}/agents.md`
- * is missing. The full template lives at `templates/domain/topic-thread/agents.md`.
- * Used to keep topic-agents functional even before backfill runs.
- */
-function buildFallbackAgentsMd(
-  domainName: string,
-  sessionKey: string,
-  qmdIndex: string,
-  agentId: string,
-  kgCollection: string,
-  kgEntity?: string,
-): string {
-  const kgLine = kgEntity
-    ? `- **Свой KG entity**: \`${kgEntity}\` → \`qmd --index ${qmdIndex} query "<topic>" -c life-projects-${domainName}\` или \`read life/${kgEntity}/summary.md\``
-    : `- **KG entity не задан** — QMD для KG не использовать`;
-  return `# Domain AGENTS — ${domainName} (fallback)
-
-⚠️ Это встроенный fallback. Полная версия: \`memory/domains/${domainName}/agents.md\`.
-Создай из шаблона: \`bun skills/engram/scripts/backfill-domain-agents.js\`.
-
-## Ты в роли
-Topic-agent домена \`${domainName}\`. Session: \`${sessionKey}\`.
-
-## QMD default
-\`\`\`bash
-qmd --index ${qmdIndex} query "<topic>" \\
-  -c domain-${domainName} \\
-  -c openclaw-memory-agent-${agentId}-${sessionKey}
-\`\`\`
-${kgLine}
-- ❌ Без явного OK Сергея НЕ использовать: \`-c domains\` (cross-topic), \`-c ${kgCollection}\` (cross-KG)
-
-## Write rules (минимум)
-- ✅ Своя daily note, decisions.md (на маркерах), status.md (handover), changelog.md (curated)
-- ❌ \`life/\`, ❌ чужие домены, ❌ workspace MEMORY.md/AGENTS.md
-- ❌ Telegram-сообщения, посты в Сетку, Хабр — только по явному «да» Сергея
-
-## Когда выходить за пределы
-- Cross-topic: \`-c domains\`
-- Cross-KG: \`-c ${kgCollection}\` (лучше делегировать main-агенту)
-`;
-}
 
 export default handler;

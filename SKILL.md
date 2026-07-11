@@ -1,6 +1,6 @@
 ---
 name: engram
-description: Etalon memory architecture with Knowledge Graph, session isolation, memory decay, and QMD hybrid search (Local/Jina/Ollama)
+description: Etalon memory architecture with Knowledge Graph, session isolation, memory decay, and QMD hybrid search (Local/Jina)
 ---
 
 # Engram Memory System
@@ -114,7 +114,7 @@ Full decay rules: [references/decay-rules.md](references/decay-rules.md)
 
 ### QMD Search
 
-QMD = hybrid search engine (BM25 + embeddings + rerank). Three providers: local (Vulkan), jina (cloud), ollama (REST).
+QMD = hybrid search engine (BM25 + embeddings + rerank). Two providers: local (Vulkan), jina (cloud).
 
 **Query triggers:**
 

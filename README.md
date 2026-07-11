@@ -26,7 +26,7 @@ Three independent layers. Use any combination.
 ```
 MEMORY          Daily notes → Knowledge Graph → QMD hybrid search
                 Atomic facts with confidence, decay, supersede chains
-                BM25 + vector embeddings + reranker (local / Jina / Ollama)
+                BM25 + vector embeddings + reranker (local / Jina)
 
 HEARTBEAT       10-phase cron pipeline, every 30 min
                 Mechanical phases inline · LLM phases as isolated subagents
@@ -56,7 +56,7 @@ Three storage layers, each answering a different question:
 | Warm | 8-30 days | ✅ Lower priority | ✅ |
 | Cold | 30+ days | ❌ | ✅ via QMD |
 
-Retrieval is hybrid: BM25 for keyword hits, vector embeddings for semantic match, reranker for relevance. Three embedder providers — local GPU, Jina cloud, Ollama REST — cover different cost/privacy trade-offs.
+Retrieval is hybrid: BM25 for keyword hits, vector embeddings for semantic match, reranker for relevance. Two embedder providers — local GPU and Jina cloud — cover different cost/privacy trade-offs.
 
 ## Heartbeat
 
@@ -123,7 +123,7 @@ bun skills/engram/scripts/install-cron.js install \
 
 - [OpenClaw](https://github.com/openclaw/openclaw) agent runtime
 - [Bun](https://bun.sh) — script runtime
-- QMD — installed automatically by bootstrap; choose `local` (GPU/CPU), `jina` (cloud), or `ollama` (local REST)
+- QMD — installed automatically by bootstrap; choose `local` (GPU/CPU) or `jina` (cloud)
 
 ## Documentation
 

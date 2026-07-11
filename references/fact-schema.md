@@ -8,7 +8,7 @@ Each fact in `items.json` follows this structure:
 {
   "id": "<entity>-NNN",
   "fact": "Human-readable fact statement",
-  "category": "relationship|milestone|status|preference|context",
+  "category": "relationship|milestone|status|preference|context|decision|correction",
   "confidence": 0.85,
   "abstractionLevel": "episode|pattern|principle",
   "tags": ["tag1", "tag2"],
@@ -28,7 +28,7 @@ Each fact in `items.json` follows this structure:
 |-------|------|-------------|
 | `id` | string | Unique ID: `<entity-slug>-NNN` |
 | `fact` | string | Human-readable fact statement |
-| `category` | enum | `relationship`, `milestone`, `status`, `preference`, `context` |
+| `category` | enum | `relationship`, `milestone`, `status`, `preference`, `context`, `decision`, `correction` |
 | `confidence` | float | 0.0-1.0 certainty score |
 | `abstractionLevel` | enum | `episode`, `pattern`, `principle` |
 | `tags` | string[] | Free-form labels for search |

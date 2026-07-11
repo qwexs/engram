@@ -1,238 +1,147 @@
-# 🧠 Engram
+# Engram
 
-**Memory, automation, and organization for long-lived AI agents.**
+Memory for long-lived AI agents. An [OpenClaw](https://github.com/openclaw/openclaw) skill that gives a stateless agent a Knowledge Graph, decay-aware retrieval, and self-maintaining heartbeat — without growing context cost over time.
 
-Engram is an [OpenClaw](https://github.com/openclaw/openclaw) skill that
-turns a stateless agent into a system with real memory. Production-deployed
-since v1.
+Production-deployed since v1. Currently v3.5.
 
 ---
 
-## The problem
+## What it solves
 
-Every long-running agent runs into the same four walls:
+| Problem | Without Engram | With Engram |
+|---------|----------------|-------------|
+| Agent forgets everything on `/new` or compaction | Starts from zero each time | QMD query (~600 tokens) restores working context |
+| Loading history doesn't scale | O(days) — grows forever | O(1) — bounded by entity count, not time |
+| Subagents start cold | No project context | Domain contour injected at spawn — 0-token bootstrap |
+| Memory turns to noise | Junk drawer or aggressive cleanup | Hot/Warm/Cold decay + supersede chains — nothing deleted, everything ranked |
 
-- **Stateless by default.** Restart, compaction, or a `/new` command wipes
-  the slate. The next session starts from zero.
-- **Naive memory doesn't scale.** Loading every daily note every session is
-  `O(days)` — it grows forever, and you pay for it on every turn.
-- **Subagents start cold.** Spawn a worker for a sub-task and it knows
-  nothing about your project, your preferences, or what you decided
-  last week.
-- **Memory gets noisy.** Without decay, the KG becomes a junk drawer.
-  With aggressive cleanup, you lose the things that matter.
-
-The cost curve, measured:
-
-| Approach                       | Tokens per session | Growth curve                             |
-| ------------------------------ | ------------------ | ---------------------------------------- |
-| Naive (load every daily note)  | ~27k+              | Linear with time, unbounded              |
-| Engram curated summaries       | ~8k                | Flat — bounded by entity count           |
-| Engram QMD query (top-K)       | ~600               | Flat — bounded by relevance, not history |
-
-The longer you run it, the cheaper each session gets.
+Token cost per session stays flat. The KG index mirrors all active facts into a derived layer, so search sees everything — not just the curated top-K.
 
 ---
 
-## What Engram is
+## Architecture
 
-One skill, three independent layers. Use any combination:
+Three independent layers. Use any combination.
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  🧠  MEMORY                                                       │
-│  Daily notes → Knowledge Graph → curated MEMORY.md                │
-│  Hot / Warm / Cold decay · hybrid retrieval (BM25 + vectors)     │
-├──────────────────────────────────────────────────────────────────┤
-│  ⚡  HEARTBEAT                                                    │
-│  Deterministic 10-phase pipeline · LLM only where it counts     │
-│  Mechanical phases run inline · heavy work as isolated subagents │
-├──────────────────────────────────────────────────────────────────┤
-│  🏗️  DOMAINS                                                      │
-│  Long-lived memory for subagents, cron tasks, and chat sessions   │
-│  Telegram topics · DMs · groups · dev projects · recurring work   │
-└──────────────────────────────────────────────────────────────────┘
+MEMORY          Daily notes → Knowledge Graph → QMD hybrid search
+                Atomic facts with confidence, decay, supersede chains
+                BM25 + vector embeddings + reranker (local / Jina / Ollama)
+
+HEARTBEAT       10-phase cron pipeline, every 30 min
+                Mechanical phases inline · LLM phases as isolated subagents
+                Extracts facts, validates KG, rebuilds summaries, runs OLL
+
+DOMAINS         Persistent memory contours for subagents and chat sessions
+                Telegram topics, DMs, groups, dev projects, cron tasks
 ```
 
-Memory gives the agent facts that age, not files that grow. Heartbeat
-keeps memory fresh and the system self-maintaining. Domains give every
-long-lived worker its own memory contour, so subagents carry project
-context across compaction and restart.
+**Session isolation is enforced in scripts, not convention.** Group chats can't see main-session memory. Every retrieval scopes to a session.
 
 ---
 
-## 🧠 Memory: facts that age, not files that grow
+## Memory
 
-Three layers, each shaped for the kind of question it answers:
+Three storage layers, each answering a different question:
 
-- **Daily notes** — raw session log, per session. Rotated when it gets
-  long; the day's archive stays searchable.
-- **Knowledge graph** — atomic facts grouped into entities (`people/`,
-  `projects/`, `archives/`). Every fact has confidence, an abstraction
-  level, tags, and a supersede chain. Nothing is ever deleted, only
-  superseded.
-- **Curated wisdom** — distilled into `MEMORY.md` and per-entity
-  `summary.md`. Decay-aware: hot facts are prominent, warm ones
-  secondary, cold ones are searchable but won't waste your context.
+**Daily notes** — raw session log. Rotated at 1000 lines; archive stays QMD-searchable.
 
-The retrieval side uses a hybrid index (BM25 + vector embeddings +
-reranker) so the right fact surfaces whether you ask in plain words,
-named entities, or fuzzy intent. Three embedder providers — local GPU,
-Jina cloud, Ollama — cover different cost and privacy trade-offs.
+**Knowledge Graph** — atomic facts grouped into entities (`people/`, `projects/`). Every fact carries confidence, abstraction level (episode → pattern → principle), tags, and a supersede chain. Nothing is deleted — old facts get `status: "superseded"` and linked to the replacement.
 
-> The KG index mirrors all active facts into a derived layer, so the
-> search engine sees everything — not just the curated top-K.
+**Curated summaries** — `summary.md` per entity, decay-aware:
 
-One hard rule: **sessions don't share memory**. Group chats can't see
-your main-session memory. Every retrieval explicitly scopes to a session.
-This is enforced in scripts, not just convention.
+| Tier | Recency | In summary | Searchable |
+|------|---------|------------|------------|
+| Hot | ≤7 days | ✅ Prominent | ✅ |
+| Warm | 8-30 days | ✅ Lower priority | ✅ |
+| Cold | 30+ days | ❌ | ✅ via QMD |
 
----
+Retrieval is hybrid: BM25 for keyword hits, vector embeddings for semantic match, reranker for relevance. Three embedder providers — local GPU, Jina cloud, Ollama REST — cover different cost/privacy trade-offs.
 
-## ⚡ Heartbeat: a 10-phase pipeline
+## Heartbeat
 
-Memory maintenance runs on a single cron entrypoint. The mechanical
-phases — lock handling, daily-note rotation, watermark-based extraction,
-KG validation, QMD indexing — run without an LLM. The phases that
-actually need judgment spawn isolated subagents:
+A single cron entrypoint runs 10 phases every 30 minutes. Mechanical work (locking, rotation, validation, QMD indexing) runs inline. Judgment work (extraction, synthesis, domain review) spawns isolated subagents.
 
-| Phase | What happens                                       | Who runs it      |
-| ----: | ------------------------------------------------- | ---------------- |
-|     0 | Fast Init: lock, read state, pick what to run     | inline           |
-|   0.5 | Rotate daily notes that crossed the size threshold | inline           |
-|     1 | Extract facts from notes since last watermark     | `hb-extract`     |
-|   1.5 | Summarize rotated archives into stubs             | inline           |
-|     2 | Weekly synthesis (Mondays only)                   | `hb-synthesis`   |
-|     3 | Domain status check                               | `hb-domains`     |
-|   3.5 | Apply pending domain changelogs                   | `hb-domains-write` |
-|     4 | Validate KG · QMD update · embed                  | inline           |
-|     5 | Operational Learning Loop triggers                | inline           |
-|   5.5 | Drain queued OLL subagents                        | inline           |
-|     6 | Heartbeat report + unlock                         | inline           |
+| Phase | What | Runs |
+|------:|------|------|
+| 0 | Init: lock, state | inline |
+| 0.5 | Rotate oversized daily notes | inline |
+| 1 | Extract facts from new notes | `hb-extract` subagent |
+| 1.5 | Summarize rotated archives | inline |
+| 2 | Weekly synthesis (Mondays) | `hb-synthesis` subagent |
+| 3 | Domain status check | `hb-domains` subagent |
+| 3.5 | Apply pending changelogs | `hb-domains-write` subagent |
+| 4 | Validate KG, update QMD | inline |
+| 5 | OLL triggers (rethink/autoresearch) | inline |
+| 6 | Report + unlock | inline |
 
-One phase failing doesn't kill the rest. Subagent models are configurable
-per phase — tune cost vs. quality without code changes. The cron is
-idempotent: re-running never double-writes.
+One phase failing doesn't kill the rest. Subagent models are configurable per phase via `engram.json`. The cron is idempotent — re-running never double-writes.
 
----
+## Domains
 
-## 🏗️ Domains: long-lived memory for every worker
+Subagents are ephemeral. Domains give them persistent memory contours anchored to the KG.
 
-Subagents and chat sessions are ephemeral by nature. Engram gives them
-persistent memory contours — folders with a contract, anchored to the
-Knowledge Graph.
+Five types, one protocol:
 
-Five types, one shared protocol:
+| Type | Binding | Use case |
+|------|---------|----------|
+| `dev-project` | KG entity | Development project, spawned on demand |
+| `cron-task` | — | Periodic background task |
+| `topic-thread` | Telegram topic | Forum topic as memory contour |
+| `peer-direct` | Telegram DM | Private memory contour |
+| `group-direct` | Telegram group | Group without topics |
 
-| Type             | What it is                                                |
-| ---------------- | --------------------------------------------------------- |
-| `dev-project`    | Development project, spawned on demand                    |
-| `cron-task`      | Periodic background task, re-spawned by the cron          |
-| `topic-thread`   | Telegram forum topic as its own memory contour            |
-| `peer-direct`    | Telegram DM as a private memory contour                  |
-| `group-direct`   | Telegram group without topics as a shared contour         |
+Every domain has the same shape: `decisions.md` (read-only rules), `workflow.md` (how it works), `status.md` (current state), `changelog.md` (append-only history). The main agent reads the contour, spawns a clean subagent with that context — the subagent starts informed, not from zero.
 
-Every domain has the same shape: `decisions.md` (read-only rules),
-`workflow.md` (how it works), `status.md` (current state), `changelog.md`
-(append-only history). The main agent reads the contour, formulates a
-precise task, and spawns a clean subagent — that subagent starts with
-the context it needs, not from zero.
+## Operational Learning Loop
 
-> After `/new`, compaction, or a fresh cron tick: a single QMD query
-> (~600 tokens) restores working context. No replay, no
-> re-summarization.
-
----
-
-## Why this works
-
-Four ideas, drawn from running Engram in production:
-
-**1. System events, not file-and-hope.**
-When the system needs to tell the agent something — a domain loaded,
-a session resumed, a watchlist hit — it pushes that into OpenClaw's
-guaranteed event stream. It doesn't leave a note in a file and pray
-the next model pass picks it up. Daily notes and curated memory are
-not messaging channels.
-
-**2. Idempotent by design.**
-Every script, phase, and hook can be re-run without side effects. If
-a heartbeat is interrupted mid-flight, the next tick continues cleanly.
-Nothing gets double-written, nothing gets corrupted.
-
-**3. Race-safe.**
-Concurrent sessions, parallel agents, and overlapping chat threads don't
-fight over the same files. The safety is built into the system, not left
-to each script to be careful.
-
-**4. Operational Learning Loop.**
-The system watches its own behavior — what surprised it, where it
-stumbled, what pattern emerged — and turns those signals into
-improvements. Over time, the agent gets better at being itself.
+The system observes its own behavior — friction, surprises, patterns — and feeds those signals back. `hb-rethink` reviews accumulated observations during heartbeat Phase 5, generates proposals, and auto-executes low-risk improvements. Over time the agent gets better at being itself.
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Install QMD (hybrid search engine)
+# Install QMD (hybrid search engine)
 bun skills/engram/scripts/install-qmd.js
 
-# 2. Bootstrap the full memory system in one command
-bun skills/engram/scripts/init.js --with-cron --auto-detect-sessions
+# Bootstrap memory system + heartbeat cron
+bun skills/engram/scripts/init.js --with-cron
 
-# 3. Restart the gateway (Engram hooks take effect here)
+# Activate hooks
 openclaw gateway restart
 ```
 
-For a fresh workspace in production:
+For an existing workspace:
 
 ```bash
 bun skills/engram/scripts/install-cron.js install \
-  --workspace /path/to/workspace \
-  --agent-id main \
-  --schedule '*/30 * * * *'
+  --workspace /path/to/workspace --agent-id main --schedule '*/30 * * * *'
 ```
-
-The cron ticks, the hooks handle session lifecycle, and the KG starts
-building from day one.
-
----
-
-## For users
-
-If you're wiring this into an existing OpenClaw workspace:
-
-- **Production checklist**: see `references/setup.md`
-- **Heartbeat cycle**: see `references/HEARTBEAT.md`
-- **Operational Learning Loop**: see `references/HB-RETHINK.md`
-- **Subagent domains**: see `references/subagent-memory.md`
-- **Telegram topic-thread**: see `references/topic-thread.md`
-- **Fact schema**: see `references/fact-schema.md`
-
----
-
-## For contributors
-
-- **Skill protocol**: [`SKILL.md`](./SKILL.md) — the canonical contract.
-  Read it first. SKILL.md is the source of truth for the public API.
-- **Architecture deep-dive**: `references/architecture.md`
-- **Memory decay rules**: `references/decay-rules.md`
-- **Working spec notes**: this repo is read-only for skill consumers.
-  When installing, copy `scripts/` to your workspace and set
-  `ENGRAM_SKILL_DIR`. Templates and assets stay in the skill folder.
-
----
 
 ## Requirements
 
-- **[OpenClaw](https://github.com/openclaw/openclaw)** agent runtime
-- **[Bun](https://bun.sh)** as the script runtime
-- **QMD** for the hybrid index — installed automatically by the
-  bootstrap; choose `local` (GPU/CPU), `jina` (cloud free tier), or
-  `ollama` (local REST) depending on your hardware
+- [OpenClaw](https://github.com/openclaw/openclaw) agent runtime
+- [Bun](https://bun.sh) — script runtime
+- QMD — installed automatically by bootstrap; choose `local` (GPU/CPU), `jina` (cloud), or `ollama` (local REST)
 
----
+## Documentation
+
+| Topic | File |
+|-------|------|
+| Skill protocol (canonical) | [`SKILL.md`](./SKILL.md) |
+| Heartbeat full spec | `references/HEARTBEAT.md` |
+| Heartbeat flow + cron | `references/heartbeat-flow.md` |
+| Scripts reference | `references/scripts.md` |
+| OLL details | `references/oll.md` |
+| Hooks | `references/hooks.md` |
+| Subagent domains | `references/subagent-memory.md` |
+| Telegram topic-thread | `references/topic-thread.md` |
+| Fact schema | `references/fact-schema.md` |
+| Memory decay | `references/decay-rules.md` |
+| Architecture | `references/architecture.md` |
+| Setup guide | `references/setup.md` |
+| QMD setup | `references/qmd-setup.md` |
 
 ## License
 

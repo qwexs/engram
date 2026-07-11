@@ -94,17 +94,28 @@ For full details, see [references/HEARTBEAT.md](HEARTBEAT.md) and [references/su
 
 ## Subagent Model Resolution
 
-The heartbeat spawns **7 subagents** (hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch). The model for each is **not hardcoded** in the protocol — it is resolved at spawn time by `scripts/config.js → resolveSubagentModel(workspace, label)`. Resolution order:
+The heartbeat spawns **7 subagents** (hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch). The model for each is **not hardcoded** in the protocol — it is resolved at spawn time by `scripts/config.js → resolveSubagentModel(workspace, label)`. Resolution order (f73cda3, 2026-07-11):
 
-1. `process.env.ENGRAM_MODEL_<LABEL_UPPER>` (e.g. `ENGRAM_MODEL_HB_EXTRACT`)
-2. `engram.json → models.heartbeat.subagents[<label>]`
-3. Per-label default in `SUBAGENT_MODEL_DEFAULTS`
-4. Generic fallback
+1. `process.env.ENGRAM_MODEL_<LABEL_UPPER>` (e.g. `ENGRAM_MODEL_HB_EXTRACT`) — explicit env override
+2. `engram.json → models.heartbeat.subagents[label]` (e.g. `"hb-extract": "<model-id>"`) — per-label override
+3. `engram.json → models.default` — workspace-wide default for all subagents
+4. `engram.json → models.subagents_default` — legacy alias for `models.default`
+5. `OSS_FALLBACK_MODEL = "sonnet-4-6"` — only when engram.json has no model config (fresh OSS install)
+
+**Known labels** (`HB_SUBAGENT_LABELS` in `config.js`): hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch.
+
+**Full-reasoning labels** (`FULL_REASONING_LABELS` in `config.js`): hb-synthesis, hb-rethink, hb-rethink2 — these need a capable model. Others (hb-extract, hb-domains, hb-domains-write, hb-autoresearch) are grinding/regex and can use cheaper models.
+
+**Helpers** exported from `scripts/config.js`:
+- `getHbSubagentLabels()` → array of all 7 labels
+- `isFullReasoningLabel(label)` → boolean
 
 Example `engram.json` override:
 ```json
 {
   "models": {
+    "default": "<your-default-model>",
+    "subagents_default": "<your-default-model>",
     "heartbeat": {
       "subagents": {
         "hb-extract": "<cheap-model>",
@@ -115,4 +126,6 @@ Example `engram.json` override:
 }
 ```
 
-**Why configurable, not hardcoded:** Engram is model-agnostic. Models are configured per-workspace in `engram.json`. Hardcoding deployment-specific aliases in the protocol would leak private infra and break for other users.
+**On `init.js`:** fresh installs auto-detect the model from `openclaw.json → agents.defaults.model.primary` and inject it into the new `engram.json` template (`assets/templates/engram.json`, placeholders `{AGENT_ID}`, `{COLLECTION_NAME}`, `{MODEL_ID}`).
+
+**Why configurable, not hardcoded:** Engram is model-agnostic. Models are configured per-workspace in `engram.json` (see `models.default` and `models.heartbeat.subagents`). Hardcoding deployment-specific aliases (e.g. `m3`, `m2.7`) in the protocol would leak private infra and break for other users.

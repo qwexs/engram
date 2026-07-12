@@ -1,7 +1,8 @@
 /**
  * Domain resolution helper shared by all `*-domain-load` hooks.
  *
- * Given an OpenClaw `message:received` event, resolves which domain (if any)
+ * Given an OpenClaw `message:received` or `agent:bootstrap` event, resolves which
+ * domain (if any)
  * is bound to the session the message arrived in. Supports three session kinds:
  *
  *   - `topic-thread`  — Telegram group with topics (chatId + topicId)
@@ -59,15 +60,29 @@ export type ResolveOpts = {
 
 const ALL_KINDS: SessionKind[] = ["topic-thread", "peer-direct", "group-direct"];
 
-function resolveTz(): string {
-  return process.env.ENGRAM_TZ || process.env.TZ || "UTC";
+/** Parse sessionKey to extract chatId and topicId.
+ * Session key format: agent:<agentId>:telegram-group-<chatId>-topic-<topicId>
+ * or agent:<agentId>:telegram-direct-<chatId> */
+function parseSessionKeyForChatTopic(sessionKey: string): { chatId: string; topicId: string | null } | null {
+  // Strip agent: prefix: agent:main:telegram-group--<chatId>-topic-<topicId>
+  const seg = sessionKey.replace(/^agent:[^:]+:/, "");
+  // topic-thread: telegram-group--<chatId>-topic-<topicId>
+  const topicM = seg.match(/^telegram-group--(-?\d+)-topic-(\d+)$/);
+  if (topicM) return { chatId: topicM[1], topicId: topicM[2] };
+  // peer-direct: telegram-direct-<chatId>
+  const peerM = seg.match(/^telegram-direct-(-?\d+)$/);
+  if (peerM) return { chatId: peerM[1], topicId: null };
+  // group-direct: telegram-group--<chatId> (no topic)
+  const groupM = seg.match(/^telegram-group--(-?\d+)$/);
+  if (groupM) return { chatId: groupM[1], topicId: null };
+  return null;
 }
 
 /**
  * Resolve the domain bound to the session the message arrived in.
  *
  * Returns `null` if:
- *   - the event is not a `message:received`,
+ *   - the event is not a `message:received` or `agent:bootstrap`,
  *   - `chatId` cannot be resolved,
  *   - the session kind is not in the allowed `kinds`,
  *   - no matching domain entry exists in the registry,
@@ -81,7 +96,9 @@ export function resolveDomainFromEvent(
   event: any,
   opts?: ResolveOpts,
 ): ResolvedDomain | null {
-  if (event.type !== "message" || event.action !== "received") return null;
+  const isMessage = event.type === "message" && event.action === "received";
+  const isBootstrap = event.type === "agent" && event.action === "bootstrap";
+  if (!isMessage && !isBootstrap) return null;
 
   const allowedKinds = opts?.kinds || ALL_KINDS;
 
@@ -96,6 +113,21 @@ export function resolveDomainFromEvent(
     process.env.OPENCLAW_WORKSPACE ||
     (resolvedAgentId ? resolveWorkspaceByAgentId(resolvedAgentId) : null);
   if (!workspaceDir) return null;
+
+  // For bootstrap events, chatId/topicId are not in event.context.
+  // Parse them from the sessionKey.
+  if (isBootstrap) {
+    const parsed = parseSessionKeyForChatTopic(sessionKey);
+    if (!parsed) return null;
+    return resolveDomainFromRegistry({
+      chatId: parsed.chatId,
+      topicId: parsed.topicId,
+      allowedKinds,
+      workspaceDir,
+      sessionKey,
+      resolvedAgentId,
+    });
+  }
 
   // --- Extract chatId + topicId from event (multi-layer fallback) ---
   const conversationId: string = event.context?.conversationId || "";
@@ -256,6 +288,116 @@ export function resolveDomainFromEvent(
         : absChatId;
 
   const agentId = resolvedAgentId || event.context?.agentId || "main";
+
+  return {
+    domainName,
+    domainEntry,
+    sessionKind,
+    sessionSegment,
+    sessionLocation,
+    chatId,
+    absChatId,
+    topicId,
+    agentId,
+    workspaceDir,
+    sessionKey,
+  };
+}
+
+/** Shared registry lookup used by both message:received and agent:bootstrap paths. */
+type RegistryLookupInput = {
+  chatId: string;
+  topicId: string | null;
+  allowedKinds: SessionKind[];
+  workspaceDir: string;
+  sessionKey: string;
+  resolvedAgentId: string | null;
+};
+
+function resolveDomainFromRegistry(input: RegistryLookupInput): ResolvedDomain | null {
+  const { chatId, topicId, allowedKinds, workspaceDir, sessionKey } = input;
+
+  let sessionKind: SessionKind;
+  if (topicId) {
+    sessionKind = "topic-thread";
+  } else if (!chatId.startsWith("-")) {
+    sessionKind = "peer-direct";
+  } else {
+    sessionKind = "group-direct";
+  }
+
+  if (!allowedKinds.includes(sessionKind)) return null;
+
+  const absChatId = chatId.replace(/^-/, "");
+  const sessionSegment =
+    sessionKind === "topic-thread"
+      ? `telegram-group--${absChatId}-topic-${topicId}`
+      : sessionKind === "peer-direct"
+        ? `telegram-direct--${chatId}`
+        : `telegram-group--${absChatId}`;
+
+  const registryPath = join(workspaceDir, "memory", "domains", "registry.json");
+  if (!existsSync(registryPath)) return null;
+
+  let registry: any;
+  try {
+    registry = JSON.parse(readFileSync(registryPath, "utf-8"));
+  } catch {
+    return null;
+  }
+  if (!registry.domains || typeof registry.domains !== "object") return null;
+
+  const bindingKey =
+    sessionKind === "topic-thread"
+      ? "topic"
+      : sessionKind === "peer-direct"
+        ? "peer"
+        : "group";
+
+  let domainName: string | null = null;
+  let domainEntry: any = null;
+
+  for (const [name, entry] of Object.entries<any>(registry.domains)) {
+    if (!entry || typeof entry !== "object") continue;
+    const binding = entry[bindingKey];
+    if (!binding) continue;
+
+    if (sessionKind === "topic-thread") {
+      if (
+        binding.topicId === topicId &&
+        String(binding.chatId).replace(/^-/, "") === absChatId
+      ) {
+        domainName = name;
+        domainEntry = entry;
+        break;
+      }
+    } else {
+      if (String(binding.chatId).replace(/^-/, "") === absChatId) {
+        domainName = name;
+        domainEntry = entry;
+        break;
+      }
+    }
+  }
+
+  if (!domainName || !domainEntry) return null;
+
+  if (domainEntry.archived === true) {
+    delete domainEntry.archived;
+    registry.domains[domainName] = domainEntry;
+    try {
+      writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
+    } catch {}
+  }
+
+  const sessionLocation =
+    sessionKind === "topic-thread"
+      ? `${absChatId}:${topicId}`
+      : sessionKind === "peer-direct"
+        ? chatId
+        : absChatId;
+
+  const agentId = input.resolvedAgentId || "main";
 
   return {
     domainName,

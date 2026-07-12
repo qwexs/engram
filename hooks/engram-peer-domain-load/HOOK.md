@@ -1,82 +1,52 @@
 ---
 name: engram-peer-domain-load
-description: "On Telegram DM or group-without-topics message, resolve domain via registry.domains[slug].peer or .group and inject Domain Context + AGENTS via OpenClaw's system-event channel."
+description: "On agent:bootstrap, resolve domain via registry.domains[slug].peer or .group and inject Domain Context + AGENTS into the bootstrap event's messages array."
 metadata:
   {
     "openclaw": {
       "emoji": "🧠",
-      "events": ["message:received"],
+      "events": ["agent:bootstrap"],
       "export": "default"
     }
   }
 ---
 
-# engram-peer-domain-load (v3.5 — system-event delivery)
+# engram-peer-domain-load (v4 — bootstrap delivery)
 
-On `message:received`, if the inbound message is in a Telegram **direct
-(DM) chat** or a **group without topics**, look up the domain bound to
-that chat in `memory/domains/registry.json` and inject the Domain
-Context + AGENTS payload via the OpenClaw gateway `system event` channel.
+On `agent:bootstrap`, if the session is a Telegram **direct (DM) chat**
+or a **group without topics** bound to a domain in
+`memory/domains/registry.json`, inject the Domain Context + AGENTS
+payload into the bootstrap event's `messages` array.
+
+> **v4 (2026-07-12).** v3.5 fired on `message:received` and delivered
+> via `openclaw system event --mode now`. That created a separate agent
+> turn, causing visible spam in the chat. v4 fires on `agent:bootstrap`
+> and pushes to `event.messages` — the payload becomes part of the
+> initial system context, same mechanism `engram-session-start` uses.
+> No system event, no extra turn, no spam.
 
 ## When it fires
 
-On `message:received`, if:
-- The message is **not** in a topic session (no `topicId`),
-- AND a non-empty `chatId` is present,
-- AND the session kind resolves to:
-  - `peer-direct` (positive chatId = user id → DM) with a matching
-    `entry.peer = { chatId }` in registry, OR
-  - `group-direct` (negative chatId, no topicId → group without topics)
-    with a matching `entry.group = { chatId }` in registry,
-- AND the resolved domain-context hash differs from the last-injected
-  `<!-- engram-system-event-hash:<8-hex> -->` marker in today's daily
-  note (when present; absence ⇒ always inject).
+On `agent:bootstrap`, if:
+- The session key matches:
+  - `agent:<id>:telegram-direct-<chatId>` (DM)
+  - `agent:<id>:telegram-group-<chatId>` (group without topics)
+- AND a matching `peer: {chatId}` or `group: {chatId}` entry exists in
+  `memory/domains/registry.json`,
+- AND `event.messages` is an array (present on bootstrap events).
 
 If any of those fail, the hook returns silently.
 
 ## What it injects
 
 Same payload shape as `engram-topic-domain-load`, with `sessionKind`
-set to `peer-direct` or `group-direct` instead of `topic-thread`.
+set to `peer-direct` or `group-direct`. The payload is pushed into
+`event.messages`, becoming part of the agent's initial context.
 
-The `sessionLabel` in the payload is:
-- `peer-direct`: `DM \`{userId}\``
-- `group-direct`: `group \`{chatId}\``
-
-## Registry bindings
-
-```
-{
-  "domains": {
-    "elena-direct": {
-      "type": "peer-direct",
-      "peer": { "chatId": "205075873" },
-      ...
-    },
-    "company-group": {
-      "type": "group-direct",
-      "group": { "chatId": "-1001234567890" },
-      ...
-    }
-  }
-}
-```
-
-## Session segments
-
-| Kind | sessionSegment |
-|------|----------------|
-| `peer-direct` | `telegram-direct--{chatId}` |
-| `group-direct` | `telegram-group--{absChatId}` |
+No idempotency hash check is needed: bootstrap fires once per session.
 
 ## Pair with
 
 - `engram-topic-domain-load` (sibling — topic-thread bindings)
-- `engram-session-start` / `engram-session-end` (session markers)
-- `engram-daily-note` (creates daily notes)
-
-## Idempotency & failure model
-
-Same as `engram-topic-domain-load` — see its HOOK.md for the full table.
-Hash-based idempotency via `<!-- engram-system-event-hash:<8-hex> -->`,
-silent retry on next message if delivery fails.
+- `engram-session-start` (also fires on `agent:bootstrap`)
+- `engram-daily-note` (creates daily notes on gateway startup)

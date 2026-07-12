@@ -5,34 +5,23 @@ import {
   computeContextHash,
   resolveAgentsBody,
   buildDomainPayload,
-  readLatestHashFromNote,
   type DomainSourceFiles,
 } from "../_lib/domain-inject.js";
-import { enqueueSystemEventToSession } from "../_lib/system-event.js";
 
 /**
- * engram-peer-domain-load (v3.5 — system-event delivery)
+ * engram-peer-domain-load (v4 — bootstrap delivery)
  *
- * On `message:received`, if the message is in a Telegram direct (DM) chat
- * or a group without topics, look up the domain bound to that chat and
- * inject Domain Context + AGENTS via the OpenClaw gateway `system event`
- * channel.
+ * On `agent:bootstrap`, if the session is a Telegram DM or group without
+ * topics bound to a domain, inject Domain Context + AGENTS into the
+ * bootstrap event's `messages` array. This makes the context part of the
+ * agent's initial system prompt — no separate system event, no extra
+ * agent turn, no spam.
  *
  * Handles two session kinds:
  *   - `peer-direct`  — DM chats (positive chatId = user id)
  *   - `group-direct` — groups without topic structure (negative chatId, no topicId)
- *
- * Topic-thread sessions (groups with topics) are handled by the sibling
- * `engram-topic-domain-load` hook.
- *
- * Registry bindings:
- *   - peer-direct:  `entry.peer  = { chatId }`
- *   - group-direct: `entry.group = { chatId }`
- *
- * See HOOK.md for full documentation.
  */
 const handler = async (event: any) => {
-  // Only handle peer-direct and group-direct sessions
   const resolved = resolveDomainFromEvent(event, {
     kinds: ["peer-direct", "group-direct"],
   });
@@ -72,7 +61,7 @@ const handler = async (event: any) => {
     } catch {}
   }
 
-  // --- Hash + agents + idempotency ---
+  // --- Hash + agents ---
   const contentHash = computeContextHash(files);
   const agents = resolveAgentsBody(files, {
     qmdIndex,
@@ -83,20 +72,7 @@ const handler = async (event: any) => {
     kgEntity: domainEntry.kgEntity,
   });
 
-  const today = new Date().toLocaleDateString("sv-SE", {
-    timeZone: process.env.ENGRAM_TZ || process.env.TZ || "UTC",
-  });
-  const sessionDir = join(
-    workspaceDir,
-    "memory",
-    `agent-${agentId}`,
-    sessionSegment,
-  );
-  const notePath = join(sessionDir, `${today}.md`);
-  const lastHash = readLatestHashFromNote(notePath);
-  if (lastHash === contentHash) return;
-
-  // --- Build payload + inject ---
+  // --- Build payload ---
   const payload = buildDomainPayload({
     domainName,
     domainEntry,
@@ -107,21 +83,13 @@ const handler = async (event: any) => {
     files,
   });
 
-  const result = enqueueSystemEventToSession({
-    sessionKey,
-    text: payload,
-    spawnFn: (globalThis as any).__ENGRAM_TEST_SPAWN_FN__,
-  });
-
-  if (!result.ok) {
-    console.warn(
-      `[engram-peer-domain-load] system-event injection failed for "${domainName}" (chat=${chatId}, kind=${sessionKind}): ${result.error}; next message will retry`,
-    );
-    return;
+  // --- Inject via event.messages (becomes part of bootstrap context) ---
+  if (Array.isArray(event.messages)) {
+    event.messages.push(payload);
   }
 
   console.log(
-    `[engram-peer-domain-load] Injected domain context + agents for "${domainName}" → ${sessionKind} ${absChatId} via system-event (hash ${contentHash}, agents ${agents.source}, ${result.bytesSent} bytes)`,
+    `[engram-peer-domain-load] Injected domain context + agents for "${domainName}" → ${sessionKind} ${absChatId} via bootstrap (hash ${contentHash}, agents ${agents.source}, ${Buffer.byteLength(payload, "utf-8")} bytes)`,
   );
 };
 

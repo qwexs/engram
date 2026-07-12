@@ -139,6 +139,26 @@ var handler = async (event) => {
   appendFileSync(notePath, `<!-- session:start:${iso} -->
 `);
   console.log(`[engram-session-start] Wrote session:start to ${notePath}`);
+  // Register this session in heartbeat-state.json activeSessions so the
+  // heartbeat runner's --all-active-sessions flag picks it up for
+  // extraction and domain writes. Without this, sessions that don't
+  // appear in openclaw.json bindings[] (e.g. direct DMs) are invisible
+  // to the heartbeat and never get extraction/domains processing.
+  try {
+    const heartbeatPath = join(workspaceDir, "memory", "heartbeat-state.json");
+    if (existsSync(heartbeatPath)) {
+      const raw = readFileSync(heartbeatPath, "utf-8");
+      const state = JSON.parse(raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw);
+      if (!Array.isArray(state.activeSessions)) state.activeSessions = [];
+      if (!state.activeSessions.includes(sessionKey)) {
+        state.activeSessions.push(sessionKey);
+        writeFileSync(heartbeatPath, JSON.stringify(state, null, 2) + "\n");
+        console.log(`[engram-session-start] Registered session '${sessionKey}' in activeSessions`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[engram-session-start] Failed to register session in activeSessions: ${e.message}`);
+  }
   try {
     const memoryDir = join(workspaceDir, "memory");
     const agentSessionDir = join(memoryDir, `agent-${agentId}`, sessionKey);

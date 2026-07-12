@@ -422,7 +422,9 @@ function buildSchedule(s) {
 const PROSE_TEMPLATE = `You are the cron job for the Clawd engram heartbeat. Do these steps in order using your available tools (do not write or run any JavaScript or shell scripts; call the tools directly).
 
 Step 1 — Run the heartbeat runner:
-Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --spawn-hb-domains-write --spawn-rethink --spawn-rethink2", workdir="<WORKSPACE>", timeout_ms=900000. Capture the output as \`runner\`.
+Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2", workdir="<WORKSPACE>", timeout_ms=900000. Capture the output as \`runner\`.
+
+Note: --recover-stale-oll-locks clears stale worker locks that exceeded TTL (2h default), preventing permanent lockout when a subagent fails without producing a handoff.
 
 Note on spawn flags: --spawn-hb-domains-write, --spawn-rethink, --spawn-rethink2 only open the gate for hb-rethink/rethink2/domains-write to be queued when their respective triggers fire. heartbeat-runner.js filters internally (wouldRunRethink, wouldRunRethink2, domainsWriteDue); cost is zero on ticks where triggers don't fire. This is the etalon default — fresh installs bootstrap the OLL loop end-to-end without manual seeding.
 

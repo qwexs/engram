@@ -200,10 +200,16 @@ function isSessionNoise(text, role = "user") {
 }
 
 function classifyText(text) {
-  if (/(решил[аи]?|решили|принято решение|давай будем|будем делать|we decided|decision made|let\x27s go with)/i.test(text)) return "decision";
-  if (/(предпочитаю|нравится|не нравится|лучше использовать|prefer|like|dislike|better to use)/i.test(text)) return "preference";
-  if (/(на самом деле|поправ|correction|actually|I meant)/i.test(text)) return "correction";
-  if (/(запустили|задеплоили|завершили|готово|deployed|launched|finished|released|completed)/i.test(text)) return "milestone";
+  // Decision: explicit decisions, agreements, plans to act
+  if (/(решил[аи]?|решили|принято решение|давай будем|будем делать|договорились|согласовали|утвердили|we decided|decision made|let\x27s go with|agreed to|approved)/i.test(text)) return "decision";
+  // Preference: likes/dislikes, tool/language/framework choices
+  if (/(предпочитаю|нравится|не нравится|лучше использовать|prefer|like|dislike|better to use|should use|should be)/i.test(text)) return "preference";
+  // Correction: fixing wrong assumptions, clarifying
+  if (/(на самом деле|поправ|correction|actually|I meant|не так|ошибся|исправил)/i.test(text)) return "correction";
+  // Milestone: completed work, deployments, status changes
+  if (/(запустили|задеплоили|завершили|готово|deployed|launched|finished|released|completed|зафиксировал|обновил|настроил|проверил|добавил|удалил|исправил|починил|установил|создал|написал|сделал)/i.test(text)) return "milestone";
+  // Context: notable findings, observations, status updates
+  if (/(обнаружил|нашёл|выяснил|проверил|убедился|оказалось|статус|состояние|found out|discovered|turned out|status update)/i.test(text)) return "context";
   return null;
 }
 

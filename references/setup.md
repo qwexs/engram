@@ -47,7 +47,7 @@ Use OpenClaw's cron system (`/cron add` or via API):
   "wakeMode": "now",
   "payload": {
     "kind": "agentTurn",
-    "message": "Run the engram heartbeat runner for the target workspace.\n\nCall the exec tool with:\n- command: `bun skills/engram/scripts/heartbeat-runner.js --workspace /path/to/workspace --agent-id PLACEHOLDER_AGENT_ID --session main --all-active-sessions --label-prefix PLACEHOLDER_LABEL_PREFIX --timeout-ms 300000`\n- workdir: `/path/to/workspace`\n- timeout: 900 seconds\n\nThe runner is self-contained and deterministic. After exec returns, post a one-line summary in this format:\n\n`status=... extraction=... domains=... oll=... maintenance=...`\n\nIf exec fails, report the error message verbatim and stop.",
+    "message": "Run the engram heartbeat runner for the target workspace.\n\nCall the exec tool with:\n- command: `bun skills/engram/scripts/heartbeat-runner.js --workspace /path/to/workspace --agent-id PLACEHOLDER_AGENT_ID --session main --all-active-sessions --label-prefix PLACEHOLDER_LABEL_PREFIX --timeout-ms 300000 --recover-stale-oll-locks`\n- workdir: `/path/to/workspace`\n- timeout: 900 seconds\n\nThe runner is self-contained and deterministic. After exec returns, post a one-line summary in this format:\n\n`status=... extraction=... domains=... oll=... maintenance=...`\n\nIf exec fails, report the error message verbatim and stop.",
     "timeoutSeconds": 900,
     "lightContext": true
   },
@@ -278,3 +278,62 @@ After install + restart, both should be true:
 openclaw hooks list          # 11/13 ready, engram-* hooks show openclaw-workspace
 bun scripts/validate.js      # Errors: 0, "All 8 engram hooks installed in …"
 ```
+
+## Troubleshooting
+
+### Rethink stuck (rethinkInProgress: true for >2h)
+
+If `heartbeat-state.json` shows `rethinkInProgress: true` with a stale
+`rethinkStartedAt` (more than 2 hours ago), the rethink subagent failed
+without producing a handoff. The heartbeat runner includes
+`--recover-stale-oll-locks` which auto-clears stale locks after a 2h TTL.
+
+Manual fix:
+```bash
+python3 -c "
+import json
+with open('memory/heartbeat-state.json','r') as f: s=json.load(f)
+s['rethinkInProgress']=False; s['rethinkStartedAt']=None
+with open('memory/heartbeat-state.json','w') as f: json.dump(s,f,indent=2)+'\n'
+"
+```
+
+### activeSessions empty — extraction not running
+
+If `activeSessions` in `heartbeat-state.json` is `[]` or missing,
+`--all-active-sessions` falls back to `["main"]` and extraction looks
+in the wrong session directory. The `engram-session-start` hook now
+auto-registers sessions on first message, but for pre-existing sessions
+you need to add them manually:
+
+```bash
+python3 -c "
+import json
+with open('memory/heartbeat-state.json','r') as f: s=json.load(f)
+if 'activeSessions' not in s: s['activeSessions']=[]
+if 'telegram-direct-<USER_ID>' not in s['activeSessions']:
+    s['activeSessions'].append('telegram-direct-<USER_ID>')
+with open('memory/heartbeat-state.json','w') as f: json.dump(s,f,indent=2)+'\n'
+"
+```
+
+### Domain files (decisions/status/changelog) empty
+
+Domain files are written by the **agent itself** during conversations,
+not by the heartbeat runner. The `engram-topic-domain-load` and
+`engram-peer-domain-load` hooks inject Domain Context + AGENTS (including
+write rules) into the session via system event. If files stay empty:
+
+1. Check the domain is registered in `memory/domains/registry.json`
+2. Check the hook is enabled in `openclaw.json`
+3. Check the agent received the system event (look for `<!-- engram-system-event-hash:... -->` in the daily note)
+4. Ensure the model/provider is working (subagent failures prevent writing)
+
+### Cron payload missing --recover-stale-oll-locks
+
+Re-install the cron to get the latest payload:
+```bash
+bun skills/engram/scripts/install-cron.js install --agent-id <id> --workspace <path> --schedule <expr>
+```
+The install script is idempotent and will update the payload message
+without touching schedule, model, or delivery settings.

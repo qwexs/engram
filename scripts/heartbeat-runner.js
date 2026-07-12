@@ -740,6 +740,84 @@ async function applyDomainHandoffs() {
   return { applied, failed };
 }
 
+// applyRethinkHandoffs: scan workspace/ops/heartbeat-spawns/handoff/*.md for
+// HB-RETHINK handoff blocks written by previous ticks' hb-rethink subagents,
+// parse them, apply state patches (lastRethink, rethinkScore, etc.), and move
+// to done/. Mirrors applyDomainHandoffs() but for rethink handoffs.
+// Closes the architectural gap where rethink subagents wrote handoff files
+// but the runner never processed them — handoffs piled up in handoff/ forever.
+async function applyRethinkHandoffs() {
+  const spawnsDir = join(workspace, "workspace", "ops", "heartbeat-spawns");
+  const handoffDir = join(spawnsDir, "handoff");
+  const doneDir = join(spawnsDir, "done");
+  let applied = 0;
+  let failed = 0;
+  if (!existsSync(handoffDir)) return { applied, failed };
+  let files;
+  try {
+    files = await readdir(handoffDir);
+  } catch (err) {
+    summary.warnings.push("hb-rethink apply: cannot read " + handoffDir + ": " + (err && err.message ? err.message : String(err)));
+    return { applied, failed };
+  }
+  files = files.filter((f) => typeof f === "string" && f.endsWith(".md")).sort();
+  if (files.length === 0) return { applied, failed };
+  try { mkdirSync(doneDir, { recursive: true }); } catch { /* ignore */ }
+  for (const file of files) {
+    const filePath = join(handoffDir, file);
+    let text = "";
+    try {
+      text = await readFile(filePath, "utf8");
+    } catch (err) {
+      failed++;
+      summary.warnings.push("hb-rethink apply: cannot read " + file + ": " + (err && err.message ? err.message : String(err)));
+      continue;
+    }
+    const parsed = parseHandoff(text);
+    if (!parsed.ok) {
+      // Not a rethink handoff — skip (might be domains-write)
+      continue;
+    }
+    if (parsed.type !== "HB-RETHINK") {
+      // Not ours — leave for another handler
+      continue;
+    }
+    try {
+      const handlers = defaultHandoffHandlers({
+        workspace,
+        session: "main",
+        date: today,
+      });
+      const result = await applyHandoff(parsed, handlers);
+      if (result.status === "error") {
+        failed++;
+        summary.warnings.push("hb-rethink apply: " + file + " — " + (result.error || "apply error"));
+        continue;
+      }
+      // Clear rethinkInProgress on successful apply
+      await patchState({
+        rethinkInProgress: false,
+        rethinkStartedAt: null,
+        lastRethink: localIso(),
+        "subagentRuns.hb-rethink.status": "ok",
+      });
+      const destPath = join(doneDir, file);
+      try {
+        renameSync(filePath, destPath);
+      } catch (err) {
+        failed++;
+        summary.warnings.push("hb-rethink apply: " + file + " — moved to done failed: " + (err && err.message ? err.message : String(err)));
+        continue;
+      }
+      applied++;
+    } catch (err) {
+      failed++;
+      summary.warnings.push("hb-rethink apply: " + file + " — " + (err && err.message ? err.message : String(err)));
+    }
+  }
+  return { applied, failed };
+}
+
 async function runDomains() {
   const registry = join(workspace, "memory", "domains", "registry.json");
   if (!existsSync(registry)) {
@@ -1521,6 +1599,15 @@ async function main() {
     // by default — see shouldApplyDomainHandoffs() for the rationale and
     // ISS-14 for the regression history. --no-hb-domains-write-apply
     // disables for tests/debug.
+    // Apply pending hb-rethink handoff files BEFORE running OLL triggers
+    // so rethink state (lastRethink, score) is fresh when deciding whether
+    // to queue a new rethink. Mirrors the domains-write apply pattern.
+    const rethinkApplyResult = await applyRethinkHandoffs();
+    summary.phases = summary.phases || {};
+    summary.phases["hb-rethink-apply"] = {
+      applied: rethinkApplyResult.applied,
+      failed: rethinkApplyResult.failed,
+    };
     if (shouldApplyDomainHandoffs(opts)) {
       const applyResult = await applyDomainHandoffs();
       summary.phases = summary.phases || {};

@@ -23,6 +23,7 @@ const { values: args } = parseArgs({
     'bootstrap-from-forum': { type: 'boolean', default: false },
     'bootstrap-chat': { type: 'string', default: '' },
     'bootstrap-yes': { type: 'boolean', default: false },
+    'yes': { type: 'boolean', default: false },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -56,9 +57,10 @@ Options:
                              that existed before the bot saw them.
   --bootstrap-chat <id>      With --bootstrap-from-forum, limit to one chat ID
                              (e.g. "-100XXXXXXXXXX"). Default: all forum groups in cache.
-  --bootstrap-yes            Skip interactive confirmation (assume yes). For non-interactive
-                             CI/scripted use; otherwise init prints a preview and waits for
-                             a single y/N.
+  --bootstrap-yes            Skip interactive confirmation for --bootstrap-from-forum (assume yes).
+  --yes                      Skip the global confirmation prompt (run non-interactively).
+                             Without --yes, init prints a summary of what it will do and
+                             waits for a single y/N before proceeding.
   --dry-run                  Print the full plan without executing
   --skip-gateway-restart      Do not run 'openclaw gateway restart' (CI / test env)
   -h, --help                Show this help
@@ -87,6 +89,7 @@ Examples:
   bun skills/engram/scripts/init.js --bootstrap-from-forum
   bun skills/engram/scripts/init.js --bootstrap-from-forum --bootstrap-chat -100XXXXXXXXXX
   bun skills/engram/scripts/init.js --bootstrap-from-forum --bootstrap-yes
+  bun skills/engram/scripts/init.js --yes
 `);
   process.exit(0);
 }
@@ -107,6 +110,38 @@ function recordCreate(action, item) { plan.created.push(`${action}: ${item}`); }
 function recordSkip(action, item, reason) { plan.skipped.push(`${action}: ${item} (${reason})`); }
 function recordWarn(item) { plan.warnings.push(item); }
 function recordError(item) { plan.errors.push(item); }
+
+// --- Global confirmation gate ---
+// init.js is a destructive operation: it creates directories, installs hooks,
+// re-indexes QMD, disables built-in hooks, and restarts the gateway.
+// Require explicit --yes (or --dry-run) to proceed without prompting.
+// This prevents accidental damage from running init.js for "testing".
+if (!dryRun && !args['yes'] && !args['force']) {
+  console.log(`\nengram init — this will:`);
+  console.log(`  • create memory/ and life/ directories in: ${WORKSPACE}`);
+  console.log(`  • set up QMD collections and run initial index`);
+  console.log(`  • install/overwrite engram hooks (with backup)`);
+  console.log(`  • disable the built-in session-memory hook`);
+  if (args['with-cron']) console.log(`  • install heartbeat cron job`);
+  console.log(`  • restart the OpenClaw gateway`);
+  console.log(`\nRun with --dry-run to preview without changes.`);
+  console.log(`Proceed? [y/N]`);
+
+  let answer = '';
+  try {
+    const buf = Buffer.alloc(16);
+    const n = require('node:fs').readSync(0, buf, 0, 16, null);
+    if (n > 0) answer = buf.slice(0, n).toString('utf8').trim().toLowerCase();
+  } catch (e) {
+    console.log(`\nCould not read confirmation from stdin (${e.message}).`);
+    console.log(`Use --yes to skip the prompt for non-interactive use.`);
+    process.exit(1);
+  }
+  if (answer !== 'y' && answer !== 'yes') {
+    console.log('Cancelled.');
+    process.exit(0);
+  }
+}
 
 // --- Detect QMD ---
 function detectQmdVariant() {

@@ -149,9 +149,9 @@ const GATEWAY_HOOKS = args['hooks-dir'] || discoverOpenclawHooksDir();
 // (workspace cannot override managed code). So putting hooks in managed is
 // always safe even if workspace-local exists with the same names.
 //
-// Removed: `~/clawd/hooks` convention candidate. It was the source of the
+// Removed: `~/.openclaw/hooks` convention candidate. It was the source of the
 // "hooks copied to the wrong place" bug — on machines where workspaceDir is
-// not `~/clawd`, the script silently created a fresh `~/clawd/hooks` directory
+// not `~/.openclaw`, the script silently created a fresh `~/.openclaw/hooks` directory
 // that the gateway never scanned.
 function discoverOpenclawHooksDir() {
   // Strategy 0: query OpenClaw gateway via `hooks list --json` (authoritative).

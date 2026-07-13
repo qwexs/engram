@@ -590,8 +590,8 @@ if (!cronCfg || !cronCfg.expectedJobName) {
   }
 }
 
-// 9. Hooks sync drift guard (catches skill/hooks/ ↔ ~/clawd/hooks/ drift).
-// Skill is the source of truth; OpenClaw loads from `~/clawd/hooks/`. If
+// 9. Hooks sync drift guard (catches skill/hooks/ ↔ ~/.openclaw/hooks/ drift).
+// Skill is the source of truth; OpenClaw loads from `~/.openclaw/hooks/`. If
 // any `engram-*` hook is in the skill but missing as a directory in the
 // OpenClaw hooks dir, OpenClaw silently skips it. install-hooks.js creates
 // the directories; this check surfaces drift before runtime hits it.
@@ -599,7 +599,7 @@ if (!cronCfg || !cronCfg.expectedJobName) {
 console.log('\n--- Hooks Sync ---');
 {
   // Skill hooks dir = <skill>/hooks. resolveDir is the workspace-specific
-  // junction target (e.g. <workspace>/skills/engram -> clawd/skills/engram);
+  // junction target (e.g. <workspace>/skills/engram -> .openclaw/skills/engram);
   // SKILL_DIR is whatever process.env.ENGRAM_SKILL_DIR says, or the actual
   // file location. We follow whatever path install-hooks.js used to install.
   const skillHooksDir = join(SKILL_DIR, 'hooks');
@@ -612,14 +612,14 @@ console.log('\n--- Hooks Sync ---');
     const home = process.env.USERPROFILE || process.env.HOME || '';
     let gatewayHooksDir = null;
     const candidates = [
-      join(home, 'clawd', 'hooks'),
+      join(home, '.openclaw', 'hooks'),
       join(home, '.openclaw', 'hooks'),
     ];
     for (const c of candidates) {
       if (existsSync(c)) { gatewayHooksDir = c; break; }
     }
     if (!gatewayHooksDir) {
-      warn('Could not locate OpenClaw hooks directory (~/clawd/hooks or ~/.openclaw/hooks). Skipping hook sync check.');
+      warn('Could not locate OpenClaw hooks directory (~/.openclaw/hooks). Skipping hook sync check.');
     } else {
       // List hooks in skill
       const skillHooks = readdirSync(skillHooksDir, { withFileTypes: true })

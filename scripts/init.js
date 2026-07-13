@@ -1115,7 +1115,7 @@ if (!dryRun) {
   // Detect if hooks already exist on this workspace. If so, pass --force to
   // install-hooks.js so it can overwrite (after backup). Without --force,
   // install-hooks refuses to touch existing entries — see install-hooks.js.
-  const gatewayHooksDir = process.env.OPENCLAW_HOOKS_DIR || join(process.env.USERPROFILE || process.env.HOME || '.', 'clawd', 'hooks');
+  const gatewayHooksDir = process.env.OPENCLAW_HOOKS_DIR || join(process.env.USERPROFILE || process.env.HOME || '.', '.openclaw', 'hooks');
   const anyHookExists = existsSync(join(gatewayHooksDir, 'engram-bootstrap-qmd')) ||
     existsSync(join(gatewayHooksDir, 'engram-daily-note'));
   const forceFlag = anyHookExists ? ' --force' : '';

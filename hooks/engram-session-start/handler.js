@@ -1,10 +1,9 @@
-// hooks/engram-session-start/handler.ts
-import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, readdirSync, renameSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
-import { spawnSync } from "node:child_process";
+// @bun
+// handler.ts
+import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, readdirSync, renameSync } from "fs";
+import { join } from "path";
 
-// hooks/_lib/parse-agent-id.ts
+// ../_lib/parse-agent-id.ts
 function splitAgentAndSession(sessionKey) {
   if (!sessionKey)
     return null;
@@ -16,7 +15,7 @@ function splitAgentAndSession(sessionKey) {
   return { agentId, sessionKey: sessionKeySeg };
 }
 
-// hooks/engram-session-start/handler.ts
+// handler.ts
 var TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 var TEMPLATE = (date) => `# ${date}
 
@@ -67,43 +66,6 @@ var handler = async (event) => {
     return;
   if (/^cron-.+-run-/.test(sessionKey))
     return;
-  const TAG = "[engram-session-start:auto-domain]";
-  const topicMatch = sessionKey.match(/^telegram-group-(-?\d+)-topic-(\d+)$/);
-  if (topicMatch) {
-    const chatId = topicMatch[1];
-    const topicId = topicMatch[2];
-    const registryPath = join(workspaceDir, "memory", "domains", "registry.json");
-    let alreadyBound = false;
-    try {
-      const raw = readFileSync(registryPath, "utf-8");
-      const text = raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw;
-      const reg = JSON.parse(text);
-      const abs = chatId.replace(/^-/, "");
-      alreadyBound = Object.values(reg.domains || {}).some((e) => e && e.topic && String(e.topic.chatId).replace(/^-/, "") === abs && String(e.topic.topicId) === topicId);
-    } catch {}
-    if (!alreadyBound) {
-      const addDomain = process.env.ENGRAM_ADD_DOMAIN_SCRIPT || join(homedir(), "clawd", "skills", "engram", "scripts", "add-domain.js");
-      const slug = `topic-${chatId}-${topicId}`;
-      const res = spawnSync("bun", [
-        addDomain,
-        "--type",
-        "topic-thread",
-        "--domain",
-        slug,
-        "--topic",
-        `${chatId}:${topicId}`,
-        "--description",
-        "auto-bound"
-      ], { encoding: "utf-8", timeout: 30000, cwd: workspaceDir });
-      if (res.error || typeof res.status === "number" && res.status !== 0) {
-        console.warn(`${TAG} add-domain.js failed: ${res.error?.message || `exit ${res.status}`}`);
-      } else {
-        try {
-          Array.isArray(event.messages) && event.messages.push(`\uD83E\uDDE0 Домен \`${slug}\` создан автоматически для этого топика.`);
-        } catch {}
-      }
-    }
-  }
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
   const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey);
   const notePath = join(sessionDir, `${today}.md`);
@@ -139,20 +101,17 @@ var handler = async (event) => {
   appendFileSync(notePath, `<!-- session:start:${iso} -->
 `);
   console.log(`[engram-session-start] Wrote session:start to ${notePath}`);
-  // Register this session in heartbeat-state.json activeSessions so the
-  // heartbeat runner's --all-active-sessions flag picks it up for
-  // extraction and domain writes. Without this, sessions that don't
-  // appear in openclaw.json bindings[] (e.g. direct DMs) are invisible
-  // to the heartbeat and never get extraction/domains processing.
   try {
     const heartbeatPath = join(workspaceDir, "memory", "heartbeat-state.json");
     if (existsSync(heartbeatPath)) {
       const raw = readFileSync(heartbeatPath, "utf-8");
       const state = JSON.parse(raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw);
-      if (!Array.isArray(state.activeSessions)) state.activeSessions = [];
+      if (!Array.isArray(state.activeSessions))
+        state.activeSessions = [];
       if (!state.activeSessions.includes(sessionKey)) {
         state.activeSessions.push(sessionKey);
-        writeFileSync(heartbeatPath, JSON.stringify(state, null, 2) + "\n");
+        writeFileSync(heartbeatPath, JSON.stringify(state, null, 2) + `
+`);
         console.log(`[engram-session-start] Registered session '${sessionKey}' in activeSessions`);
       }
     }

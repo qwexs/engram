@@ -1,7 +1,5 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { spawnSync } from "node:child_process";
 import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -62,50 +60,6 @@ const handler = async (event: any) => {
   // Skip ephemeral runtime sessions — they don't need daily notes.
   if (sessionKey.startsWith("subagent-")) return;
   if (/^cron-.+-run-/.test(sessionKey)) return;
-
-  // ISS-10: silent auto-create domain for unbound Telegram topics on first bootstrap.
-  // Runs BEFORE the debounce/skip checks so it always fires for new topics even
-  // when the daily note already has a recent session:start watermark.
-  // Session key shape for group topics: `telegram-group-<chatId>-topic-<topicId>`.
-  const TAG = "[engram-session-start:auto-domain]";
-  const topicMatch = sessionKey.match(/^telegram-group-(-?\d+)-topic-(\d+)$/);
-  if (topicMatch) {
-    const chatId = topicMatch[1];
-    const topicId = topicMatch[2];
-    const registryPath = join(workspaceDir, "memory", "domains", "registry.json");
-    let alreadyBound = false;
-    try {
-      const raw = readFileSync(registryPath, "utf-8");
-      const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
-      const reg = JSON.parse(text);
-      const abs = chatId.replace(/^-/, "");
-      alreadyBound = Object.values(reg.domains || {}).some((e: any) =>
-        e && e.topic &&
-        String(e.topic.chatId).replace(/^-/, "") === abs &&
-        String(e.topic.topicId) === topicId
-      );
-    } catch {
-      // missing or corrupt registry → treat as unbound, proceed to create
-    }
-    if (!alreadyBound) {
-      const addDomain = process.env.ENGRAM_ADD_DOMAIN_SCRIPT
-        || join(homedir(), "clawd", "skills", "engram", "scripts", "add-domain.js");
-      const slug = `topic-${chatId}-${topicId}`;
-      const res = spawnSync("bun", [
-        addDomain, "--type", "topic-thread", "--domain", slug,
-        "--topic", `${chatId}:${topicId}`, "--description", "auto-bound",
-      ], { encoding: "utf-8", timeout: 30_000, cwd: workspaceDir });
-      if (res.error || (typeof res.status === "number" && res.status !== 0)) {
-        console.warn(`${TAG} add-domain.js failed: ${res.error?.message || `exit ${res.status}`}`);
-      } else {
-        try {
-          Array.isArray(event.messages) && event.messages.push(
-            `🧠 Домен \`${slug}\` создан автоматически для этого топика.`
-          );
-        } catch {}
-      }
-    }
-  }
 
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
   const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey);

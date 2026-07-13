@@ -15,8 +15,8 @@ const handler = async (event: any) => {
     event.context?.workspaceDir ||
     process.env.OPENCLAW_WORKSPACE ||
     process.env.CLAWD_WORKSPACE ||
-    (process.env.USERPROFILE ? join(process.env.USERPROFILE, "clawd") : null) ||
-    (process.env.HOME ? join(process.env.HOME, "clawd") : null);
+    (process.env.USERPROFILE ? join(process.env.USERPROFILE, ".openclaw", "workspace") : null) ||
+    (process.env.HOME ? join(process.env.HOME, ".openclaw", "workspace") : null);
   if (!workspaceDir) return;
 
   const logDir = join(workspaceDir, "workspace", "message-log");

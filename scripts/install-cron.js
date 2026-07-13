@@ -11,11 +11,12 @@
  *   3. for each JSON line with action="spawn": sessions_spawn(...)
  *   4. reply with runner output + "[phase-5.5] ..." + HEARTBEAT_OK
  *
- * This script is idempotent: re-running it updates the existing job's
- * payload.message and name to the current 4-step prose form, but does
- * NOT touch agentId, schedule, model, thinking, timeoutSeconds,
- * lightContext, sessionTarget, delivery, or sessionKey. So existing
- * schedule and routing are preserved across updates.
+ * This script is idempotent: re-running it detects drift (old payload
+ * format, model mismatch vs engram.json, stale --agent-id / workspace,
+ * missing --recover-stale-oll-locks) and updates message + tools + model.
+ * agentId, schedule, sessionTarget, delivery, and sessionKey are preserved
+ * so routing stays stable. Model IS updated on drift — leaving it sticky
+ * previously stuck HB on MiniMax after engram.json moved to Grok.
  *
  * ## Windows + multi-line --message note
  *
@@ -510,6 +511,41 @@ function isOnNewFormat(payload) {
   );
 }
 
+/** Detect drift between live cron job and desired etalon spec.
+ *  install used to early-return on isOnNewFormat alone, which left jobs stuck on
+ *  old provider models (e.g. MiniMax) after engram.json moved to Grok, and left
+ *  stale --agent-id values from previous workspaces (e.g. apriori-tech).
+ */
+function detectCronDrift(existing, spec) {
+  const reasons = [];
+  const msg = existing?.payload?.message || "";
+  const liveModel = existing?.payload?.model || "";
+  const wantModel = spec?.payload?.model || "";
+
+  if (!isOnNewFormat(existing?.payload)) {
+    reasons.push("old-format");
+  }
+  if (liveModel !== wantModel) {
+    reasons.push(`model:${liveModel || "(none)"}->${wantModel || "(none)"}`);
+  }
+  // Structural message checks (cheap, stable across whitespace).
+  if (!msg.includes(`--agent-id ${agentId}`)) {
+    reasons.push("agent-id");
+  }
+  if (!msg.includes("--recover-stale-oll-locks")) {
+    reasons.push("recover-stale-oll-locks");
+  }
+  if (!msg.includes("--spawn-hb-domains-write")) {
+    reasons.push("spawn-hb-domains-write");
+  }
+  // Workspace path in Step 1 command — accept either absolute form we emit.
+  const wsPosix = String(workspace).replace(/\\/g, "/");
+  if (!msg.includes(wsPosix) && !msg.includes(workspace)) {
+    reasons.push("workspace");
+  }
+  return reasons;
+}
+
 // --- Build full cron spec (for add / dry-run) ---
 function buildCronSpec() {
   return {
@@ -603,15 +639,16 @@ function actionInstall() {
   const existing = findCronJobByName(jobsData, cronName);
 
   if (existing) {
-    if (isOnNewFormat(existing.payload)) {
+    const drift = detectCronDrift(existing, spec);
+    if (drift.length === 0) {
       console.log(`✅ already up to date (id=${existing.id})`);
       return;
     }
-    // Update name + payload.message + tools allow-list. agentId, schedule,
-    // model, thinking, timeoutSeconds, lightContext, sessionTarget,
-    // delivery, sessionKey are preserved from the existing job — we MUST
-    // NOT touch them.
-    runOpenclaw([
+    // Sync message + tools + model when drift is detected.
+    // Historically install refused to touch model on existing jobs, which left
+    // production HB stuck on MiniMax after engram.json moved to Grok (2026-07-14).
+    // agentId / schedule / sessionTarget / delivery / sessionKey stay preserved.
+    const editArgv = [
       "cron",
       "edit",
       existing.id,
@@ -621,8 +658,18 @@ function actionInstall() {
       spec.payload.message,
       "--tools",
       HEARTBEAT_TOOLS_ALLOW_CLI,
-    ]);
-    console.log(`✅ updated cron job ${existing.id} (message + tools allow-list)`);
+      "--model",
+      subagentModel,
+      "--thinking",
+      "medium",
+      "--timeout-seconds",
+      "900",
+      "--light-context",
+    ];
+    runOpenclaw(editArgv);
+    console.log(
+      `✅ updated cron job ${existing.id} (drift: ${drift.join(", ")}; message+tools+model)`
+    );
     return;
   }
 

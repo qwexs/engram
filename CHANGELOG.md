@@ -6,6 +6,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `domains-runner.js` `parseHandoffField` / `parseJsonStrict`: accept LLM-style
+  fenced ` ```json ` blocks for `Base-Hashes` and `Changelog-Entries`. The old
+  single-line regex used `\s*` after the colon, which swallowed the newline and
+  captured only the opening fence (` ```json `), then failed with
+  `Unrecognized token '\`'` — leaving `hb-domains-write` handoffs stuck in
+  `workspace/ops/heartbeat-spawns/handoff/` since 2026-07-09.
+- `install-cron.js`: detect model / agent-id / workspace / recover-flag drift on
+  existing jobs and re-sync `message` + `tools` + `model`. Previously an
+  `isOnNewFormat` early-return left HB cron on MiniMax after `engram.json` moved
+  to Grok (token-plan limit → 10 consecutive errors).
+
 ### Added
 - `scripts/init.js` single-command fresh-install bootstrap with `--with-cron`,
   `--auto-detect-sessions`, `--with-sample-domain`, `--dry-run`, and

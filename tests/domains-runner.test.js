@@ -201,4 +201,55 @@ describe("domains-runner write handoff", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // 2026-07-14: LLMs wrap Base-Hashes / Changelog-Entries in ```json fences.
+  // parseHandoffField used to swallow only the opening fence line via \\s*,
+  // causing "Unrecognized token '`'". Accept fenced multi-line JSON blocks.
+  test("accepts fenced ```json Base-Hashes and Changelog-Entries blocks", async () => {
+    const root = makeWorkspace();
+    try {
+      writeFileSync(join(root, "memory", "domains", "registry.json"), JSON.stringify({
+        domains: { engram: { type: "dev-project" } },
+      }));
+      writeDomain(root, "engram", {
+        "status.md": "# status\n",
+        "changelog.md": "# changelog\n",
+      });
+      const hashes = {
+        "status.md": hashDomainFile({ workspace: root, domain: "engram", file: "status.md" }),
+        "changelog.md": hashDomainFile({ workspace: root, domain: "engram", file: "changelog.md" }),
+      };
+      const handoff = {
+        body: [
+          "Domain: engram",
+          "Run-Id: run-fenced-1",
+          "Base-Hashes:",
+          "```json",
+          JSON.stringify(hashes, null, 2),
+          "```",
+          "Changelog-Entries:",
+          "```json",
+          JSON.stringify([
+            {
+              id: "run-fenced-1-0",
+              runId: "run-fenced-1",
+              content: "## 2026-07-14 — fenced handoff accepted\n\nParser regression fix.",
+            },
+          ], null, 2),
+          "```",
+          "Promotions: []",
+        ].join("\n"),
+      };
+      const result = await applyDomainWriteHandoff(handoff, {
+        workspace: root,
+        now: "2026-07-14T00:00:00.000Z",
+      });
+      expect(result.status).toBe("ok");
+      expect(result.changed).toBe(true);
+      expect(result.appendedEntries).toBe(1);
+      expect(readFileSync(join(root, "memory", "domains", "engram", "changelog.md"), "utf8")).toContain("Run-Id: run-fenced-1");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

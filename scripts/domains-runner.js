@@ -448,20 +448,53 @@ function assertInside(parent, child) {
   if (rel.startsWith("..") || rel.includes("..")) throw new Error("Resolved path escapes domain root");
 }
 
+/** Strip optional markdown code fences around JSON payloads.
+ *  LLMs frequently wrap Base-Hashes / Changelog-Entries as ```json ... ```.
+ *  Accepts ```json, ```JSON, or bare ``` fences; returns trimmed inner text.
+ */
+function stripJsonWrapper(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return s;
+  const fence = s.match(/^```(?:json|JSON)?[ \t]*\r?\n?([\s\S]*?)\r?\n?[ \t]*```[ \t]*$/);
+  if (fence) return fence[1].trim();
+  return s;
+}
+
 function parseJsonStrict(raw, fieldName) {
   if (raw == null || raw === "") return null;
+  const cleaned = stripJsonWrapper(raw);
+  if (cleaned === "") return null;
   try {
-    return JSON.parse(raw);
+    return JSON.parse(cleaned);
   } catch (err) {
     throw new Error(fieldName + " must be valid JSON: " + err.message);
   }
 }
 
 function parseHandoffField(body, name) {
-  const multi = body.match(new RegExp("^" + name + ":\\s*\\|\\n([\\s\\S]*?)(?=\\n[A-Za-z][A-Za-z-]*:|\\n===|\\Z)", "m"));
-  if (multi) return multi[1].replace(/^ {2}/gm, "").replace(/\n$/, "");
-  const single = body.match(new RegExp("^" + name + ":\\s*(.*)$", "m"));
-  return single ? single[1].trim() : null;
+  // Explicit YAML-style multi-line: Field: |\n  ...
+  const multi = body.match(
+    new RegExp("^" + name + ":[ \\t]*\\|[ \\t]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n[A-Za-z][A-Za-z-]*:|\\r?\\n===|$)", "m")
+  );
+  if (multi) return multi[1].replace(/^ {2}/gm, "").replace(/\r?\n$/, "");
+
+  // Block form used by LLM handoffs: Field:\n```json\n...\n```  or Field:\n{...}/[...]
+  // Important: do NOT use \\s* after the colon — \\s includes newlines and would let a
+  // single-line capture eat only the opening fence line (```json) and drop the body.
+  const block = body.match(
+    new RegExp(
+      "^" + name + ":[ \\t]*(?:\\r?\\n)((?:```(?:json|JSON)?[ \\t]*\\r?\\n[\\s\\S]*?```|(?:[\\[{][\\s\\S]*)))(?=\\r?\\n[A-Za-z][A-Za-z-]*:|\\r?\\n===|$)",
+      "m"
+    )
+  );
+  if (block) return block[1].trim();
+
+  // Single-line value on the same line as the field name.
+  // Use [ \\t]* (not \\s*) so a newline after the colon is NOT swallowed.
+  const single = body.match(new RegExp("^" + name + ":[ \\t]*(.*)$", "m"));
+  if (!single) return null;
+  const value = single[1].trim();
+  return value === "" ? null : value;
 }
 
 function normalizeChangelogEntries(entries, runId) {
@@ -587,7 +620,7 @@ export async function applyDomainWriteHandoff(handoff, {
   const rawStatusContent = parseHandoffField(handoff.body, "Status-Content");
   const rawEntriesRaw = parseHandoffField(handoff.body, "Changelog-Entries") ?? "[]";
   let rawEntries;
-  try { rawEntries = JSON.parse(rawEntriesRaw); } catch { rawEntries = null; }
+  try { rawEntries = parseJsonStrict(rawEntriesRaw, "Changelog-Entries"); } catch { rawEntries = null; }
   const isNoopHandoff = rawBaseHashes == null && rawStatusContent == null && Array.isArray(rawEntries) && rawEntries.length === 0;
   if (isNoopHandoff && !dryRun) {
     const updated = existsSync(stateFile) ? readJson(stateFile) : {};

@@ -73,6 +73,7 @@ A single cron entrypoint runs 10 phases every 30 minutes. Mechanical work (locki
 | 3.5 | Apply pending changelogs | `hb-domains-write` subagent |
 | 4 | Validate KG, update QMD | inline |
 | 5 | OLL triggers (rethink/autoresearch) | inline |
+| 5.5 | OLL spawn queue (queued subagents) | inline |
 | 6 | Report + unlock | inline |
 
 One phase failing doesn't kill the rest. Subagent models are configurable per phase via `engram.json`. The cron is idempotent — re-running never double-writes.

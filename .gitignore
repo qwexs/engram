@@ -10,14 +10,13 @@ workspace/ops/
 
 # Local backups and runtime artifacts — never source.
 *.bak-*
-scripts/hb-runner-output.json
+scripts/hb-*-output.json
 scripts/spawn-claim-output.json
 # Per-test temp workspaces created by bun test (e.g. ws-bootstrap-test/, ws1/, ws3/, ws5/).
 # Each test file's beforeEach mkdtempSync() drops a new directory here.
 .tmp/
 
 # Workspace-specific hooks — deployed locally via install-hooks.js, not committed.
-# `apriori-*` hooks are workspace-specific and not tracked.
 
 # Bundled handler.js — built from handler.ts + _lib/*.ts via bun build.
 # Do not commit; rebuild locally with: bun build hooks/<name>/handler.ts --target=bun

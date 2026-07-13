@@ -6,8 +6,7 @@ description: Etalon memory architecture with Knowledge Graph, session isolation,
 # Engram Memory System
 
 > v3.5 (2026-07-11). Skill is read-only — copy scripts to your workspace, do not edit.
-> Changelog: workspace `CHANGELOG.md` · Spec addenda: `memory/tmp/engram-v35-addendum.md`
-> For script reference: [references/scripts.md](references/scripts.md)
+> Changelog: [CHANGELOG.md](CHANGELOG.md) · Script reference: [references/scripts.md](references/scripts.md)
 
 ## Quick Start
 
@@ -26,21 +25,21 @@ bun skills/engram/scripts/init.js --force
 
 ```
 workspace/
-├── life/                    # Knowledge Graph (entities, facts, summaries)
-│   ├── people/sergey/
-│   │   ├── items.json        # Facts array (v2 schema)
-│   │   └── summary.md        # Quick-context (Hot/Warm/Cold tiers)
-│   └── projects/engram/
-├── memory/                   # Operational memory
-│   ├── sessions/             # Daily notes (per-session)
-│   │   └── main/2026-02-08.md
-│   ├── domains/              # Subagent domains
-│   │   ├── registry.json     # Domain registry
+├── life/                         # Knowledge Graph (entities, facts, summaries)
+│   ├── people/{name}/
+│   │   ├── items.json            # Facts array (v2 schema)
+│   │   └── summary.md            # Quick-context (Hot/Warm/Cold tiers)
+│   └── projects/{slug}/
+├── memory/                       # Operational memory
+│   ├── agent-{id}/               # Per-agent session silo (e.g. agent-main)
+│   │   └── {session}/YYYY-MM-DD.md   # Daily notes (main, telegram-…)
+│   ├── domains/                  # Subagent domains
+│   │   ├── registry.json
 │   │   └── {slug}/
-│   ├── heartbeat-state.json  # Phase tracker
-│   └── memory-state/         # Dedup hashes
-├── ops/                      # OLL: observations + tensions
-└── engram.json               # Workspace config (models, QMD)
+│   ├── heartbeat-state.json      # Phase tracker
+│   └── memory-state/             # Dedup hashes
+├── ops/                          # OLL: observations + tensions
+└── engram.json                   # Workspace config (models, QMD)
 ```
 
 Three-layer storage: **Daily Notes** (ephemeral, rotated) → **Knowledge Graph** (durable facts, tiered retrieval) → **QMD** (hybrid search: BM25 + embeddings + rerank).
@@ -78,7 +77,7 @@ For full architecture: [references/architecture.md](references/architecture.md)
 
 ```bash
 bun skills/engram/scripts/memory-write.js \
-  --entity "people/sergey" --fact "Prefers Bun over Node.js" \
+  --entity "people/alice" --fact "Prefers Bun over Node.js" \
   --category preference --confidence 0.9 --abstraction pattern \
   --tags "tools,runtime" --source "2026-02-16"
 ```
@@ -162,11 +161,11 @@ Supports **Russian and English**. Six categories: `correction`, `preference`, `d
 
 ```bash
 # Intra-entity (fast, no QMD)
-bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "people/sergey"
+bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "people/alice"
 
 # Cross-entity (via QMD BM25)
-bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "people/sergey" \
-  --cross-entity --collections "life,openclaw-memory-takeron-main"
+bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "people/alice" \
+  --cross-entity --collections "life,openclaw-memory-agent-main-main"
 ```
 
 ### Rules for Inline Extraction

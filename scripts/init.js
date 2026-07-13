@@ -1133,6 +1133,18 @@ if (!dryRun) {
   recordCreate('hooks', 'install via install-hooks.js');
 }
 
+// --- Disable built-in session-memory hook (replaced by engram-session-memory) ---
+// The built-in session-memory hook writes session context to workspace/memory/YYYY-MM-DD-HHMM.md
+// engram-session-memory does the same job but writes to the structured engram memory tree.
+// Running both creates duplicate files. We disable the built-in by writing
+// hooks.internal.entries.session-memory.enabled = false in openclaw.json.
+// Gateway API cannot do this (protected path), so we edit the file directly.
+if (!dryRun) {
+  disableBuiltinSessionMemory();
+} else {
+  console.log('  [dry-run] would disable built-in session-memory hook in openclaw.json');
+}
+
 // --- Cron install (optional) ---
 if (args['with-cron']) {
   console.log('\nInstalling heartbeat cron job...');
@@ -1157,6 +1169,48 @@ if (args['with-cron']) {
 if (args['with-sample-domain']) {
   console.log('\nCreating sample domain...');
   createSampleDomain();
+}
+
+// --- Disable built-in session-memory hook in openclaw.json ---
+// Replaced by engram-session-memory which writes to the structured memory tree.
+// Uses `openclaw config set` CLI (the gateway API protects this path, but CLI does not).
+function disableBuiltinSessionMemory() {
+  // Check current value first to stay idempotent.
+  let alreadyDisabled = false;
+  try {
+    const r = spawnSync('openclaw', ['config', 'get', 'hooks.internal.entries.session-memory.enabled'], {
+      encoding: 'utf-8',
+      shell: true,
+    });
+    if (r.status === 0) {
+      const val = r.stdout.trim();
+      alreadyDisabled = val === 'false' || val === '"false"';
+    }
+  } catch {}
+
+  if (alreadyDisabled) {
+    console.log('  built-in session-memory already disabled, skipping');
+    return;
+  }
+
+  try {
+    const r = spawnSync('openclaw', [
+      'config', 'set',
+      'hooks.internal.entries.session-memory.enabled',
+      'false',
+      '--strict-json',
+    ], { encoding: 'utf-8', shell: true });
+
+    if (r.status === 0) {
+      console.log('  ✅ disabled built-in session-memory hook (replaced by engram-session-memory)');
+      recordCreate('session-memory-disabled', 'built-in session-memory replaced by engram-session-memory');
+    } else {
+      const tail = (r.stderr || r.stdout || '').trim().split('\n').slice(-3).join(' ');
+      recordWarn(`openclaw config set failed (exit ${r.status}): ${tail}`);
+    }
+  } catch (e) {
+    recordWarn(`failed to run openclaw config set: ${e.message}`);
+  }
 }
 
 // --- AC9: Backfill domain agents ---

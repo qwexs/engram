@@ -166,3 +166,196 @@ describe("add-domain.js — ISS-9 A7 cadenceAdaptive default", () => {
     expect(dom.cadenceAdaptive.windowDays).toBe(7);
   });
 });
+
+describe("add-domain.js — meta-domain type", () => {
+  test("meta-domain with --topic binding creates registry entry with qmdCollections", () => {
+    const { exitCode, stderr } = runAddDomain([
+      "--domain", "managers-general",
+      "--type", "meta-domain",
+      "--topic", "-1009999999:1",
+      "--qmd-collections", "managers-memory,managers-domains,projectA-memory",
+      "--description", "General meta-domain for managers",
+    ]);
+    expect(exitCode).toBe(0);
+    if (stderr) console.error("stderr:", stderr);
+
+    const registry = readRegistry();
+    const entry = registry.domains["managers-general"];
+    expect(entry).toBeDefined();
+    expect(entry.type).toBe("meta-domain");
+    expect(entry.metaDomain).toBe(true);
+    expect(entry.qmdCollections).toEqual(["managers-memory", "managers-domains", "projectA-memory"]);
+    expect(entry.topic).toEqual({ chatId: "-1009999999", topicId: "1" });
+    expect(entry.cadenceDays).toBe(2);
+    expect(entry.staleAfterDays).toBe(90);
+    expect(entry.cadenceAdaptive).toBe(true);
+    expect(entry.cadenceAdaptiveWindowDays).toBe(7);
+  });
+
+  test("meta-domain with --peer binding creates registry entry", () => {
+    const { exitCode, stderr } = runAddDomain([
+      "--domain", "alice-general",
+      "--type", "meta-domain",
+      "--peer", "100000001",
+      "--qmd-collections", "alice-memory,managers-memory",
+      "--description", "Elena CEO meta-domain",
+    ]);
+    expect(exitCode).toBe(0);
+    if (stderr) console.error("stderr:", stderr);
+
+    const registry = readRegistry();
+    const entry = registry.domains["alice-general"];
+    expect(entry).toBeDefined();
+    expect(entry.type).toBe("meta-domain");
+    expect(entry.metaDomain).toBe(true);
+    expect(entry.peer).toEqual({ chatId: "100000001" });
+    expect(entry.qmdCollections).toEqual(["alice-memory", "managers-memory"]);
+  });
+
+  test("meta-domain without --qmd-collections creates entry with no qmdCollections field", () => {
+    const { exitCode } = runAddDomain([
+      "--domain", "bare-meta",
+      "--type", "meta-domain",
+      "--peer", "12345",
+      "--description", "Bare meta-domain without qmd-collections",
+    ]);
+    expect(exitCode).toBe(0);
+
+    const registry = readRegistry();
+    const entry = registry.domains["bare-meta"];
+    expect(entry).toBeDefined();
+    expect(entry.metaDomain).toBe(true);
+    expect(entry.qmdCollections).toBeUndefined();
+  });
+
+  test("meta-domain creates domain files (README, decisions, status, changelog, agents)", () => {
+    const { exitCode } = runAddDomain([
+      "--domain", "files-meta",
+      "--type", "meta-domain",
+      "--peer", "12345",
+      "--qmd-collections", "coll1",
+      "--description", "File structure test",
+    ]);
+    expect(exitCode).toBe(0);
+
+    const domainDir = join(workspace, "memory", "domains", "files-meta");
+    expect(existsSync(join(domainDir, "README.md"))).toBe(true);
+    expect(existsSync(join(domainDir, "decisions.md"))).toBe(true);
+    expect(existsSync(join(domainDir, "status.md"))).toBe(true);
+    expect(existsSync(join(domainDir, "changelog.md"))).toBe(true);
+    expect(existsSync(join(domainDir, "agents.md"))).toBe(true);
+  });
+
+  test("meta-domain without binding (no --topic/--peer/--group) still works", () => {
+    const { exitCode } = runAddDomain([
+      "--domain", "unbound-meta",
+      "--type", "meta-domain",
+      "--qmd-collections", "coll1,coll2",
+      "--description", "Unbound meta-domain",
+    ]);
+    expect(exitCode).toBe(0);
+
+    const registry = readRegistry();
+    expect(registry.domains["unbound-meta"]).toBeDefined();
+    expect(registry.domains["unbound-meta"].topic).toBeUndefined();
+    expect(registry.domains["unbound-meta"].peer).toBeUndefined();
+    expect(registry.domains["unbound-meta"].group).toBeUndefined();
+  });
+
+  test("auto-propagation: new domain adds its collection to existing meta-domain", () => {
+    // First create a meta-domain
+    const { exitCode: metaExit } = runAddDomain([
+      "--domain", "existing-meta",
+      "--type", "meta-domain",
+      "--peer", "99999",
+      "--qmd-collections", "some-collection",
+      "--description", "Existing meta-domain",
+    ]);
+    expect(metaExit).toBe(0);
+
+    // Now add a new topic-thread domain — should auto-propagate domain-new-topic
+    const { exitCode: newExit } = runAddDomain([
+      "--domain", "new-topic",
+      "--type", "topic-thread",
+      "--topic", "-1009999999:5",
+      "--description", "New topic domain",
+    ]);
+    expect(newExit).toBe(0);
+
+    const registry = readRegistry();
+    const meta = registry.domains["existing-meta"];
+    expect(meta.qmdCollections).toContain("domain-new-topic");
+  });
+
+  test("auto-propagation: does not duplicate existing collections", () => {
+    // Create meta-domain with domain-already-there in qmdCollections
+    const { exitCode: metaExit } = runAddDomain([
+      "--domain", "dedup-meta",
+      "--type", "meta-domain",
+      "--peer", "88888",
+      "--qmd-collections", "domain-already-there",
+      "--description", "Dedup test meta",
+    ]);
+    expect(metaExit).toBe(0);
+
+    // Create a domain named "already-there" — domain-already-there already in list
+    const { exitCode: newExit } = runAddDomain([
+      "--domain", "already-there",
+      "--type", "topic-thread",
+      "--topic", "-1009999999:6",
+      "--description", "Already there",
+    ]);
+    expect(newExit).toBe(0);
+
+    const registry = readRegistry();
+    const meta = registry.domains["dedup-meta"];
+    const count = meta.qmdCollections.filter(c => c === "domain-already-there").length;
+    expect(count).toBe(1);
+  });
+
+  test("auto-propagation: meta-domain does not propagate to itself", () => {
+    // Create a meta-domain, then create another domain — meta should not
+    // add its own collection to itself via propagation from non-meta domains
+    const { exitCode: metaExit } = runAddDomain([
+      "--domain", "self-meta",
+      "--type", "meta-domain",
+      "--peer", "77777",
+      "--qmd-collections", "base-coll",
+      "--description", "Self meta",
+    ]);
+    expect(metaExit).toBe(0);
+
+    // Create another meta-domain — should NOT propagate to the first meta
+    // (meta-domains only receive propagation from non-meta domain creation)
+    const { exitCode: newMetaExit } = runAddDomain([
+      "--domain", "other-meta",
+      "--type", "meta-domain",
+      "--peer", "66666",
+      "--qmd-collections", "other-coll",
+      "--description", "Other meta",
+    ]);
+    expect(newMetaExit).toBe(0);
+
+    const registry = readRegistry();
+    const selfMeta = registry.domains["self-meta"];
+    // self-meta should NOT have domain-other-meta (meta-domains don't propagate to each other)
+    expect(selfMeta.qmdCollections).not.toContain("domain-other-meta");
+  });
+});
+
+describe("add-domain.js — meta-domain validation", () => {
+  test("rejects invalid --qmd-collections with empty entries (parses to valid array)", () => {
+    const { exitCode } = runAddDomain([
+      "--domain", "empty-coll",
+      "--type", "meta-domain",
+      "--peer", "55555",
+      "--qmd-collections", "coll1,,coll2,", // empty entries should be filtered
+      "--description", "Empty entries test",
+    ]);
+    expect(exitCode).toBe(0);
+
+    const registry = readRegistry();
+    const entry = registry.domains["empty-coll"];
+    expect(entry.qmdCollections).toEqual(["coll1", "coll2"]); // empty strings filtered
+  });
+});

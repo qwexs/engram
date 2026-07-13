@@ -258,6 +258,7 @@ Pattern for subagents with `cleanup: "delete"` and long-term memory via domains.
 | `topic-thread` | `topic: {chatId, topicId}` | Telegram topic as memory contour |
 | `peer-direct` | `peer: {chatId}` | Telegram DM as memory contour |
 | `group-direct` | `group: {chatId}` | Telegram group without topics |
+| `meta-domain` | `topic` / `peer` / `group` | Vertical QMD access across lower-level workspaces. Uses `qmdCollections` array. Auto-propagates new domain collections. |
 
 ### Key Rules
 
@@ -278,7 +279,7 @@ memory/domains/{domain}/
 └── archives/       # Changelog rotation
 ```
 
-For full subagent memory, spawn workflow, templates: [references/subagent-memory.md](references/subagent-memory.md) · [references/topic-thread.md](references/topic-thread.md)
+For full subagent memory, spawn workflow, templates: [references/subagent-memory.md](references/subagent-memory.md) · [references/topic-thread.md](references/topic-thread.md) · [references/meta-domain.md](references/meta-domain.md)
 
 ## OpenClaw Hooks
 

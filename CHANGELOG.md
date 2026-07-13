@@ -6,6 +6,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Meta-domain type**: new domain type `meta-domain` with `qmdCollections` field
+  for vertical QMD access across lower-level workspaces. Supported in
+  `add-domain.js` (`--type meta-domain`, `--qmd-collections`, `--peer`,
+  `--topic` bindings) and `domains-runner.js` (expected files, heartbeat
+  Phase 3/3.5). Auto-propagation: when a new domain is created, its QMD
+  collection names are automatically added to all meta-domains in the same
+  registry. Templates: `templates/domain/meta-domain/`. Reference:
+  [references/meta-domain.md](references/meta-domain.md).
+
 ### Fixed
 - `domains-runner.js` `parseHandoffField` / `parseJsonStrict`: accept LLM-style
   fenced ` ```json ` blocks for `Base-Hashes` and `Changelog-Entries`. The old

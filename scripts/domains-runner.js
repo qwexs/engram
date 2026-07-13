@@ -13,6 +13,9 @@ const EXPECTED_FILES_BY_TYPE = {
   "dev-project": ["decisions.md", "workflow.md", "status.md", "changelog.md"],
   "cron-task":   ["decisions.md", "workflow.md", "status.md", "changelog.md"],
   "topic-thread":["decisions.md", "status.md", "changelog.md"],
+  "peer-direct": ["decisions.md", "status.md", "changelog.md"],
+  "group-direct":["decisions.md", "status.md", "changelog.md"],
+  "meta-domain": ["decisions.md", "status.md", "changelog.md"],
 };
 
 // === TZ contract =============================================================

@@ -253,3 +253,114 @@ describe("domains-runner write handoff", () => {
     }
   });
 });
+
+describe("domains-runner scan — meta-domain type", () => {
+  test("meta-domain is scanned with expected files (decisions, status, changelog)", () => {
+    const root = makeWorkspace();
+    try {
+      writeFileSync(join(root, "memory", "domains", "registry.json"), JSON.stringify({
+        domains: {
+          "managers-general": {
+            type: "meta-domain",
+            metaDomain: true,
+            qmdCollections: ["managers-memory", "projectA-memory"],
+            cadenceDays: 2,
+            staleAfterDays: 90,
+            description: "Meta-domain test",
+            created: "2026-07-14",
+          },
+        },
+      }));
+      writeDomain(root, "managers-general", {
+        "decisions.md": "# decisions\n",
+        "status.md": "# status\n",
+        "changelog.md": "# changelog\n",
+      });
+
+      const scan = scanDomains({ workspace: root, now: new Date("2026-07-14T12:00:00Z"), staleDays: 90 });
+      expect(scan.registered).toBe(1);
+      expect(scan.checked).toBe(1);
+      expect(scan.missing).toBe(0);
+      const dom = scan.domains.find((d) => d.name === "managers-general");
+      expect(dom).toBeDefined();
+      expect(dom.type).toBe("meta-domain");
+      expect(dom.missingFiles).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("meta-domain with missing files reports them correctly", () => {
+    const root = makeWorkspace();
+    try {
+      writeFileSync(join(root, "memory", "domains", "registry.json"), JSON.stringify({
+        domains: {
+          "alice-general": {
+            type: "meta-domain",
+            metaDomain: true,
+            qmdCollections: ["alice-memory"],
+            cadenceDays: 2,
+            staleAfterDays: 90,
+            description: "Elena meta-domain",
+            created: "2026-07-14",
+          },
+        },
+      }));
+      writeDomain(root, "alice-general", {
+        "decisions.md": "# decisions\n",
+        // status.md and changelog.md missing
+      });
+
+      const scan = scanDomains({ workspace: root, now: new Date("2026-07-14T12:00:00Z"), staleDays: 90 });
+      const dom = scan.domains.find((d) => d.name === "alice-general");
+      expect(dom).toBeDefined();
+      expect(dom.missingFiles).toContain("status.md");
+      expect(dom.missingFiles).toContain("changelog.md");
+      expect(dom.missingFiles).not.toContain("workflow.md"); // meta-domain doesn't expect workflow.md
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("peer-direct and group-direct types are scanned with correct expected files", () => {
+    const root = makeWorkspace();
+    try {
+      writeFileSync(join(root, "memory", "domains", "registry.json"), JSON.stringify({
+        domains: {
+          "dm-domain": {
+            type: "peer-direct",
+            peer: { chatId: "12345" },
+            cadenceDays: 2,
+            staleAfterDays: 90,
+            description: "DM domain",
+            created: "2026-07-14",
+          },
+          "group-domain": {
+            type: "group-direct",
+            group: { chatId: "-100123" },
+            cadenceDays: 2,
+            staleAfterDays: 90,
+            description: "Group domain",
+            created: "2026-07-14",
+          },
+        },
+      }));
+      writeDomain(root, "dm-domain", {
+        "decisions.md": "# decisions\n",
+        "status.md": "# status\n",
+        "changelog.md": "# changelog\n",
+      });
+      writeDomain(root, "group-domain", {
+        "decisions.md": "# decisions\n",
+        "status.md": "# status\n",
+        "changelog.md": "# changelog\n",
+      });
+
+      const scan = scanDomains({ workspace: root, now: new Date("2026-07-14T12:00:00Z"), staleDays: 90 });
+      expect(scan.missing).toBe(0);
+      expect(scan.checked).toBe(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -19,6 +19,7 @@ const { values: args } = parseArgs({
     'topic': { type: 'string', default: '' },
     'peer': { type: 'string', default: '' },
     'group': { type: 'string', default: '' },
+    'qmd-collections': { type: 'string', default: '' },
     'create-telegram-topic': { type: 'boolean', default: false },
     'telegram-chat-id': { type: 'string', default: '' },
     'telegram-icon-color': { type: 'string', default: '0x6FB9F0' },
@@ -52,10 +53,12 @@ Options:
   --kg-entity <path>         Путь к KG entity (например "projects/engram")
   --topic <chatId:topicId>   Привязка к существующему Telegram-топику (только для type=topic-thread).
                              Формат: "-100XXXXXXXXXX:NN"
-  --peer <chatId>            Привязка к DM-чату (только для type=peer-direct).
+  --peer <chatId>            Привязка к DM-чату (для type=peer-direct и meta-domain).
                              Формат: userId (например "205075873")
   --group <chatId>           Привязка к группе без топиков (только для type=group-direct).
                              Формат: "-100XXXXXXXXXX"
+  --qmd-collections <list>   Список QMD-коллекций через запятую (только для type=meta-domain).
+                             Например: "managers-memory,managers-domains,projectA-memory"
   --create-telegram-topic   Создать новый Telegram-топик через Bot API и привязать к домену
                              (только для type=topic-thread, требует --telegram-chat-id).
                              Токен бота: ~/.openclaw/openclaw.json -> channels.telegram.accounts.sergey.botToken
@@ -67,12 +70,12 @@ Options:
                              0x8EEE98 green, 0xFF93B2 pink, 0xFB6F5F red.
   --pending                  Создать домен в статусе pending (только для type=topic-thread).
                              pending: true в registry.json. Используется
-                             bootstrap-from-forum (`init.js --bootstrap-from-forum`)
+                             bootstrap-from-forum (init.js --bootstrap-from-forum)
                              для one-shot operator-bind темпов, созданных ДО
-                             установки `engram-session-start`. Идемпотентно: если
+                             установки engram-session-start. Идемпотентно: если
                              для этого (chatId, topicId) уже есть домен — exit 0
                              no-op. Для новых топиков auto-bind делается silently
-                             в `engram-session-start` (ISS-10) без pending.
+                             в engram-session-start (ISS-10) без pending.
   -h, --help                 Показать справку
 
 Examples:
@@ -101,6 +104,20 @@ Examples:
     --topic -100XXXXXXXXXX:NN \\
     --pending \\
     --description "Топик создан пользователем, ожидает промоушна"
+
+  # Meta-domain (топик General группы managers)
+  bun skills/engram/scripts/add-domain.js --domain managers-general \\
+    --type meta-domain \\
+    --topic -1009999999:1 \
+    --qmd-collections "managers-memory,managers-domains,projectA-memory,projectA-domains" \\
+    --description "General: мета-домен руководителей"
+
+  # Meta-domain (DM руководителя)
+  bun skills/engram/scripts/add-domain.js --domain alice-general \\
+    --type meta-domain \\
+    --peer 100000001 \\
+    --qmd-collections "alice-memory,managers-memory,managers-domains,projectA-memory,projectA-domains" \\
+    --description "General: мета-домен Alice (CEO)"
 `);
   process.exit(args.help ? 0 : 1);
 }
@@ -141,14 +158,14 @@ if (!/^[a-z][a-z0-9-]*$/.test(domain)) {
 }
 
 // Валидация типа домена
-if (!['dev-project', 'cron-task', 'topic-thread', 'peer-direct', 'group-direct'].includes(domainType)) {
-  console.error('❌ Тип домена должен быть dev-project, cron-task, topic-thread, peer-direct или group-direct');
+if (!['dev-project', 'cron-task', 'topic-thread', 'peer-direct', 'group-direct', 'meta-domain'].includes(domainType)) {
+  console.error('❌ Тип домена должен быть dev-project, cron-task, topic-thread, peer-direct, group-direct или meta-domain');
   process.exit(1);
 }
 
-// Парсинг и валидация --topic для topic-thread
+// Парсинг и валидация --topic для topic-thread и meta-domain
 let topicBinding = null;
-if (domainType === 'topic-thread') {
+if (domainType === 'topic-thread' || domainType === 'meta-domain') {
   if (createTelegramTopic) {
     if (!telegramChatIdArg) {
       console.error('❌ Для --create-telegram-topic обязателен --telegram-chat-id <id>');
@@ -210,18 +227,21 @@ if (domainType === 'topic-thread') {
     console.log(`✅ Топик создан: ${telegramChatIdArg}:${newTopicId} (icon_color=0x${result.result.icon_color.toString(16).toUpperCase()})`);
     topicBinding = { chatId: telegramChatIdArg, topicId: newTopicId };
   } else {
-    if (!topicArg) {
+    // --topic required for topic-thread; optional for meta-domain (can also use --peer or --group)
+    if (domainType === 'topic-thread' && !topicArg) {
       console.error('❌ Для type=topic-thread обязателен --topic <chatId:topicId> или --create-telegram-topic');
       console.error('   Пример: --topic -100XXXXXXXXXX:NN');
       process.exit(1);
     }
-    const m = topicArg.match(/^(-?\d+):(\d+)$/);
-    if (!m) {
-      console.error(`❌ --topic должен быть в формате <chatId:topicId>, например "-100XXXXXXXXXX:NN"`);
-      console.error(`   Получено: "${topicArg}"`);
-      process.exit(1);
+    if (topicArg) {
+      const m = topicArg.match(/^(-?\d+):(\d+)$/);
+      if (!m) {
+        console.error(`❌ --topic должен быть в формате <chatId:topicId>, например "-100XXXXXXXXXX:NN"`);
+        console.error(`   Получено: "${topicArg}"`);
+        process.exit(1);
+      }
+      topicBinding = { chatId: m[1], topicId: m[2] };
     }
-    topicBinding = { chatId: m[1], topicId: m[2] };
   }
 } else if (topicArg) {
   console.warn(`⚠️  --topic указан, но тип домена ${domainType} (не topic-thread). Игнорирую.`);
@@ -229,23 +249,21 @@ if (domainType === 'topic-thread') {
 
 const peerArg = args.peer;
 const groupArg = args.group;
+const qmdCollectionsArg = args['qmd-collections']; // meta-domain: comma-separated list of QMD collection names
 
-// --- peer-direct binding ---
+// --- peer-direct / meta-domain binding ---
 let peerBinding = null;
-if (domainType === 'peer-direct') {
-  if (!peerArg) {
-    console.error('❌ Для type=peer-direct обязателен --peer <chatId>');
-    console.error('   Пример: --peer 205075873');
-    process.exit(1);
+if (domainType === 'peer-direct' || domainType === 'meta-domain') {
+  if (peerArg) {
+    if (!/^\d+$/.test(peerArg)) {
+      console.error(`❌ --peer должен быть числовым userId (например 205075873)`);
+      console.error(`   Получено: "${peerArg}"`);
+      process.exit(1);
+    }
+    peerBinding = { chatId: peerArg };
   }
-  if (!/^\d+$/.test(peerArg)) {
-    console.error(`❌ --peer должен быть числовым userId (например 205075873)`);
-    console.error(`   Получено: "${peerArg}"`);
-    process.exit(1);
-  }
-  peerBinding = { chatId: peerArg };
 } else if (peerArg) {
-  console.warn(`⚠️  --peer указан, но тип домена ${domainType} (не peer-direct). Игнорирую.`);
+  console.warn(`⚠️  --peer указан, но тип домена ${domainType} (не peer-direct/meta-domain). Игнорирую.`);
 }
 
 // --- group-direct binding ---
@@ -319,10 +337,11 @@ console.log(`📁 Создан: memory/domains/${domain}/`);
 
 // Копирование шаблонов с подстановками
 const today = new Date().toISOString().split('T')[0];
-// Session key для topic-thread/peer-direct/group-direct:
+// Session key для topic-thread/peer-direct/group-direct/meta-domain:
 // topic-thread:  telegram-group--{absChatId}-topic-{topicId}
 // peer-direct:   telegram-direct--{chatId}
 // group-direct:  telegram-group--{absChatId}
+// meta-domain:   inherits from binding (topic/peer/group), or '' if no binding
 const sessionKey = topicBinding
   ? `telegram-group--${topicBinding.chatId.replace(/^-/, '')}-topic-${topicBinding.topicId}`
   : peerBinding
@@ -377,13 +396,14 @@ if (hasTypeTemplates) {
 }
 
 const templates = ['decisions.md', 'status.md', 'changelog.md', 'README.md'];
-// workflow.md — только для типов с инфраструктурой (не для topic-thread)
-if (domainType !== 'topic-thread') {
+// workflow.md — только для subagent-типов (dev-project, cron-task).
+// Chat-based типы (topic-thread, peer-direct, group-direct, meta-domain) не имеют workflow.md.
+if (domainType === 'dev-project' || domainType === 'cron-task') {
   templates.push('workflow.md');
 }
-// agents.md — для topic-thread, peer-direct и group-direct.
+// agents.md — для topic-thread, peer-direct, group-direct и meta-domain.
 // Per-domain operational ruleset, инжектится хуком *-domain-load.
-if (domainType === 'topic-thread' || domainType === 'peer-direct' || domainType === 'group-direct') {
+if (domainType === 'topic-thread' || domainType === 'peer-direct' || domainType === 'group-direct' || domainType === 'meta-domain') {
   templates.push('agents.md');
 }
 
@@ -402,8 +422,8 @@ for (const tmpl of templates) {
   console.log(`  ✅ ${tmpl}`);
 }
 
-// Для topic-thread / peer-direct / group-direct дописываем секцию привязки в README
-if ((domainType === 'topic-thread' || domainType === 'peer-direct' || domainType === 'group-direct') && (topicBinding || peerBinding || groupBinding)) {
+// Для topic-thread / peer-direct / group-direct / meta-domain дописываем секцию привязки в README
+if ((domainType === 'topic-thread' || domainType === 'peer-direct' || domainType === 'group-direct' || domainType === 'meta-domain') && (topicBinding || peerBinding || groupBinding)) {
   const readmePath = join(domainDir, 'README.md');
   let readme = await Bun.file(readmePath).text();
   let bindingBlock = '';
@@ -512,6 +532,7 @@ const DEFAULTS_BY_TYPE = {
   "cron-task":    { cadenceDays: 1, staleAfterDays: 30 },
   "peer-direct":  { cadenceDays: 2, staleAfterDays: 90 },
   "group-direct": { cadenceDays: 2, staleAfterDays: 90 },
+  "meta-domain":  { cadenceDays: 2, staleAfterDays: 90, cadenceAdaptive: true, cadenceAdaptiveWindowDays: DEFAULT_CADENCE_ADAPTIVE_WINDOW_DAYS },
 };
 const typeDefaults = DEFAULTS_BY_TYPE[domainType] ?? {
   cadenceDays: 3,
@@ -528,6 +549,8 @@ registry.domains[domain] = {
   ...(peerBinding ? { peer: peerBinding } : {}),
   ...(groupBinding ? { group: groupBinding } : {}),
   ...(pending ? { pending: true } : {}),
+  ...(domainType === 'meta-domain' ? { metaDomain: true } : {}),
+  ...(domainType === 'meta-domain' && qmdCollectionsArg ? { qmdCollections: qmdCollectionsArg.split(',').map(s => s.trim()).filter(Boolean) } : {}),
   description,
   created: today,
 };
@@ -597,6 +620,34 @@ if (qmdAvailable()) {
   } catch {
     console.warn('qmd update failed — run manually');
   }
+
+  // === Auto-propagate QMD collections to meta-domains ===
+  // When a new domain is created, its QMD collection names should be added
+  // to any meta-domain in this registry so they get automatic vertical access.
+  // This prevents the "domain added but upper-level collections not updated" drift.
+  // Meta-domains do NOT propagate to other meta-domains (they manage their own qmdCollections).
+  const newCollections = [`domain-${domain}`];
+  if (kgEntity) newCollections.push(`life-projects-${domain}`);
+  let propagated = 0;
+  for (const [name, entry] of Object.entries(registry.domains || {})) {
+    if (entry.metaDomain === true && name !== domain && domainType !== 'meta-domain' && Array.isArray(entry.qmdCollections)) {
+      const added = [];
+      for (const col of newCollections) {
+        if (!entry.qmdCollections.includes(col)) {
+          entry.qmdCollections.push(col);
+          added.push(col);
+        }
+      }
+      if (added.length > 0) {
+        console.log(`  📡 Propagated collections to meta-domain "${name}": ${added.join(', ')}`);
+        propagated++;
+      }
+    }
+  }
+  if (propagated > 0) {
+    await Bun.write(registryPath, JSON.stringify(registry, null, 2) + '\n');
+    console.log(`  ✅ qmdCollections propagated to ${propagated} meta-domain(s)`);
+  }
 } else {
   console.log('QMD not found. Add collections manually:');
   console.log(`   qmd collection add "${join(WORKSPACE, 'memory', 'domains', domain)}" --name "domain-${domain}" --mask "**/*.md"`);
@@ -624,6 +675,12 @@ ${domainType === 'topic-thread'
   3. Лог значимых событий → changelog.md
   4. Операционные правила → agents.md (auto-inject через system-event, ручной override)
   5. Хук engram-peer-domain-load автоматически подгружает контекст при каждом новом сообщении`
+  : domainType === 'meta-domain'
+    ? `  1. qmdCollections настраиваются в registry.json (или через --qmd-collections)
+  2. При добавлении новых доменов — коллекции авто-пропагируются в этот meta-domain
+  3. Решения → decisions.md, текущее состояние → status.md
+  4. Кросс-доменный поиск: qmd query "запрос" -c <coll1> -c <coll2> ...
+  5. Heartbeat: liveness, статус-агрегация по нижестоящим доменам`
   : `  1. Настрой правила в decisions.md
   2. Запусти субагент с промптом из templates/spawn-prompt.md
   3. Субагент обновит status.md и changelog.md`}

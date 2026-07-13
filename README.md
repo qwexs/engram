@@ -1,66 +1,151 @@
 # Engram
 
-Memory for long-lived AI agents. An [OpenClaw](https://github.com/openclaw/openclaw) skill that gives a stateless agent a Knowledge Graph, decay-aware retrieval, and self-maintaining heartbeat — without growing context cost over time.
+**Memory that stays sharp while agents and teams scale.**
 
-Production-deployed since v1. Currently v3.5.
+An [OpenClaw](https://github.com/openclaw/openclaw) skill that gives long-lived agents a real memory system:
+
+- Knowledge Graph with confidence, decay, and supersede chains
+- Hybrid search (BM25 + embeddings + rerank)
+- Self-maintaining heartbeat
+- Domain contours for projects, chats, and teams
+
+**MIT · OpenClaw · v3.5 · production since v1**
+
+![Engram Memory Stack](assets/readme/engram-memory-stack-hot-cold-light.jpg)
+
+*Three layers + fact temperature: Daily Notes → Knowledge Graph (Hot / Warm / Cold) → Hybrid Search. Heartbeat keeps it healthy.*
 
 ---
 
-## What it solves
+## The problem
+
+Stateless agents forget on every `/new` and compaction.
+
+Dumping chat history does not scale — tokens grow with days, signal drowns in noise.
+
+**Engram keeps working context cheap and history complete.**
+
+Token cost per session stays roughly flat. Memory quality does not collapse over time.
 
 | Problem | Without Engram | With Engram |
-|---------|----------------|-------------|
-| Agent forgets everything on `/new` or compaction | Starts from zero each time | QMD query (~600 tokens) restores working context |
-| Loading history doesn't scale | O(days) — grows forever | O(1) — bounded by entity count, not time |
-| Subagents start cold | No project context | Domain contour injected at spawn — 0-token bootstrap |
-| Memory turns to noise | Junk drawer or aggressive cleanup | Hot/Warm/Cold decay + supersede chains — nothing deleted, everything ranked |
-
-Token cost per session stays flat. The KG index mirrors all active facts into a derived layer, so search sees everything — not just the curated top-K.
+|---------|----------------|------------|
+| Agent forgets on `/new` or compaction | Starts from zero | Hybrid query restores working context |
+| Loading history doesn't scale | O(days) forever | O(1) — ranked by recency + confidence |
+| Subagents start cold | No project context | Domain contour at spawn |
+| Memory turns to noise | Junk drawer or aggressive cleanup | Hot / Warm / Cold + supersede — nothing deleted, everything ranked |
 
 ---
 
-## Architecture
+## What it enables
 
-Three independent layers. Use any combination.
-
-```
-MEMORY          Daily notes → Knowledge Graph → QMD hybrid search
-                Atomic facts with confidence, decay, supersede chains
-                BM25 + vector embeddings + reranker (local / Jina)
-
-HEARTBEAT       10-phase cron pipeline, every 30 min
-                Mechanical phases inline · LLM phases as isolated subagents
-                Extracts facts, validates KG, rebuilds summaries, runs OLL
-
-DOMAINS         Persistent memory contours for subagents and chat sessions
-                Telegram topics, DMs, groups, dev projects, cron tasks
-```
-
-**Session isolation is enforced in scripts, not convention.** Group chats can't see main-session memory. Every retrieval scopes to a session.
+| Capability | Why it matters |
+|---|---|
+| **Long-lived personal agent** | Preferences, decisions, corrections — without stuffing the prompt |
+| **Project subagents with continuity** | Ephemeral workers get a domain contour; start informed, leave status behind |
+| **Team / forum memory** | Each topic, DM, or group is an isolated contour; no bleed by default |
+| **Role-scoped shared context** | Managers join overlaps and see selected collections — not full personal memory |
+| **Self-improving ops** | Heartbeat + OLL observe friction and propose fixes |
 
 ---
 
-## Memory
+## Mental model
 
-Three storage layers, each answering a different question:
+Three systems. One skill.
 
-**Daily notes** — raw session log. Rotated at 1000 lines; archive stays QMD-searchable.
+```
+MEMORY     daily notes → KG facts → QMD hybrid search
+HEARTBEAT  10-phase cron: extract, synthesize, validate, OLL
+DOMAINS    persistent contours for subagents + chat sessions
+```
 
-**Knowledge Graph** — atomic facts grouped into entities (`people/`, `projects/`). Every fact carries confidence, abstraction level (episode → pattern → principle), tags, and a supersede chain. Nothing is deleted — old facts get `status: "superseded"` and linked to the replacement.
+**Session isolation is enforced in scripts, not convention.**
 
-**Curated summaries** — `summary.md` per entity, decay-aware:
+Main session, project domains, and chat contours do not silently mix.
+
+---
+
+## Memory quality over time
+
+Facts live in the Knowledge Graph with temperature:
 
 | Tier | Recency | In summary | Searchable |
 |------|---------|------------|------------|
-| Hot | ≤7 days | ✅ Prominent | ✅ |
-| Warm | 8-30 days | ✅ Lower priority | ✅ |
-| Cold | 30+ days | ❌ | ✅ via QMD |
+| **Hot** | ≤7 days | Yes, prominent | Yes |
+| **Warm** | 8–30 days | Yes, lower priority | Yes |
+| **Cold** | 30+ days | No (principles kept) | Yes via QMD |
 
-Retrieval is hybrid: BM25 for keyword hits, vector embeddings for semantic match, reranker for relevance. Two embedder providers — local GPU and Jina cloud — cover different cost/privacy trade-offs.
+Facts are **never deleted**. Old facts are **superseded** and linked to replacements.
+
+Retrieval is hybrid:
+
+- BM25 for exact keywords
+- embeddings for semantic match
+- reranker for relevance
+
+Local GPU or Jina cloud — pick the privacy/cost trade-off.
+
+---
+
+## Domain memory for teams
+
+Subagents are ephemeral. Domains give them — and people — persistent memory contours.
+
+![Domain Memory for Teams](assets/readme/engram-domain-teams-light.jpg)
+
+Five domain types, one protocol:
+
+| Type | Binding | Typical role |
+|------|---------|--------------|
+| `topic-thread` | Forum topic | Project channel with curated memory |
+| `peer-direct` | DM | Private 1:1 agent contour |
+| `group-direct` | Group | Shared group contour |
+| `dev-project` | KG entity | Engineering work + spawnable subagents |
+| `cron-task` | Schedule | Background workers with durable state |
+
+Every domain has the same shape:
+
+| File | Who writes | Role |
+|------|------------|------|
+| `decisions.md` | owners | WHAT is allowed |
+| `workflow.md` | owners | HOW work is done |
+| `status.md` | workers | current state |
+| `changelog.md` | workers | append-only history + proposals |
+
+---
+
+## Shared contours (the team story)
+
+Engram models team memory as **overlapping project contours**.
+
+![Shared Contours](assets/readme/engram-shared-contours-projects.jpg)
+
+Read the diagram like org design, not like a chat dump:
+
+- **Inside one contour, no overlap** → executors / individual contributors
+- **In the overlap** → managers / coordinators who bridge projects
+- **Shared context** lives at the joins, not in a global “everyone sees everything” pool
+
+### Vertical access (role-scoped collections)
+
+Managers do not get “all employee memory”.
+
+They get **selected collections** needed for coordination:
+
+- project domain status / decisions / changelogs
+- scoped work notes bound to the project
+- optional opt-in collections for handoff
+
+Private agent contours and personal context stay private unless explicitly joined.
+
+> Engram models team memory as overlapping project contours: isolation by default, shared context only at the joins.
+
+---
 
 ## Heartbeat
 
-A single cron entrypoint runs 10 phases every 30 minutes. Mechanical work (locking, rotation, validation, QMD indexing) runs inline. Judgment work (extraction, synthesis, domain review) spawns isolated subagents.
+A single cron entrypoint runs every 30 minutes.
+
+Mechanical work runs inline. Judgment work spawns isolated subagents.
 
 | Phase | What | Runs |
 |------:|------|------|
@@ -73,30 +158,16 @@ A single cron entrypoint runs 10 phases every 30 minutes. Mechanical work (locki
 | 3.5 | Apply pending changelogs | `hb-domains-write` subagent |
 | 4 | Validate KG, update QMD | inline |
 | 5 | OLL triggers (rethink/autoresearch) | inline |
-| 5.5 | OLL spawn queue (queued subagents) | inline |
+| 5.5 | OLL spawn queue | inline |
 | 6 | Report + unlock | inline |
 
-One phase failing doesn't kill the rest. Subagent models are configurable per phase via `engram.json`. The cron is idempotent — re-running never double-writes.
+One phase failing doesn't kill the rest. Models are configured per workspace in `engram.json`. The pipeline is idempotent.
 
-## Domains
-
-Subagents are ephemeral. Domains give them persistent memory contours anchored to the KG.
-
-Five types, one protocol:
-
-| Type | Binding | Use case |
-|------|---------|----------|
-| `dev-project` | KG entity | Development project, spawned on demand |
-| `cron-task` | — | Periodic background task |
-| `topic-thread` | Telegram topic | Forum topic as memory contour |
-| `peer-direct` | Telegram DM | Private memory contour |
-| `group-direct` | Telegram group | Group without topics |
-
-Every domain has the same shape: `decisions.md` (read-only rules), `workflow.md` (how it works), `status.md` (current state), `changelog.md` (append-only history). The main agent reads the contour, spawns a clean subagent with that context — the subagent starts informed, not from zero.
+---
 
 ## Operational Learning Loop
 
-The system observes its own behavior — friction, surprises, patterns — and feeds those signals back. `hb-rethink` reviews accumulated observations during heartbeat Phase 5, generates proposals, and auto-executes low-risk improvements. Over time the agent gets better at being itself.
+The system observes its own behavior — friction, surprises, patterns — and feeds those signals back. `hb-rethink` reviews accumulated observations during heartbeat Phase 5, generates proposals, and can auto-execute low-risk improvements. Over time the agent gets better at being itself.
 
 ---
 
@@ -113,7 +184,7 @@ bun skills/engram/scripts/init.js --with-cron
 openclaw gateway restart
 ```
 
-For an existing workspace:
+Existing workspace:
 
 ```bash
 bun skills/engram/scripts/install-cron.js install \

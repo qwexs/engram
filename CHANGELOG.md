@@ -15,8 +15,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `workspace/ops/heartbeat-spawns/handoff/` since 2026-07-09.
 - `install-cron.js`: detect model / agent-id / workspace / recover-flag drift on
   existing jobs and re-sync `message` + `tools` + `model`. Previously an
-  `isOnNewFormat` early-return left HB cron on MiniMax after `engram.json` moved
-  to Grok (token-plan limit → 10 consecutive errors).
+  `isOnNewFormat` early-return left HB cron sticky on an outdated model after
+  config change.
 
 ### Added
 - `scripts/init.js` single-command fresh-install bootstrap with `--with-cron`,

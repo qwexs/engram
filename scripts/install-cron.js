@@ -16,7 +16,7 @@
  * missing --recover-stale-oll-locks) and updates message + tools + model.
  * agentId, schedule, sessionTarget, delivery, and sessionKey are preserved
  * so routing stays stable. Model IS updated on drift — leaving it sticky
- * previously stuck HB on MiniMax after engram.json moved to Grok.
+ * previously left HB on an outdated model after engram.json changed.
  *
  * ## Windows + multi-line --message note
  *
@@ -513,8 +513,8 @@ function isOnNewFormat(payload) {
 
 /** Detect drift between live cron job and desired etalon spec.
  *  install used to early-return on isOnNewFormat alone, which left jobs stuck on
- *  old provider models (e.g. MiniMax) after engram.json moved to Grok, and left
- *  stale --agent-id values from previous workspaces (e.g. apriori-tech).
+ *  an outdated model after engram.json changed, and left stale --agent-id values
+ *  from previous workspaces.
  */
 function detectCronDrift(existing, spec) {
   const reasons = [];
@@ -646,7 +646,7 @@ function actionInstall() {
     }
     // Sync message + tools + model when drift is detected.
     // Historically install refused to touch model on existing jobs, which left
-    // production HB stuck on MiniMax after engram.json moved to Grok (2026-07-14).
+    // production HB sticky on an outdated model after engram.json changed.
     // agentId / schedule / sessionTarget / delivery / sessionKey stay preserved.
     const editArgv = [
       "cron",

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -70,9 +71,11 @@ const handler = async (event: any) => {
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(notePath, TEMPLATE(today));
     console.log(`[engram-session-start] Created daily note ${notePath}`);
-    // Update heartbeat-state.json: lastDailyNoteCreated.<session> = today
-    updateLastDailyNote(workspaceDir, sessionKey, today);
   }
+
+  // Register state before debounce returns: even repeated bootstraps should
+  // keep heartbeat-state in sync with the existing session directory/note.
+  updateHeartbeatState(workspaceDir, sessionKey, today);
 
   // Skip if there's already a session:start within the last 15 minutes (debounce repeated bootstraps)
   const content = existsSync(notePath) ? readFileSync(notePath, "utf-8") : "";
@@ -103,27 +106,6 @@ const handler = async (event: any) => {
   appendFileSync(notePath, `<!-- session:start:${iso} -->\n`);
   console.log(`[engram-session-start] Wrote session:start to ${notePath}`);
 
-  // Register this session in heartbeat-state.json activeSessions so the
-  // heartbeat runner's --all-active-sessions flag picks it up for
-  // extraction and domain writes. Without this, sessions that don't
-  // appear in openclaw.json bindings[] (e.g. direct DMs) are invisible
-  // to the heartbeat and never get extraction/domains processing.
-  try {
-    const heartbeatPath = join(workspaceDir, "memory", "heartbeat-state.json");
-    if (existsSync(heartbeatPath)) {
-      const raw = readFileSync(heartbeatPath, "utf-8");
-      const state = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
-      if (!Array.isArray(state.activeSessions)) state.activeSessions = [];
-      if (!state.activeSessions.includes(sessionKey)) {
-        state.activeSessions.push(sessionKey);
-        writeFileSync(heartbeatPath, JSON.stringify(state, null, 2) + "\n");
-        console.log(`[engram-session-start] Registered session '${sessionKey}' in activeSessions`);
-      }
-    }
-  } catch (e: any) {
-    console.warn(`[engram-session-start] Failed to register session in activeSessions: ${e.message}`);
-  }
-
   // Move handoff .md files from memory/ root to memory/agent-{agentId}/{sessionKey}/YYYY-MM-DD/.
   // The legacy layout (memory/domains/{session}/) conflated sessions and domains — domains are
   // curated memory contours registered in memory/domains/registry.json, while sessions are
@@ -149,7 +131,7 @@ const handler = async (event: any) => {
 
 export default handler;
 
-function updateLastDailyNote(workspaceDir: string, sessionKey: string, date: string) {
+function updateHeartbeatState(workspaceDir: string, sessionKey: string, date: string) {
   const statePath = join(workspaceDir, "memory", "heartbeat-state.json");
   if (!existsSync(statePath)) return;
   try {
@@ -157,10 +139,26 @@ function updateLastDailyNote(workspaceDir: string, sessionKey: string, date: str
     const state = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
     if (!state.lastDailyNoteCreated || typeof state.lastDailyNoteCreated !== "object")
       state.lastDailyNoteCreated = {};
-    if (state.lastDailyNoteCreated[sessionKey] === date) return;
-    state.lastDailyNoteCreated[sessionKey] = date;
-    writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+    if (!Array.isArray(state.activeSessions)) state.activeSessions = [];
+
+    let changed = false;
+    if (state.lastDailyNoteCreated[sessionKey] !== date) {
+      state.lastDailyNoteCreated[sessionKey] = date;
+      changed = true;
+    }
+    if (!state.activeSessions.includes(sessionKey)) {
+      state.activeSessions.push(sessionKey);
+      changed = true;
+      console.log(`[engram-session-start] Registered session '${sessionKey}' in activeSessions`);
+    }
+    if (changed) writeJsonAtomic(statePath, state);
   } catch (e: any) {
     console.warn(`[engram-session-start] Could not update heartbeat-state: ${e.message}`);
   }
+}
+
+function writeJsonAtomic(path: string, value: any) {
+  const tmp = `${path}.tmp-${randomUUID()}`;
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
+  renameSync(tmp, path);
 }

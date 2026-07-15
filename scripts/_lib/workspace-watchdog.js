@@ -135,13 +135,26 @@ function runCommand(command, args, cwd, timeout = 30000) {
   };
 }
 
-function parseQmdCollectionList(stdout) {
-  const names = new Set();
-  for (const line of stdout.split(/\r?\n/)) {
-    const m = line.match(/^([A-Za-z0-9_.-]+) \(qmd:\/\//);
-    if (m) names.add(m[1]);
+export function parseQmdCollections(stdout) {
+  const collections = new Map();
+  let current = null;
+  for (const line of String(stdout || "").split(/\r?\n/)) {
+    const name = line.match(/^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s+\(qmd:\/\/[^)]+\/?\)/);
+    if (name) {
+      current = name[1];
+      collections.set(current, { files: null });
+      continue;
+    }
+    const files = line.match(/^\s*Files:\s*(\d+)\s*$/i);
+    if (current && files) {
+      collections.set(current, { ...collections.get(current), files: Number(files[1]) });
+    }
   }
-  return names;
+  return collections;
+}
+
+function parseQmdCollectionList(stdout) {
+  return new Set(parseQmdCollections(stdout).keys());
 }
 
 function runValidate(workspace, findings) {
@@ -197,7 +210,8 @@ function checkQmd(workspace, registry, engram, findings) {
     }));
     return;
   }
-  const known = parseQmdCollectionList(list.stdout);
+  const collections = parseQmdCollections(list.stdout);
+  const known = new Set(collections.keys());
 
   for (const ref of uniqueRefs) {
     if (!known.has(ref.collection)) {
@@ -211,6 +225,17 @@ function checkQmd(workspace, registry, engram, findings) {
           : `QMD collection reference is missing: ${ref.collection}`,
         path: ref.source === "registry" ? "memory/domains/registry.json" : "engram.json",
         details: { source: ref.source, domain: ref.domain, collection: ref.collection, ...(candidateExists ? { candidate } : {}) },
+      }));
+      continue;
+    }
+    const meta = collections.get(ref.collection);
+    if (meta?.files === 0) {
+      findings.push(makeFinding({
+        code: "WD-QMD-007",
+        level: "warn",
+        message: `QMD collection reference exists but indexes zero files: ${ref.collection}`,
+        path: ref.source === "registry" ? "memory/domains/registry.json" : "engram.json",
+        details: { source: ref.source, domain: ref.domain, collection: ref.collection, files: 0 },
       }));
     }
   }

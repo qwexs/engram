@@ -1374,31 +1374,33 @@ function discoverSessionDirs() {
   return discovered;
 }
 
-async function reconcileActiveSessions(initialState) {
-  // Auto-discover session dirs on disk and merge them into activeSessions
-  // and lastDailyNoteCreated. This makes --all-active-sessions work without
-  // requiring a manual init.js run after new sessions appear.
-  if (!allActiveSessions) return { added: [], activeSessions: getActiveSessions(initialState) };
+function planSessionReconciliation(initialState, onDiskSessions) {
   const existing = new Set(
     (Array.isArray(initialState.activeSessions) ? initialState.activeSessions : []).map(normalizeActiveSession).filter(Boolean)
   );
   const tracked = new Set(
     Object.keys(initialState.lastDailyNoteCreated || {}).map(normalizeActiveSession).filter(Boolean)
   );
-  const onDisk = discoverSessionDirs();
-  const toAdd = onDisk.filter((name) => !existing.has(name) && !tracked.has(name));
-  if (toAdd.length === 0) {
+  const onDisk = Array.from(new Set((onDiskSessions || []).map(normalizeActiveSession).filter(Boolean)));
+  const toActivate = onDisk.filter((name) => !existing.has(name));
+  const toTrack = onDisk.filter((name) => !tracked.has(name));
+  const patches = {};
+  if (toActivate.length > 0) patches["activeSessions"] = [...existing, ...toActivate];
+  for (const name of toTrack) patches["lastDailyNoteCreated." + name] = null;
+  return { added: toActivate, toTrack, patches };
+}
+
+async function reconcileActiveSessions(initialState) {
+  // Auto-discover session dirs on disk and merge them into activeSessions
+  // and lastDailyNoteCreated. This makes --all-active-sessions work without
+  // requiring a manual init.js run after new sessions appear.
+  if (!allActiveSessions) return { added: [], activeSessions: getActiveSessions(initialState) };
+  const plan = planSessionReconciliation(initialState, discoverSessionDirs());
+  if (Object.keys(plan.patches).length === 0) {
     return { added: [], activeSessions: getActiveSessions(initialState) };
   }
-  // Patch state: add new sessions to activeSessions and lastDailyNoteCreated
-  const patches = {};
-  const newActive = [...existing, ...toAdd];
-  patches["activeSessions"] = newActive;
-  for (const name of toAdd) {
-    patches["lastDailyNoteCreated." + name] = null;
-  }
-  const updated = await patchState(patches);
-  return { added: toAdd, activeSessions: getActiveSessions(updated) };
+  const updated = await patchState(plan.patches);
+  return { added: plan.added, activeSessions: getActiveSessions(updated) };
 }
 
 function getActiveSessions(initialState) {
@@ -1733,5 +1735,6 @@ if (!import.meta.main) {
     discoverQmdCollections,
     qmdCommandArgs,
     shouldApplyDomainHandoffs,
+    planSessionReconciliation,
   };
 }

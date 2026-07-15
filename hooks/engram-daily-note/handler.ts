@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 
@@ -43,7 +44,10 @@ const handler = async (event: any) => {
       if (/^cron-.+-run-/.test(session.name)) continue;
 
       const notePath = join(agentDir, session.name, `${today}.md`);
-      if (existsSync(notePath)) continue;
+      if (existsSync(notePath)) {
+        updateLastDailyNote(workspaceDir, session.name, today);
+        continue;
+      }
 
       mkdirSync(join(agentDir, session.name), { recursive: true });
       writeFileSync(notePath, TEMPLATE(today));
@@ -66,13 +70,19 @@ function updateLastDailyNote(workspaceDir: string, sessionKey: string, date: str
   if (!existsSync(statePath)) return;
   try {
     const raw = readFileSync(statePath, "utf-8");
-    const state = JSON.parse(raw);
+    const state = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
     if (!state.lastDailyNoteCreated || typeof state.lastDailyNoteCreated !== "object")
       state.lastDailyNoteCreated = {};
     if (state.lastDailyNoteCreated[sessionKey] === date) return;
     state.lastDailyNoteCreated[sessionKey] = date;
-    writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+    writeJsonAtomic(statePath, state);
   } catch (e: any) {
     console.warn(`[engram-daily-note] Could not update heartbeat-state: ${e.message}`);
   }
+}
+
+function writeJsonAtomic(path: string, value: any) {
+  const tmp = `${path}.tmp-${randomUUID()}`;
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
+  renameSync(tmp, path);
 }

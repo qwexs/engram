@@ -32,7 +32,7 @@ import {
 // imported as a non-entry-point module. This avoids re-running main()'s
 // side effects (cron state mutations, qmd discovery, etc.).
 import "../scripts/heartbeat-runner.js";
-const { shouldApplyDomainHandoffs } = globalThis.__engramHeartbeatRunnerExports;
+const { shouldApplyDomainHandoffs, planSessionReconciliation } = globalThis.__engramHeartbeatRunnerExports;
 
 describe("ISS-14: shouldApplyDomainHandoffs — drain-queue gate regression", () => {
   test("A1. default (no opts) → apply runs on every cron tick", () => {
@@ -73,5 +73,27 @@ describe("ISS-14: shouldApplyDomainHandoffs — drain-queue gate regression", ()
       // intentionally NO "hb-domains-write-apply" — it had no effect pre-fix either.
     };
     expect(shouldApplyDomainHandoffs(cronTickOpts)).toBe(true);
+  });
+});
+
+describe("session auto-discovery reconciliation", () => {
+  test("adds on-disk sessions to activeSessions even when already tracked in lastDailyNoteCreated", () => {
+    const plan = planSessionReconciliation({
+      activeSessions: [],
+      lastDailyNoteCreated: { "telegram-group--100-topic-7": "2026-07-15" },
+    }, ["telegram-group--100-topic-7"]);
+    expect(plan.added).toEqual(["telegram-group--100-topic-7"]);
+    expect(plan.toTrack).toEqual([]);
+    expect(plan.patches.activeSessions).toEqual(["telegram-group--100-topic-7"]);
+  });
+
+  test("tracks active on-disk sessions when lastDailyNoteCreated is missing", () => {
+    const plan = planSessionReconciliation({
+      activeSessions: ["telegram-direct-1"],
+      lastDailyNoteCreated: {},
+    }, ["telegram-direct-1"]);
+    expect(plan.added).toEqual([]);
+    expect(plan.toTrack).toEqual(["telegram-direct-1"]);
+    expect(plan.patches["lastDailyNoteCreated.telegram-direct-1"]).toBeNull();
   });
 });

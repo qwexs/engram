@@ -152,7 +152,7 @@ bun skills/engram/scripts/watchdog.js --workspace /a --workspace /b --json
 bun skills/engram/scripts/watchdog.js --all --workspaces-dir /path/to/workspaces --json
 ```
 
-Audits drift around an Engram workspace without fixing anything: `validate.js` exit status, QMD collection references, registry ↔ domain folders, heartbeat-state ↔ session dirs, KG v2 schema / likely test pollution, and missing `cron.expectedJobName`. Options: `--output`, `--no-core`, `--no-qmd`, `--exit-zero-on-warn`. Report schema: `engram.watchdog.v1`. Full reference: [watchdog.md](watchdog.md).
+Audits drift around an Engram workspace without fixing anything: `validate.js` exit status, runtime hook drift, QMD collection references, registry ↔ domain folders, heartbeat-state ↔ session dirs, KG v2 schema / likely test pollution, and missing `cron.expectedJobName`. Options: `--output`, `--no-core`, `--no-qmd`, `--no-hooks`, `--exit-zero-on-warn`. Report schema: `engram.watchdog.v1`. Full reference: [watchdog.md](watchdog.md).
 
 ## migrate-v2.js — Migrate to v2 schema
 

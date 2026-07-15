@@ -31,6 +31,7 @@ const { values: args } = parseArgs({
     "output": { type: "string" },
     "no-core": { type: "boolean", default: false },
     "no-qmd": { type: "boolean", default: false },
+    "no-hooks": { type: "boolean", default: false },
     "exit-zero-on-warn": { type: "boolean", default: false },
     "help": { type: "boolean", short: "h", default: false },
   },
@@ -54,6 +55,7 @@ Options:
   --output <path>          Write report to file (JSON if --json, text otherwise).
   --no-core                Skip validate.js wrapper check.
   --no-qmd                 Skip QMD collection checks.
+  --no-hooks               Skip runtime hook drift checks.
   --exit-zero-on-warn      Exit 0 for warnings-only reports (useful for cron).
   -h, --help               Show this help.
 
@@ -70,7 +72,7 @@ Read-only guarantee:
 }
 
 const unknown = Object.keys(args).filter((k) => ![
-  "workspace", "all", "workspaces-dir", "json", "output", "no-core", "no-qmd", "exit-zero-on-warn", "help", "_",
+  "workspace", "all", "workspaces-dir", "json", "output", "no-core", "no-qmd", "no-hooks", "exit-zero-on-warn", "help", "_",
 ].includes(k));
 if (unknown.length) {
   console.error(`❌ Unknown option(s): ${unknown.map((k) => `--${k}`).join(", ")}`);
@@ -98,6 +100,7 @@ if (!workspaces.length) {
 const options = {
   core: !args["no-core"],
   qmd: !args["no-qmd"],
+  hooks: !args["no-hooks"],
 };
 const reports = workspaces.map((workspace) => auditWorkspace(workspace, options));
 const report = reports.length === 1 ? reports[0] : mergeReports(reports);

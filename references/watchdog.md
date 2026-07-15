@@ -51,6 +51,7 @@ then pass `--all`.
 | `--output <path>` | Write the same report to a file. |
 | `--no-core` | Skip the `validate.js` wrapper check. Useful for focused tests. |
 | `--no-qmd` | Skip QMD collection checks. Useful when QMD is unavailable. |
+| `--no-hooks` | Skip runtime hook drift checks. Useful in isolated CI fixtures without OpenClaw. |
 | `--exit-zero-on-warn` | Return exit code `0` for warnings-only reports. Useful for cron/reporting jobs. |
 
 ## Exit codes
@@ -105,6 +106,13 @@ remains `false` until a separate explicit repair tool exists.
 
 `WD-CORE-001` runs existing `validate.js` as an additive check. Watchdog does not
 parse human output for repairs; it treats non-zero exit as a core error.
+
+### Runtime hook drift
+
+- `WD-HOOK-000` — hook drift check skipped because source/runtime hooks directory could not be found.
+- `WD-HOOK-001` — Engram source hook exists but runtime hook is missing or not built; run `install-hooks.js --force` and restart OpenClaw.
+- `WD-HOOK-002` — runtime `handler.js` appears older than source `handler.ts`; reinstall hooks and restart OpenClaw.
+- `WD-HOOK-003` — runtime hook is missing `HOOK.md`.
 
 ### QMD registry consistency
 

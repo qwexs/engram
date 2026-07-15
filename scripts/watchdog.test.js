@@ -64,7 +64,7 @@ function codes(report) {
 
 describe("workspace watchdog core", () => {
   test("clean synthetic workspace is ok when core/qmd checks are skipped", () => {
-    const report = auditWorkspace(workspace, { core: false, qmd: false });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(report.status).toBe("ok");
     expect(report.summary).toMatchObject({ errors: 0, warnings: 0, readOnly: true, fixed: 0 });
   });
@@ -75,14 +75,14 @@ describe("workspace watchdog core", () => {
         missing: { type: "dev-project", description: "Missing folder" },
       },
     }, null, 2) + "\n");
-    const report = auditWorkspace(workspace, { core: false, qmd: false });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(report.status).toBe("error");
     expect(codes(report)).toContain("WD-DOMAIN-001");
   });
 
   test("detects folder without registry entry", () => {
     mkdirSync(join(workspace, "memory", "domains", "orphan"), { recursive: true });
-    const report = auditWorkspace(workspace, { core: false, qmd: false });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(report.status).toBe("warn");
     expect(codes(report)).toContain("WD-DOMAIN-002");
   });
@@ -103,7 +103,7 @@ describe("workspace watchdog core", () => {
     }, null, 2) + "\n");
     mkdirSync(join(workspace, "memory", "domains", "general"), { recursive: true });
     mkdirSync(join(workspace, "memory", "domains", "child"), { recursive: true });
-    const report = auditWorkspace(workspace, { core: false, qmd: false });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(codes(report)).not.toContain("WD-DOMAIN-006");
   });
 
@@ -123,7 +123,7 @@ describe("workspace watchdog core", () => {
     }, null, 2) + "\n");
     mkdirSync(join(workspace, "memory", "domains", "general"), { recursive: true });
     mkdirSync(join(workspace, "memory", "domains", "child"), { recursive: true });
-    const report = auditWorkspace(workspace, { core: false, qmd: false });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(codes(report)).toContain("WD-DOMAIN-006");
     const finding = report.findings.find((f) => f.code === "WD-DOMAIN-006");
     expect(finding.details.expectedCollection).toBe("domain-child");
@@ -149,7 +149,7 @@ empty-domain (qmd://empty-domain/)
     writeFileSync(join(workspace, "memory", "heartbeat-state.json"), JSON.stringify({
       lastDailyNoteCreated: { main: "2026-07-15", ghost: "2026-07-15" },
     }, null, 2) + "\n");
-    const report = auditWorkspace(workspace, { core: false, qmd: false });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(codes(report)).toContain("WD-SESSION-001");
     expect(codes(report)).toContain("WD-SESSION-002");
   });
@@ -157,8 +157,16 @@ empty-domain (qmd://empty-domain/)
   test("ephemeral session dirs (cron-*-run-*, subagent-*) are not flagged", () => {
     mkdirSync(join(workspace, "memory", "agent-main", "cron-abc-123-run-def"), { recursive: true });
     mkdirSync(join(workspace, "memory", "agent-main", "subagent-xyz"), { recursive: true });
-    const report = auditWorkspace(workspace, { core: false, qmd: false });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(codes(report)).not.toContain("WD-SESSION-001");
+  });
+
+
+  test("detects missing runtime hooks when hook drift check is enabled", () => {
+    const hooksDir = join(workspace, "runtime-hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooksDir });
+    expect(codes(report)).toContain("WD-HOOK-001");
   });
 
   test("detects KG v2 schema errors and test pollution", () => {
@@ -168,7 +176,7 @@ empty-domain (qmd://empty-domain/)
       entityType: "project",
       facts: [{ id: "bad", title: "Old", content: "test fixture", category: "technical", tags: ["test"] }],
     }, null, 2) + "\n");
-    const report = auditWorkspace(workspace, { core: false, qmd: false });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(report.status).toBe("error");
     expect(codes(report)).toContain("WD-KG-001");
     expect(codes(report)).toContain("WD-KG-002");
@@ -194,7 +202,7 @@ empty-domain (qmd://empty-domain/)
         status: "active",
       }],
     }, null, 2) + "\n");
-    const report = auditWorkspace(workspace, { core: false, qmd: false });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     const pollution = report.findings.filter((f) => f.code === "WD-KG-004" && f.path?.includes("qmd-config"));
     expect(pollution).toHaveLength(0);
   });
@@ -202,7 +210,7 @@ empty-domain (qmd://empty-domain/)
 
 describe("watchdog CLI", () => {
   test("--json prints structured report and returns 0 for clean workspace", () => {
-    const r = runCli(["--workspace", workspace, "--json", "--no-core", "--no-qmd"]);
+    const r = runCli(["--workspace", workspace, "--json", "--no-core", "--no-qmd", "--no-hooks"]);
     expect(r.status).toBe(0);
     const out = JSON.parse(r.stdout);
     expect(out.schema).toBe("engram.watchdog.v1");
@@ -211,9 +219,9 @@ describe("watchdog CLI", () => {
 
   test("warnings-only exits 2 by default and 0 with --exit-zero-on-warn", () => {
     mkdirSync(join(workspace, "memory", "domains", "orphan"), { recursive: true });
-    const strict = runCli(["--workspace", workspace, "--json", "--no-core", "--no-qmd"]);
+    const strict = runCli(["--workspace", workspace, "--json", "--no-core", "--no-qmd", "--no-hooks"]);
     expect(strict.status).toBe(2);
-    const cron = runCli(["--workspace", workspace, "--json", "--no-core", "--no-qmd", "--exit-zero-on-warn"]);
+    const cron = runCli(["--workspace", workspace, "--json", "--no-core", "--no-qmd", "--no-hooks", "--exit-zero-on-warn"]);
     expect(cron.status).toBe(0);
   });
 

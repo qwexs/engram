@@ -579,6 +579,85 @@ function checkCronConfig(workspace, engram, findings) {
   }
 }
 
+function discoverRuntimeHooksDir(workspace, options = {}) {
+  if (options.hooksDir) return resolve(String(options.hooksDir));
+  const openclaw = runCommand("openclaw", ["hooks", "list", "--json"], workspace, 30000);
+  if (openclaw.status === 0 && openclaw.stdout) {
+    try {
+      const data = JSON.parse(openclaw.stdout);
+      if (typeof data?.managedHooksDir === "string" && data.managedHooksDir) return data.managedHooksDir;
+      if (typeof data?.workspaceDir === "string" && data.workspaceDir) return join(data.workspaceDir, "hooks");
+    } catch {}
+  }
+  const stateDir = process.env.OPENCLAW_STATE_DIR
+    || (process.env.OPENCLAW_CONFIG_PATH ? dirname(process.env.OPENCLAW_CONFIG_PATH) : null)
+    || join(process.env.HOME || process.env.USERPROFILE || "", ".openclaw");
+  return stateDir ? join(stateDir, "hooks") : null;
+}
+
+function checkHooks(workspace, findings, options = {}) {
+  const sourceHooksDir = join(SKILL_DIR, "hooks");
+  if (!isDir(sourceHooksDir)) {
+    findings.push(makeFinding({
+      code: "WD-HOOK-000",
+      level: "info",
+      message: "Engram source hooks directory is missing; hook drift check skipped",
+      path: rel(workspace, sourceHooksDir),
+    }));
+    return;
+  }
+
+  const runtimeHooksDir = discoverRuntimeHooksDir(workspace, options);
+  if (!runtimeHooksDir || !isDir(runtimeHooksDir)) {
+    findings.push(makeFinding({
+      code: "WD-HOOK-000",
+      level: "info",
+      message: "OpenClaw runtime hooks directory was not found; hook drift check skipped",
+      details: runtimeHooksDir ? { runtimeHooksDir } : {},
+    }));
+    return;
+  }
+
+  for (const name of listDirs(sourceHooksDir).filter((n) => n.startsWith("engram-"))) {
+    const sourceHandler = join(sourceHooksDir, name, "handler.ts");
+    const runtimeDir = join(runtimeHooksDir, name);
+    const runtimeHandler = join(runtimeDir, "handler.js");
+    const runtimeHookMd = join(runtimeDir, "HOOK.md");
+    if (!existsSync(runtimeDir) || !existsSync(runtimeHandler)) {
+      findings.push(makeFinding({
+        code: "WD-HOOK-001",
+        level: "warn",
+        message: `Engram runtime hook is missing or not built: ${name}`,
+        path: runtimeDir,
+        details: { sourceHook: sourceHandler, runtimeHooksDir },
+      }));
+      continue;
+    }
+    try {
+      const sourceMtime = statSync(sourceHandler).mtimeMs;
+      const runtimeMtime = statSync(runtimeHandler).mtimeMs;
+      if (runtimeMtime + 1000 < sourceMtime) {
+        findings.push(makeFinding({
+          code: "WD-HOOK-002",
+          level: "warn",
+          message: `Engram runtime hook appears older than source; reinstall hooks: ${name}`,
+          path: runtimeHandler,
+          details: { sourceHook: sourceHandler, runtimeHooksDir },
+        }));
+      }
+    } catch {}
+    if (!existsSync(runtimeHookMd)) {
+      findings.push(makeFinding({
+        code: "WD-HOOK-003",
+        level: "warn",
+        message: `Engram runtime hook is missing HOOK.md: ${name}`,
+        path: runtimeHookMd,
+        details: { runtimeHooksDir },
+      }));
+    }
+  }
+}
+
 export function auditWorkspace(workspaceInput, options = {}) {
   const workspace = resolve(String(workspaceInput || process.cwd()));
   const findings = [];
@@ -623,6 +702,7 @@ export function auditWorkspace(workspaceInput, options = {}) {
   }
   checkKg(workspace, findings);
   if (options.qmd !== false) checkQmd(workspace, registry, engram, findings);
+  if (options.hooks !== false) checkHooks(workspace, findings, options);
   checkCronConfig(workspace, engram, findings);
 
   return finalizeReport(workspace, findings, options);

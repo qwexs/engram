@@ -7,7 +7,7 @@
  * interpret HEARTBEAT.md correctly.
  */
 
-import { existsSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, statSync, readdirSync } from "node:fs";
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1352,6 +1352,55 @@ function normalizeActiveSession(value) {
   return raw;
 }
 
+function discoverSessionDirs() {
+  // Scan memory/agent-{id}/ for session directories that exist on disk
+  // but are not yet tracked in heartbeat-state.activeSessions.
+  // Skips subagent-* and cron-*-run-* (ephemeral, not tracked by design).
+  const agentRoot = join(workspace, "memory", agentDir);
+  if (!existsSync(agentRoot)) return [];
+  const skipPatterns = [/^subagent-/, /^cron-.+-run-/];
+  const discovered = [];
+  let entries;
+  try {
+    entries = readdirSync(agentRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (skipPatterns.some((p) => p.test(entry.name))) continue;
+    discovered.push(entry.name);
+  }
+  return discovered;
+}
+
+async function reconcileActiveSessions(initialState) {
+  // Auto-discover session dirs on disk and merge them into activeSessions
+  // and lastDailyNoteCreated. This makes --all-active-sessions work without
+  // requiring a manual init.js run after new sessions appear.
+  if (!allActiveSessions) return { added: [], activeSessions: getActiveSessions(initialState) };
+  const existing = new Set(
+    (Array.isArray(initialState.activeSessions) ? initialState.activeSessions : []).map(normalizeActiveSession).filter(Boolean)
+  );
+  const tracked = new Set(
+    Object.keys(initialState.lastDailyNoteCreated || {}).map(normalizeActiveSession).filter(Boolean)
+  );
+  const onDisk = discoverSessionDirs();
+  const toAdd = onDisk.filter((name) => !existing.has(name) && !tracked.has(name));
+  if (toAdd.length === 0) {
+    return { added: [], activeSessions: getActiveSessions(initialState) };
+  }
+  // Patch state: add new sessions to activeSessions and lastDailyNoteCreated
+  const patches = {};
+  const newActive = [...existing, ...toAdd];
+  patches["activeSessions"] = newActive;
+  for (const name of toAdd) {
+    patches["lastDailyNoteCreated." + name] = null;
+  }
+  const updated = await patchState(patches);
+  return { added: toAdd, activeSessions: getActiveSessions(updated) };
+}
+
 function getActiveSessions(initialState) {
   const explicit = opts["active-sessions"]
     ? String(opts["active-sessions"]).split(",")
@@ -1547,7 +1596,12 @@ async function refreshAutoDerivedStatus() {
 
 async function main() {
   const initial = await readJson(statePath, DEFAULT_STATE);
-  const activeSessions = allActiveSessions ? getActiveSessions(initial) : [session];
+  // Auto-discover session dirs on disk and reconcile into activeSessions.
+  const reconciliation = await reconcileActiveSessions(initial);
+  if (reconciliation.added.length > 0) {
+    summary.sessionDiscovery = { added: reconciliation.added };
+  }
+  const activeSessions = allActiveSessions ? reconciliation.activeSessions : [session];
   summary.activeSessions = activeSessions;
   if (initial.heartbeatInProgress) {
     const lockedAt = initial.heartbeatLockedAt ? new Date(initial.heartbeatLockedAt).getTime() : 0;

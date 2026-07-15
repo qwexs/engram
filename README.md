@@ -191,6 +191,12 @@ bun skills/engram/scripts/install-cron.js install \
   --workspace /path/to/workspace --agent-id main --schedule '*/30 * * * *'
 ```
 
+Audit workspace drift without changing anything:
+
+```bash
+bun skills/engram/scripts/watchdog.js --workspace /path/to/workspace --json
+```
+
 ## Requirements
 
 - [OpenClaw](https://github.com/openclaw/openclaw) agent runtime
@@ -205,6 +211,7 @@ bun skills/engram/scripts/install-cron.js install \
 | Heartbeat full spec | `references/HEARTBEAT.md` |
 | Heartbeat flow + cron | `references/heartbeat-flow.md` |
 | Scripts reference | `references/scripts.md` |
+| Workspace watchdog auditor | `references/watchdog.md` |
 | OLL details | `references/oll.md` |
 | Hooks | `references/hooks.md` |
 | Subagent domains | `references/subagent-memory.md` |

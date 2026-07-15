@@ -6,7 +6,7 @@ description: Etalon memory architecture with Knowledge Graph, session isolation,
 # Engram Memory System
 
 > v3.5 (2026-07-11). Skill is read-only — copy scripts to your workspace, do not edit.
-> Changelog: [CHANGELOG.md](CHANGELOG.md) · Script reference: [references/scripts.md](references/scripts.md)
+> Changelog: [CHANGELOG.md](CHANGELOG.md) · Script reference: [references/scripts.md](references/scripts.md) · Watchdog: [references/watchdog.md](references/watchdog.md)
 
 ## Quick Start
 
@@ -19,6 +19,9 @@ bun skills/engram/scripts/init.js --agent-id main --qmd-variant auto --with-cron
 
 # Force merge into existing workspace
 bun skills/engram/scripts/init.js --force
+
+# Read-only workspace audit (no fixes)
+bun skills/engram/scripts/watchdog.js --workspace /path/to/workspace --json
 ```
 
 ## Architecture Overview

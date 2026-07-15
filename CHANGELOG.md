@@ -7,6 +7,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Read-only workspace auditor**: `scripts/watchdog.js` and
+  `scripts/_lib/workspace-watchdog.js` report Engram workspace drift without
+  applying fixes. Checks cover `validate.js`, QMD collection references,
+  registry ↔ domain folders, heartbeat-state ↔ session dirs, KG v2 schema /
+  likely test pollution, and missing `cron.expectedJobName`. Includes JSON
+  report schema `engram.watchdog.v1`, `--output`, `--all --workspaces-dir`,
+  `--no-core`, `--no-qmd`, `--exit-zero-on-warn`, docs in
+  `references/watchdog.md`, and synthetic tests in `scripts/watchdog.test.js`.
+  Follow-up tuning: `qmd-config` is no longer treated as test pollution by name
+  alone, missing session state for dormant topic-bound domains is reported as
+  informational, and meta-domain coverage now checks that child topic domains
+  are included directly or via an aggregate `*-domains` / `domains` collection.
 - **Meta-domain type**: new domain type `meta-domain` with `qmdCollections` field
   for vertical QMD access across lower-level workspaces. Supported in
   `add-domain.js` (`--type meta-domain`, `--qmd-collections`, `--peer`,

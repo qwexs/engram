@@ -70,6 +70,8 @@ const handler = async (event: any) => {
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(notePath, TEMPLATE(today));
     console.log(`[engram-session-start] Created daily note ${notePath}`);
+    // Update heartbeat-state.json: lastDailyNoteCreated.<session> = today
+    updateLastDailyNote(workspaceDir, sessionKey, today);
   }
 
   // Skip if there's already a session:start within the last 15 minutes (debounce repeated bootstraps)
@@ -146,3 +148,19 @@ const handler = async (event: any) => {
 };
 
 export default handler;
+
+function updateLastDailyNote(workspaceDir: string, sessionKey: string, date: string) {
+  const statePath = join(workspaceDir, "memory", "heartbeat-state.json");
+  if (!existsSync(statePath)) return;
+  try {
+    const raw = readFileSync(statePath, "utf-8");
+    const state = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
+    if (!state.lastDailyNoteCreated || typeof state.lastDailyNoteCreated !== "object")
+      state.lastDailyNoteCreated = {};
+    if (state.lastDailyNoteCreated[sessionKey] === date) return;
+    state.lastDailyNoteCreated[sessionKey] = date;
+    writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+  } catch (e: any) {
+    console.warn(`[engram-session-start] Could not update heartbeat-state: ${e.message}`);
+  }
+}

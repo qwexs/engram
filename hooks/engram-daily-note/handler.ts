@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -49,6 +49,8 @@ const handler = async (event: any) => {
       writeFileSync(notePath, TEMPLATE(today));
       created++;
       console.log(`[engram-daily-note] Created ${notePath}`);
+      // Update heartbeat-state.json: lastDailyNoteCreated.<session> = today
+      updateLastDailyNote(workspaceDir, session.name, today);
     }
   }
 
@@ -58,3 +60,19 @@ const handler = async (event: any) => {
 };
 
 export default handler;
+
+function updateLastDailyNote(workspaceDir: string, sessionKey: string, date: string) {
+  const statePath = join(workspaceDir, "memory", "heartbeat-state.json");
+  if (!existsSync(statePath)) return;
+  try {
+    const raw = readFileSync(statePath, "utf-8");
+    const state = JSON.parse(raw);
+    if (!state.lastDailyNoteCreated || typeof state.lastDailyNoteCreated !== "object")
+      state.lastDailyNoteCreated = {};
+    if (state.lastDailyNoteCreated[sessionKey] === date) return;
+    state.lastDailyNoteCreated[sessionKey] = date;
+    writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+  } catch (e: any) {
+    console.warn(`[engram-daily-note] Could not update heartbeat-state: ${e.message}`);
+  }
+}

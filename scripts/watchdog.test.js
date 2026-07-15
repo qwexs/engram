@@ -154,6 +154,13 @@ empty-domain (qmd://empty-domain/)
     expect(codes(report)).toContain("WD-SESSION-002");
   });
 
+  test("ephemeral session dirs (cron-*-run-*, subagent-*) are not flagged", () => {
+    mkdirSync(join(workspace, "memory", "agent-main", "cron-abc-123-run-def"), { recursive: true });
+    mkdirSync(join(workspace, "memory", "agent-main", "subagent-xyz"), { recursive: true });
+    const report = auditWorkspace(workspace, { core: false, qmd: false });
+    expect(codes(report)).not.toContain("WD-SESSION-001");
+  });
+
   test("detects KG v2 schema errors and test pollution", () => {
     mkdirSync(join(workspace, "life", "projects", "test-project"), { recursive: true });
     writeFileSync(join(workspace, "life", "projects", "test-project", "items.json"), JSON.stringify({

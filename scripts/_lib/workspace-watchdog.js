@@ -403,7 +403,19 @@ function checkHeartbeatState(workspace, registry, findings) {
   const stateSessions = new Set(Object.keys(lastDaily));
   const activeSessions = new Set(Array.isArray(state.activeSessions) ? state.activeSessions : []);
 
+  // Session dirs that are ephemeral by design and should not be tracked
+  // in heartbeat-state. Hooks (engram-daily-note, engram-session-start)
+  // and heartbeat-runner all skip these, so watchdog should too.
+  const EPHEMERAL_SESSION_PATTERNS = [
+    /^cron-.+-run-/, // isolated cron run sessions
+    /^subagent-/,    // spawned subagent sessions
+  ];
+  function isEphemeralSession(name) {
+    return EPHEMERAL_SESSION_PATTERNS.some((p) => p.test(name));
+  }
+
   for (const session of sessionDirs) {
+    if (isEphemeralSession(session)) continue;
     if (!stateSessions.has(session)) {
       findings.push(makeFinding({
         code: "WD-SESSION-001",

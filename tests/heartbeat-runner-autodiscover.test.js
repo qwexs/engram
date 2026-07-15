@@ -58,12 +58,12 @@ describe("parseQmdCollectionList", () => {
 
   test("supports dashes, dots, and underscores in collection names", () => {
     const stdout =
-      "  dobriy-life (qmd://dobriy-life/)\n" +
-      "  openclaw-memory-agent-dobriy-telegram-group--1003838366865-topic-30 (qmd://.../)\n" +
+      "  sample-life (qmd://sample-life/)\n" +
+      "  openclaw-memory-agent-sample-telegram-group--12345-topic-30 (qmd://.../)\n" +
       "  my.collection_v2 (qmd://my.collection_v2/)\n";
     const result = exports.parseQmdCollectionList(stdout);
-    expect(result).toContain("dobriy-life");
-    expect(result).toContain("openclaw-memory-agent-dobriy-telegram-group--1003838366865-topic-30");
+    expect(result).toContain("sample-life");
+    expect(result).toContain("openclaw-memory-agent-sample-telegram-group--12345-topic-30");
     expect(result).toContain("my.collection_v2");
   });
 });

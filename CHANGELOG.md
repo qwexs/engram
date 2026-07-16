@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `engram.json` template now seeds `qmd.collections` as a heartbeat
+  maintenance allowlist (`primary`, `life`, `openclaw-root`). Workspaces can
+  still register vertical child collections for read access, but heartbeat
+  `qmd embed` should only maintain self-owned collections. `watchdog` now warns
+  when meta-domain vertical access has no maintenance allowlist (`WD-QMD-008`)
+  or when the allowlist includes child access collections (`WD-QMD-009`).
 - **Read-only workspace auditor**: `scripts/watchdog.js` and
   `scripts/_lib/workspace-watchdog.js` report Engram workspace drift without
   applying fixes. Checks cover `validate.js`, QMD collection references,

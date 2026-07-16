@@ -4,7 +4,13 @@
   "qmd": {
     "command": "qmd",
     "localIndex": true,
-    "collection": "{COLLECTION_NAME}"
+    "collection": "{COLLECTION_NAME}",
+    "_collections_comment": "Maintenance allowlist for heartbeat qmd embed/update. Keep vertical/child access collections registered in QMD, but do not add them here; child workspaces maintain their own embeddings.",
+    "collections": [
+      "{COLLECTION_NAME}",
+      "life",
+      "openclaw-root"
+    ]
   },
   "models": {
     "_comment": "Model ids for heartbeat subagents. Set 'default' to your preferred model — all subagents will use it unless overridden in heartbeat.subagents.",

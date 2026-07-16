@@ -90,6 +90,32 @@ qmd collection add <path> --name <name> --mask "**/*.md"
 qmd collection list
 ```
 
+### Maintenance Allowlist
+
+Upper-level workspaces may register lower-level collections for vertical read
+access (for example via meta-domain `qmdCollections`). Keep those collections
+available for explicit `qmd query -c ...` calls, but do not make the upper
+workspace re-embed them on every heartbeat.
+
+Use `engram.json` `qmd.collections` as the heartbeat maintenance allowlist:
+
+```json
+{
+  "qmd": {
+    "collection": "openclaw-memory-agent-main-main",
+    "collections": [
+      "openclaw-memory-agent-main-main",
+      "life",
+      "openclaw-root"
+    ]
+  }
+}
+```
+
+Rule of thumb: add only self-owned collections here. Child workspaces should
+maintain their own embeddings. Watchdog reports missing or over-broad
+maintenance allowlists as `WD-QMD-008` / `WD-QMD-009`.
+
 ## Commands
 
 ```bash

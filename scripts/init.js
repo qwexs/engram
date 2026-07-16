@@ -997,18 +997,19 @@ function detectDefaultModel() {
       let tpl = readFileSync(engramTemplatePath, 'utf-8');
       // Replace template placeholders
       tpl = tpl.replaceAll('{AGENT_ID}', agentId);
-      tpl = tpl.replaceAll('{COLLECTION_NAME}', `${agentId}-memory`);
+      const primaryCollection = `openclaw-memory-agent-${agentId}-main`;
+      tpl = tpl.replaceAll('{COLLECTION_NAME}', primaryCollection);
       
       // Auto-detect model from openclaw.json and replace {MODEL_ID} placeholder
       const detectedModel = detectDefaultModel();
       if (detectedModel) {
         tpl = tpl.replaceAll('"{MODEL_ID}"', `"${detectedModel}"`);
-        recordCreate('engram.json', `created from template (agent=${agentId}, collection=${agentId}-memory, model=${detectedModel})`);
+        recordCreate('engram.json', `created from template (agent=${agentId}, collection=${primaryCollection}, model=${detectedModel})`);
         console.log(`  ✓ engram.json created from template — model auto-detected: ${detectedModel}`);
       } else {
         // No model detected — replace {MODEL_ID} with OSS fallback so file is valid
         tpl = tpl.replaceAll('"{MODEL_ID}"', `"${OSS_FALLBACK_MODEL}"`);
-        recordCreate('engram.json', `created from template (agent=${agentId}, collection=${agentId}-memory) — using OSS fallback ${OSS_FALLBACK_MODEL}`);
+        recordCreate('engram.json', `created from template (agent=${agentId}, collection=${primaryCollection}) — using OSS fallback ${OSS_FALLBACK_MODEL}`);
         console.log(`  ✓ engram.json created from template — edit models.* to match your deployment`);
         console.log(`  ⚠ No model found in openclaw.json (agents.defaults.model.primary) — using ${OSS_FALLBACK_MODEL} fallback`);
       }

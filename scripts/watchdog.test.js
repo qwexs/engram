@@ -129,6 +129,72 @@ describe("workspace watchdog core", () => {
     expect(finding.details.expectedCollection).toBe("domain-child");
   });
 
+  test("warns when meta-domain vertical access has no qmd.collections maintenance allowlist", () => {
+    writeFileSync(join(workspace, "memory", "domains", "registry.json"), JSON.stringify({
+      domains: {
+        general: {
+          type: "meta-domain",
+          topic: { chatId: "-1001", topicId: "1" },
+          qmdCollections: ["alpha-memory", "child-memory"],
+        },
+      },
+    }, null, 2) + "\n");
+    mkdirSync(join(workspace, "memory", "domains", "general"), { recursive: true });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).toContain("WD-QMD-008");
+  });
+
+  test("warns when qmd.collections includes vertical child access collections", () => {
+    writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+      agent: "agent-main",
+      qmd: {
+        command: "qmd",
+        collection: "alpha-memory",
+        collections: ["alpha-memory", "alpha-domains", "child-memory"],
+      },
+      cron: { expectedJobName: "Heartbeat (Engram runner) — alpha" },
+    }, null, 2) + "\n");
+    writeFileSync(join(workspace, "memory", "domains", "registry.json"), JSON.stringify({
+      domains: {
+        general: {
+          type: "meta-domain",
+          topic: { chatId: "-1001", topicId: "1" },
+          qmdCollections: ["alpha-memory", "alpha-domains", "child-memory"],
+        },
+      },
+    }, null, 2) + "\n");
+    mkdirSync(join(workspace, "memory", "domains", "general"), { recursive: true });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).toContain("WD-QMD-009");
+    const finding = report.findings.find((f) => f.code === "WD-QMD-009");
+    expect(finding.details.collections).toEqual(["child-memory"]);
+  });
+
+  test("accepts qmd.collections limited to self-owned maintenance collections", () => {
+    writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+      agent: "agent-main",
+      qmd: {
+        command: "qmd",
+        collection: "alpha-memory",
+        collections: ["alpha-memory", "alpha-domains", "domain-general"],
+      },
+      cron: { expectedJobName: "Heartbeat (Engram runner) — alpha" },
+    }, null, 2) + "\n");
+    writeFileSync(join(workspace, "memory", "domains", "registry.json"), JSON.stringify({
+      domains: {
+        general: {
+          type: "meta-domain",
+          topic: { chatId: "-1001", topicId: "1" },
+          qmdCollections: ["alpha-memory", "alpha-domains", "child-memory"],
+        },
+      },
+    }, null, 2) + "\n");
+    mkdirSync(join(workspace, "memory", "domains", "general"), { recursive: true });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).not.toContain("WD-QMD-008");
+    expect(codes(report)).not.toContain("WD-QMD-009");
+  });
+
   test("QMD parser captures zero-file collections", () => {
     const parsed = parseQmdCollections(`Collections (2):
 

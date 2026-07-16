@@ -255,6 +255,76 @@ function checkQmd(workspace, registry, engram, findings) {
   }
 }
 
+function collectMetaDomainCollections(registry, engram) {
+  const refs = [];
+  for (const [domain, entry] of Object.entries(registry?.domains || {})) {
+    const isMeta = entry?.type === "meta-domain" || entry?.metaDomain === true;
+    if (!isMeta) continue;
+    for (const collection of entry?.qmdCollections || []) {
+      refs.push({ source: "registry", domain, collection: String(collection) });
+    }
+  }
+  for (const [domain, entry] of Object.entries(engram?.domains || {})) {
+    const isMeta = entry?.type === "meta-domain" || entry?.metaDomain === true;
+    if (!isMeta) continue;
+    for (const collection of entry?.qmdCollections || []) {
+      refs.push({ source: "engram", domain, collection: String(collection) });
+    }
+  }
+  return refs;
+}
+
+function expectedMaintenanceCollections(workspace, registry, engram) {
+  const expected = new Set(["openclaw-root", "life"]);
+  const primary = engram?.qmd?.collection ? String(engram.qmd.collection) : "";
+  if (primary) {
+    expected.add(primary);
+    if (primary.endsWith("-memory")) expected.add(primary.replace(/-memory$/, "-domains"));
+  }
+  for (const slug of listDirs(join(workspace, "memory", "domains"))) {
+    expected.add(`domain-${slug}`);
+  }
+  for (const [slug, entry] of Object.entries(registry?.domains || {})) {
+    if (entry?.pending) continue;
+    expected.add(`domain-${slug}`);
+  }
+  return expected;
+}
+
+function checkQmdMaintenanceCollections(workspace, registry, engram, findings) {
+  const metaRefs = collectMetaDomainCollections(registry, engram);
+  if (metaRefs.length === 0) return;
+
+  const maintenance = Array.isArray(engram?.qmd?.collections)
+    ? engram.qmd.collections.map((c) => String(c)).filter(Boolean)
+    : [];
+  if (maintenance.length === 0) {
+    findings.push(makeFinding({
+      code: "WD-QMD-008",
+      level: "warn",
+      message: "Workspace has meta-domain vertical QMD access but no qmd.collections maintenance allowlist; heartbeat qmd embed may re-embed child collections.",
+      path: "engram.json",
+      details: { metaDomains: [...new Set(metaRefs.map((r) => r.domain))].sort() },
+    }));
+    return;
+  }
+
+  const expected = expectedMaintenanceCollections(workspace, registry, engram);
+  const metaAccess = new Set(metaRefs.map((r) => r.collection));
+  const overreach = maintenance
+    .filter((collection) => metaAccess.has(collection) && !expected.has(collection))
+    .sort();
+  if (overreach.length > 0) {
+    findings.push(makeFinding({
+      code: "WD-QMD-009",
+      level: "warn",
+      message: "qmd.collections includes vertical child access collections; upper-level heartbeat may re-embed child workspaces that maintain themselves.",
+      path: "engram.json",
+      details: { collections: overreach },
+    }));
+  }
+}
+
 function requiredDomainFiles(type) {
   const files = ["README.md", "decisions.md", "status.md", "changelog.md"];
   if (type === "dev-project" || type === "cron-task") files.push("workflow.md");
@@ -826,6 +896,7 @@ export function auditWorkspace(workspaceInput, options = {}) {
   checkKg(workspace, findings);
   checkOllState(workspace, findings);
   if (options.qmd !== false) checkQmd(workspace, registry, engram, findings);
+  checkQmdMaintenanceCollections(workspace, registry, engram, findings);
   if (options.hooks !== false) checkHooks(workspace, findings, options);
   checkCronConfig(workspace, engram, findings);
 

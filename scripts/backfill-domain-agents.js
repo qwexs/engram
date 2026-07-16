@@ -97,11 +97,25 @@ function renderTemplate(slug, topicBinding, kgEntity) {
   const operator = cfg.operator || process.env.ENGRAM_OPERATOR || 'Operator (см. workspace AGENTS.md)';
   const qmdIndex = cfg.qmd?.index || process.env.ENGRAM_QMD_INDEX || 'default';
   const workspaceKgCollection = cfg.qmd?.workspaceKgCollection || process.env.ENGRAM_WORKSPACE_KG_COLLECTION || 'life';
+  const kgEntityBlock = kgEntity
+    ? [
+        `- **Свой KG entity** (${kgEntityDisplay}):`,
+        '  ```bash',
+        `  qmd --index ${qmdIndex} query "<topic>" -c life-projects-${slug}`,
+        '  ```',
+        `  Или прямым \`read\`: \`life/${kgEntityPath}/summary.md\` и \`life/${kgEntityPath}/items.json\` (через \`read\`, не писать).`,
+      ].join('\n')
+    : '- **KG entity не задан** — QMD для KG не использовать; не читать `life/` без явного cross-KG запроса.';
+  const kgEntityReadRule = kgEntity
+    ? `- ✅ \`life/${kgEntityPath}/*\` (${kgEntityDisplay}, read-only).`
+    : '- ⚠️ `life/` — только при явном cross-KG запросе Operator.';
   return template
     .replaceAll('{{DOMAIN}}', slug)
     .replaceAll('{{SESSION_KEY}}', sessionKey)
     .replaceAll('{{KG_ENTITY_PATH}}', kgEntityPath)
     .replaceAll('{{KG_ENTITY_DISPLAY}}', kgEntityDisplay)
+    .replaceAll('{{KG_ENTITY_BLOCK}}', kgEntityBlock)
+    .replaceAll('{{KG_ENTITY_READ_RULE}}', kgEntityReadRule)
     .replaceAll('{{CHAT_ID}}', topicBinding?.chatId || '')
     .replaceAll('{{TOPIC_ID}}', topicBinding?.topicId || '')
     .replaceAll('{{WORKSPACE}}', workspaceName)

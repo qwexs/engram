@@ -27,11 +27,7 @@
     -c openclaw-memory-agent-{{AGENT_ID}}-{{SESSION_KEY}}
   ```
   Это own domain + own session notes. Ничего больше по умолчанию.
-- **Свой KG entity** ({{KG_ENTITY_DISPLAY}}):
-  ```bash
-  qmd --index {{QMD_INDEX}} query "<topic>" -c life-projects-{{DOMAIN}}
-  ```
-  Или прямым `read`: `life/{{KG_ENTITY_PATH}}/summary.md` и `life/{{KG_ENTITY_PATH}}/items.json` (через `read`, не писать).
+{{KG_ENTITY_BLOCK}}
 - **НЕ использовать без явного OK Operator**:
   - `-c domains` (cross-topic) — другой проект/тред, чужой контекст.
   - `-c {{WORKSPACE_KG_COLLECTION}}` (cross-KG) — workspace-level KG, чужой контекст.
@@ -47,9 +43,9 @@
 
 - ✅ Своя daily note (`memory/agent-{{AGENT_ID}}/{{SESSION_KEY}}/YYYY-MM-DD.md`).
 - ✅ `memory/domains/{{DOMAIN}}/*` (этот домен).
-- ✅ `life/{{KG_ENTITY_PATH}}/*` ({{KG_ENTITY_DISPLAY}}, read-only).
+{{KG_ENTITY_READ_RULE}}
 - ⚠️ `memory/domains/{other-slug}/*` — только по явному запросу «а в другом треде?».
-- ⚠️ `life/` целиком (без `kgEntity`) — только при явном cross-KG запросе.
+- ⚠️ `life/` целиком (cross-KG) — только при явном запросе Operator.
 - ❌ `MEMORY.md` / `AGENTS.md` / `SOUL.md` workspace-уровня — auto-load, читать отдельно не нужно.
 
 ## Write rules

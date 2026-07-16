@@ -279,6 +279,7 @@ models:
   test("detects generated runtime artifacts inside the Engram skill repo", () => {
     const skillDir = join(workspace, "synthetic-skill");
     mkdirSync(join(skillDir, "memory", "agent-main", "main"), { recursive: true });
+    mkdirSync(join(skillDir, "memory", "domains", "smoke"), { recursive: true });
     mkdirSync(join(skillDir, "life", "_derived"), { recursive: true });
     mkdirSync(join(skillDir, "workspace", "ops", "watchdog"), { recursive: true });
     const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false, skillDir });
@@ -286,6 +287,7 @@ models:
     expect(artifactFindings.map((f) => f.path).sort()).toEqual([
       "skill:life/_derived",
       "skill:memory/agent-main",
+      "skill:memory/domains",
       "skill:workspace/ops/watchdog",
     ]);
     expect(artifactFindings.every((f) => !JSON.stringify(f.details || {}).includes(skillDir))).toBe(true);

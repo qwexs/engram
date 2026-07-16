@@ -742,6 +742,7 @@ function checkSkillGeneratedArtifacts(findings, options = {}) {
   const skillDir = options.skillDir || SKILL_DIR;
   const checks = [
     { relPath: join("memory", "agent-*"), globPrefix: join(skillDir, "memory"), reason: "agent session memory must not be generated inside the Engram skill repo" },
+    { relPath: join("memory", "domains"), requireNonEmpty: true, reason: "domain memory must be generated in the workspace, not into the Engram skill repo" },
     { relPath: join("life", "_derived"), reason: "derived KG exports must be generated in the workspace, not into the Engram skill repo" },
     { relPath: join("ops", "watchdog"), reason: "watchdog reports must be generated in the workspace, not into the Engram skill repo" },
     { relPath: join("workspace", "ops", "watchdog"), reason: "watchdog reports must be generated in the workspace, not into the Engram skill repo" },
@@ -763,6 +764,7 @@ function checkSkillGeneratedArtifacts(findings, options = {}) {
     }
     const full = join(skillDir, check.relPath);
     if (!existsSync(full)) continue;
+    if (check.requireNonEmpty && readdirSync(full).length === 0) continue;
     findings.push(makeFinding({
       code: "WD-ARTIFACT-001",
       level: "warn",

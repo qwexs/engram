@@ -374,6 +374,20 @@ const operator = engramConfig.operator || process.env.ENGRAM_OPERATOR || 'Operat
 const qmdIndex = engramConfig.qmd?.index || process.env.ENGRAM_QMD_INDEX || 'default';
 const workspaceKgCollection = engramConfig.qmd?.workspaceKgCollection || process.env.ENGRAM_WORKSPACE_KG_COLLECTION || 'life';
 
+// Conditional KG blocks for agents.md — never leave empty life// paths when kgEntity is absent.
+const kgEntityBlock = kgEntity
+  ? [
+      `- **Свой KG entity** (${kgEntityDisplay}):`,
+      '  ```bash',
+      `  qmd --index ${qmdIndex} query "<topic>" -c life-projects-${domain}`,
+      '  ```',
+      `  Или прямым \`read\`: \`life/${kgEntityPath}/summary.md\` и \`life/${kgEntityPath}/items.json\` (через \`read\`, не писать).`,
+    ].join('\n')
+  : '- **KG entity не задан** — QMD для KG не использовать; не читать `life/` без явного cross-KG запроса.';
+const kgEntityReadRule = kgEntity
+  ? `- ✅ \`life/${kgEntityPath}/*\` (${kgEntityDisplay}, read-only).`
+  : '- ⚠️ `life/` — только при явном cross-KG запросе Operator.';
+
 const replacements = {
   DOMAIN: domain,
   DESCRIPTION: description,
@@ -383,6 +397,8 @@ const replacements = {
   QMD_INDEX: qmdIndex,
   AGENT_ID: agentId,
   WORKSPACE_KG_COLLECTION: workspaceKgCollection,
+  KG_ENTITY_BLOCK: kgEntityBlock,
+  KG_ENTITY_READ_RULE: kgEntityReadRule,
   ...(topicBinding ? { CHAT_ID: topicBinding.chatId, TOPIC_ID: topicBinding.topicId, SESSION_KEY: sessionKey } : {}),
   ...(kgEntity ? { KG_ENTITY_PATH: kgEntityPath, KG_ENTITY_DISPLAY: kgEntityDisplay } : {}),
 };

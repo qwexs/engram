@@ -9,7 +9,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { auditWorkspace, parseQmdCollections, parseQmdIndexCollections } from "./_lib/workspace-watchdog.js";
@@ -17,26 +17,25 @@ import { auditWorkspace, parseQmdCollections, parseQmdIndexCollections } from ".
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "watchdog.js");
 let workspace;
 
-beforeEach(() => {
-  workspace = mkdtempSync(join(tmpdir(), "engram-watchdog-test-"));
-  mkdirSync(join(workspace, "memory", "domains"), { recursive: true });
-  mkdirSync(join(workspace, "memory", "agent-main", "main"), { recursive: true });
-  mkdirSync(join(workspace, "life", "projects", "alpha"), { recursive: true });
-  writeFileSync(join(workspace, "engram.json"), JSON.stringify({
-    agent: "agent-main",
-    qmd: { command: "qmd", collection: "alpha-memory" },
-    cron: { expectedJobName: "Heartbeat (Engram runner) — alpha" },
+function createCleanWorkspace(root, { agent = "agent-main", project = "alpha" } = {}) {
+  mkdirSync(join(root, "memory", "domains"), { recursive: true });
+  mkdirSync(join(root, "memory", agent, "main"), { recursive: true });
+  mkdirSync(join(root, "life", "projects", project), { recursive: true });
+  writeFileSync(join(root, "engram.json"), JSON.stringify({
+    agent,
+    qmd: { command: "qmd", collection: `${project}-memory` },
+    cron: { expectedJobName: `Heartbeat (Engram runner) — ${project}` },
   }, null, 2) + "\n");
-  writeFileSync(join(workspace, "memory", "heartbeat-state.json"), JSON.stringify({
+  writeFileSync(join(root, "memory", "heartbeat-state.json"), JSON.stringify({
     lastDailyNoteCreated: { main: "2026-07-15" },
   }, null, 2) + "\n");
-  writeFileSync(join(workspace, "memory", "domains", "registry.json"), JSON.stringify({ domains: {} }, null, 2) + "\n");
-  writeFileSync(join(workspace, "life", "projects", "alpha", "items.json"), JSON.stringify({
-    entityId: "projects/alpha",
+  writeFileSync(join(root, "memory", "domains", "registry.json"), JSON.stringify({ domains: {} }, null, 2) + "\n");
+  writeFileSync(join(root, "life", "projects", project, "items.json"), JSON.stringify({
+    entityId: `projects/${project}`,
     entityType: "project",
     facts: [{
       id: "fact-1",
-      fact: "Alpha project exists.",
+      fact: `${project} project exists.`,
       category: "context",
       timestamp: "2026-07-15T00:00:00.000Z",
       lastAccessed: "2026-07-15T00:00:00.000Z",
@@ -47,6 +46,11 @@ beforeEach(() => {
       status: "active",
     }],
   }, null, 2) + "\n");
+}
+
+beforeEach(() => {
+  workspace = mkdtempSync(join(tmpdir(), "engram-watchdog-test-"));
+  createCleanWorkspace(workspace);
 });
 
 afterEach(() => {
@@ -463,6 +467,40 @@ describe("watchdog CLI", () => {
     expect(strict.status).toBe(2);
     const cron = runCli(["--workspace", workspace, "--json", "--no-core", "--no-qmd", "--no-hooks", "--exit-zero-on-warn"]);
     expect(cron.status).toBe(0);
+  });
+
+  test("repeated --workspace audits only the selected workspaces", () => {
+    const root = mkdtempSync(join(tmpdir(), "engram-watchdog-multi-"));
+    try {
+      const selectedMain = join(root, "main");
+      const selectedSecondary = join(root, "secondary");
+      const notSelected = join(root, "other");
+      createCleanWorkspace(selectedMain, { agent: "agent-main", project: "main" });
+      createCleanWorkspace(selectedSecondary, { agent: "agent-secondary", project: "secondary" });
+      createCleanWorkspace(notSelected, { agent: "agent-other", project: "other" });
+
+      const r = runCli([
+        "--workspace", selectedMain,
+        "--workspace", selectedSecondary,
+        "--workspace", selectedMain,
+        "--json",
+        "--no-core",
+        "--no-qmd",
+        "--no-hooks",
+      ]);
+
+      expect(r.status).toBe(0);
+      const out = JSON.parse(r.stdout);
+      expect(out.summary.workspaces).toBe(2);
+      expect(out.reports.map((report) => report.workspace).sort()).toEqual([
+        resolve(selectedMain),
+        resolve(selectedSecondary),
+      ].sort());
+      expect(out.reports.some((report) => report.workspace === resolve(notSelected))).toBe(false);
+      expect(out.reports.every((report) => report.summary.readOnly && report.status === "ok")).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("requires explicit workspaces-dir for --all", () => {

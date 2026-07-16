@@ -115,7 +115,16 @@ describe("heartbeat-runner OLL spawn gates", () => {
 
     const recovered = runRunner(["--spawn-rethink", "--recover-stale-oll-locks", "--oll-stale-rethink-hours", "0"]);
     expect(recovered.summary.phases.oll.recovery.recovered).toContain("hb-rethink");
-    expect(recovered.summary.phases.oll.spawns).toHaveLength(1);
+    // Recovery deliberately suppresses an immediate re-spawn in the same tick;
+    // otherwise a repeatedly failing worker can enter a stale-lock recovery loop.
+    expect(recovered.summary.phases.oll.rethink.wouldRun).toBe(false);
+    expect(recovered.summary.phases.oll.spawns).toHaveLength(0);
+    expect(spawnFiles()).toHaveLength(0);
+
+    // The following heartbeat tick re-evaluates the still-valid rethink reasons
+    // and may queue a fresh worker normally.
+    const nextTick = runRunner(["--spawn-rethink", "--oll-stale-rethink-hours", "0"]);
+    expect(nextTick.summary.phases.oll.spawns).toHaveLength(1);
     expect(spawnFiles()).toHaveLength(1);
   });
 

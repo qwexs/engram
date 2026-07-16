@@ -1,19 +1,44 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
-import { existsSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, rmSync, mkdirSync, readFileSync, mkdtempSync, readdirSync } from "fs";
+import { tmpdir } from "os";
 import { extractKeywords, jaccardSimilarity } from "../scripts/utils.js";
 
 const SCRIPTS_DIR = join(import.meta.dir, "..", "scripts");
 
-// Workspace root — на 3 уровня выше tests/
-const WORKSPACE_ROOT = join(import.meta.dir, "..", "..", "..");
+// Isolate every test in a fresh tmpdir so we never touch the real
+// clawd workspace (workspace/ops/observations, life/items.json, ...).
+// Each spawned CLI is invoked with ENGRAM_WORKSPACE pointing at the same
+// tmp root so the script under test also stays inside the temp tree.
+let WORKSPACE_ROOT;
+let OBS_DIR;
+let TENSION_DIR;
+let LIFE_DIR;
 
-// Новые пути: workspace/ops/ (не в submodule)
-const OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
-const TENSION_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "tensions");
+function spawnObserve(args, envExtras = {}) {
+  return Bun.spawn(["bun", join(SCRIPTS_DIR, "memory-observe.js"), ...args], {
+    env: { ...process.env, ENGRAM_WORKSPACE: WORKSPACE_ROOT, ...envExtras },
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+}
 
-// KG: жизнь в корне workspace
-const LIFE_DIR = join(WORKSPACE_ROOT, "life");
+function spawnTension(args, envExtras = {}) {
+  return Bun.spawn(["bun", join(SCRIPTS_DIR, "memory-tension.js"), ...args], {
+    env: { ...process.env, ENGRAM_WORKSPACE: WORKSPACE_ROOT, ...envExtras },
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+}
+
+function cleanJsonFiles(dir) {
+  if (!existsSync(dir)) return;
+  for (const f of readdirSync(dir)) {
+    if (f.endsWith(".json") && f !== ".gitkeep") {
+      rmSync(join(dir, f), { force: true });
+    }
+  }
+}
 
 describe("memory-observe.js - extractKeywords utility", () => {
   test("extracts keywords from text (word length > 3)", () => {
@@ -67,47 +92,44 @@ describe("memory-observe.js - jaccardSimilarity utility", () => {
 
 describe("memory-observe.js - CLI integration", () => {
   beforeEach(() => {
-    // Очищаем весь индекс и все файлы наблюдений перед каждым тестом
-    if (!existsSync(OBS_DIR)) return;
-    const { readdirSync } = require("fs");
-    for (const f of readdirSync(OBS_DIR)) {
-      if (f.endsWith(".json")) rmSync(join(OBS_DIR, f), { force: true });
+    // Fresh isolated workspace per test.
+    WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "engram-oll-test-"));
+    OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
+    TENSION_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "tensions");
+    LIFE_DIR = join(WORKSPACE_ROOT, "life");
+    mkdirSync(OBS_DIR, { recursive: true });
+    mkdirSync(TENSION_DIR, { recursive: true });
+    mkdirSync(LIFE_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (WORKSPACE_ROOT && existsSync(WORKSPACE_ROOT)) {
+      rmSync(WORKSPACE_ROOT, { recursive: true, force: true });
     }
   });
 
   test("requires --observation argument", async () => {
-    const proc = Bun.spawn(["bun", join(SCRIPTS_DIR, "memory-observe.js")], {
-      stderr: "pipe",
-      stdout: "pipe"
-    });
+    const proc = spawnObserve([]);
     await proc.exited;
     const stderr = await new Response(proc.stderr).text();
     expect(stderr).toContain("Требуется --observation");
   });
 
   test("validates category", async () => {
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
-      "--observation", "test observation",
-      "--category", "invalid_category"
-    ], {
-      stderr: "pipe",
-      stdout: "pipe"
-    });
+    const proc = spawnObserve([
+      "--observation", "agent observed slow qmd query latency on 2026-07-17",
+      "--category", "invalid_category",
+    ]);
     await proc.exited;
     const stderr = await new Response(proc.stderr).text();
     expect(stderr).toContain("Категория должна быть");
   });
 
   test("accepts valid categories", async () => {
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
-      "--observation", "test observation text here",
-      "--category", "friction"
-    ], {
-      stderr: "pipe",
-      stdout: "pipe"
-    });
+    const proc = spawnObserve([
+      "--observation", "agent observed slow qmd query latency on 2026-07-17",
+      "--category", "friction",
+    ]);
     const stdout = await new Response(proc.stdout).text();
     const result = JSON.parse(stdout);
     expect(result.status).toBe("created");
@@ -115,39 +137,33 @@ describe("memory-observe.js - CLI integration", () => {
   });
 
   test("truncates long observation text to 500 chars", async () => {
-    const longText = "a".repeat(600);
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
+    // Use a varied long string (no single-char-repeat) to avoid the hard-blocker.
+    const longText = ("engram memory pipeline observed slow qmd query latency 2026-07-17 ").repeat(20);
+    expect(longText.length).toBeGreaterThan(500);
+    const proc = spawnObserve([
       "--observation", longText,
-      "--category", "surprise"
-    ], {
-      stderr: "pipe",
-      stdout: "pipe"
-    });
+      "--category", "surprise",
+    ]);
     const stdout = await new Response(proc.stdout).text();
     const result = JSON.parse(stdout);
     expect(result.status).toBe("created");
+    // And the on-disk observation must be truncated to <= 500 chars.
+    const obsPath = join(OBS_DIR, `${result.id}.json`);
+    const obsData = JSON.parse(readFileSync(obsPath, "utf-8"));
+    expect(obsData.observation.length).toBe(500);
   });
 
   test("detects duplicates with Jaccard > 0.7", async () => {
-    const proc1 = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
+    const proc1 = spawnObserve([
       "--observation", "the system has a friction issue with the workflow",
-      "--category", "friction"
-    ], {
-      stderr: "pipe",
-      stdout: "pipe"
-    });
+      "--category", "friction",
+    ]);
     await new Response(proc1.stdout).text();
 
-    const proc2 = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
+    const proc2 = spawnObserve([
       "--observation", "the system has a friction issue with the workflow processes",
-      "--category", "friction"
-    ], {
-      stderr: "pipe",
-      stdout: "pipe"
-    });
+      "--category", "friction",
+    ]);
     const stdout = await new Response(proc2.stdout).text();
     const result = JSON.parse(stdout);
     expect(result.status).toBe("skipped");
@@ -156,20 +172,15 @@ describe("memory-observe.js - CLI integration", () => {
   });
 
   test("allows non-duplicate observations", async () => {
-    await Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
+    await spawnObserve([
       "--observation", "the system has friction issues with workflow processes",
-      "--category", "friction"
+      "--category", "friction",
     ], { stdout: "pipe", stderr: "pipe" });
 
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
+    const proc = spawnObserve([
       "--observation", "something completely different about surprise quality",
-      "--category", "surprise"
-    ], {
-      stderr: "pipe",
-      stdout: "pipe"
-    });
+      "--category", "surprise",
+    ]);
     const stdout = await new Response(proc.stdout).text();
     const result = JSON.parse(stdout);
     expect(result.status).toBe("created");
@@ -177,15 +188,11 @@ describe("memory-observe.js - CLI integration", () => {
   });
 
   test("--dry-run outputs JSON without writing", async () => {
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
-      "--observation", "dry run test observation text",
+    const proc = spawnObserve([
+      "--observation", "dry run check on engram memory pipeline",
       "--category", "friction",
-      "--dry-run"
-    ], {
-      stderr: "pipe",
-      stdout: "pipe"
-    });
+      "--dry-run",
+    ]);
     const stdout = await new Response(proc.stdout).text();
     const result = JSON.parse(stdout);
     expect(result.status).toBe("dry-run");
@@ -198,38 +205,32 @@ describe("memory-observe.js - CLI integration", () => {
 
 describe("memory-tension.js - CLI integration", () => {
   beforeEach(() => {
-    if (existsSync(join(TENSION_DIR, "index.json"))) {
-      rmSync(join(TENSION_DIR, "index.json"));
-    }
-    if (existsSync(join(LIFE_DIR, "items.json"))) {
-      rmSync(join(LIFE_DIR, "items.json"));
-    }
+    WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "engram-oll-test-"));
+    OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
+    TENSION_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "tensions");
+    LIFE_DIR = join(WORKSPACE_ROOT, "life");
+    mkdirSync(OBS_DIR, { recursive: true });
+    mkdirSync(TENSION_DIR, { recursive: true });
+    mkdirSync(LIFE_DIR, { recursive: true });
   });
 
   afterEach(() => {
-    if (existsSync(join(LIFE_DIR, "items.json"))) {
-      rmSync(join(LIFE_DIR, "items.json"));
+    if (WORKSPACE_ROOT && existsSync(WORKSPACE_ROOT)) {
+      rmSync(WORKSPACE_ROOT, { recursive: true, force: true });
     }
   });
 
   test("requires --tension argument", async () => {
-    const proc = Bun.spawn(["bun", join(SCRIPTS_DIR, "memory-tension.js")], {
-      stderr: "pipe",
-      stdout: "pipe"
-    });
+    const proc = spawnTension([]);
     await proc.exited;
     const stderr = await new Response(proc.stderr).text();
     expect(stderr).toContain("Требуется --tension");
   });
 
   test("requires both fact references", async () => {
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-tension.js"),
-      "--tension", "test tension"
-    ], {
-      stderr: "pipe",
-      stdout: "pipe"
-    });
+    const proc = spawnTension([
+      "--tension", "fresh tension between two engram facts",
+    ]);
     await proc.exited;
     const stderr = await new Response(proc.stderr).text();
     expect(stderr).toContain("Требуется --fact1 и --fact2");
@@ -238,104 +239,82 @@ describe("memory-tension.js - CLI integration", () => {
 
 describe("OLL Integration - Observation Storage", () => {
   beforeEach(() => {
-    const cleanup = (dir) => {
-      if (!existsSync(dir)) return;
-      const files = require("fs").readdirSync(dir);
-      for (const f of files) {
-        if (f.endsWith(".json") && f !== ".gitkeep") {
-          rmSync(join(dir, f), { force: true });
-        }
-      }
-    };
-    cleanup(OBS_DIR);
-    cleanup(TENSION_DIR);
-    if (existsSync(join(LIFE_DIR, "items.json"))) {
-      rmSync(join(LIFE_DIR, "items.json"));
-    }
+    WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "engram-oll-test-"));
+    OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
+    TENSION_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "tensions");
+    LIFE_DIR = join(WORKSPACE_ROOT, "life");
+    mkdirSync(OBS_DIR, { recursive: true });
+    mkdirSync(TENSION_DIR, { recursive: true });
+    mkdirSync(LIFE_DIR, { recursive: true });
   });
 
   afterEach(() => {
-    const cleanup = (dir) => {
-      if (!existsSync(dir)) return;
-      const files = require("fs").readdirSync(dir);
-      for (const f of files) {
-        if (f.endsWith(".json") && f !== ".gitkeep") {
-          rmSync(join(dir, f), { force: true });
-        }
-      }
-    };
-    cleanup(OBS_DIR);
-    cleanup(TENSION_DIR);
-    if (existsSync(join(LIFE_DIR, "items.json"))) {
-      rmSync(join(LIFE_DIR, "items.json"));
+    // Cleanup the entire temp workspace (includes any observations/tensions written).
+    if (WORKSPACE_ROOT && existsSync(WORKSPACE_ROOT)) {
+      rmSync(WORKSPACE_ROOT, { recursive: true, force: true });
     }
   });
 
   test("observation ID format is correct", async () => {
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
-      "--observation", "test observation",
-      "--category", "pattern"
-    ], { stdout: "pipe", stderr: "pipe" });
-    
+    const proc = spawnObserve([
+      "--observation", "agent observed slow qmd query latency on 2026-07-17",
+      "--category", "pattern",
+    ]);
+
     const stdout = await new Response(proc.stdout).text();
     const result = JSON.parse(stdout);
     expect(result.id).toMatch(/^obs-\d{4}$/);
   });
 
   test("observation stores description when provided", async () => {
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
-      "--observation", "test observation",
+    const proc = spawnObserve([
+      "--observation", "agent observed slow qmd query latency on 2026-07-17",
       "--category", "friction",
-      "--description", "my test description"
-    ], { stdout: "pipe", stderr: "pipe" });
-    
+      "--description", "my test description",
+    ]);
+
     const stdout = await new Response(proc.stdout).text();
     const result = JSON.parse(stdout);
-    
+
     const obsPath = join(OBS_DIR, `${result.id}.json`);
     const obsData = JSON.parse(readFileSync(obsPath, "utf-8"));
     expect(obsData.description).toBe("my test description");
   });
 
   test("observation default category is friction", async () => {
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
-      "--observation", "test observation without category"
-    ], { stdout: "pipe", stderr: "pipe" });
-    
+    const proc = spawnObserve([
+      "--observation", "agent observed slow qmd query latency on 2026-07-17 without category",
+    ]);
+
     const stdout = await new Response(proc.stdout).text();
     const result = JSON.parse(stdout);
-    
+
     expect(result.category).toBe("friction");
   });
 
   test("observation createdAt is valid ISO timestamp", async () => {
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
-      "--observation", "test observation",
-      "--category", "surprise"
-    ], { stdout: "pipe", stderr: "pipe" });
-    
+    const proc = spawnObserve([
+      "--observation", "agent observed slow qmd query latency on 2026-07-17",
+      "--category", "surprise",
+    ]);
+
     const stdout = await new Response(proc.stdout).text();
     const result = JSON.parse(stdout);
-    
+
     const obsPath = join(OBS_DIR, `${result.id}.json`);
     const obsData = JSON.parse(readFileSync(obsPath, "utf-8"));
     expect(new Date(obsData.createdAt).toISOString()).toBe(obsData.createdAt);
   });
 
   test("observation status is pending by default", async () => {
-    const proc = Bun.spawn([
-      "bun", join(SCRIPTS_DIR, "memory-observe.js"),
-      "--observation", "test observation",
-      "--category", "pattern"
-    ], { stdout: "pipe", stderr: "pipe" });
-    
+    const proc = spawnObserve([
+      "--observation", "agent observed slow qmd query latency on 2026-07-17",
+      "--category", "pattern",
+    ]);
+
     const stdout = await new Response(proc.stdout).text();
     const result = JSON.parse(stdout);
-    
+
     const obsPath = join(OBS_DIR, `${result.id}.json`);
     const obsData = JSON.parse(readFileSync(obsPath, "utf-8"));
     expect(obsData.status).toBe("pending");

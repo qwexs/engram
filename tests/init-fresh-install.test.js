@@ -7,12 +7,16 @@ import { spawnSync } from "child_process";
 const SKILL_DIR = join(import.meta.dir, "..");
 const INIT_SCRIPT = join(SKILL_DIR, "scripts", "init.js");
 const VALIDATE_SCRIPT = join(SKILL_DIR, "scripts", "validate.js");
+const FAKE_QMD = process.platform === "win32"
+  ? `bun "${join(import.meta.dir, "fixtures", "fake-qmd.js")}"`
+  : "true";
 
 async function runInit(workspace, extraArgs = [], { force = true } = {}) {
   // Always pass --skip-gateway-restart in tests so the suite doesn't hang on
   // 'openclaw gateway restart' when no gateway is running.
   const args = [INIT_SCRIPT, "--skip-gateway-restart"];
   if (force) args.push("--force");
+  else args.push("--yes");
   args.push(...extraArgs);
   const proc = Bun.spawn(
     ["bun", ...args],
@@ -20,7 +24,16 @@ async function runInit(workspace, extraArgs = [], { force = true } = {}) {
       cwd: workspace,
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, ENGRAM_WORKSPACE: workspace },
+      env: {
+        ...process.env,
+        ENGRAM_WORKSPACE: workspace,
+        // Never let tests fall back to the operator's production QMD index.
+        ENGRAM_QMD: FAKE_QMD,
+        ENGRAM_SKIP_HOOK_INSTALL: "1",
+        HOME: workspace,
+        USERPROFILE: workspace,
+        OPENCLAW_HOOKS_DIR: join(workspace, ".openclaw", "hooks"),
+      },
     }
   );
   const exitCode = await proc.exited;
@@ -225,7 +238,14 @@ describe("init.js — fresh install happy path", () => {
           cwd: workspace,
           stdout: "pipe",
           stderr: "pipe",
-          env: { ...process.env, USERPROFILE: fakeHome },
+          env: {
+            ...process.env,
+            USERPROFILE: fakeHome,
+            HOME: fakeHome,
+            ENGRAM_QMD: FAKE_QMD,
+            ENGRAM_SKIP_HOOK_INSTALL: "1",
+            OPENCLAW_HOOKS_DIR: join(fakeHome, ".openclaw", "hooks"),
+          },
         }
       );
       const exitCode = await proc.exited;
@@ -269,7 +289,14 @@ describe("init.js — fresh install happy path", () => {
           cwd: workspace,
           stdout: "pipe",
           stderr: "pipe",
-          env: { ...process.env, USERPROFILE: fakeHome },
+          env: {
+            ...process.env,
+            USERPROFILE: fakeHome,
+            HOME: fakeHome,
+            ENGRAM_QMD: FAKE_QMD,
+            ENGRAM_SKIP_HOOK_INSTALL: "1",
+            OPENCLAW_HOOKS_DIR: join(fakeHome, ".openclaw", "hooks"),
+          },
         }
       );
       await proc.exited;

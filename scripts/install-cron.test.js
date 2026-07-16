@@ -213,7 +213,7 @@ function envForFake(fake) {
 // --- Fixture helpers ---
 
 /** Build a cron-list job in the format openclaw cron list --json returns. */
-function cronListJob({ id, name, message, toolsAllow, model = "sonnet-4-6", description = "Engram heartbeat for agent main. Managed by install-cron.js." }) {
+function cronListJob({ id, name, message, toolsAllow, model = "sonnet-4-6", description = "Engram heartbeat for agent main. Managed by install-cron.js.", agentId = "main", sessionKey = "agent:main:main" }) {
   const payload = {
     kind: "agentTurn",
     message,
@@ -234,9 +234,10 @@ function cronListJob({ id, name, message, toolsAllow, model = "sonnet-4-6", desc
     enabled: true,
     createdAtMs: 1781163973897,
     updatedAtMs: 1781517009927,
-    agentId: "main",
+    agentId,
     schedule: { kind: "every", everyMs: 1800000, anchorMs: 1781163973897 },
     sessionTarget: "isolated",
+    sessionKey,
     wakeMode: "now",
     payload,
     delivery: { mode: "none" },
@@ -278,6 +279,7 @@ describe("install-cron.js", () => {
   beforeEach(() => {
     tmp = makeTmp();
     mkdirSync(tmp, { recursive: true });
+    writeFileSync(join(tmp, "engram.json"), JSON.stringify({ agent: "agent-main" }));
     fake = setupFakeOpenclaw(tmp);
   });
   afterEach(() => {
@@ -524,7 +526,7 @@ describe("install-cron.js", () => {
     });
     const r = await runInstallCron({
       workspace: tmp,
-      args: ["install", "--agent-id", "main"],
+      args: ["install", "--agent-id", "main", "--repair-routing"],
       extraEnv: envForFake(fake),
     });
     expect(r.exitCode).toBe(0);
@@ -807,6 +809,7 @@ describe("install-cron.js", () => {
         "install",
         "--cron-name",
         "Heartbeat (Alpha Engram runner)",
+        "--repair-routing",
       ],
       extraEnv: envForFake(fake),
     });
@@ -824,6 +827,7 @@ describe("install-cron.js", () => {
   test("21. workspace arg from --workspace flag (not ENGRAM_WORKSPACE)", async () => {
     const otherTmp = makeTmp();
     mkdirSync(otherTmp, { recursive: true });
+    writeFileSync(join(otherTmp, "engram.json"), JSON.stringify({ agent: "agent-wsflag" }));
     try {
       const r = await runInstallCron({
         workspace: tmp,
@@ -844,6 +848,62 @@ describe("install-cron.js", () => {
     } finally {
       rmSync(otherTmp, { recursive: true, force: true });
     }
+  });
+
+  test("21b. install refuses a workspace without a valid engram.json", async () => {
+    const invalidWorkspace = makeTmp();
+    try {
+      const r = await runInstallCron({
+        workspace: invalidWorkspace,
+        args: ["install", "--dry-run"],
+      });
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("missing");
+      expect(r.stderr).toContain("engram.json");
+    } finally {
+      rmSync(invalidWorkspace, { recursive: true, force: true });
+    }
+  });
+
+  test("21c. install refuses the Engram skill repository as workspace", async () => {
+    const r = await runInstallCron({
+      workspace: CWD,
+      args: ["install", "--dry-run"],
+    });
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("skill repository");
+  });
+
+  test("21d. routing drift fails closed unless --repair-routing is explicit", async () => {
+    fake.setCronList({
+      jobs: [cronListJob({
+        id: "wrong-owner",
+        name: "Heartbeat (Engram runner) — main",
+        message: newPayload(tmp),
+        toolsAllow: ["exec", "sessions_spawn", "read"],
+        agentId: "other",
+        sessionKey: "agent:other:main",
+      })],
+      total: 1,
+    });
+    const blocked = await runInstallCron({
+      workspace: tmp,
+      args: ["install"],
+      extraEnv: envForFake(fake),
+    });
+    expect(blocked.exitCode).toBe(2);
+    expect(blocked.stderr).toContain("--repair-routing");
+    expect(readCallLog(fake.logFile).some((c) => c.args[1] === "edit")).toBe(false);
+
+    const repaired = await runInstallCron({
+      workspace: tmp,
+      args: ["install", "--repair-routing"],
+      extraEnv: envForFake(fake),
+    });
+    expect(repaired.exitCode).toBe(0);
+    const edit = readCallLog(fake.logFile).find((c) => c.args[1] === "edit");
+    expect(edit.args).toContain("--agent");
+    expect(edit.args).toContain("--session-key");
   });
 
   // 22–24: direct unit tests for findNodeScriptForCmdDir (extracted from
@@ -913,6 +973,7 @@ describe("install-cron.js", () => {
   test("27. ENGRAM_OPENCLAW=/mnt/c/.../openclaw.cmd → exit 3 with WSL hint (Unix only)", async () => {
     if (process.platform === "win32") return;
     const shimTmp = makeTmp();
+    writeFileSync(join(shimTmp, "engram.json"), JSON.stringify({ agent: "agent-main" }));
     const fakeShim = join(shimTmp, "openclaw.cmd");
     writeFileSync(fakeShim, "@echo off\r\n");
     try {
@@ -937,6 +998,7 @@ describe("install-cron.js", () => {
   test("28. ENGRAM_OPENCLAW=/cygdrive/.../openclaw → exit 3 with WSL hint (Unix only)", async () => {
     if (process.platform === "win32") return;
     const shimTmp = makeTmp();
+    writeFileSync(join(shimTmp, "engram.json"), JSON.stringify({ agent: "agent-main" }));
     const fakeShim = join(shimTmp, "openclaw");
     writeFileSync(fakeShim, "#!/bin/sh\nexec /no/such/node\n");
     try {

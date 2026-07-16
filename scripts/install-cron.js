@@ -14,9 +14,8 @@
  * This script is idempotent: re-running it detects drift (old payload
  * format, model mismatch vs engram.json, stale --agent-id / workspace,
  * missing --recover-stale-oll-locks) and updates message + tools + model.
- * agentId, schedule, sessionTarget, delivery, and sessionKey are preserved
- * so routing stays stable. Model IS updated on drift — leaving it sticky
- * previously left HB on an outdated model after engram.json changed.
+ * Routing is never changed implicitly. agentId, sessionKey, or workspace
+ * drift fails closed unless the operator passes --repair-routing.
  *
  * ## Windows + multi-line --message note
  *
@@ -69,6 +68,7 @@
  *   --label-prefix <p>    Label prefix for spawned subagents (default: hb)
  *   --cron-name <name>    Job name (default: "Heartbeat (Engram runner) — <agent-id>")
  *   --schedule <expr>     Schedule: "30m" (default), "5m", "1h", or cron expr
+ *   --repair-routing      Explicitly repair agentId/sessionKey/workspace drift
  *   --dry-run             Print cron job spec JSON, no openclaw calls
  *   -h, --help            Show this help
  *
@@ -81,7 +81,9 @@
 
 import { parseArgs } from "node:util";
 import { execSync, spawnSync } from "node:child_process";
-import { dirname } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadEngramConfig } from "./config.js";
 import { findNodeScriptForCmdDir } from "./lib/find-openclaw-mjs.js";
 
@@ -104,6 +106,7 @@ const KNOWN_OPTIONS = new Set([
   "label-prefix",
   "cron-name",
   "schedule",
+  "repair-routing",
   "dry-run",
   "help",
   "_",
@@ -119,6 +122,7 @@ const { values: args } = parseArgs({
     "label-prefix": { type: "string" },
     "cron-name": { type: "string" },
     "schedule": { type: "string" },
+    "repair-routing": { type: "boolean", default: false },
     "dry-run": { type: "boolean", default: false },
     "help": { type: "boolean", short: "h", default: false },
   },
@@ -162,6 +166,7 @@ Options:
   --label-prefix <p>    Label prefix for spawned subagents (default: hb)
   --cron-name <name>    Job name (default: "Heartbeat (Engram runner) — <agent-id>")
   --schedule <expr>     Schedule: "30m" (default), "5m", "1h", or cron expr
+  --repair-routing      Explicitly repair agentId/sessionKey/workspace drift
   --dry-run             Print cron job spec JSON, no openclaw calls
   -h, --help            Show this help
 
@@ -209,6 +214,47 @@ const cronName = args["cron-name"] || `Heartbeat (Engram runner) — ${agentId}`
 const cronDescription = `Engram heartbeat for agent ${agentId}. Managed by install-cron.js.`;
 const schedule = args.schedule || "30m";
 const dryRun = !!args["dry-run"];
+const repairRouting = !!args["repair-routing"];
+const SKILL_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
+
+function canonicalPath(path) {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+function isSameOrInside(parent, candidate) {
+  const relPath = relative(canonicalPath(parent), canonicalPath(candidate));
+  return relPath === "" || (!relPath.startsWith("..") && !isAbsolute(relPath));
+}
+
+function validateInstallWorkspace() {
+  if (isSameOrInside(SKILL_DIR, WORKSPACE)) {
+    console.error("❌ Refusing to install a heartbeat against the Engram skill repository.");
+    console.error(`   Workspace: ${WORKSPACE}`);
+    console.error("   Pass the actual OpenClaw agent workspace with --workspace.");
+    process.exit(2);
+  }
+
+  const configPath = join(WORKSPACE, "engram.json");
+  if (!existsSync(configPath)) {
+    console.error(`❌ Invalid Engram workspace: missing ${configPath}`);
+    process.exit(2);
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || typeof parsed.agent !== "string" || !parsed.agent.trim()) {
+      throw new Error("engram.json must contain a non-empty string field: agent");
+    }
+  } catch (error) {
+    console.error(`❌ Invalid Engram workspace config: ${configPath}`);
+    console.error(`   ${error.message}`);
+    process.exit(2);
+  }
+}
 
 // Sub-agent model: prefer engram.json -> models.subagents_default,
 // then models.default, then models.heartbeat.subagents.hb-extract,
@@ -550,7 +596,7 @@ function detectCronDrift(existing, spec) {
     reasons.push("description");
   }
   // Structural message checks (cheap, stable across whitespace).
-  if (!msg.includes(`--agent-id ${agentId}`)) {
+  if (!msg.includes(`--agent-id ${spec.agentId}`)) {
     reasons.push("agent-id");
   }
   if (!msg.includes("--recover-stale-oll-locks")) {
@@ -563,6 +609,12 @@ function detectCronDrift(existing, spec) {
   const wsPosix = String(WORKSPACE).replace(/\\/g, "/");
   if (!msg.includes(wsPosix) && !msg.includes(WORKSPACE)) {
     reasons.push("workspace");
+  }
+  if ((existing?.agentId || "") !== spec.agentId) {
+    reasons.push(`routing-agent:${existing?.agentId || "(none)"}->${spec.agentId}`);
+  }
+  if ((existing?.sessionKey || "") !== spec.sessionKey) {
+    reasons.push(`routing-session:${existing?.sessionKey || "(none)"}->${spec.sessionKey}`);
   }
   return reasons;
 }
@@ -650,6 +702,7 @@ function runOpenclaw(cmdArgv) {
 
 // --- Actions ---
 function actionInstall() {
+  validateInstallWorkspace();
   const spec = buildCronSpec();
 
   if (dryRun) {
@@ -672,6 +725,14 @@ function actionInstall() {
     if (drift.length === 0) {
       console.log(`✅ already up to date (id=${existing.id})`);
       return;
+    }
+    const protectedDrift = drift.filter((reason) =>
+      reason === "workspace" || reason.startsWith("routing-")
+    );
+    if (protectedDrift.length > 0 && !repairRouting) {
+      console.error(`❌ Cron routing drift detected for ${existing.id}: ${protectedDrift.join(", ")}`);
+      console.error("   Re-run with --repair-routing after verifying --workspace and --agent-id.");
+      process.exit(2);
     }
     // Sync message + tools + model when drift is detected.
     // Historically install refused to touch model on existing jobs, which left
@@ -697,6 +758,9 @@ function actionInstall() {
       "900",
       "--light-context",
     ];
+    if (repairRouting) {
+      editArgv.push("--agent", spec.agentId, "--session-key", spec.sessionKey);
+    }
     runOpenclaw(editArgv);
     console.log(
       `✅ updated cron job ${existing.id} (drift: ${drift.join(", ")}; message+tools+model)`

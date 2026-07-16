@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 
 const ENGRAM_DIR = join(import.meta.dir, "..");
 const ADD_DOMAIN = join(ENGRAM_DIR, "scripts", "add-domain.js");
+const FAKE_QMD = process.platform === "win32"
+  ? `bun "${join(import.meta.dir, "fixtures", "fake-qmd.js")}"`
+  : "true";
 
 let workspace;
 
@@ -27,7 +30,12 @@ function runAddDomain(args = []) {
     ["bun", ADD_DOMAIN, ...args],
     {
       cwd: workspace,
-      env: { ...process.env, ENGRAM_WORKSPACE: workspace },
+      env: {
+        ...process.env,
+        ENGRAM_WORKSPACE: workspace,
+        // Never let tests fall back to the operator's production QMD index.
+        ENGRAM_QMD: FAKE_QMD,
+      },
       stdout: "pipe",
       stderr: "pipe",
     }

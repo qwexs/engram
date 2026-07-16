@@ -266,14 +266,23 @@ function enrichQmdMetadata(collections, indexCollections) {
   }
 }
 
-function checkQmdCollectionSanity(workspace, collections, findings, referencedCollections = new Set()) {
+function checkQmdCollectionSanity(
+  workspace,
+  collections,
+  findings,
+  referencedCollections = new Set(),
+  allowedExternalCollections = new Set()
+) {
   const workspaceRoot = normalizePathForCompare(workspace, workspace).replace(/\/$/, "");
   for (const [name, meta] of collections.entries()) {
     const collectionPath = meta?.path ? normalizePathForCompare(workspace, meta.path).replace(/\/$/, "") : "";
     const pattern = String(meta?.pattern || "");
 
     const expectedDomainPath = expectedDomainCollectionPath(workspace, name);
-    if (expectedDomainPath && collectionPath) {
+    const isExternal = collectionPath && !isInsideDir(workspace, collectionPath);
+    const isDeclaredExternal = isExternal && allowedExternalCollections.has(name);
+
+    if (expectedDomainPath && collectionPath && !isDeclaredExternal) {
       const expected = normalizePathForCompare(workspace, expectedDomainPath).replace(/\/$/, "");
       if (collectionPath !== expected) {
         findings.push(makeFinding({
@@ -310,7 +319,7 @@ function checkQmdCollectionSanity(workspace, collections, findings, referencedCo
       }));
     }
 
-    if (collectionPath && !isInsideDir(workspace, collectionPath)) {
+    if (isExternal && !isDeclaredExternal) {
       findings.push(makeFinding({
         code: "WD-QMD-013",
         level: "warn",
@@ -381,8 +390,17 @@ function checkQmd(workspace, registry, engram, findings, options = {}) {
   const collections = new Map(cliCollections);
   enrichQmdMetadata(collections, indexCollections);
   const referencedCollections = new Set(uniqueRefs.map((r) => r.collection));
+  const allowedExternalCollections = new Set(
+    collectMetaDomainCollections(registry, engram).map((r) => r.collection)
+  );
 
-  checkQmdCollectionSanity(workspace, collections, findings, referencedCollections);
+  checkQmdCollectionSanity(
+    workspace,
+    collections,
+    findings,
+    referencedCollections,
+    allowedExternalCollections
+  );
 
   for (const ref of uniqueRefs) {
     if (!known.has(ref.collection)) {
@@ -583,11 +601,20 @@ function checkDomains(workspace, registry, engram, findings) {
       continue;
     }
 
-    if ((type === "topic-thread" || type === "meta-domain") && !entry?.topic) {
+    if (type === "topic-thread" && !entry?.topic) {
       findings.push(makeFinding({
         code: "WD-DOMAIN-004",
         level: "warn",
         message: `${type} domain has no topic binding`,
+        path: `memory/domains/registry.json#${slug}`,
+        details: { domain: slug, type },
+      }));
+    }
+    if (type === "meta-domain" && !entry?.topic && !entry?.peer && !entry?.group) {
+      findings.push(makeFinding({
+        code: "WD-DOMAIN-004",
+        level: "warn",
+        message: "meta-domain has no chat binding",
         path: `memory/domains/registry.json#${slug}`,
         details: { domain: slug, type },
       }));

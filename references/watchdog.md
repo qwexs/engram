@@ -121,6 +121,10 @@ parse human output for repairs; it treats non-zero exit as a core error.
 - `WD-QMD-004` — unprefixed collection is missing, but `domain-{slug}` exists.
 - `WD-QMD-005` — domain folder exists, but `domain-{slug}` collection is missing.
 - `WD-QMD-007` — referenced QMD collection exists but indexes zero files.
+- `WD-QMD-010` — a local `domain-*` collection points somewhere other than its canonical domain folder; external paths explicitly declared by a meta-domain are allowed.
+- `WD-QMD-011` — a collection recursively indexes the entire workspace.
+- `WD-QMD-012` — an unreferenced domain collection indexes zero files.
+- `WD-QMD-013` — a collection path is outside the workspace without an explicit meta-domain declaration.
 
 Sources checked:
 
@@ -134,7 +138,7 @@ Sources checked:
 - `WD-DOMAIN-001` — registry domain has no folder.
 - `WD-DOMAIN-002` — folder has no registry entry.
 - `WD-DOMAIN-003` — meta-domain has no `qmdCollections`.
-- `WD-DOMAIN-004` — chat-bound domain is missing its binding.
+- `WD-DOMAIN-004` — chat-bound domain is missing its binding; meta-domains may use `topic`, `peer`, or `group`.
 - `WD-DOMAIN-005` — expected domain file is missing.
 - `WD-DOMAIN-006` — meta-domain search contour does not include a child domain collection directly or via an aggregate `*-domains` / `domains` collection.
 

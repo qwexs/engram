@@ -1147,7 +1147,10 @@ if (hasQmd) {
 
 // --- Install hooks ---
 console.log('\nInstalling OpenClaw hooks (copy-based)...');
-if (!dryRun) {
+if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
+  console.log('  skipped by ENGRAM_SKIP_HOOK_INSTALL=1');
+  recordSkip('hooks', 'install', 'ENGRAM_SKIP_HOOK_INSTALL=1');
+} else if (!dryRun) {
   // Detect if hooks already exist on this workspace. If so, pass --force to
   // install-hooks.js so it can overwrite (after backup). Without --force,
   // install-hooks refuses to touch existing entries — see install-hooks.js.
@@ -1175,8 +1178,10 @@ if (!dryRun) {
 // Running both creates duplicate files. We disable the built-in by writing
 // hooks.internal.entries.session-memory.enabled = false in openclaw.json.
 // Gateway API cannot do this (protected path), so we edit the file directly.
-if (!dryRun) {
+if (!dryRun && process.env.ENGRAM_SKIP_HOOK_INSTALL !== '1') {
   disableBuiltinSessionMemory();
+} else if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
+  recordSkip('built-in-hook', 'session-memory', 'ENGRAM_SKIP_HOOK_INSTALL=1');
 } else {
   console.log('  [dry-run] would disable built-in session-memory hook in openclaw.json');
 }

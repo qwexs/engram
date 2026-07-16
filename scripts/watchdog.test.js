@@ -107,6 +107,27 @@ describe("workspace watchdog core", () => {
     expect(codes(report)).not.toContain("WD-DOMAIN-006");
   });
 
+  test("meta-domain accepts peer or group binding without requiring topic", () => {
+    writeFileSync(join(workspace, "memory", "domains", "registry.json"), JSON.stringify({
+      domains: {
+        peer_meta: {
+          type: "meta-domain",
+          peer: { id: "42" },
+          qmdCollections: ["alpha-memory"],
+        },
+        group_meta: {
+          type: "meta-domain",
+          group: { id: "-1001" },
+          qmdCollections: ["alpha-memory"],
+        },
+      },
+    }, null, 2) + "\n");
+    mkdirSync(join(workspace, "memory", "domains", "peer_meta"), { recursive: true });
+    mkdirSync(join(workspace, "memory", "domains", "group_meta"), { recursive: true });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(report.findings.filter((f) => f.code === "WD-DOMAIN-004")).toHaveLength(0);
+  });
+
   test("meta-domain coverage warns when child domain is neither explicit nor aggregate-covered", () => {
     writeFileSync(join(workspace, "memory", "domains", "registry.json"), JSON.stringify({
       domains: {
@@ -359,6 +380,48 @@ outside (qmd://outside/)
     expect(empty.level).toBe("info");
     const mismatch = report.findings.find((f) => f.code === "WD-QMD-010");
     expect(mismatch.details.actualPath).toBe("domain-main");
+  });
+
+  test("allows external QMD paths explicitly declared by a meta-domain", () => {
+    mkdirSync(join(workspace, ".qmd"), { recursive: true });
+    mkdirSync(join(workspace, "memory", "domains", "general"), { recursive: true });
+    writeFileSync(join(workspace, "memory", "domains", "registry.json"), JSON.stringify({
+      domains: {
+        general: {
+          type: "meta-domain",
+          peer: { id: "42" },
+          qmdCollections: ["child-memory", "domain-child"],
+        },
+      },
+    }, null, 2) + "\n");
+    writeFileSync(join(workspace, ".qmd", "index.yml"), `version: 1
+collections:
+  child-memory:
+    path: ../child/memory/agent-child/main
+    pattern: "**/*.md"
+  domain-child:
+    path: ../child/memory/domains/child
+    pattern: "**/*.md"
+  undeclared:
+    path: ../undeclared
+    pattern: "**/*.md"
+models: {}
+`);
+    const qmdList = `Collections (3):
+
+child-memory (qmd://child-memory/)
+  Files:    1
+
+domain-child (qmd://domain-child/)
+  Files:    1
+
+undeclared (qmd://undeclared/)
+  Files:    1
+`;
+    const report = auditWorkspace(workspace, { core: false, qmd: true, hooks: false, qmdListStdout: qmdList });
+    const external = report.findings.filter((f) => f.code === "WD-QMD-013");
+    expect(external.map((f) => f.details.collection)).toEqual(["undeclared"]);
+    expect(report.findings.some((f) => f.code === "WD-QMD-010" && f.details.collection === "domain-child")).toBe(false);
   });
 
   test("does not flag qmd-config as test pollution by name alone", () => {

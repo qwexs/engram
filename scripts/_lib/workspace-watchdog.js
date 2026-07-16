@@ -12,7 +12,7 @@ import {
   readdirSync,
   statSync,
 } from "node:fs";
-import { join, relative, dirname, resolve } from "node:path";
+import { join, relative, dirname, resolve, isAbsolute, win32 } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadEngramConfig, resolveQmdCommand } from "../config.js";
@@ -139,15 +139,25 @@ export function parseQmdCollections(stdout) {
   const collections = new Map();
   let current = null;
   for (const line of String(stdout || "").split(/\r?\n/)) {
-    const name = line.match(/^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s+\(qmd:\/\/[^)]+\/?\)/);
+    const name = line.match(/^\s*([A-Za-z0-9][A-Za-z0-9_.:-]*)\s+\(qmd:\/\/[^)]+\/?\)/);
     if (name) {
       current = name[1];
-      collections.set(current, { files: null });
+      collections.set(current, { files: null, path: null, pattern: null });
       continue;
     }
     const files = line.match(/^\s*Files:\s*(\d+)\s*$/i);
     if (current && files) {
       collections.set(current, { ...collections.get(current), files: Number(files[1]) });
+      continue;
+    }
+    const path = line.match(/^\s*Path:\s*(.+?)\s*$/i);
+    if (current && path) {
+      collections.set(current, { ...collections.get(current), path: unquoteYamlScalar(path[1]) });
+      continue;
+    }
+    const pattern = line.match(/^\s*Pattern:\s*(.+?)\s*$/i);
+    if (current && pattern) {
+      collections.set(current, { ...collections.get(current), pattern: unquoteYamlScalar(pattern[1]) });
     }
   }
   return collections;
@@ -155,6 +165,161 @@ export function parseQmdCollections(stdout) {
 
 function parseQmdCollectionList(stdout) {
   return new Set(parseQmdCollections(stdout).keys());
+}
+
+function unquoteYamlScalar(value) {
+  const text = String(value ?? "").trim();
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+export function parseQmdIndexCollections(text) {
+  const collections = new Map();
+  const lines = String(text || "").split(/\r?\n/);
+  let inCollections = false;
+  let current = null;
+  for (const line of lines) {
+    if (/^collections:\s*$/.test(line)) {
+      inCollections = true;
+      current = null;
+      continue;
+    }
+    if (!inCollections) continue;
+    if (/^[A-Za-z0-9_-]+:\s*$/.test(line)) break;
+
+    const name = line.match(/^  ([A-Za-z0-9][A-Za-z0-9_.:-]*):\s*$/);
+    if (name) {
+      current = name[1];
+      collections.set(current, { path: null, pattern: null });
+      continue;
+    }
+    const kv = line.match(/^    (path|pattern):\s*(.+?)\s*$/);
+    if (current && kv) {
+      collections.set(current, { ...collections.get(current), [kv[1]]: unquoteYamlScalar(kv[2]) });
+    }
+  }
+  return collections;
+}
+
+function normalizePathForCompare(workspace, value) {
+  if (!value) return "";
+  let text = String(value).replace(/^\\\\\?\\/, "");
+  const isWinAbs = /^[A-Za-z]:[\\/]/.test(text);
+  if (isWinAbs) {
+    text = win32.normalize(text).replace(/\\/g, "/");
+  } else if (isAbsolute(text)) {
+    text = resolve(text).replace(/\\/g, "/");
+  } else {
+    text = resolve(workspace, text).replace(/\\/g, "/");
+  }
+  return process.platform === "win32" || isWinAbs ? text.toLowerCase() : text;
+}
+
+function isInsideDir(parent, child) {
+  const p = normalizePathForCompare(parent, parent).replace(/\/$/, "");
+  const c = normalizePathForCompare(parent, child).replace(/\/$/, "");
+  return c === p || c.startsWith(p + "/");
+}
+
+function safeReportPath(workspace, value) {
+  if (!value) return value;
+  const normalized = normalizePathForCompare(workspace, value).replace(/\/$/, "");
+  const root = normalizePathForCompare(workspace, workspace).replace(/\/$/, "");
+  if (normalized === root) return ".";
+  if (normalized.startsWith(root + "/")) return normalized.slice(root.length + 1);
+  return "[outside-workspace]";
+}
+
+function isRecursiveGlob(pattern) {
+  return String(pattern || "").split(/[\\/]+/).includes("**");
+}
+
+function expectedDomainCollectionPath(workspace, collection) {
+  if (!collection.startsWith("domain-")) return null;
+  const slug = collection.slice("domain-".length);
+  if (!slug) return null;
+  return join(workspace, "memory", "domains", slug);
+}
+
+function readQmdIndexCollections(workspace, findings) {
+  const indexPath = join(workspace, ".qmd", "index.yml");
+  if (!existsSync(indexPath)) return new Map();
+  try {
+    return parseQmdIndexCollections(readFileSync(indexPath, "utf-8"));
+  } catch (e) {
+    findings.push(makeFinding({
+      code: "WD-QMD-002",
+      level: "warn",
+      message: `Could not read .qmd/index.yml: ${e.message}`,
+      path: ".qmd/index.yml",
+    }));
+    return new Map();
+  }
+}
+
+function enrichQmdMetadata(collections, indexCollections) {
+  for (const [name, meta] of indexCollections.entries()) {
+    if (!collections.has(name)) continue;
+    collections.set(name, { ...collections.get(name), ...meta });
+  }
+}
+
+function checkQmdCollectionSanity(workspace, collections, findings, referencedCollections = new Set()) {
+  const workspaceRoot = normalizePathForCompare(workspace, workspace).replace(/\/$/, "");
+  for (const [name, meta] of collections.entries()) {
+    const collectionPath = meta?.path ? normalizePathForCompare(workspace, meta.path).replace(/\/$/, "") : "";
+    const pattern = String(meta?.pattern || "");
+
+    const expectedDomainPath = expectedDomainCollectionPath(workspace, name);
+    if (expectedDomainPath && collectionPath) {
+      const expected = normalizePathForCompare(workspace, expectedDomainPath).replace(/\/$/, "");
+      if (collectionPath !== expected) {
+        findings.push(makeFinding({
+          code: "WD-QMD-010",
+          level: "warn",
+          message: `Domain QMD collection path mismatch: ${name}`,
+          path: ".qmd/index.yml",
+          details: {
+            collection: name,
+            expectedPath: rel(workspace, expectedDomainPath),
+            actualPath: safeReportPath(workspace, meta.path),
+          },
+        }));
+      }
+    }
+
+    if (collectionPath === workspaceRoot && isRecursiveGlob(pattern)) {
+      findings.push(makeFinding({
+        code: "WD-QMD-011",
+        level: "warn",
+        message: `QMD collection indexes the entire workspace recursively: ${name}`,
+        path: ".qmd/index.yml",
+        details: { collection: name, path: safeReportPath(workspace, meta.path), pattern },
+      }));
+    }
+
+    if (name.startsWith("domain-") && meta?.files === 0 && !referencedCollections.has(name)) {
+      findings.push(makeFinding({
+        code: "WD-QMD-012",
+        level: "info",
+        message: `Domain QMD collection indexes zero files: ${name}`,
+        path: ".qmd/index.yml",
+        details: { collection: name, path: safeReportPath(workspace, meta.path), pattern, files: 0 },
+      }));
+    }
+
+    if (collectionPath && !isInsideDir(workspace, collectionPath)) {
+      findings.push(makeFinding({
+        code: "WD-QMD-013",
+        level: "warn",
+        message: `QMD collection path is outside the workspace: ${name}`,
+        path: ".qmd/index.yml",
+        details: { collection: name, path: safeReportPath(workspace, meta.path) },
+      }));
+    }
+  }
 }
 
 function runValidate(workspace, findings) {
@@ -193,14 +358,14 @@ function runValidate(workspace, findings) {
   }
 }
 
-function checkQmd(workspace, registry, engram, findings) {
+function checkQmd(workspace, registry, engram, findings, options = {}) {
   const qmd = resolveQmdCommand(workspace);
   const refs = [...collectRegistryQmdRefs(registry), ...collectEngramQmdRefs(engram)];
   const uniqueRefs = [...new Map(refs.map((r) => [r.collection, r])).values()];
 
-  if (uniqueRefs.length === 0) return;
-
-  const list = runCommand(qmd, ["collection", "list"], workspace, 30000);
+  const list = options.qmdListStdout != null
+    ? { status: 0, stdout: String(options.qmdListStdout), stderr: "", error: null }
+    : runCommand(qmd, ["collection", "list"], workspace, 30000);
   if (list.error || list.status !== 0) {
     findings.push(makeFinding({
       code: "WD-QMD-000",
@@ -210,8 +375,14 @@ function checkQmd(workspace, registry, engram, findings) {
     }));
     return;
   }
-  const collections = parseQmdCollections(list.stdout);
-  const known = new Set(collections.keys());
+  const cliCollections = parseQmdCollections(list.stdout);
+  const known = new Set(cliCollections.keys());
+  const indexCollections = readQmdIndexCollections(workspace, findings);
+  const collections = new Map(cliCollections);
+  enrichQmdMetadata(collections, indexCollections);
+  const referencedCollections = new Set(uniqueRefs.map((r) => r.collection));
+
+  checkQmdCollectionSanity(workspace, collections, findings, referencedCollections);
 
   for (const ref of uniqueRefs) {
     if (!known.has(ref.collection)) {
@@ -567,6 +738,41 @@ function checkHeartbeatState(workspace, registry, findings) {
   }
 }
 
+function checkSkillGeneratedArtifacts(findings, options = {}) {
+  const skillDir = options.skillDir || SKILL_DIR;
+  const checks = [
+    { relPath: join("memory", "agent-*"), globPrefix: join(skillDir, "memory"), reason: "agent session memory must not be generated inside the Engram skill repo" },
+    { relPath: join("life", "_derived"), reason: "derived KG exports must be generated in the workspace, not into the Engram skill repo" },
+    { relPath: join("ops", "watchdog"), reason: "watchdog reports must be generated in the workspace, not into the Engram skill repo" },
+    { relPath: join("workspace", "ops", "watchdog"), reason: "watchdog reports must be generated in the workspace, not into the Engram skill repo" },
+  ];
+
+  for (const check of checks) {
+    if (check.globPrefix) {
+      for (const dir of listDirs(check.globPrefix)) {
+        if (!dir.startsWith("agent-")) continue;
+        findings.push(makeFinding({
+          code: "WD-ARTIFACT-001",
+          level: "warn",
+          message: `Generated runtime artifact found inside Engram skill repo: memory/${dir}`,
+          path: `skill:memory/${dir}`,
+          details: { reason: check.reason },
+        }));
+      }
+      continue;
+    }
+    const full = join(skillDir, check.relPath);
+    if (!existsSync(full)) continue;
+    findings.push(makeFinding({
+      code: "WD-ARTIFACT-001",
+      level: "warn",
+      message: `Generated runtime artifact found inside Engram skill repo: ${check.relPath.replace(/\\/g, "/")}`,
+      path: `skill:${check.relPath.replace(/\\/g, "/")}`,
+      details: { reason: check.reason },
+    }));
+  }
+}
+
 function checkKg(workspace, findings) {
   const files = walkFiles(join(workspace, "life"), "items.json");
   for (const file of files) {
@@ -895,7 +1101,8 @@ export function auditWorkspace(workspaceInput, options = {}) {
   }
   checkKg(workspace, findings);
   checkOllState(workspace, findings);
-  if (options.qmd !== false) checkQmd(workspace, registry, engram, findings);
+  checkSkillGeneratedArtifacts(findings, options);
+  if (options.qmd !== false) checkQmd(workspace, registry, engram, findings, options);
   checkQmdMaintenanceCollections(workspace, registry, engram, findings);
   if (options.hooks !== false) checkHooks(workspace, findings, options);
   checkCronConfig(workspace, engram, findings);

@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { auditWorkspace, parseQmdCollections } from "./_lib/workspace-watchdog.js";
+import { auditWorkspace, parseQmdCollections, parseQmdIndexCollections } from "./_lib/workspace-watchdog.js";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "watchdog.js");
 let workspace;
@@ -195,19 +195,45 @@ describe("workspace watchdog core", () => {
     expect(codes(report)).not.toContain("WD-QMD-009");
   });
 
-  test("QMD parser captures zero-file collections", () => {
+  test("QMD parser captures path, pattern, and zero-file collections", () => {
     const parsed = parseQmdCollections(`Collections (2):
 
 alpha (qmd://alpha/)
+  Path:     /srv/openclaw/workspaces/main/memory/agent-main/main
   Pattern:  **/*.md
   Files:    3
 
 empty-domain (qmd://empty-domain/)
+  Path:     /srv/openclaw/workspaces/main/memory/domains/empty
   Pattern:  **/*.md
   Files:    0
 `);
+    expect(parsed.get("alpha").path).toBe("/srv/openclaw/workspaces/main/memory/agent-main/main");
+    expect(parsed.get("alpha").pattern).toBe("**/*.md");
     expect(parsed.get("alpha").files).toBe(3);
     expect(parsed.get("empty-domain").files).toBe(0);
+  });
+
+  test("QMD index parser is workspace-path agnostic", () => {
+    const parsed = parseQmdIndexCollections(`version: 1
+collections:
+  domain-main:
+    path: /var/lib/openclaw/workspaces/main/memory/domains/main
+    pattern: "**/*.md"
+  root-scan:
+    path: D:\\OpenClaw\\workspaces\\main
+    pattern: '**/*.md'
+models:
+  embedding: test
+`);
+    expect(parsed.get("domain-main")).toEqual({
+      path: "/var/lib/openclaw/workspaces/main/memory/domains/main",
+      pattern: "**/*.md",
+    });
+    expect(parsed.get("root-scan")).toEqual({
+      path: "D:\\OpenClaw\\workspaces\\main",
+      pattern: "**/*.md",
+    });
   });
 
   test("detects heartbeat-state/session drift", () => {
@@ -248,6 +274,89 @@ empty-domain (qmd://empty-domain/)
     expect(codes(report)).toContain("WD-KG-002");
     expect(codes(report)).toContain("WD-KG-003");
     expect(codes(report)).toContain("WD-KG-004");
+  });
+
+  test("detects generated runtime artifacts inside the Engram skill repo", () => {
+    const skillDir = join(workspace, "synthetic-skill");
+    mkdirSync(join(skillDir, "memory", "agent-main", "main"), { recursive: true });
+    mkdirSync(join(skillDir, "life", "_derived"), { recursive: true });
+    mkdirSync(join(skillDir, "workspace", "ops", "watchdog"), { recursive: true });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false, skillDir });
+    const artifactFindings = report.findings.filter((f) => f.code === "WD-ARTIFACT-001");
+    expect(artifactFindings.map((f) => f.path).sort()).toEqual([
+      "skill:life/_derived",
+      "skill:memory/agent-main",
+      "skill:workspace/ops/watchdog",
+    ]);
+    expect(artifactFindings.every((f) => !JSON.stringify(f.details || {}).includes(skillDir))).toBe(true);
+  });
+
+  test("detects QMD path guardrails without treating stale index entries as live collections", () => {
+    mkdirSync(join(workspace, ".qmd"), { recursive: true });
+    mkdirSync(join(workspace, "memory", "domains", "main"), { recursive: true });
+    mkdirSync(join(workspace, "memory", "domains", "empty"), { recursive: true });
+    writeFileSync(join(workspace, "memory", "domains", "registry.json"), JSON.stringify({
+      domains: {
+        main: { type: "dev-project", qmdCollections: ["domain-main"] },
+        ghost: { type: "dev-project", qmdCollections: ["domain-ghost"] },
+      },
+    }, null, 2) + "\n");
+    writeFileSync(join(workspace, ".qmd", "index.yml"), `version: 1
+collections:
+  alpha-memory:
+    path: ./memory/agent-main/main
+    pattern: "**/*.md"
+  domain-main:
+    path: ./domain-main
+    pattern: "**/*.md"
+  domain-ghost:
+    path: ./memory/domains/ghost
+    pattern: "**/*.md"
+  domain-empty:
+    path: ./memory/domains/empty
+    pattern: "**/*.md"
+  root-scan:
+    path: .
+    pattern: "**/*"
+  outside:
+    path: ../outside
+    pattern: "**/*.md"
+models: {}
+`);
+    const qmdList = `Collections (5):
+
+alpha-memory (qmd://alpha-memory/)
+  Pattern:  **/*.md
+  Files:    1
+
+domain-main (qmd://domain-main/)
+  Pattern:  **/*.md
+  Files:    3
+
+domain-empty (qmd://domain-empty/)
+  Pattern:  **/*.md
+  Files:    0
+
+root-scan (qmd://root-scan/)
+  Pattern:  **/*
+  Files:    99
+
+outside (qmd://outside/)
+  Pattern:  **/*.md
+  Files:    1
+`;
+    const report = auditWorkspace(workspace, { core: false, qmd: true, hooks: false, qmdListStdout: qmdList });
+    expect(codes(report)).toContain("WD-QMD-001");
+    expect(codes(report)).toContain("WD-QMD-010");
+    expect(codes(report)).toContain("WD-QMD-011");
+    expect(codes(report)).toContain("WD-QMD-012");
+    expect(codes(report)).toContain("WD-QMD-013");
+    const missing = report.findings.find((f) => f.code === "WD-QMD-001" && f.details?.collection === "domain-ghost");
+    expect(missing).toBeTruthy();
+    const empty = report.findings.find((f) => f.code === "WD-QMD-012");
+    expect(empty.level).toBe("info");
+    const mismatch = report.findings.find((f) => f.code === "WD-QMD-010");
+    expect(mismatch.details.actualPath).toBe("domain-main");
   });
 
   test("does not flag qmd-config as test pollution by name alone", () => {

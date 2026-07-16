@@ -32,7 +32,7 @@ Tensions are auto-created when `memory-write.js --check-contradictions` finds Ja
 ```bash
 bun skills/engram/scripts/memory-tension.js \
   --tension "Fact A contradicts fact B" \
-  --fact1 "sergey-001" --fact2 "sergey-005" \
+  --fact1 "alice-001" --fact2 "alice-005" \
   --type factual \
   --confidence 0.8 \
   --description "Context about the contradiction"
@@ -116,9 +116,9 @@ bun skills/engram/scripts/memory-tension-resolve.js \
   "tension": "Possible contradiction: ...",
   "type": "factual | temporal | priority",
   "confidence": 0.72,
-  "fact1": "sergey-001",
+  "fact1": "alice-001",
   "fact1Text": "Prefers Bun over Node.js",
-  "fact2": "sergey-005",
+  "fact2": "alice-005",
   "fact2Text": "Uses Node.js for all projects",
   "description": "Auto-detected (Jaccard 0.72, 4 common words)",
   "status": "pending | resolved | dissolved",

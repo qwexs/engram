@@ -220,7 +220,7 @@ describe("memory-observe hard-blocker", () => {
   // does NOT block Russian text. (Open question: should there be a
   // Russian-language placeholder/empty blocker? Documented, not a failure.)
   test("14. russian normal text → NOT rejected (open question: ru-blocker?)", async () => {
-    const r = await runObserve({ text: "Сергей попросил проверить OBS индексацию" });
+    const r = await runObserve({ text: "Алиса попросил проверить OBS индексацию" });
     expect(r.exitCode).toBe(0);
     const out = parseStdout(r.stdout);
     expect(out.status).not.toBe("rejected");

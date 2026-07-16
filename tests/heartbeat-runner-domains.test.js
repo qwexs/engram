@@ -179,9 +179,13 @@ describe("heartbeat-runner hb-domains-write trigger", () => {
       engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
     };
     seedDomainRegistry(domainNames);
-    // Run twice in quick succession — both should produce exactly one
-    // hb-domains-write spawn each (and not corrupt state).
+    // Run twice in quick succession with an explicit terminal transition
+    // between them — both should produce exactly one hb-domains-write spawn
+    // and the rapid atomic state writes must not corrupt JSON.
     const r1 = runRunner(["--spawn-hb-domains-write"]);
+    const between = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf-8"));
+    between.subagentRuns["hb-domains-write"].status = "ok";
+    writeJson(join(root, "memory", "heartbeat-state.json"), between);
     const r2 = runRunner(["--spawn-hb-domains-write"]);
     const q1 = r1.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write").map((s) => s.runId);
     const q2 = r2.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write").map((s) => s.runId);
@@ -502,7 +506,7 @@ Changelog-Entries: []`;
     mkdirSync(noteDir, { recursive: true });
     writeFileSync(
       join(noteDir, DATE + ".md"),
-      "# " + DATE + "\n\n## Events\n\n- 09:30 Сергей обсудил важное решение про cadence.\n\n## Decisions\n"
+      "# " + DATE + "\n\n## Events\n\n- 09:30 Алиса обсудил важное решение про cadence.\n\n## Decisions\n"
     );
     const result = runRunnerRaw(["--spawn-hb-domains-write"]);
     const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
@@ -604,6 +608,65 @@ describe("heartbeat-runner hb-domains-write apply phase (ISS-9)", () => {
     expect(state.domainRuns?.engram?.appliedRunIds).toContain("hb-domains-write-" + DATE + "-test0001");
     // summary text mentions applied count
     expect(result.summary.oll).toContain("applied 1");
+  });
+
+  test("successful apply closes the matching spawned worker so the next run is not TTL-blocked", () => {
+    const runId = "hb-domains-write-" + DATE + "-worker01";
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    });
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main"],
+      subagentRuns: {
+        "hb-domains-write": { status: "spawned", runId, startedAt: "2026-05-21T00:00:00.000Z" },
+      },
+    });
+    const doneDir = join(root, "workspace", "ops", "heartbeat-spawns", "done");
+    mkdirSync(doneDir, { recursive: true });
+    writeJson(join(doneDir, runId + ".json"), {
+      runId,
+      phase: "hb-domains-write",
+      status: "spawned",
+      spawnedAt: "2026-05-21T00:00:00.000Z",
+    });
+    writeHandoffFile(runId, noopHandoffBody("engram", runId));
+
+    runRunner(["--spawn-hb-domains-write"]);
+
+    const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+    expect(state.subagentRuns["hb-domains-write"]).toMatchObject({ status: "ok", runId });
+    const lifecycle = JSON.parse(readFileSync(join(doneDir, runId + ".json"), "utf8"));
+    expect(lifecycle.status).toBe("done");
+  });
+
+  test("late handoff from an older run does not close a newer spawned worker", () => {
+    const oldRunId = "hb-domains-write-" + DATE + "-oldrun01";
+    const newRunId = "hb-domains-write-" + DATE + "-newrun01";
+    seedDomainRegistry({
+      engram: { type: "topic-thread", cadenceDays: 2, topic: { chatId: "-100", topicId: "1" } },
+    });
+    writeJson(join(root, "memory", "heartbeat-state.json"), {
+      heartbeatInProgress: false,
+      activeSessions: ["main"],
+      subagentRuns: {
+        "hb-domains-write": { status: "spawned", runId: newRunId, startedAt: new Date().toISOString() },
+      },
+    });
+    const doneDir = join(root, "workspace", "ops", "heartbeat-spawns", "done");
+    mkdirSync(doneDir, { recursive: true });
+    writeJson(join(doneDir, oldRunId + ".json"), {
+      runId: oldRunId,
+      phase: "hb-domains-write",
+      status: "spawned",
+      spawnedAt: "2026-05-21T00:00:00.000Z",
+    });
+    writeHandoffFile(oldRunId, noopHandoffBody("engram", oldRunId));
+
+    runRunner(["--spawn-hb-domains-write"]);
+
+    const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+    expect(state.subagentRuns["hb-domains-write"]).toMatchObject({ status: "spawned", runId: newRunId });
   });
 
   test("invalid handoff (no HB-DOMAINS block) leaves file in place, warning added", () => {

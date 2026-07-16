@@ -1,12 +1,15 @@
 #!/usr/bin/env bun
 
 import { mkdirSync, renameSync } from "node:fs";
-import { access, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, open, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 const TERMINAL_STATUSES = new Set(["done", "failed"]);
 const SAFE_RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+const LOCK_STALE_MS = 30_000;
+const LOCK_RETRY_MS = 10;
+const LOCK_RETRIES = 100;
 
 export function runtimeSpawnLabel(label, runId) {
   const base = String(label || "hb").replace(/[^a-zA-Z0-9._-]+/g, "-");
@@ -19,6 +22,45 @@ async function atomicJsonWrite(path, value) {
   const tmp = `${path}.tmp-${randomUUID()}`;
   await writeFile(tmp, JSON.stringify(value, null, 2) + "\n", "utf8");
   renameSync(tmp, path);
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRecordLock(recordPath, fn) {
+  const lockPath = `${recordPath}.lock`;
+  mkdirSync(dirname(lockPath), { recursive: true });
+  let handle = null;
+  for (let attempt = 0; attempt < LOCK_RETRIES; attempt++) {
+    try {
+      handle = await open(lockPath, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }) + "\n");
+      break;
+    } catch (err) {
+      if (err?.code !== "EEXIST") throw err;
+      try {
+        const info = await stat(lockPath);
+        if (Date.now() - info.mtimeMs > LOCK_STALE_MS) {
+          await unlink(lockPath);
+          continue;
+        }
+      } catch (lockErr) {
+        if (lockErr?.code === "ENOENT") continue;
+        throw lockErr;
+      }
+      await sleep(LOCK_RETRY_MS);
+    }
+  }
+  if (!handle) return { ok: false, error: "record-lock-timeout", recordPath };
+  try {
+    return await fn();
+  } finally {
+    await handle.close().catch(() => {});
+    await unlink(lockPath).catch((err) => {
+      if (err?.code !== "ENOENT") throw err;
+    });
+  }
 }
 
 export async function transitionSpawnRecord({
@@ -37,25 +79,27 @@ export async function transitionSpawnRecord({
     return { ok: false, error: `invalid terminal status: ${status}` };
   }
   const recordPath = join(spawnsDir, "done", `${runId}.json`);
-  let record;
-  try {
-    record = JSON.parse(await readFile(recordPath, "utf8"));
-  } catch (err) {
-    return { ok: false, error: err?.code === "ENOENT" ? "record-not-found" : `record-read: ${err?.message || err}`, recordPath };
-  }
-  if (record.runId !== runId) return { ok: false, error: "run-id-mismatch", recordPath };
-  if (phase && record.phase !== phase) return { ok: false, error: "phase-mismatch", recordPath };
-  if (TERMINAL_STATUSES.has(record.status)) {
-    return record.status === status
-      ? { ok: true, changed: false, record, recordPath }
-      : { ok: false, error: `already-terminal:${record.status}`, recordPath };
-  }
-  record.status = status;
-  record.completedAt = now;
-  if (handoffPath) record.handoffPath = String(handoffPath).replace(/\\/g, "/");
-  if (error) record.error = String(error);
-  await atomicJsonWrite(recordPath, record);
-  return { ok: true, changed: true, record, recordPath };
+  return withRecordLock(recordPath, async () => {
+    let record;
+    try {
+      record = JSON.parse(await readFile(recordPath, "utf8"));
+    } catch (err) {
+      return { ok: false, error: err?.code === "ENOENT" ? "record-not-found" : `record-read: ${err?.message || err}`, recordPath };
+    }
+    if (record.runId !== runId) return { ok: false, error: "run-id-mismatch", recordPath };
+    if (phase && record.phase !== phase) return { ok: false, error: "phase-mismatch", recordPath };
+    if (TERMINAL_STATUSES.has(record.status)) {
+      return record.status === status
+        ? { ok: true, changed: false, record, recordPath }
+        : { ok: false, error: `already-terminal:${record.status}`, recordPath };
+    }
+    record.status = status;
+    record.completedAt = now;
+    if (handoffPath) record.handoffPath = String(handoffPath).replace(/\\/g, "/");
+    if (error) record.error = String(error);
+    await atomicJsonWrite(recordPath, record);
+    return { ok: true, changed: true, record, recordPath };
+  });
 }
 
 export async function reconcileStrandedSpawnRecords({

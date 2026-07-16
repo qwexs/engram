@@ -42,6 +42,21 @@ describe("spawn lifecycle", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test("concurrent conflicting transitions serialize without lost updates", async () => {
+    const runId = "hb-rethink-2026-07-16-concur00";
+    const root = fixture({ runId, phase: "hb-rethink", status: "spawned" });
+    try {
+      const results = await Promise.all([
+        transitionSpawnRecord({ spawnsDir: root, runId, phase: "hb-rethink", status: "done" }),
+        transitionSpawnRecord({ spawnsDir: root, runId, phase: "hb-rethink", status: "failed" }),
+      ]);
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      expect(results.filter((result) => !result.ok)[0].error).toMatch(/^already-terminal:/);
+      const saved = JSON.parse(readFileSync(join(root, "done", `${runId}.json`), "utf8"));
+      expect(["done", "failed"]).toContain(saved.status);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("rejects run-id path traversal", async () => {
     expect(await transitionSpawnRecord({ spawnsDir: "/tmp/engram", runId: "../escape", status: "failed" })).toMatchObject({ ok: false, error: "invalid-run-id" });
   });

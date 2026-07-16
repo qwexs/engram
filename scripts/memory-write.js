@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Запись фактов в Knowledge Graph с дедупликацией
-// Использование: bun scripts/memory-write.js --entity "people/sergey" --fact "Факт" --category preference --confidence 0.9 --abstraction pattern --tags "tag1,tag2" --source "2026-02-15" [--description "Почему этот факт важен (max 150 chars)"]
+// Использование: bun scripts/memory-write.js --entity "people/alice" --fact "Факт" --category preference --confidence 0.9 --abstraction pattern --tags "tag1,tag2" --source "2026-02-15" [--description "Почему этот факт важен (max 150 chars)"]
 
 import { join } from "path";
 import { isDuplicate, registerHash, extractKeywordsJaccard, jaccardSimilarity } from "./memory-dedup.js";

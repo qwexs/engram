@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Детерминированная генерация summary.md для всех entity в life/
 // Использование:
-//   bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity people/sergey] [--apply-decay]
+//   bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity people/alice] [--apply-decay]
 // Без --apply-decay — поведение как раньше (все active facts).
 // С --apply-decay    — применяет decay classification (Hot/Warm/Cold) и новый формат.
 

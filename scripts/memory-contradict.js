@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Детектор противоречий в фактах через keyword overlap
-// Intra-entity: bun scripts/memory-contradict.js --fact "Prefers JS" --entity "people/sergey"
-// Cross-entity: bun scripts/memory-contradict.js --fact "Prefers JS" --entity "people/sergey" --cross-entity
+// Intra-entity: bun scripts/memory-contradict.js --fact "Prefers JS" --entity "people/alice"
+// Cross-entity: bun scripts/memory-contradict.js --fact "Prefers JS" --entity "people/alice" --cross-entity
 
 import { join } from "path";
 import { resolveQmdCommand } from "./config.js";
@@ -115,7 +115,7 @@ async function discoverEntitiesViaQmd(queryText) {
     await proc.exited;
 
     // Извлечь entity paths из JSON вывода QMD
-    // Формат: [{ file: "qmd://life/people/sergey/summary.md", ... }]
+    // Формат: [{ file: "qmd://life/people/alice/summary.md", ... }]
     const entityPaths = new Set();
     let results = [];
     try {
@@ -126,7 +126,7 @@ async function discoverEntitiesViaQmd(queryText) {
 
     for (const r of results) {
       if (!r.file) continue;
-      // qmd://life/people/sergey/summary.md → people/sergey
+      // qmd://life/people/alice/summary.md → people/alice
       const match = r.file.match(/qmd:\/\/life\/((?:projects|areas|resources)\/[\w\-\/]+?)\/summary\.md/);
       if (match) {
         entityPaths.add(match[1]);

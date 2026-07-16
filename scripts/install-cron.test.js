@@ -213,11 +213,11 @@ function envForFake(fake) {
 // --- Fixture helpers ---
 
 /** Build a cron-list job in the format openclaw cron list --json returns. */
-function cronListJob({ id, name, message, toolsAllow }) {
+function cronListJob({ id, name, message, toolsAllow, model = "sonnet-4-6", description = "Engram heartbeat for agent main. Managed by install-cron.js." }) {
   const payload = {
     kind: "agentTurn",
     message,
-    model: "sonnet-4-6",
+    model,
     thinking: "medium",
     timeoutSeconds: 900,
     lightContext: true,
@@ -230,6 +230,7 @@ function cronListJob({ id, name, message, toolsAllow }) {
   return {
     id,
     name,
+    description,
     enabled: true,
     createdAtMs: 1781163973897,
     updatedAtMs: 1781517009927,
@@ -312,6 +313,7 @@ describe("install-cron.js", () => {
     expect(r.exitCode).toBe(0);
     const spec = JSON.parse(r.stdout);
     expect(spec.name).toBe("Heartbeat (Engram runner) — main");
+    expect(spec.description).toBe("Engram heartbeat for agent main. Managed by install-cron.js.");
     expect(spec.agentId).toBe("main");
     expect(spec.schedule).toEqual({ kind: "every", everyMs: 1800000 });
     expect(spec.sessionTarget).toBe("isolated");
@@ -326,6 +328,25 @@ describe("install-cron.js", () => {
     expect(spec.payload.message).toContain("--label-prefix hb");
     expect(spec.payload.message).toContain("--agent-id main");
     // No openclaw calls recorded
+    expect(readCallLog(fake.logFile)).toEqual([]);
+  });
+
+  test("2b. importing install-cron is side-effect free on Linux and Windows", async () => {
+    const proc = Bun.spawn({
+      cmd: ["bun", "-e", `await import(${JSON.stringify(join(CWD, SCRIPT))})`],
+      cwd: CWD,
+      env: { ...process.env, ENGRAM_WORKSPACE: tmp, ...envForFake(fake) },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
     expect(readCallLog(fake.logFile)).toEqual([]);
   });
 
@@ -443,6 +464,57 @@ describe("install-cron.js", () => {
     expect(toolsIdx).toBeGreaterThan(-1);
     // Comma-separated canonical form per openclaw cron edit --help.
     expect(editCall.args[toolsIdx + 1]).toBe("exec,sessions_spawn,read");
+  });
+
+  test("6c. install replaces identifying legacy cron descriptions", async () => {
+    fake.setCronList({
+      jobs: [cronListJob({
+        id: "job-private-description",
+        name: "Heartbeat (Engram runner) — main",
+        message: newPayload(tmp),
+        toolsAllow: ["exec", "sessions_spawn", "read"],
+        description: "Heartbeat for a private user workspace",
+      })],
+      total: 1,
+    });
+    const r = await runInstallCron({
+      workspace: tmp,
+      args: ["install"],
+      extraEnv: envForFake(fake),
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("description");
+    const editCall = readCallLog(fake.logFile).find(
+      (c) => c.args[0] === "cron" && c.args[1] === "edit"
+    );
+    expect(editCall).toBeDefined();
+    const descriptionIdx = editCall.args.indexOf("--description");
+    expect(descriptionIdx).toBeGreaterThan(-1);
+    expect(editCall.args[descriptionIdx + 1]).toBe("Engram heartbeat for agent main. Managed by install-cron.js.");
+  });
+
+  test("6d. existing model is preserved when engram.json has no model config", async () => {
+    fake.setCronList({
+      jobs: [cronListJob({
+        id: "job-custom-model",
+        name: "Heartbeat (Engram runner) — main",
+        message: newPayload(tmp),
+        toolsAllow: ["exec", "sessions_spawn", "read"],
+        model: "ollama-cloud/minimax-m3",
+      })],
+      total: 1,
+    });
+    const r = await runInstallCron({
+      workspace: tmp,
+      args: ["install"],
+      extraEnv: envForFake(fake),
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("already up to date");
+    const editCall = readCallLog(fake.logFile).find(
+      (c) => c.args[0] === "cron" && c.args[1] === "edit"
+    );
+    expect(editCall).toBeUndefined();
   });
 
   test("7. install on existing job with old payload — emits 'cron edit' call, prints 'updated'", async () => {

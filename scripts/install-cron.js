@@ -131,7 +131,7 @@ const { values: args } = parseArgs({
 const argv = process.argv.slice(2);
 let action = "install";
 const firstArg = argv[0];
-if (firstArg !== undefined) {
+if (import.meta.main && firstArg !== undefined) {
   if (firstArg.startsWith("-")) {
     // No action specified; use default "install".
   } else if (KNOWN_ACTIONS.has(firstArg)) {
@@ -143,7 +143,7 @@ if (firstArg !== undefined) {
   }
 }
 
-if (args.help) {
+if (import.meta.main && args.help) {
   console.log(`
 install-cron — Install the engram heartbeat cron job
 
@@ -182,11 +182,13 @@ Exit codes:
 }
 
 // --- Validate args ---
-for (const k of Object.keys(args)) {
-  if (!KNOWN_OPTIONS.has(k)) {
-    console.error(`❌ Unknown option: --${k}`);
-    console.error(`   Run with --help for the list of known options.`);
-    process.exit(2);
+if (import.meta.main) {
+  for (const k of Object.keys(args)) {
+    if (!KNOWN_OPTIONS.has(k)) {
+      console.error(`❌ Unknown option: --${k}`);
+      console.error(`   Run with --help for the list of known options.`);
+      process.exit(2);
+    }
   }
 }
 
@@ -204,6 +206,7 @@ const labelPrefix = args["label-prefix"] || "hb";
 // A shared default name makes a second workspace edit the first workspace's
 // job. Include the logical Engram agent id so fresh installs are isolated.
 const cronName = args["cron-name"] || `Heartbeat (Engram runner) — ${agentId}`;
+const cronDescription = `Engram heartbeat for agent ${agentId}. Managed by install-cron.js.`;
 const schedule = args.schedule || "30m";
 const dryRun = !!args["dry-run"];
 
@@ -223,6 +226,11 @@ const subagentModel = (() => {
   }
   return "sonnet-4-6";
 })();
+const hasConfiguredSubagentModel = Boolean(
+  config?.models?.subagents_default ||
+  config?.models?.default ||
+  config?.models?.heartbeat?.subagents?.["hb-extract"]
+);
 
 // --- Resolve openclaw invocation strategy ---
 // On Windows, we need to bypass the .cmd wrapper to preserve multi-line
@@ -364,7 +372,7 @@ function openclawAvailable() {
   }
 }
 
-if (!dryRun && !openclawAvailable()) {
+if (import.meta.main && !dryRun && !openclawAvailable()) {
   console.error(`❌ openclaw binary not found on PATH.`);
   console.error(`   Looking for: ${OPENCLAW_CMD}`);
   if (process.platform !== "win32") {
@@ -538,6 +546,9 @@ function detectCronDrift(existing, spec) {
   if (liveModel !== wantModel) {
     reasons.push(`model:${liveModel || "(none)"}->${wantModel || "(none)"}`);
   }
+  if ((existing?.description || "") !== spec.description) {
+    reasons.push("description");
+  }
   // Structural message checks (cheap, stable across whitespace).
   if (!msg.includes(`--agent-id ${agentId}`)) {
     reasons.push("agent-id");
@@ -560,6 +571,7 @@ function detectCronDrift(existing, spec) {
 function buildCronSpec() {
   return {
     name: cronName,
+    description: cronDescription,
     agentId,
     schedule: buildSchedule(schedule),
     sessionTarget: "isolated",
@@ -649,6 +661,13 @@ function actionInstall() {
   const existing = findCronJobByName(jobsData, cronName);
 
   if (existing) {
+    // A missing engram.json is valid for a fresh OSS install, but it must not
+    // silently replace an explicitly configured live model on an existing
+    // job with the generic fallback. Preserve the live value until a model
+    // is supplied by workspace config.
+    if (!hasConfiguredSubagentModel && existing?.payload?.model) {
+      spec.payload.model = existing.payload.model;
+    }
     const drift = detectCronDrift(existing, spec);
     if (drift.length === 0) {
       console.log(`✅ already up to date (id=${existing.id})`);
@@ -664,6 +683,8 @@ function actionInstall() {
       existing.id,
       "--name",
       cronName,
+      "--description",
+      cronDescription,
       "--message",
       spec.payload.message,
       "--tools",
@@ -689,6 +710,8 @@ function actionInstall() {
     "add",
     "--name",
     cronName,
+    "--description",
+    cronDescription,
     "--agent",
     agentId,
     "--session",
@@ -758,6 +781,8 @@ function actionStatus() {
 }
 
 // --- Dispatch ---
-if (action === "install") actionInstall();
-else if (action === "uninstall") actionUninstall();
-else if (action === "status") actionStatus();
+if (import.meta.main) {
+  if (action === "install") actionInstall();
+  else if (action === "uninstall") actionUninstall();
+  else if (action === "status") actionStatus();
+}

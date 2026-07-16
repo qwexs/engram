@@ -14,8 +14,9 @@
  *      dirs (apriori-tech, apriori-life), etc. — and flagging it as a leak
  *      produces false positives in legitimate routing rules.)
  *   3. Telegram chat ids in the supergroup range: -100… (10-digit ids)
- *   4. (optional, enabled by --strict) OpenClaw bot tokens (long base64 chunks)
- *   5. Workspace-specific FQDNs (default: any subdomain of apriori.tech).
+ *   4. Telegram user IDs in explicit user/peer fields and direct-session keys
+ *   5. OpenClaw bot tokens (long base64 chunks)
+ *   6. Workspace-specific FQDNs (default: any subdomain of apriori.tech).
  *      Catches URLs like `https://outline.apriori.tech/...` in commit
  *      messages or sample configs. Override the host list via env
  *      `ENGRAM_LINT_HOSTS=host1.tld,host2.tld`.
@@ -111,14 +112,22 @@ const PATTERNS: { name: string; re: RegExp; allowPaths?: RegExp }[] = [
     name: "telegram-supergroup-chat-id",
     re: /-100\d{9,11}\b/g,
   },
-  // 5. Telegram bot tokens in OpenClaw configs: 8+ digits ":" 35+ chars
+  // 5. Ordinary Telegram user ids when their context is explicit. A bare
+  //    8-12 digit number is intentionally not flagged because timestamps,
+  //    byte counts, and hashes commonly share that shape. 100000001 is the
+  //    documented synthetic fixture used throughout this public repository.
+  {
+    name: "telegram-user-id",
+    re: /(?:\b(?:telegram[_ -]?user[_ -]?id|user[_ -]?id|peer[_ -]?id)["']?\s*[:=]\s*["']?(?!100000001\b)[1-9]\d{7,11}\b|\btelegram-[a-z0-9._-]+-direct-(?!100000001\b)[1-9]\d{7,11}\b)/gi,
+  },
+  // 6. Telegram bot tokens in OpenClaw configs: 8+ digits ":" 35+ chars
   //    (best-effort; not a perfect bot token matcher, but it catches the
   //    canonical "id:hash" pattern from accounts.telegram.* in openclaw.json).
   {
     name: "telegram-bot-token",
     re: /\b\d{8,12}:[A-Za-z0-9_-]{35,}\b/g,
   },
-  // 6. Workspace-specific FQDNs (default: any subdomain of apriori.tech).
+  // 7. Workspace-specific FQDNs (default: any subdomain of apriori.tech).
   //    Catches URLs like `https://outline.apriori.tech/...` in commit
   //    messages, sample configs, or test fixtures. The bare word "apriori"
   //    in segment names like `apriori-tech/`, `apriori-vm` is intentionally
@@ -158,7 +167,7 @@ function stripAllowlistComments(src: string): string {
     .split(/\r?\n/)
     .filter(
       (line) =>
-        !/ALLOWLIST|reserved-agent-id|telegram-supergroup|telegram-bot-token|windows-user-path|unix-home-path|workspace-host|workspaceHostRegex|DEFAULT_WORKSPACE_HOSTS|ENGRAM_LINT_HOSTS/.test(
+        !/ALLOWLIST|reserved-agent-id|telegram-supergroup|telegram-user-id|telegram-bot-token|windows-user-path|unix-home-path|workspace-host|workspaceHostRegex|DEFAULT_WORKSPACE_HOSTS|ENGRAM_LINT_HOSTS/.test(
           line,
         ),
     )

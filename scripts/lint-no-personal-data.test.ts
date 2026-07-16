@@ -3,13 +3,13 @@ import { scanFile, scanText, runScan, workspaceHostRegex } from "./lint-no-perso
 
 describe("scanFile", () => {
   test("flags a Windows user path", () => {
-    const src = String.raw`const x = "C:\Users\Sergey\medved";`;
+    const src = String.raw`const x = "C:\Users\Alice\medved";`;
     const issues = scanFile("hooks/foo/handler.ts", src);
     expect(issues.some((i) => i.pattern === "windows-user-path")).toBe(true);
   });
 
   test("flags a Unix home path", () => {
-    const src = `const x = "/home/spastukhov/apriori.tech";`;
+    const src = `const x = "/home/alice/apriori.tech";`;
     const issues = scanFile("hooks/foo/handler.ts", src);
     expect(issues.some((i) => i.pattern === "unix-home-path")).toBe(true);
   });
@@ -24,6 +24,24 @@ describe("scanFile", () => {
     const src = `chatId = "-1004252667646";`;
     const issues = scanFile("hooks/foo/handler.ts", src);
     expect(issues.some((i) => i.pattern === "telegram-supergroup-chat-id")).toBe(true);
+  });
+
+  test("flags an ordinary Telegram user id in an explicit field", () => {
+    const src = `telegramUserId = "987654321";`;
+    const issues = scanFile("config.json", src);
+    expect(issues.some((i) => i.pattern === "telegram-user-id")).toBe(true);
+  });
+
+  test("flags an ordinary Telegram user id embedded in a direct-session key", () => {
+    const src = `session = "telegram-owner-direct-987654321";`;
+    const issues = scanFile("config.json", src);
+    expect(issues.some((i) => i.pattern === "telegram-user-id")).toBe(true);
+  });
+
+  test("does not flag the documented synthetic Telegram user id fixture", () => {
+    const src = `userId = "100000001"; session = "telegram-alice-direct-100000001";`;
+    const issues = scanFile("config.json", src);
+    expect(issues.some((i) => i.pattern === "telegram-user-id")).toBe(false);
   });
 
   test("flags a Telegram bot token in OpenClaw form", () => {
@@ -113,7 +131,7 @@ describe("scanFile", () => {
     // Re-read this very file via fs — runScan/scanFile should short-circuit
     // when the file path matches the allowlist.
     const path = "scripts/lint-no-personal-data.ts";
-    const issues = scanFile(path, "medved dobriy apriori-tech -1001234567890 C:\\\\Users\\\\Sergey");
+    const issues = scanFile(path, "medved dobriy apriori-tech -1001234567890 C:\\\\Users\\\\Alice");
     expect(issues).toEqual([]);
   });
 
@@ -136,7 +154,7 @@ describe("scanFile", () => {
   });
 
   test("returns multiple issues when multiple patterns match", () => {
-    const src = String.raw`const a = "C:\Users\Sergey"; const b = "medved";`;
+    const src = String.raw`const a = "C:\Users\Alice"; const b = "medved";`;
     const issues = scanFile("hooks/foo/handler.ts", src);
     expect(issues.length).toBeGreaterThanOrEqual(2);
   });

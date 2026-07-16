@@ -212,7 +212,7 @@ describe("init.js — fresh install happy path", () => {
         bindings: [
           { agentId: "agent-main", match: { channel: "telegram", accountId: "default", peer: { kind: "group", id: "-5206956283" } } },
           { agentId: "agent-main", match: { channel: "telegram", accountId: "default", peer: { kind: "group", id: "-1234567890:topic:60" } } },
-          { agentId: "agent-main", match: { channel: "telegram", accountId: "sergey", peer: { kind: "direct", id: "205075873" } } },
+          { agentId: "agent-main", match: { channel: "telegram", accountId: "alice", peer: { kind: "direct", id: "100000001" } } },
           { agentId: "agent-other-agent", match: { channel: "telegram", accountId: "default", peer: { kind: "group", id: "-111" } } },
         ],
       };
@@ -237,8 +237,8 @@ describe("init.js — fresh install happy path", () => {
       // Forum topic binding -> both parent group AND topic subdir
       expect(existsSync(join(agentSessionsDir, "telegram-group--1234567890"))).toBe(true);
       expect(existsSync(join(agentSessionsDir, "telegram-group--1234567890-topic-60"))).toBe(true);
-      // Direct binding uses accountId -> telegram-sergey-direct-205075873
-      expect(existsSync(join(agentSessionsDir, "telegram-sergey-direct-205075873"))).toBe(true);
+      // Direct binding uses accountId -> telegram-alice-direct-100000001
+      expect(existsSync(join(agentSessionsDir, "telegram-alice-direct-100000001"))).toBe(true);
       // Other-agent binding must NOT have been created
       expect(existsSync(join(agentSessionsDir, "telegram-group--111"))).toBe(false);
     } finally {
@@ -258,7 +258,7 @@ describe("init.js — fresh install happy path", () => {
       const fixture = {
         bindings: [
           { agentId: "agent-main", match: { channel: "telegram", accountId: "default", peer: { kind: "group", id: "-5206956283" } } },
-          { agentId: "agent-main", match: { channel: "telegram", accountId: "sergey", peer: { kind: "direct", id: "205075873" } } },
+          { agentId: "agent-main", match: { channel: "telegram", accountId: "alice", peer: { kind: "direct", id: "100000001" } } },
         ],
       };
       require("fs").writeFileSync(join(openclawDir, "openclaw.json"), JSON.stringify(fixture));
@@ -278,7 +278,7 @@ describe("init.js — fresh install happy path", () => {
         readFileSync(join(workspace, "memory", "heartbeat-state.json"), "utf-8")
       );
       expect(hbState.activeSessions).toContain("telegram-group--5206956283");
-      expect(hbState.activeSessions).toContain("telegram-sergey-direct-205075873");
+      expect(hbState.activeSessions).toContain("telegram-alice-direct-100000001");
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
     }

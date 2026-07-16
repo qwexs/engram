@@ -210,6 +210,17 @@ async function patchState(patches) {
   return state;
 }
 
+async function markWorkerCompleteIfCurrent(phase, runId) {
+  const latest = await readJson(statePath, DEFAULT_STATE);
+  const current = latest.subagentRuns?.[phase];
+  if (!current || current.runId !== runId) return false;
+  current.status = "ok";
+  current.completedAt = localIso();
+  mkdirSync(dirname(statePath), { recursive: true });
+  await atomicWrite(statePath, JSON.stringify(latest, null, 2) + "\n");
+  return true;
+}
+
 function run(command, args, options = {}) {
   const startedAt = Date.now();
   const result = spawnSync(command, args, {
@@ -780,6 +791,7 @@ async function applyDomainHandoffs() {
       if (!lifecycle.ok && lifecycle.error !== "record-not-found") {
         summary.warnings.push("hb-domains-write lifecycle: " + file + " — " + lifecycle.error);
       }
+      await markWorkerCompleteIfCurrent("hb-domains-write", runId);
       applied++;
     } catch (err) {
       failed++;
@@ -1563,7 +1575,7 @@ async function runSilentThreadCheck(activeSessions) {
     for (const peer of entry.peers) {
       if (!peer || peer.kind !== "direct") continue;
       const sessionKey =
-        "telegram-" + (peer.accountId || "sergey") + "-direct-" + peer.id;
+        "telegram-" + (peer.accountId || "default") + "-direct-" + peer.id;
       peerSessions.set(sessionKey, slug);
     }
   }

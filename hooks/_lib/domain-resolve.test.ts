@@ -33,7 +33,7 @@ afterAll(() => {
 const CHAT_GROUP = "1001234567890";      // fixture: anonymized Telegram group id (all-digits — required by conversationId regex)
 const CHAT_GROUP_NEG = `-${CHAT_GROUP}`;  // fixture: signed form (event shape)
 const TOPIC = "60";                       // fixture: topic id
-const USER_PEER = "205075873";            // fixture: anonymized user id (DM)
+const USER_PEER = "100000001";            // fixture: anonymized user id (DM)
 
 const SESSION_KEY_TELE = `agent:apriori-tech:telegram:group:${CHAT_GROUP_NEG}:topic:${TOPIC}`;
 const SESSION_KEY_PEER = `agent:apriori-tech:telegram:direct:${USER_PEER}`;

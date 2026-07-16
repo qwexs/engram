@@ -53,7 +53,7 @@ beforeEach(() => {
 
 // ---------- Helpers ----------
 
-const ACCT = "205075873";
+const ACCT = "100000001";
 const CHAT = "100xxxxxxxxxx";         // test fixture: anonymized Telegram group id
 const TOPIC = "60";                    // test fixture: topic id
 const AGENT_ID = "apriori-tech";

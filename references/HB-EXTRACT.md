@@ -69,7 +69,7 @@ Durable facts -- things worth remembering across sessions:
 
 ```bash
 bun skills/engram/scripts/memory-write.js \
-  --entity "people/sergey" \
+  --entity "people/alice" \
   --fact "Predpochtitaet Bun vmesto Node.js" \
   --description "Tool preference affecting project setup decisions" \
   --category preference \

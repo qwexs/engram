@@ -159,8 +159,8 @@ describe("buildDomainPayload", () => {
   });
 
   test("peer-direct session label is `DM X`", () => {
-    const out = buildDomainPayload({ ...baseOpts(), sessionKind: "peer-direct", sessionLocation: "sergey" });
-    expect(out).toContain("DM `sergey`");
+    const out = buildDomainPayload({ ...baseOpts(), sessionKind: "peer-direct", sessionLocation: "alice" });
+    expect(out).toContain("DM `alice`");
   });
 
   test("group-direct session label is `group X`", () => {
@@ -205,7 +205,7 @@ describe("buildDomainPayload", () => {
     const out = buildDomainPayload(baseOpts());
     expect(out).toContain("session=topic-thread");
 
-    const out2 = buildDomainPayload({ ...baseOpts(), sessionKind: "peer-direct", sessionLocation: "sergey" });
+    const out2 = buildDomainPayload({ ...baseOpts(), sessionKind: "peer-direct", sessionLocation: "alice" });
     expect(out2).toContain("session=peer-direct");
   });
 

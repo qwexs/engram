@@ -54,14 +54,14 @@ Options:
   --topic <chatId:topicId>   Привязка к существующему Telegram-топику (только для type=topic-thread).
                              Формат: "-100XXXXXXXXXX:NN"
   --peer <chatId>            Привязка к DM-чату (для type=peer-direct и meta-domain).
-                             Формат: userId (например "205075873")
+                             Формат: userId (например "100000001")
   --group <chatId>           Привязка к группе без топиков (только для type=group-direct).
                              Формат: "-100XXXXXXXXXX"
   --qmd-collections <list>   Список QMD-коллекций через запятую (только для type=meta-domain).
                              Например: "managers-memory,managers-domains,projectA-memory"
   --create-telegram-topic   Создать новый Telegram-топик через Bot API и привязать к домену
                              (только для type=topic-thread, требует --telegram-chat-id).
-                             Токен бота: ~/.openclaw/openclaw.json -> channels.telegram.accounts.sergey.botToken
+                             Токен бота: ~/.openclaw/openclaw.json -> channels.telegram.accounts.default.botToken
                              (или env TELEGRAM_BOT_TOKEN).
   --telegram-chat-id <id>   Chat ID форум-группы для --create-telegram-topic
                              (например "-100XXXXXXXXXX").
@@ -182,14 +182,14 @@ if (domainType === 'topic-thread' || domainType === 'meta-domain') {
     if (!botToken) {
       try {
         const oc = JSON.parse(await Bun.file(join(process.env.USERPROFILE || process.env.HOME, '.openclaw', 'openclaw.json')).text());
-        botToken = oc?.channels?.telegram?.accounts?.sergey?.botToken || '';
+        botToken = oc?.channels?.telegram?.accounts?.default?.botToken || '';
       } catch (e) {
         console.error('❌ Не удалось прочитать ~/.openclaw/openclaw.json. Установите TELEGRAM_BOT_TOKEN или проверьте config.');
         process.exit(1);
       }
     }
     if (!botToken) {
-      console.error('❌ Токен бота не найден ни в TELEGRAM_BOT_TOKEN, ни в openclaw.json:channels.telegram.accounts.sergey.botToken');
+      console.error('❌ Токен бота не найден ни в TELEGRAM_BOT_TOKEN, ни в openclaw.json:channels.telegram.accounts.default.botToken');
       process.exit(1);
     }
 
@@ -256,7 +256,7 @@ let peerBinding = null;
 if (domainType === 'peer-direct' || domainType === 'meta-domain') {
   if (peerArg) {
     if (!/^\d+$/.test(peerArg)) {
-      console.error(`❌ --peer должен быть числовым userId (например 205075873)`);
+      console.error(`❌ --peer должен быть числовым userId (например 100000001)`);
       console.error(`   Получено: "${peerArg}"`);
       process.exit(1);
     }

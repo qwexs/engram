@@ -16,7 +16,7 @@ Each fact in `items.json` follows this structure:
   "source": "2026-02-07",
   "status": "active|superseded",
   "supersededBy": null,
-  "relatedEntities": ["people/sergey", "projects/projectmix"],
+  "relatedEntities": ["people/alice", "projects/projectmix"],
   "lastAccessed": "2026-02-08",
   "accessCount": 1
 }

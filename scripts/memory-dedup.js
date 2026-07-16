@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Дедупликация фактов через content-hash (SHA-256)
-// Использование: bun scripts/memory-dedup.js --fact "текст" --entity "people/sergey"
+// Использование: bun scripts/memory-dedup.js --fact "текст" --entity "people/alice"
 //               bun scripts/memory-dedup.js --seed
 
 import { join } from "path";

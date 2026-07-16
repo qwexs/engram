@@ -223,7 +223,7 @@ function inferEntity(text) {
     [/\b(projectmix)\b/i, "projects/projectmix"],
     [/\b(telemax)\b/i, "projects/telemax"],
     [/\b(qmd)\b/i, "projects/qmd"],
-    [/\bsergey|серге[йяюем]\b/i, "people/sergey"],
+    [/\balice|алис[аыуеой]\b/i, "people/alice"],
   ];
   for (const [re, entity] of rules) {
     if (re.test(lower)) return entity;

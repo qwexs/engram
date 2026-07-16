@@ -259,7 +259,7 @@ Atomically appends a bullet entry to a named section of today's daily note. Crea
 ## rebuild-summaries.js — Rebuild summary.md from items.json
 
 ```bash
-bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity people/sergey] [--apply-decay] [--max-cold-principles 12]
+bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity people/alice] [--apply-decay] [--max-cold-principles 12]
 ```
 
 Deterministically regenerates `summary.md` for all entities in `life/` from their `items.json`. No LLM involved.

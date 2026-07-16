@@ -51,7 +51,7 @@ This keeps context windows lean. Most conversations only need the summary.
     "source": "2026-02-07",
     "status": "active|superseded",
     "supersededBy": null,
-    "relatedEntities": ["people/sergey", "projects/projectmix"],
+    "relatedEntities": ["people/alice", "projects/projectmix"],
     "lastAccessed": "2026-02-08",
     "accessCount": 1
   }

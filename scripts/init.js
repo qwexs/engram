@@ -556,7 +556,7 @@ function readTopicNameCacheEntries(db) {
   const rows = db.prepare(
     "SELECT namespace, entry_key, value_json FROM plugin_state_entries WHERE plugin_id='telegram' AND namespace LIKE 'telegram.topic-name-cache.%' ORDER BY namespace, entry_key"
   ).all();
-  // Multiple bot accounts (default, sergey, etc.) maintain separate
+  // Multiple bot accounts (default, secondary, etc.) maintain separate
   // topic-name-cache namespaces and can record the same topic. Dedupe by
   // (chatId, threadId), keeping the most-recent entry.
   const byKey = new Map();

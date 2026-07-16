@@ -91,21 +91,21 @@ describe("memory-write — semantic-check JSON parsing", () => {
   test("detects similar fact via snippet field", () => {
     const qmdJson = JSON.stringify([
       {
-        file: "qmd://life/areas/people/sergey/summary.md",
+        file: "qmd://life/areas/people/alice/summary.md",
         score: 0.85,
-        snippet: "Sergey prefers TypeScript over JavaScript for all projects",
+        snippet: "Alice prefers TypeScript over JavaScript for all projects",
       },
     ]);
-    const warnings = parseQmdSearchJson(qmdJson, "Sergey prefers TypeScript for new projects");
+    const warnings = parseQmdSearchJson(qmdJson, "Alice prefers TypeScript for new projects");
     expect(warnings.length).toBeGreaterThan(0);
     expect(warnings[0].similarity).toBeGreaterThanOrEqual(0.3);
-    expect(warnings[0].source).toBe("qmd://life/areas/people/sergey/summary.md");
+    expect(warnings[0].source).toBe("qmd://life/areas/people/alice/summary.md");
   });
 
   test("uses body field when snippet is absent", () => {
     const qmdJson = JSON.stringify([
       {
-        file: "qmd://life/areas/people/sergey/summary.md",
+        file: "qmd://life/areas/people/alice/summary.md",
         score: 0.7,
         // Use words that cleanly match after toLowerCase + remove punctuation
         body: "Prefers using TypeScript over JavaScript for backend projects always",
@@ -164,7 +164,7 @@ describe("memory-write — semantic-check JSON parsing", () => {
       },
     ]);
     // Completely unrelated fact
-    const warnings = parseQmdSearchJson(qmdJson, "Sergey prefers TypeScript");
+    const warnings = parseQmdSearchJson(qmdJson, "Alice prefers TypeScript");
     expect(warnings).toEqual([]);
   });
 
@@ -172,12 +172,12 @@ describe("memory-write — semantic-check JSON parsing", () => {
     const longText = "word ".repeat(100); // 500 chars
     const qmdJson = JSON.stringify([
       {
-        file: "qmd://life/areas/people/sergey/summary.md",
+        file: "qmd://life/areas/people/alice/summary.md",
         score: 0.9,
-        snippet: `Sergey always uses TypeScript and ${longText}`,
+        snippet: `Alice always uses TypeScript and ${longText}`,
       },
     ]);
-    const warnings = parseQmdSearchJson(qmdJson, "Sergey TypeScript always prefers");
+    const warnings = parseQmdSearchJson(qmdJson, "Alice TypeScript always prefers");
     if (warnings.length > 0) {
       expect(warnings[0].similarText.length).toBeLessThanOrEqual(200);
     }
@@ -187,10 +187,10 @@ describe("memory-write — semantic-check JSON parsing", () => {
     const qmdJson = JSON.stringify([
       {
         score: 0.9,
-        snippet: "Sergey prefers TypeScript for all backend projects",
+        snippet: "Alice prefers TypeScript for all backend projects",
       },
     ]);
-    const warnings = parseQmdSearchJson(qmdJson, "Sergey TypeScript backend");
+    const warnings = parseQmdSearchJson(qmdJson, "Alice TypeScript backend");
     if (warnings.length > 0) {
       expect(warnings[0].source).toBe("unknown");
     }
@@ -199,9 +199,9 @@ describe("memory-write — semantic-check JSON parsing", () => {
   test("processes multiple results and returns all above threshold", () => {
     const qmdJson = JSON.stringify([
       {
-        file: "qmd://life/areas/people/sergey/summary.md",
+        file: "qmd://life/areas/people/alice/summary.md",
         score: 0.9,
-        snippet: "Sergey uses Bun runtime for TypeScript projects",
+        snippet: "Alice uses Bun runtime for TypeScript projects",
       },
       {
         file: "qmd://life/projects/telemax/summary.md",
@@ -230,20 +230,20 @@ describe("memory-write — semantic-check JSON parsing", () => {
 describe("memory-contradict — entity path extraction from qmd JSON", () => {
   test("extracts entity path from slash-format file URL", () => {
     const qmdJson = JSON.stringify([
-      { file: "qmd://life/areas/people/sergey/summary.md", score: 0.9 },
+      { file: "qmd://life/areas/people/alice/summary.md", score: 0.9 },
     ]);
     const paths = extractEntityPathsFromJson(qmdJson);
-    expect(paths).toContain("areas/people/sergey");
+    expect(paths).toContain("areas/people/alice");
   });
 
   test("extracts multiple unique entity paths", () => {
     const qmdJson = JSON.stringify([
-      { file: "qmd://life/areas/people/sergey/summary.md", score: 0.9 },
+      { file: "qmd://life/areas/people/alice/summary.md", score: 0.9 },
       { file: "qmd://life/projects/engram/summary.md", score: 0.7 },
       { file: "qmd://life/resources/tools/qmd/summary.md", score: 0.6 },
     ]);
     const paths = extractEntityPathsFromJson(qmdJson);
-    expect(paths).toContain("areas/people/sergey");
+    expect(paths).toContain("areas/people/alice");
     expect(paths).toContain("projects/engram");
     expect(paths).toContain("resources/tools/qmd");
     expect(paths.length).toBe(3);
@@ -251,12 +251,12 @@ describe("memory-contradict — entity path extraction from qmd JSON", () => {
 
   test("deduplicates repeated entity paths", () => {
     const qmdJson = JSON.stringify([
-      { file: "qmd://life/areas/people/sergey/summary.md", score: 0.9 },
-      { file: "qmd://life/areas/people/sergey/summary.md", score: 0.7 },
+      { file: "qmd://life/areas/people/alice/summary.md", score: 0.9 },
+      { file: "qmd://life/areas/people/alice/summary.md", score: 0.7 },
     ]);
     const paths = extractEntityPathsFromJson(qmdJson);
     expect(paths.length).toBe(1);
-    expect(paths[0]).toBe("areas/people/sergey");
+    expect(paths[0]).toBe("areas/people/alice");
   });
 
   test("returns empty array on invalid JSON (graceful fallback)", () => {
@@ -281,13 +281,13 @@ describe("memory-contradict — entity path extraction from qmd JSON", () => {
 
   test("ignores items.json and non-summary paths", () => {
     const qmdJson = JSON.stringify([
-      { file: "qmd://life/areas/people/sergey/items.json", score: 0.9 },
+      { file: "qmd://life/areas/people/alice/items.json", score: 0.9 },
       { file: "qmd://life/readme.md", score: 0.8 },
-      { file: "qmd://life/areas/people/sergey/summary.md", score: 0.7 },
+      { file: "qmd://life/areas/people/alice/summary.md", score: 0.7 },
     ]);
     const paths = extractEntityPathsFromJson(qmdJson);
     expect(paths.length).toBe(1);
-    expect(paths[0]).toBe("areas/people/sergey");
+    expect(paths[0]).toBe("areas/people/alice");
   });
 
   test("ignores system/ and other non-PARA paths", () => {

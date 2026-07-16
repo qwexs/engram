@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { parseAgentIdFromSessionKey, splitAgentAndSession } from "../_lib/parse-agent-id.js";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 const DEFAULT_MESSAGE_COUNT = 40;
@@ -148,14 +149,19 @@ const handler = async (event: any) => {
   console.log(`[engram-session-memory] workspaceDir=${workspaceDir}`);
   if (!workspaceDir) return;
 
-  const agentId = (context.agentId as string | undefined) || "main";
-
-  // Use event.sessionKey (top-level) for resolving the agent session key
-  // context.sessionKey may differ; prefer the top-level event.sessionKey
+  // Prefer sessionKey parsing (single source of truth) over context.agentId.
+  // OpenClaw often omits context.agentId for multi-agent workspaces; falling
+  // back to "main" wrote other agents' transcripts under agent-main/.
   const rawKey = (event.sessionKey as string | undefined) || (context.sessionKey as string | undefined) || "main";
-  const sessionKey = rawKey.includes(":")
-    ? rawKey.split(":").slice(2).join("-") || "main"
-    : rawKey;
+  const keyParts = splitAgentAndSession(rawKey);
+  const agentId =
+    keyParts?.agentId ||
+    parseAgentIdFromSessionKey(rawKey) ||
+    (context.agentId as string | undefined) ||
+    "main";
+  const sessionKey =
+    keyParts?.sessionKey ||
+    (rawKey.includes(":") ? rawKey.split(":").slice(2).join("-") || "main" : rawKey);
 
   console.log(`[engram-session-memory] rawKey=${rawKey} sessionKey=${sessionKey} agentId=${agentId}`);
 

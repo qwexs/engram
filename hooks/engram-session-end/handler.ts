@@ -1,6 +1,7 @@
 import { existsSync, appendFileSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
+import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 
@@ -35,10 +36,18 @@ const handler = async (event: any) => {
   const workspaceDir = event.context?.workspaceDir;
   if (!workspaceDir) return;
 
-  const agentId = event.context?.agentId || "main";
-  // sessionId may come as "agent:main:main" — extract session segment
-  const rawSession = event.context?.sessionId || "main";
-  const sessionKey = rawSession.includes(":") ? rawSession.split(":").slice(2).join("-") || "main" : rawSession;
+  // Prefer sessionKey parsing (same as session-start/session-memory). OpenClaw
+  // often omits context.agentId for multi-agent workspaces; avoid agent-main/.
+  const rawKey =
+    (event.sessionKey as string | undefined) ||
+    (event.context?.sessionKey as string | undefined) ||
+    (event.context?.sessionId as string | undefined) ||
+    "main";
+  const split = splitAgentAndSession(rawKey);
+  const agentId = split?.agentId || event.context?.agentId || "main";
+  const sessionKey =
+    split?.sessionKey ||
+    (rawKey.includes(":") ? rawKey.split(":").slice(2).join("-") || "main" : rawKey);
 
   // Skip ephemeral runtime sessions.
   if (sessionKey.startsWith("subagent-")) return;

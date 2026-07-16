@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
 import { join } from "path";
 import { tmpdir } from "os";
 import { existsSync, rmSync, mkdirSync, writeFileSync, mkdtempSync } from "fs";
@@ -6,6 +6,11 @@ import { extractKeywords, jaccardSimilarity } from "../scripts/utils.js";
 
 const SCRIPTS_DIR = join(import.meta.dir, "..", "scripts");
 const ENGRAM_DIR = join(import.meta.dir, "..");
+
+// CLI integration invokes memory-write with its real qmd/derive-facts subprocess
+// chain. On Windows a healthy invocation takes ~3s and can exceed Bun's 5s
+// default while the full suite is concurrently exercising other subprocesses.
+setDefaultTimeout(20_000);
 
 function createTestWorkspace() {
   const workspace = mkdtempSync(join(tmpdir(), "engram-memory-contradict-"));

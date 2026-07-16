@@ -539,8 +539,8 @@ function detectCronDrift(existing, spec) {
     reasons.push("spawn-hb-domains-write");
   }
   // Workspace path in Step 1 command — accept either absolute form we emit.
-  const wsPosix = String(workspace).replace(/\\/g, "/");
-  if (!msg.includes(wsPosix) && !msg.includes(workspace)) {
+  const wsPosix = String(WORKSPACE).replace(/\\/g, "/");
+  if (!msg.includes(wsPosix) && !msg.includes(WORKSPACE)) {
     reasons.push("workspace");
   }
   return reasons;

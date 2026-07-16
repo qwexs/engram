@@ -475,29 +475,59 @@ function parseJsonStrict(raw, fieldName) {
 }
 
 function parseHandoffField(body, name) {
-  // Explicit YAML-style multi-line: Field: |\n  ...
-  const multi = body.match(
-    new RegExp("^" + name + ":[ \\t]*\\|[ \\t]*\\r?\\n([\\s\\S]*?)(?=\\r?\\n[A-Za-z][A-Za-z-]*:|\\r?\\n===|$)", "m")
-  );
-  if (multi) return multi[1].replace(/^ {2}/gm, "").replace(/\r?\n$/, "");
+  // Line-based parser. A field starts at the first line matching `^<name>:` and
+  // extends until the next field boundary or the end-of-body marker (`=== … ===`).
+  // This avoids the multiline-regex gotcha where `$` (under the `m` flag) matches
+  // end-of-line, silently truncating a `Field: |` block that contains blank lines.
+  const lines = body.split(/\r?\n/);
 
-  // Block form used by LLM handoffs: Field:\n```json\n...\n```  or Field:\n{...}/[...]
-  // Important: do NOT use \\s* after the colon — \\s includes newlines and would let a
-  // single-line capture eat only the opening fence line (```json) and drop the body.
-  const block = body.match(
-    new RegExp(
-      "^" + name + ":[ \\t]*(?:\\r?\\n)((?:```(?:json|JSON)?[ \\t]*\\r?\\n[\\s\\S]*?```|(?:[\\[{][\\s\\S]*)))(?=\\r?\\n[A-Za-z][A-Za-z-]*:|\\r?\\n===|$)",
-      "m"
-    )
-  );
-  if (block) return block[1].trim();
+  // The opening line for `name`. Match at start-of-line `<name>:`; trailing
+  // whitespace and content after the colon are handled via the header slice.
+  const startIdx = lines.findIndex((l) => new RegExp("^" + name + ":").test(l));
+  if (startIdx === -1) return null;
+  const header = lines[startIdx];
+  const after = header.slice(name.length + 1); // drop `Name:`
+  // After-colon content (may be empty before \n). Strip leading space/tab only.
+  const tail = after.replace(/^[ \t]*/, "");
 
-  // Single-line value on the same line as the field name.
-  // Use [ \\t]* (not \\s*) so a newline after the colon is NOT swallowed.
-  const single = body.match(new RegExp("^" + name + ":[ \\t]*(.*)$", "m"));
-  if (!single) return null;
-  const value = single[1].trim();
-  return value === "" ? null : value;
+  // Find the boundary: index of the first line at or after startIdx+1 that is
+  // either another field (`^[A-Za-z][A-Za-z-]*:`) or an end-of-body marker (`=== … ===`).
+  // A field-start line may have nothing after the colon (e.g. `Changelog-Entries:`)
+  // or trailing content (e.g. `Status: ok`); either way, the colon is the marker.
+  const isFieldStart = (l) => /^[A-Za-z][A-Za-z-]*:/.test(l);
+  const isEndMarker = (l) => /^===.*===\s*$/.test(l);
+  const findBoundary = (from) => {
+    for (let i = from; i < lines.length; i++) {
+      if (isFieldStart(lines[i]) || isEndMarker(lines[i])) return i;
+    }
+    return lines.length; // body ends without a marker
+  };
+
+  // Form 1: explicit YAML-style multi-line — header ends with `|` (rest of header is whitespace).
+  if (tail === "|") {
+    const endIdx = findBoundary(startIdx + 1);
+    const block = lines.slice(startIdx + 1, endIdx);
+    // Each line was indented by 2 spaces; strip that prefix. Blank lines stay blank.
+    const stripped = block.map((l) => l.replace(/^ {2}/, ""));
+    // Trim trailing blank lines (the one that would precede the next field).
+    while (stripped.length > 0 && stripped[stripped.length - 1] === "") stripped.pop();
+    return stripped.join("\n");
+  }
+
+  // Form 2: single-line value on the same line as the field name (e.g. `Field: value`).
+  // This branch covers both inline JSON (`Changelog-Entries: [...]`) and inline text
+  // (`Run-Id: hb-...`). The body has no continuation lines.
+  if (tail.length > 0) {
+    const v = tail.trim();
+    return v === "" ? null : v;
+  }
+
+  // Form 3: block form on a new line. Either a fenced JSON block (```json … ```) or
+  // a raw JSON value ({…} or […]). The body is everything from startIdx+1 up to
+  // but not including the next field or end-of-body marker.
+  const endIdx = findBoundary(startIdx + 1);
+  const rawBody = lines.slice(startIdx + 1, endIdx).join("\n");
+  return rawBody.length === 0 ? null : rawBody.trim();
 }
 
 function normalizeChangelogEntries(entries, runId) {

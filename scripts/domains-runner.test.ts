@@ -294,6 +294,157 @@ describe("A2. applyDomainWriteHandoff — race recovery", () => {
     expect(state.domainRuns[domain].lastRun).toBe("2026-07-01T17:00:00.000Z");
     expect(state.domainRuns[domain].lastRunId).toBe(runId);
   });
+
+  // Regression for parseHandoffField multiline `Status-Content: |` with internal
+  // blank lines. The previous regex used `$` inside a `m`-flagged lookahead, which
+  // matched at end-of-line and silently truncated the captured body to its first
+  // line. The new line-based parser preserves internal blank lines and content
+  // until the next field boundary or end-of-body marker.
+  test("multiline Status-Content with internal blank line is preserved", async () => {
+    const domain = setupRegistry();
+    const dir = join(workspace, "memory", "domains", domain);
+    const statusPath = join(dir, "status.md");
+    const changelogPath = join(dir, "changelog.md");
+
+    const { createHash } = await import("node:crypto");
+    const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+    const currentHashes = {
+      "status.md": sha(readFileSync(statusPath, "utf8")),
+      "changelog.md": sha(readFileSync(changelogPath, "utf8")),
+    };
+    const runId = "hb-multiline-blank-001";
+    const h = handoff({
+      runId,
+      baseHashes: currentHashes,
+      statusContent: "# Status: test-domain\n\nUpdated via ISS-9 test.\n\nTrailing paragraph with deliberate blank line above.\n",
+    });
+    const statePath = join(workspace, "memory", "heartbeat-state.json");
+    const result = await applyDomainWriteHandoff(
+      { ok: true, isOk: true, type: "HB-DOMAINS", body: h.body, summary: "test" },
+      { workspace, statePath, now: "2026-07-01T18:00:00.000Z" },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.wroteStatus).toBe(true);
+    const written = readFileSync(statusPath, "utf8");
+    expect(written).toContain("# Status: test-domain");
+    expect(written).toContain("Updated via ISS-9 test.");
+    expect(written).toContain("Trailing paragraph with deliberate blank line above.");
+    // No truncation: the line after the blank line must reach the file.
+    expect(written).toMatch(/Updated via ISS-9 test\.\s*\n\s*\n\s*Trailing paragraph/);
+  });
+
+  test("multiline Status-Content preserves body when no === END === marker is present", async () => {
+    const domain = setupRegistry();
+    const dir = join(workspace, "memory", "domains", domain);
+    const statusPath = join(dir, "status.md");
+    const changelogPath = join(dir, "changelog.md");
+
+    const { createHash } = await import("node:crypto");
+    const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+    const currentHashes = {
+      "status.md": sha(readFileSync(statusPath, "utf8")),
+      "changelog.md": sha(readFileSync(changelogPath, "utf8")),
+    };
+    const runId = "hb-multiline-no-end-001";
+    // Build a handoff body WITHOUT a closing marker. parseHandoffField must still
+    // capture the full multiline body and stop at the next field or end-of-body.
+    const bodyNoEnd = [
+      "=== HB-DOMAINS HANDOFF ===",
+      "Status: ok",
+      "Summary: end-of-body test",
+      "Domain: " + domain,
+      "Run-Id: " + runId,
+      "Base-Hashes: " + JSON.stringify(currentHashes),
+      "Status-Content: |",
+      "  # Status: test-domain",
+      "",
+      "  Tail line after blank, no closing marker.",
+    ].join("\n");
+    const statePath = join(workspace, "memory", "heartbeat-state.json");
+    const result = await applyDomainWriteHandoff(
+      { ok: true, isOk: true, type: "HB-DOMAINS", body: bodyNoEnd, summary: "test" },
+      { workspace, statePath, now: "2026-07-01T19:00:00.000Z" },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.wroteStatus).toBe(true);
+    const written = readFileSync(statusPath, "utf8");
+    expect(written).toContain("Tail line after blank, no closing marker.");
+  });
+
+  test("multiline Status-Content stops at === END === marker (no body bleed)", async () => {
+    const domain = setupRegistry();
+    const dir = join(workspace, "memory", "domains", domain);
+    const statusPath = join(dir, "status.md");
+    const changelogPath = join(dir, "changelog.md");
+
+    const { createHash } = await import("node:crypto");
+    const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+    const currentHashes = {
+      "status.md": sha(readFileSync(statusPath, "utf8")),
+      "changelog.md": sha(readFileSync(changelogPath, "utf8")),
+    };
+    const runId = "hb-multiline-end-marker-001";
+    const h = handoff({
+      runId,
+      baseHashes: currentHashes,
+      statusContent: "# Status: test-domain\n\nBody line.\n",
+    });
+    const statePath = join(workspace, "memory", "heartbeat-state.json");
+    const result = await applyDomainWriteHandoff(
+      { ok: true, isOk: true, type: "HB-DOMAINS", body: h.body, summary: "test" },
+      { workspace, statePath, now: "2026-07-01T20:00:00.000Z" },
+    );
+    expect(result.ok).toBe(true);
+    const written = readFileSync(statusPath, "utf8");
+    // The captured body must not include the trailing `=== END ===` line.
+    expect(written).not.toContain("=== END ===");
+  });
+
+  test("block-form Changelog-Entries (fenced JSON) still parses when Status-Content is multiline", async () => {
+    const domain = setupRegistry();
+    const dir = join(workspace, "memory", "domains", domain);
+    const statusPath = join(dir, "status.md");
+    const changelogPath = join(dir, "changelog.md");
+
+    const { createHash } = await import("node:crypto");
+    const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+    const currentHashes = {
+      "status.md": sha(readFileSync(statusPath, "utf8")),
+      "changelog.md": sha(readFileSync(changelogPath, "utf8")),
+    };
+    const runId = "hb-block-form-coexists-001";
+    // Construct body with BOTH a multiline Status-Content AND a fenced JSON Changelog-Entries.
+    // This guards against the line-based parser accidentally truncating one form because
+    // of the other.
+    const body = [
+      "=== HB-DOMAINS HANDOFF ===",
+      "Status: ok",
+      "Summary: mixed-form test",
+      "Domain: " + domain,
+      "Run-Id: " + runId,
+      "Base-Hashes: " + JSON.stringify(currentHashes),
+      "Status-Content: |",
+      "  # Status: test-domain",
+      "",
+      "  Inline blank inside status.",
+      "Changelog-Entries:",
+      "```json",
+      JSON.stringify([{ id: runId + "-0", runId, content: "## 2026-07-01 14:30 — Mixed-form entry" }]),
+      "```",
+      "=== END ===",
+    ].join("\n");
+    const statePath = join(workspace, "memory", "heartbeat-state.json");
+    const result = await applyDomainWriteHandoff(
+      { ok: true, isOk: true, type: "HB-DOMAINS", body, summary: "test" },
+      { workspace, statePath, now: "2026-07-01T21:00:00.000Z" },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.wroteStatus).toBe(true);
+    expect(result.appendedEntries).toBe(1);
+    expect(readFileSync(changelogPath, "utf8")).toContain(runId + "-0");
+    const written = readFileSync(statusPath, "utf8");
+    expect(written).toContain("Inline blank inside status.");
+  });
 });
 
 // ============================================================================

@@ -305,6 +305,30 @@ async function countPendingObservationCategories() {
   return counts;
 }
 
+async function getPendingObservationsFull() {
+  const dir = join(workspace, "workspace", "ops", "observations");
+  const index = await readJsonIfExists(join(dir, "index.json"), { observations: [] });
+  const full = [];
+  for (const id of Array.isArray(index.observations) ? index.observations : []) {
+    const obs = await readJsonIfExists(join(dir, `${id}.json`), null);
+    if (!obs || obs.status !== "pending") continue;
+    full.push(obs);
+  }
+  return full;
+}
+
+async function getPendingTensionsFull() {
+  const dir = join(workspace, "workspace", "ops", "tensions");
+  const index = await readJsonIfExists(join(dir, "index.json"), { tensions: [] });
+  const full = [];
+  for (const id of Array.isArray(index.tensions) ? index.tensions : []) {
+    const tension = await readJsonIfExists(join(dir, `${id}.json`), null);
+    if (!tension || tension.status !== "pending") continue;
+    full.push(tension);
+  }
+  return full;
+}
+
 async function countPendingTensions() {
   const dir = join(workspace, "workspace", "ops", "tensions");
   const index = await readJsonIfExists(join(dir, "index.json"), { tensions: [] });
@@ -397,9 +421,15 @@ async function buildOllTask(phase, context) {
   // `{{session}}`, `{{weighted_score}}` etc. — subagent received broken
   // context block. Now runner fills the values it actually has.
   if (phase === "hb-rethink") {
-    // tensions is a count (number) at this point, not a list. Surface a
-    // JSON array for the template: [] when zero, or a stub note when >0
-    // telling the subagent to read workspace/ops/tensions/index.json.
+    // observations can be an array (full body) or an object (counts only).
+    // The HB-RETHINK.md template expects full observation objects for analysis.
+    // If we only have counts, surface a note telling the subagent to read files.
+    const observationsJson = (() => {
+      if (Array.isArray(context.observations)) return JSON.stringify(context.observations, null, 2);
+      // Counts-only fallback (legacy path)
+      return JSON.stringify(context.observations ?? {}, null, 2);
+    })();
+    // tensions can be an array (full body) or a count (number).
     const tensionsJson = (() => {
       if (Array.isArray(context.tensions)) return JSON.stringify(context.tensions, null, 2);
       const n = Number(context.tensions ?? 0);
@@ -412,7 +442,7 @@ async function buildOllTask(phase, context) {
       .replace(/\{\{weighted_score\}\}/g, String(context.score ?? 0))
       .replace(/\{\{days_since_rethink\}\}/g, String(context.daysSinceRethink ?? 0))
       .replace(/\{\{trigger_reason\}\}/g, Array.isArray(context.reasons) ? context.reasons.join(", ") : String(context.reasons ?? ""))
-      .replace(/\{\{observations_json\}\}/g, JSON.stringify(context.observations ?? {}, null, 2))
+      .replace(/\{\{observations_json\}\}/g, observationsJson)
       .replace(/\{\{tensions_json\}\}/g, tensionsJson);
   } else if (phase === "hb-autoresearch") {
     template = template
@@ -778,7 +808,7 @@ async function applyRethinkHandoffs() {
       // Not a rethink handoff — skip (might be domains-write)
       continue;
     }
-    if (parsed.type !== "HB-RETHINK") {
+    if (parsed.type !== "HB-RETHINK" && parsed.type !== "HB-RETHINK2" && parsed.type !== "HB-AUTORESEARCH") {
       // Not ours — leave for another handler
       continue;
     }
@@ -794,13 +824,31 @@ async function applyRethinkHandoffs() {
         summary.warnings.push("hb-rethink apply: " + file + " — " + (result.error || "apply error"));
         continue;
       }
-      // Clear rethinkInProgress on successful apply
-      await patchState({
-        rethinkInProgress: false,
-        rethinkStartedAt: null,
-        lastRethink: localIso(),
-        "subagentRuns.hb-rethink.status": "ok",
-      });
+      if (parsed.type === "HB-RETHINK") {
+        // Clear rethinkInProgress on successful apply
+        await patchState({
+          rethinkInProgress: false,
+          rethinkStartedAt: null,
+          lastRethink: localIso(),
+          "subagentRuns.hb-rethink.status": "ok",
+        });
+      } else {
+        // Clear rethink2InProgress on successful apply
+        await patchState({
+          rethink2InProgress: false,
+          rethink2StartedAt: null,
+          pendingRethink2: null,
+          "subagentRuns.hb-rethink2.status": "ok",
+        });
+      }
+      // Note: HB-AUTORESEARCH handoff handler in process-handoff-core.js
+      // already sets autoresearchInProgress=false via applyAutoresearchHandoff,
+      // but we also need to update subagentRuns status.
+      if (parsed.type === "HB-AUTORESEARCH") {
+        await patchState({
+          "subagentRuns.hb-autoresearch.status": "ok",
+        });
+      }
       const destPath = join(doneDir, file);
       try {
         renameSync(filePath, destPath);
@@ -949,7 +997,9 @@ async function runDomains() {
 async function runOllTriggerShell({ domainScan = null } = {}) {
   let state = await readJson(statePath, DEFAULT_STATE);
   const obs = await countPendingObservationCategories();
+  const observationsFull = await getPendingObservationsFull();
   const tensions = await countPendingTensions();
+  const tensionsFull = await getPendingTensionsFull();
   const experiments = await getExperimentTriggerStats();
   const pendingAutoExperiments = await listPendingAutoExperiments();
   const score = obs.friction * 3 + obs.surprise * 2 + obs.pattern;
@@ -1000,9 +1050,16 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   const rethinkInProgress = Boolean(state.rethinkInProgress);
   const autoresearchInProgress = Boolean(state.autoresearchInProgress);
   const rethink2InProgress = Boolean(state.rethink2InProgress) || isWorkerRunning(state, "hb-rethink2");
-  const wouldRunRethink = rethinkReasons.length > 0 && !rethinkInProgress && !isWorkerRunning(state, "hb-rethink");
-  const wouldRunAutoresearch = pendingAutoExperiments.length > 0 && !autoresearchInProgress && !isWorkerRunning(state, "hb-autoresearch");
-  const wouldRunRethink2 = Boolean(state.pendingRethink2) && !rethink2InProgress;
+  // Guard: if we just recovered a stale lock for rethink, don't immediately
+  // re-spawn on the same tick. The stale lock means the previous run failed
+  // to produce a handoff — re-spawning instantly creates an infinite loop.
+  // The next tick (30 min later) will re-evaluate and spawn if still due.
+  const rethinkJustRecovered = recovered.includes("hb-rethink");
+  const wouldRunRethink = rethinkReasons.length > 0 && !rethinkInProgress && !isWorkerRunning(state, "hb-rethink") && !rethinkJustRecovered;
+  const autoresearchJustRecovered = recovered.includes("hb-autoresearch");
+  const wouldRunAutoresearch = pendingAutoExperiments.length > 0 && !autoresearchInProgress && !isWorkerRunning(state, "hb-autoresearch") && !autoresearchJustRecovered;
+  const rethink2JustRecovered = recovered.includes("hb-rethink2");
+  const wouldRunRethink2 = Boolean(state.pendingRethink2) && !rethink2InProgress && !rethink2JustRecovered;
   const details = {
     observations: obs,
     tensions,
@@ -1029,7 +1086,7 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
     return queued;
   }
 
-  await maybeQueue("hb-rethink", Boolean(opts["spawn-rethink"]), wouldRunRethink, { observations: obs, tensions, score, daysSinceRethink, reasons: rethinkReasons });
+  await maybeQueue("hb-rethink", Boolean(opts["spawn-rethink"]), wouldRunRethink, { observations: observationsFull, tensions: tensionsFull, score, daysSinceRethink, reasons: rethinkReasons });
   const nextExperiment = pendingAutoExperiments[0] || null;
   await maybeQueue("hb-autoresearch", Boolean(opts["spawn-autoresearch"]), wouldRunAutoresearch, { experimentId: nextExperiment?.id || null, experiment: nextExperiment });
   await maybeQueue("hb-rethink2", Boolean(opts["spawn-rethink2"]), wouldRunRethink2, { experimentId: state.pendingRethink2 || null });

@@ -579,6 +579,129 @@ function checkCronConfig(workspace, engram, findings) {
   }
 }
 
+function checkOllState(workspace, findings) {
+  const statePath = join(workspace, "memory", "heartbeat-state.json");
+  const stateResult = safeJson(statePath, findings, "WD-SESSION-000", "memory/heartbeat-state.json");
+  if (!stateResult.ok || !stateResult.data) return;
+  const state = stateResult.data || {};
+
+  // Check: rethinkInProgress stuck for > 2 hours (stale lock)
+  const rethinkStaleHours = 2;
+  if (state.rethinkInProgress && state.rethinkStartedAt) {
+    const ageHours = (Date.now() - Date.parse(state.rethinkStartedAt)) / 3600000;
+    if (ageHours > rethinkStaleHours) {
+      findings.push(makeFinding({
+        code: "WD-OLL-001",
+        level: "error",
+        message: `rethinkInProgress has been stuck for ${ageHours.toFixed(1)}h (threshold ${rethinkStaleHours}h). Stale lock — hb-rethink will re-fire every tick. Run: bun skills/engram/scripts/heartbeat-state.js --set rethinkInProgress false --set rethinkStartedAt null`,
+        path: "memory/heartbeat-state.json",
+        fixable: true,
+        details: { startedAt: state.rethinkStartedAt, ageHours: Math.round(ageHours * 10) / 10 },
+      }));
+    }
+  }
+
+  // Check: lastRethink is null but rethinkCount > 0 (handoff never applied)
+  if (!state.lastRethink && (state.rethinkCount || 0) > 0) {
+    findings.push(makeFinding({
+      code: "WD-OLL-002",
+      level: "warn",
+      message: `rethinkCount is ${state.rethinkCount} but lastRethink is null — rethink handoffs were never applied. Check that HB-RETHINK.md has Step 7 (Persist handoff to disk) and handoff/ folder is not empty.`,
+      path: "memory/heartbeat-state.json",
+    }));
+  }
+
+  // Check: lastRethink is null AND rethinkInProgress is false —
+  // rethink will trigger on every tick via daysSinceRethink>=14d (999)
+  if (!state.lastRethink && !state.rethinkInProgress && (state.rethinkCount || 0) === 0) {
+    // This is normal for a fresh install, but only if subagentRuns.hb-rethink doesn't show prior spawns
+    const rethinkRuns = state.subagentRuns?.["hb-rethink"];
+    if (rethinkRuns && rethinkRuns.status === "ok") {
+      findings.push(makeFinding({
+        code: "WD-OLL-003",
+        level: "warn",
+        message: "lastRethink is null but hb-rethink has status=ok — handoff was not applied. Check handoff/ dir and applyRethinkHandoffs() in heartbeat-runner.js.",
+        path: "memory/heartbeat-state.json",
+      }));
+    }
+  }
+
+  // Check: rethink2InProgress stuck
+  if (state.rethink2InProgress && state.rethink2StartedAt) {
+    const ageHours = (Date.now() - Date.parse(state.rethink2StartedAt)) / 3600000;
+    if (ageHours > rethinkStaleHours) {
+      findings.push(makeFinding({
+        code: "WD-OLL-004",
+        level: "error",
+        message: `rethink2InProgress has been stuck for ${ageHours.toFixed(1)}h. Stale lock — run: bun skills/engram/scripts/heartbeat-state.js --set rethink2InProgress false --set rethink2StartedAt null`,
+        path: "memory/heartbeat-state.json",
+        fixable: true,
+        details: { startedAt: state.rethink2StartedAt, ageHours: Math.round(ageHours * 10) / 10 },
+      }));
+    }
+  }
+
+  // Check: autoresearchInProgress stuck (TTL is 30 min by default)
+  if (state.autoresearchInProgress && state.autoresearchStartedAt) {
+    const ageHours = (Date.now() - Date.parse(state.autoresearchStartedAt)) / 3600000;
+    if (ageHours > 2) {
+      findings.push(makeFinding({
+        code: "WD-OLL-005",
+        level: "error",
+        message: `autoresearchInProgress has been stuck for ${ageHours.toFixed(1)}h. Stale lock — run: bun skills/engram/scripts/heartbeat-state.js --set autoresearchInProgress false --set autoresearchStartedAt null`,
+        path: "memory/heartbeat-state.json",
+        fixable: true,
+        details: { startedAt: state.autoresearchStartedAt, ageHours: Math.round(ageHours * 10) / 10 },
+      }));
+    }
+  }
+
+  // Check: spawn queue has stuck "queued" files older than 1 hour
+  const spawnsDir = join(workspace, "workspace", "ops", "heartbeat-spawns");
+  if (existsSync(spawnsDir)) {
+    try {
+      for (const file of readdirSync(spawnsDir)) {
+        if (!file.endsWith(".json")) continue;
+        const filePath = join(spawnsDir, file);
+        const parsed = safeJson(filePath, [], `WD-OLL-006`, rel(workspace, filePath));
+        if (!parsed.ok || !parsed.data) continue;
+        const status = parsed.data.status;
+        const createdAt = parsed.data.createdAt;
+        if (status === "queued" && createdAt) {
+          const ageMin = (Date.now() - Date.parse(createdAt)) / 60000;
+          if (ageMin > 60) {
+            findings.push(makeFinding({
+              code: "WD-OLL-006",
+              level: "warn",
+              message: `Spawn queue file stuck in "queued" state for ${ageMin.toFixed(0)} min: ${file}`,
+              path: rel(workspace, filePath),
+              fixable: true,
+              details: { file, status, createdAt, ageMin: Math.round(ageMin) },
+            }));
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Check: handoff/ dir has files but applyRethinkHandoffs never processes them
+  const handoffDir = join(workspace, "workspace", "ops", "heartbeat-spawns", "handoff");
+  if (existsSync(handoffDir)) {
+    try {
+      const handoffFiles = readdirSync(handoffDir).filter((f) => f.endsWith(".md"));
+      if (handoffFiles.length > 5) {
+        findings.push(makeFinding({
+          code: "WD-OLL-007",
+          level: "warn",
+          message: `${handoffFiles.length} unprocessed handoff files in handoff/ — applyRethinkHandoffs() may not be running or failing. Check heartbeat-runner.js Phase 5 apply step.`,
+          path: rel(workspace, handoffDir),
+          details: { count: handoffFiles.length },
+        }));
+      }
+    } catch { /* ignore */ }
+  }
+}
+
 function discoverRuntimeHooksDir(workspace, options = {}) {
   if (options.hooksDir) return resolve(String(options.hooksDir));
   const openclaw = runCommand("openclaw", ["hooks", "list", "--json"], workspace, 30000);
@@ -701,6 +824,7 @@ export function auditWorkspace(workspaceInput, options = {}) {
     checkHeartbeatState(workspace, registry, findings);
   }
   checkKg(workspace, findings);
+  checkOllState(workspace, findings);
   if (options.qmd !== false) checkQmd(workspace, registry, engram, findings);
   if (options.hooks !== false) checkHooks(workspace, findings, options);
   checkCronConfig(workspace, engram, findings);

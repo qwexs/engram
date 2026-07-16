@@ -68,6 +68,25 @@ From research findings, identify new OLL signals:
 
 ### Step 6: Handoff
 
+End your response with the HB-RETHINK2 HANDOFF block (MUST be your last output).
+
+### Step 7: Persist handoff to disk (MANDATORY for apply)
+
+Before your final message, write the **exact** handoff block you produced
+in Step 6 to disk so the runner can apply it on the next tick:
+
+- **Path:** `<workspace>/workspace/ops/heartbeat-spawns/handoff/<Run-Id>.md`
+  Use the `runId` value from the Runner Context JSON block.
+- **Content:** the full text of the handoff, including the
+  `=== HB-RETHINK2 HANDOFF ===` opener and the `=== END ===` closer.
+  Same body bytes as your final message.
+- **Encoding:** UTF-8, LF line endings preferred.
+- **Overwrite** if the file already exists.
+
+If you skip this step, the runner cannot apply your results —
+`rethink2InProgress` will not clear and `pendingRethink2` will not reset,
+blocking the autoresearch pipeline.
+
 ```
 === HB-RETHINK2 HANDOFF ===
 Status: {ok | error}
@@ -98,3 +117,6 @@ Follow-Up-Observations: [{"observation": "...", "category": "friction|surprise|p
 2. Group messages are written as a human colleague would write, in Russian
 3. Outline content includes the full synthesized report with sources
 4. Follow-up observations should be high-signal only (max 2)
+5. **Persist handoff to disk (Step 7).** Without the on-disk handoff
+   file the runner cannot clear `rethink2InProgress`, blocking the
+   autoresearch pipeline.

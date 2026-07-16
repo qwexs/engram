@@ -113,6 +113,26 @@ Each spec should include:
 
 End your response with the HB-RETHINK HANDOFF block (MUST be your last output).
 
+### Step 7: Persist handoff to disk (MANDATORY for apply)
+
+Before your final message, write the **exact** handoff block you produced
+in Step 6 to disk so the runner can apply it on the next tick:
+
+- **Path:** `<workspace>/workspace/ops/heartbeat-spawns/handoff/<Run-Id>.md`
+  (the workspace path is given in the Runner Context JSON block below).
+  Use the `runId` value from the Runner Context.
+- **Content:** the full text of the handoff, including the
+  `=== HB-RETHINK HANDOFF ===` opener and the `=== END ===` closer.
+  Same body bytes as your final message.
+- **Encoding:** UTF-8, LF line endings preferred.
+- **Overwrite** if the file already exists (e.g. on retry).
+
+If you skip this step, the runner cannot apply your results —
+`lastRethink` will not advance and the rethink trigger will fire
+again on every heartbeat tick, wasting tokens. Persist the handoff
+even if you have no observations to report (empty analysis handoff
+still advances `lastRethink`).
+
 ---
 
 ## Output: Handoff Protocol
@@ -152,3 +172,6 @@ Experiment-Specs: [{"hypothesis": "...", "type": "research", "source_observation
 5. `Experiment-Specs` — JSON array of experiment specifications (can be empty `[]`)
 6. `Alerts` — always include at least one ALERT with the full report text (not just "report ready")
 7. If no observations or tensions to review, still complete the task with empty analysis
+8. **Persist handoff to disk (Step 7).** Without the on-disk handoff
+   file the runner cannot advance `lastRethink`, and rethink will
+   re-fire on every tick — wasting tokens and blocking the OLL loop.

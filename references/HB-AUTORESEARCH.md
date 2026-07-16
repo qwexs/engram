@@ -110,7 +110,22 @@ These will be automatically written to OLL by the orchestrator.
 
 ### Step 7: Handoff
 
-End with the HB-AUTORESEARCH HANDOFF block (MUST be your last output):
+End with the HB-AUTORESEARCH HANDOFF block (MUST be your last output).
+
+### Step 8: Persist handoff to disk (MANDATORY for apply)
+
+Before your final message, write the **exact** handoff block you produced
+in Step 7 to disk so the runner can apply it on the next tick:
+
+- **Path:** `<workspace>/workspace/ops/heartbeat-spawns/handoff/<Run-Id>.md`
+  Use the `runId` value from the Runner Context JSON block.
+- **Content:** the full text of the handoff, including the
+  `=== HB-AUTORESEARCH HANDOFF ===` opener and the `=== END ===` closer.
+- **Encoding:** UTF-8, LF line endings preferred.
+- **Overwrite** if the file already exists.
+
+If you skip this step, the runner cannot clear `autoresearchInProgress`,
+blocking the autoresearch pipeline.
 
 ```
 === HB-AUTORESEARCH HANDOFF ===
@@ -135,6 +150,9 @@ Follow-Up-Observations: [
 4. `Report-Path` — relative path to the report file
 5. `Follow-Up-Observations` — JSON array of observations to write to OLL (can be empty `[]`)
 6. All multi-line fields must be valid JSON (use escaped quotes inside strings)
+7. **Persist handoff to disk (Step 8).** Without the on-disk handoff
+   file the runner cannot clear `autoresearchInProgress`, blocking the
+   autoresearch pipeline.
 
 ## Error Handling
 

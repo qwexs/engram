@@ -832,7 +832,7 @@ async function applyRethinkHandoffs() {
           lastRethink: localIso(),
           "subagentRuns.hb-rethink.status": "ok",
         });
-      } else {
+      } else if (parsed.type === "HB-RETHINK2") {
         // Clear rethink2InProgress on successful apply
         await patchState({
           rethink2InProgress: false,
@@ -840,11 +840,9 @@ async function applyRethinkHandoffs() {
           pendingRethink2: null,
           "subagentRuns.hb-rethink2.status": "ok",
         });
-      }
-      // Note: HB-AUTORESEARCH handoff handler in process-handoff-core.js
-      // already sets autoresearchInProgress=false via applyAutoresearchHandoff,
-      // but we also need to update subagentRuns status.
-      if (parsed.type === "HB-AUTORESEARCH") {
+      } else if (parsed.type === "HB-AUTORESEARCH") {
+        // applyAutoresearchHandoff in process-handoff-core.js already
+        // sets autoresearchInProgress=false; we just update subagentRuns.
         await patchState({
           "subagentRuns.hb-autoresearch.status": "ok",
         });

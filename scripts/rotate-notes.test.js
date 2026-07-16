@@ -38,6 +38,7 @@ import {
   existsSync,
   readFileSync,
   statSync,
+  readdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, sep } from "node:path";
@@ -147,8 +148,8 @@ describe("ISS-10 rotate-notes: --check --session (per-session daily-note)", () =
   });
 
   test("2. small daily note (< 1000 lines) → exit 0, needsRotation=false", () => {
-    setupSessionNote(tmp, { lines: 30 });
-    const result = runRotate(["--check", "--session", "main"], { workspace: tmp });
+    setupSessionNote(tmp, { date: "2026-07-05", lines: 30 });
+    const result = runRotate(["--check", "--session", "main", "--date", "2026-07-05"], { workspace: tmp });
     expect(result.status).toBe(0);
     const payload = parseStdout(result);
     expect(payload.needsRotation).toBe(false);
@@ -305,10 +306,13 @@ describe("ISS-10 rotate-notes: --rotate --type changelog", () => {
       "--type", "changelog",
     ], { workspace: tmp });
     expect(result.status).toBe(0);
-    // Archive exists under domains/engram/archives/changelog-YYYY-MM-DD.md
-    const today = new Date().toLocaleDateString("sv-SE");
-    const archivePath = join(tmp, "memory", "domains", "engram", "archives", `changelog-${today}.md`);
-    expect(existsSync(archivePath)).toBe(true);
+    // Archive exists under domains/engram/archives/changelog-YYYY-MM-DD.md.
+    // Discover the child process's dated filename rather than deriving "today"
+    // in the Bun test process, whose timezone may differ near midnight.
+    const archiveDir = join(tmp, "memory", "domains", "engram", "archives");
+    const archiveFiles = readdirSync(archiveDir).filter((name) => /^changelog-\d{4}-\d{2}-\d{2}(?:-\d+)?\.md$/.test(name));
+    expect(archiveFiles).toHaveLength(1);
+    const archivePath = join(archiveDir, archiveFiles[0]);
     const archivedContent = readFileSync(archivePath, "utf8");
     expect(archivedContent.split("\n").length).toBeGreaterThan(1000);
     // Original reset to header

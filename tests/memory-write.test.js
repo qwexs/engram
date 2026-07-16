@@ -1,10 +1,16 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
 import { join } from "path";
 import { tmpdir } from "os";
 import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync, mkdtempSync } from "fs";
 
 const SCRIPTS_DIR = join(import.meta.dir, "..", "scripts");
 const ENGRAM_DIR = join(import.meta.dir, "..");
+
+// Several integration cases intentionally invoke memory-write twice. Each CLI
+// invocation waits for its qmd/derive-facts subprocesses and takes ~3s on
+// Windows, so Bun's 5s per-test default can kill the second invocation and
+// leave its temp workspace locked. Give the real subprocess chain time to exit.
+setDefaultTimeout(20_000);
 
 const TEST_ENTITY = "areas/people/__test_mw__";
 let TEST_WORKSPACE;

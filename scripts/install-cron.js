@@ -12,8 +12,9 @@
  *   4. concise reply + "[phase-5.5] ..." + HEARTBEAT_OK
  *
  * This script is idempotent: re-running it detects drift (old payload
- * format, model mismatch vs engram.json, stale --agent-id / workspace,
- * missing --recover-stale-oll-locks) and updates message + tools + model.
+ * format, orchestrator model mismatch vs engram.json, stale --agent-id / workspace,
+ * missing --recover-stale-oll-locks) and updates message + tools + the
+ * dedicated orchestrator model when configured.
  * Routing is never changed implicitly. agentId, sessionKey, or workspace
  * drift fails closed unless the operator passes --repair-routing.
  *
@@ -256,27 +257,21 @@ function validateInstallWorkspace() {
   }
 }
 
-// Sub-agent model: prefer engram.json -> models.subagents_default,
-// then models.default, then models.heartbeat.subagents.hb-extract,
-// then OSS fallback "sonnet-4-6". Never hardcode deployment-specific
-// model aliases in this script.
-const subagentModel = (() => {
-  if (config?.models?.subagents_default) {
-    return String(config.models.subagents_default);
+// The cron agent turn is the heartbeat orchestrator, not a heartbeat
+// subagent. Its model therefore has a dedicated config key and must never be
+// inferred from models.default, models.subagents_default, or hb-extract.
+// When unset, existing jobs keep their current model and new jobs omit
+// --model so OpenClaw uses the agent's active/default model.
+const heartbeatOrchestratorModel = (() => {
+  if (process.env.ENGRAM_HEARTBEAT_ORCHESTRATOR_MODEL) {
+    return String(process.env.ENGRAM_HEARTBEAT_ORCHESTRATOR_MODEL);
   }
-  if (config?.models?.default) {
-    return String(config.models.default);
+  if (config?.models?.heartbeat?.orchestrator) {
+    return String(config.models.heartbeat.orchestrator);
   }
-  if (config?.models?.heartbeat?.subagents?.["hb-extract"]) {
-    return String(config.models.heartbeat.subagents["hb-extract"]);
-  }
-  return "sonnet-4-6";
+  return null;
 })();
-const hasConfiguredSubagentModel = Boolean(
-  config?.models?.subagents_default ||
-  config?.models?.default ||
-  config?.models?.heartbeat?.subagents?.["hb-extract"]
-);
+const hasConfiguredHeartbeatOrchestratorModel = Boolean(heartbeatOrchestratorModel);
 
 // --- Resolve openclaw invocation strategy ---
 // On Windows, we need to bypass the .cmd wrapper to preserve multi-line
@@ -589,7 +584,7 @@ function detectCronDrift(existing, spec) {
   if (!isOnNewFormat(existing?.payload)) {
     reasons.push("old-format");
   }
-  if (liveModel !== wantModel) {
+  if (wantModel && liveModel !== wantModel) {
     reasons.push(`model:${liveModel || "(none)"}->${wantModel || "(none)"}`);
   }
   if ((existing?.description || "") !== spec.description) {
@@ -621,6 +616,23 @@ function detectCronDrift(existing, spec) {
 
 // --- Build full cron spec (for add / dry-run) ---
 function buildCronSpec() {
+  const payload = {
+    kind: "agentTurn",
+    message: buildPayloadMessage({
+      workspace: WORKSPACE,
+      agentId,
+      session,
+      labelPrefix,
+    }),
+    thinking: "medium",
+    timeoutSeconds: 900,
+    lightContext: true,
+    toolsAllow: [...HEARTBEAT_TOOLS_ALLOW],
+  };
+  if (heartbeatOrchestratorModel) {
+    payload.model = heartbeatOrchestratorModel;
+  }
+
   return {
     name: cronName,
     description: cronDescription,
@@ -629,20 +641,7 @@ function buildCronSpec() {
     sessionTarget: "isolated",
     sessionKey: `agent:${agentId}:${session}`,
     wakeMode: "now",
-    payload: {
-      kind: "agentTurn",
-      message: buildPayloadMessage({
-        workspace: WORKSPACE,
-        agentId,
-        session,
-        labelPrefix,
-      }),
-      model: subagentModel,
-      thinking: "medium",
-      timeoutSeconds: 900,
-      lightContext: true,
-      toolsAllow: [...HEARTBEAT_TOOLS_ALLOW],
-    },
+    payload,
     delivery: {
       mode: "none",
     },
@@ -714,11 +713,9 @@ function actionInstall() {
   const existing = findCronJobByName(jobsData, cronName);
 
   if (existing) {
-    // A missing engram.json is valid for a fresh OSS install, but it must not
-    // silently replace an explicitly configured live model on an existing
-    // job with the generic fallback. Preserve the live value until a model
-    // is supplied by workspace config.
-    if (!hasConfiguredSubagentModel && existing?.payload?.model) {
+    // Without a dedicated orchestrator setting, preserve an explicitly
+    // configured live model. Subagent defaults must not affect this job.
+    if (!hasConfiguredHeartbeatOrchestratorModel && existing?.payload?.model) {
       spec.payload.model = existing.payload.model;
     }
     const drift = detectCronDrift(existing, spec);
@@ -750,20 +747,23 @@ function actionInstall() {
       spec.payload.message,
       "--tools",
       HEARTBEAT_TOOLS_ALLOW_CLI,
-      "--model",
-      subagentModel,
+    ];
+    if (heartbeatOrchestratorModel) {
+      editArgv.push("--model", heartbeatOrchestratorModel);
+    }
+    editArgv.push(
       "--thinking",
       "medium",
       "--timeout-seconds",
       "900",
-      "--light-context",
-    ];
+      "--light-context"
+    );
     if (repairRouting) {
       editArgv.push("--agent", spec.agentId, "--session-key", spec.sessionKey);
     }
     runOpenclaw(editArgv);
     console.log(
-      `✅ updated cron job ${existing.id} (drift: ${drift.join(", ")}; message+tools+model)`
+      `✅ updated cron job ${existing.id} (drift: ${drift.join(", ")}; message+tools${heartbeatOrchestratorModel ? "+model" : ""})`
     );
     return;
   }
@@ -784,8 +784,11 @@ function actionInstall() {
     `agent:${agentId}:${session}`,
     "--message",
     spec.payload.message,
-    "--model",
-    subagentModel,
+  ];
+  if (heartbeatOrchestratorModel) {
+    addArgv.push("--model", heartbeatOrchestratorModel);
+  }
+  addArgv.push(
     "--thinking",
     "medium",
     "--timeout-seconds",
@@ -794,8 +797,8 @@ function actionInstall() {
     "--tools",
     HEARTBEAT_TOOLS_ALLOW_CLI,
     "--no-deliver",
-    "--json",
-  ];
+    "--json"
+  );
   if (spec.schedule.kind === "every") {
     const minutes = Math.round(spec.schedule.everyMs / 60_000);
     addArgv.push("--every", `${minutes}m`);

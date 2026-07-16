@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Decoupled the heartbeat cron orchestrator model from subagent defaults. Configure it with `models.heartbeat.orchestrator` (or `ENGRAM_HEARTBEAT_ORCHESTRATOR_MODEL`); when unset, existing cron models are preserved and new jobs use the OpenClaw agent default.
+
 All notable changes to Engram are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

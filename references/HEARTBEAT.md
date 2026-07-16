@@ -39,6 +39,7 @@ Example `engram.json` override:
     "default": "<your-default-model>",
     "subagents_default": "<your-default-model>",
     "heartbeat": {
+      "orchestrator": "<your-cron-orchestrator-model>",
       "subagents": {
         "hb-extract": "<cheap-model>",
         "hb-synthesis": "<capable-model>"
@@ -49,6 +50,16 @@ Example `engram.json` override:
 ```
 
 **On `init.js`:** fresh installs auto-detect the model from `openclaw.json → agents.defaults.model.primary` and inject it into the new `engram.json` template (`assets/templates/engram.json`, placeholders `{AGENT_ID}`, `{COLLECTION_NAME}`, `{MODEL_ID}`).
+
+### Cron Orchestrator Model
+
+The cron agent turn is configured independently from the subagents it spawns:
+
+1. `ENGRAM_HEARTBEAT_ORCHESTRATOR_MODEL` — explicit environment override
+2. `engram.json → models.heartbeat.orchestrator` — dedicated workspace setting
+3. Unset — preserve the model of an existing cron job; for a new job omit `payload.model` so OpenClaw uses the agent's active/default model
+
+`install-cron.js` never infers the orchestrator model from `models.default`, `models.subagents_default`, or `models.heartbeat.subagents.*`.
 
 **Why this is configurable, not hardcoded:** Engram itself is model-agnostic — models are configured per-workspace in `engram.json` (see `models.default` and `models.heartbeat.subagents`). Hardcoding deployment-specific aliases (e.g. `m3`, `m2.7`) in the protocol would leak private infra and break for other users.
 
@@ -371,7 +382,7 @@ The installer:
 - Detects the existing job by `--cron-name` (default `Heartbeat (Engram runner) — <agent-id>`)
 - If the payload uses unique runtime labels and the durable-handoff/`expectsCompletionMessage=false` contract, prints `✅ already up to date` and exits 0
 - If the payload is on an older form, calls `openclaw cron edit <id> --name … --message … --tools …` to patch the prose and allow-list. It preserves `agentId`, schedule, `sessionTarget`, delivery, and `sessionKey`.
-- If no matching job exists, builds the full spec and calls `openclaw cron add …` with all flags (every 30m, model from `engram.json → models.subagents_default`, thinking medium, timeoutSeconds 900, lightContext true, no-deliver, isolated session)
+- If no matching job exists, builds the full spec and calls `openclaw cron add …` with all flags (every 30m, optional model from `engram.json → models.heartbeat.orchestrator`, thinking medium, timeoutSeconds 900, lightContext true, no-deliver, isolated session)
 - `--dry-run` prints the full spec JSON to stdout without invoking `openclaw` — useful for CI and for reviewing the spec before applying
 
 Exit codes: `0` success, `1` openclaw error, `2` bad args, `3` openclaw not on PATH.

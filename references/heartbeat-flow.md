@@ -119,6 +119,7 @@ Example `engram.json` override:
     "default": "<your-default-model>",
     "subagents_default": "<your-default-model>",
     "heartbeat": {
+      "orchestrator": "<your-cron-orchestrator-model>",
       "subagents": {
         "hb-extract": "<cheap-model>",
         "hb-synthesis": "<capable-model>"

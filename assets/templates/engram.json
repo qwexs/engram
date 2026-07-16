@@ -13,11 +13,12 @@
     ]
   },
   "models": {
-    "_comment": "Model ids for heartbeat subagents. Set 'default' to your preferred model — all subagents will use it unless overridden in heartbeat.subagents.",
+    "_comment": "Model ids for the heartbeat orchestrator and its subagents. The orchestrator is configured independently from subagent defaults.",
     "default": "{MODEL_ID}",
     "subagents_default": "{MODEL_ID}",
     "heartbeat": {
-      "_comment": "Per-label overrides. Only set labels that need a different model from 'default'. Labels: hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch",
+      "_comment": "The cron orchestrator model is independent. Per-label subagent overrides fall back to models.default. Labels: hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch",
+      "orchestrator": "{MODEL_ID}",
       "subagents": {
         "hb-extract": "{MODEL_ID}",
         "hb-synthesis": "{MODEL_ID}",

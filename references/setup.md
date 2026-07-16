@@ -64,7 +64,8 @@ an execution failure.
 agent turn uses the workspace's active model (whatever model the agent would
 pick for any other turn). To pin a specific model for the cron turn, add a
 `"model": "<model-id>"` field using a model id available in your OpenClaw
-runtime. Note that the heartbeat **subagents** (hb-extract, hb-synthesis,
+runtime, or set `engram.json → models.heartbeat.orchestrator` when using
+`install-cron.js`. Note that the heartbeat **subagents** (hb-extract, hb-synthesis,
 hb-domains, hb-rethink, hb-autoresearch, hb-rethink2) pick their own models
 separately via `engram.json → models.heartbeat.subagents` or the
 `ENGRAM_MODEL_<LABEL>` env vars; see SKILL.md §Subagent Model Resolution.

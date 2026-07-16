@@ -329,6 +329,7 @@ describe("install-cron.js", () => {
     expect(spec.payload.message).toContain(`workdir="${tmp}"`);
     expect(spec.payload.message).toContain("--label-prefix hb");
     expect(spec.payload.message).toContain("--agent-id main");
+    expect(spec.payload.model).toBeUndefined();
     // No openclaw calls recorded
     expect(readCallLog(fake.logFile)).toEqual([]);
   });
@@ -517,6 +518,77 @@ describe("install-cron.js", () => {
       (c) => c.args[0] === "cron" && c.args[1] === "edit"
     );
     expect(editCall).toBeUndefined();
+  });
+
+  test("6e. subagent model settings do not change the heartbeat orchestrator model", async () => {
+    writeFileSync(join(tmp, "engram.json"), JSON.stringify({
+      agent: "agent-main",
+      models: {
+        default: "provider/default-subagent",
+        subagents_default: "provider/legacy-subagent",
+        heartbeat: {
+          subagents: { "hb-extract": "provider/extract-subagent" },
+        },
+      },
+    }));
+    fake.setCronList({
+      jobs: [cronListJob({
+        id: "job-independent-orchestrator",
+        name: "Heartbeat (Engram runner) — main",
+        message: newPayload(tmp),
+        toolsAllow: ["exec", "sessions_spawn", "read"],
+        model: "provider/orchestrator-current",
+      })],
+      total: 1,
+    });
+    const r = await runInstallCron({
+      workspace: tmp,
+      args: ["install"],
+      extraEnv: envForFake(fake),
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("already up to date");
+    const editCall = readCallLog(fake.logFile).find(
+      (c) => c.args[0] === "cron" && c.args[1] === "edit"
+    );
+    expect(editCall).toBeUndefined();
+  });
+
+  test("6f. dedicated heartbeat orchestrator setting updates the cron model", async () => {
+    writeFileSync(join(tmp, "engram.json"), JSON.stringify({
+      agent: "agent-main",
+      models: {
+        default: "provider/default-subagent",
+        heartbeat: {
+          orchestrator: "provider/dedicated-orchestrator",
+          subagents: { "hb-extract": "provider/extract-subagent" },
+        },
+      },
+    }));
+    fake.setCronList({
+      jobs: [cronListJob({
+        id: "job-orchestrator-drift",
+        name: "Heartbeat (Engram runner) — main",
+        message: newPayload(tmp),
+        toolsAllow: ["exec", "sessions_spawn", "read"],
+        model: "provider/old-orchestrator",
+      })],
+      total: 1,
+    });
+    const r = await runInstallCron({
+      workspace: tmp,
+      args: ["install"],
+      extraEnv: envForFake(fake),
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("model:provider/old-orchestrator->provider/dedicated-orchestrator");
+    const editCall = readCallLog(fake.logFile).find(
+      (c) => c.args[0] === "cron" && c.args[1] === "edit"
+    );
+    expect(editCall).toBeDefined();
+    const modelIdx = editCall.args.indexOf("--model");
+    expect(modelIdx).toBeGreaterThan(-1);
+    expect(editCall.args[modelIdx + 1]).toBe("provider/dedicated-orchestrator");
   });
 
   test("7. install on existing job with old payload — emits 'cron edit' call, prints 'updated'", async () => {
@@ -759,7 +831,7 @@ describe("install-cron.js", () => {
     expect(argv).toContain("--session");
     expect(argv).toContain("isolated");
     expect(argv).toContain("--message");
-    expect(argv).toContain("--model");
+    expect(argv).not.toContain("--model");
     expect(argv).toContain("--thinking");
     expect(argv).toContain("medium");
     expect(argv).toContain("--timeout-seconds");
@@ -770,6 +842,26 @@ describe("install-cron.js", () => {
     const everyIdx = argv.indexOf("--every");
     expect(everyIdx).toBeGreaterThan(-1);
     expect(argv[everyIdx + 1]).toBe("30m");
+  });
+
+  test("18b. install on missing job pins the dedicated orchestrator model", async () => {
+    writeFileSync(join(tmp, "engram.json"), JSON.stringify({
+      agent: "agent-main",
+      models: { heartbeat: { orchestrator: "provider/dedicated-orchestrator" } },
+    }));
+    const r = await runInstallCron({
+      workspace: tmp,
+      args: ["install"],
+      extraEnv: envForFake(fake),
+    });
+    expect(r.exitCode).toBe(0);
+    const addCall = readCallLog(fake.logFile).find(
+      (c) => c.args[0] === "cron" && c.args[1] === "add"
+    );
+    expect(addCall).toBeDefined();
+    const modelIdx = addCall.args.indexOf("--model");
+    expect(modelIdx).toBeGreaterThan(-1);
+    expect(addCall.args[modelIdx + 1]).toBe("provider/dedicated-orchestrator");
   });
 
   test("19. install on missing job with --schedule '*/30 * * * *' — emits '--cron' (not '--every')", async () => {

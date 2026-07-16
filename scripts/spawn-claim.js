@@ -51,6 +51,7 @@ import {
   writeFileSync,
   unlinkSync,
 } from "node:fs";
+import { runtimeSpawnLabel } from "./spawn-lifecycle.js";
 
 const REQUIRED_FIELDS = ["runId", "phase", "label", "model", "task"];
 
@@ -156,6 +157,7 @@ for (const name of files) {
 
   payload.status = "spawned";
   payload.spawnedAt = now;
+  payload.runtimeLabel = payload.runtimeLabel || runtimeSpawnLabel(payload.label, payload.runId);
 
   const destPath = join(doneDir, name);
   try {
@@ -177,6 +179,7 @@ for (const name of files) {
     runId: payload.runId,
     phase: payload.phase,
     label: payload.label,
+    runtimeLabel: payload.runtimeLabel,
     model: payload.model,
     task: payload.task,
     requestPath: posixDestPath,
@@ -197,6 +200,7 @@ if (claimedRecords.length > 0) {
         ...(state.subagentRuns[rec.phase] || {}),
         status: "spawned",
         label: rec.label,
+        runtimeLabel: rec.runtimeLabel,
         runId: rec.runId,
         requestPath: rec.requestPath,
         spawnedAt: now,
@@ -220,6 +224,7 @@ for (const rec of claimedRecords) {
       runId: rec.runId,
       phase: rec.phase,
       label: rec.label,
+      runtimeLabel: rec.runtimeLabel,
       model: rec.model,
       task: rec.task,
       requestPath: rec.requestPath,

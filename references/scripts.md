@@ -31,11 +31,13 @@ Handles npm install, API key configuration, .env file creation, and verification
 bun skills/engram/scripts/install-cron.js [install|uninstall|status] [options]
 ```
 
-Provisions the OpenClaw cron job that drives the heartbeat. Idempotent: detects existing cron job by name, creates if missing, updates the payload to the current 4-step prose form if outdated. Does NOT touch agentId, schedule, model, or delivery config — only `name` and `payload.message`.
+Provisions the OpenClaw cron job that drives the heartbeat. The default name includes the logical agent id (`Heartbeat (Engram runner) — <agent-id>`) because cron jobs are gateway-global. It detects the matching job, creates it if missing, and upgrades it to the current durable-handoff prose form. Existing routing, schedule and delivery are preserved; message, tools allow-list and heartbeat model are synchronized.
 
 Use after `init.js`, or pass `--with-cron` to `init.js` to do both in one step.
 
 Since 2026-07-05 the canonical payload includes `--spawn-rethink --spawn-rethink2` so fresh installs bootstrap the OLL loop without manual seeding. `install-cron.js` detects old payloads via `NEW_PAYLOAD_MARKER_5` (`"--spawn-rethink --spawn-rethink2"`) in `isOnNewFormat()` and patches them on `install`.
+
+Since 2026-07-16 the payload dispatches each child with a unique `runtimeLabel` and `expectsCompletionMessage=false`. The child writes to the exact injected absolute `handoffPath` and returns `ANNOUNCE_SKIP` as fallback, avoiding retries against a finalized isolated cron session. `NEW_PAYLOAD_MARKER_6` plus the exact `toolsAllow` list force existing jobs onto this format.
 
 `scripts/validate.js` (cron drift guard) flags any heartbeat job still on the pre-2026-06-23 echo form. See [references/heartbeat-legacy.md §Prompt format history](heartbeat-legacy.md#prompt-format-history) for the two forms, measured impact, and migration steps.
 
@@ -356,7 +358,16 @@ OLL Phase 5.5 ставит в очередь `hb-rethink2` / `hb-autoresearch` �
 bun skills/engram/scripts/spawn-claim.js [--max <N>] [--label-prefix hb]
 ```
 
-Drain `spawn-pump` queue, для каждого claim'а запускает queued subagent через OpenClaw `sessions_spawn`. Claim-токен TTL предотвращает duplicate spawn. Used by Phase 5.5 orchestrator.
+Claims queued JSON records, assigns a unique per-run `runtimeLabel`, moves them to `done/` with `status: spawned`, and emits records for OpenClaw `sessions_spawn`. After a durable handoff is applied, the matching JSON transitions idempotently to `status: done`.
+
+## spawn-reconcile.js — Close stranded spawn records
+
+```bash
+bun skills/engram/scripts/spawn-reconcile.js --workspace <path> --older-than-hours 2
+bun skills/engram/scripts/spawn-reconcile.js --workspace <path> --older-than-hours 2 --apply
+```
+
+Dry-run by default. Finds `done/*.json` records still marked `spawned` without a matching handoff and, with `--apply`, marks old records `failed` with `legacy-missing-handoff`. Fresh records and records with a pending durable handoff are left untouched.
 
 ## process-handoff.js — HB subagent handoff processor
 

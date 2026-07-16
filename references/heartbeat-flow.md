@@ -66,9 +66,11 @@ For the complete heartbeat flow, see [references/HEARTBEAT.md](HEARTBEAT.md).
 
 ## Heartbeat cron provisioning
 
-The cron job that drives the heartbeat LLM agent is provisioned (and upgraded) by `scripts/install-cron.js`. Since 2026-06-23 the payload uses a concise Step 4 (no echo, decision tree on `runner.summary.status` and `warnings`, ≤512-token reply cap) — the canonical form lives in the `PROSE_TEMPLATE` constant in that script.
+The cron job that drives the heartbeat LLM agent is provisioned (and upgraded) by `scripts/install-cron.js`. The current payload runs the runner, claims queued work, spawns each child with a unique `runtimeLabel` and `expectsCompletionMessage=false`, then emits a concise final reply. Children persist to an injected absolute `handoffPath` and return `ANNOUNCE_SKIP` as fallback; the canonical form lives in `PROSE_TEMPLATE`.
 
 Since 2026-07-05 the canonical payload includes `--spawn-rethink --spawn-rethink2` so fresh installs bootstrap the OLL loop without manual seeding. `install-cron.js` detects old payloads via `NEW_PAYLOAD_MARKER_5` and patches them on `install`.
+
+Since 2026-07-16 `NEW_PAYLOAD_MARKER_6` requires the durable-handoff/`ANNOUNCE_SKIP` form. Successful apply moves the matching spawn record from `status: spawned` to `status: done`. `delivery.mode=none` remains unchanged.
 
 For a new workspace:
 

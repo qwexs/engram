@@ -111,19 +111,16 @@ Each spec should include:
 
 ### Step 6: Write handoff
 
-End your response with the HB-RETHINK HANDOFF block (MUST be your last output).
+Construct the HB-RETHINK HANDOFF block shown below. It will be persisted to disk, not returned through announce.
 
 ### Step 7: Persist handoff to disk (MANDATORY for apply)
 
-Before your final message, write the **exact** handoff block you produced
-in Step 6 to disk so the runner can apply it on the next tick:
+Write the **exact** handoff block you produced in Step 6 to disk so the runner can apply it on the next tick:
 
-- **Path:** `<workspace>/workspace/ops/heartbeat-spawns/handoff/<Run-Id>.md`
-  (the workspace path is given in the Runner Context JSON block below).
-  Use the `runId` value from the Runner Context.
+- **Path:** use the exact absolute `handoffPath` value from the Runner Context JSON block below. Do not derive, shorten, or normalize it yourself.
 - **Content:** the full text of the handoff, including the
   `=== HB-RETHINK HANDOFF ===` opener and the `=== END ===` closer.
-  Same body bytes as your final message.
+  These are the authoritative result bytes.
 - **Encoding:** UTF-8, LF line endings preferred.
 - **Overwrite** if the file already exists (e.g. on retry).
 
@@ -132,6 +129,10 @@ If you skip this step, the runner cannot apply your results —
 again on every heartbeat tick, wasting tokens. Persist the handoff
 even if you have no observations to report (empty analysis handoff
 still advances `lastRethink`).
+
+### Step 8: Suppress completion announce
+
+After the handoff file has been written successfully, your final response must be exactly `ANNOUNCE_SKIP` and nothing else. The cron requester is intentionally fire-and-forget; disk handoff is the only result transport.
 
 ---
 

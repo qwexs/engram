@@ -32,7 +32,7 @@ import {
 // imported as a non-entry-point module. This avoids re-running main()'s
 // side effects (cron state mutations, qmd discovery, etc.).
 import "../scripts/heartbeat-runner.js";
-const { shouldApplyDomainHandoffs, planSessionReconciliation } = globalThis.__engramHeartbeatRunnerExports;
+const { shouldApplyDomainHandoffs, isWorkerRunning, staleWorker, buildOllTask, planSessionReconciliation } = globalThis.__engramHeartbeatRunnerExports;
 
 describe("ISS-14: shouldApplyDomainHandoffs — drain-queue gate regression", () => {
   test("A1. default (no opts) → apply runs on every cron tick", () => {
@@ -95,5 +95,45 @@ describe("session auto-discovery reconciliation", () => {
     expect(plan.added).toEqual([]);
     expect(plan.toTrack).toEqual(["telegram-direct-1"]);
     expect(plan.patches["lastDailyNoteCreated.telegram-direct-1"]).toBeNull();
+  });
+});
+
+describe("subagent lifecycle guards", () => {
+  test("spawned is an active worker state", () => {
+    expect(isWorkerRunning({ subagentRuns: { "hb-rethink": { status: "spawned" } } }, "hb-rethink")).toBe(true);
+  });
+
+  test("terminal worker states do not block a new run", () => {
+    expect(isWorkerRunning({ subagentRuns: { "hb-rethink": { status: "done" } } }, "hb-rethink")).toBe(false);
+    expect(isWorkerRunning({ subagentRuns: { "hb-rethink": { status: "failed" } } }, "hb-rethink")).toBe(false);
+  });
+
+  test("domains-write stale check does not inherit rethink2 legacy lock", () => {
+    expect(staleWorker({ rethink2InProgress: true, rethink2StartedAt: "2020-01-01T00:00:00Z", subagentRuns: {} }, "hb-domains-write", null, 2)).toBe(false);
+  });
+
+  test("old spawned domains-write record is stale", () => {
+    expect(staleWorker({ subagentRuns: { "hb-domains-write": { status: "spawned", startedAt: "2020-01-01T00:00:00Z" } } }, "hb-domains-write", null, 2)).toBe(true);
+  });
+
+  test("OLL task injects exact handoffPath and suppresses announce", async () => {
+    const handoffPath = "/srv/ws/workspace/ops/heartbeat-spawns/handoff/hb-rethink-2026-07-16-aaaaaaaa.md";
+    const task = await buildOllTask("hb-rethink", {
+      session: "main",
+      date: "2026-07-16",
+      score: 0,
+      daysSinceRethink: 1,
+      reasons: ["test"],
+      observations: [],
+      tensions: [],
+      runId: "hb-rethink-2026-07-16-aaaaaaaa",
+      label: "hb-rethink",
+      workspace: "/srv/ws",
+      handoffPath,
+    });
+    expect(task).toContain(handoffPath);
+    expect(task).toContain("ANNOUNCE_SKIP");
+    expect(task).toContain(`"handoffPath": "${handoffPath}"`);
+    expect(task.trim().endsWith("ANNOUNCE_SKIP")).toBe(true);
   });
 });

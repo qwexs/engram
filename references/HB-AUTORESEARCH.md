@@ -110,15 +110,13 @@ These will be automatically written to OLL by the orchestrator.
 
 ### Step 7: Handoff
 
-End with the HB-AUTORESEARCH HANDOFF block (MUST be your last output).
+Construct the HB-AUTORESEARCH HANDOFF block shown below. It will be persisted to disk, not returned through announce.
 
 ### Step 8: Persist handoff to disk (MANDATORY for apply)
 
-Before your final message, write the **exact** handoff block you produced
-in Step 7 to disk so the runner can apply it on the next tick:
+Write the **exact** handoff block you produced in Step 7 to disk so the runner can apply it on the next tick:
 
-- **Path:** `<workspace>/workspace/ops/heartbeat-spawns/handoff/<Run-Id>.md`
-  Use the `runId` value from the Runner Context JSON block.
+- **Path:** use the exact absolute `handoffPath` value from the Runner Context JSON block. Do not derive it yourself.
 - **Content:** the full text of the handoff, including the
   `=== HB-AUTORESEARCH HANDOFF ===` opener and the `=== END ===` closer.
 - **Encoding:** UTF-8, LF line endings preferred.
@@ -126,6 +124,10 @@ in Step 7 to disk so the runner can apply it on the next tick:
 
 If you skip this step, the runner cannot clear `autoresearchInProgress`,
 blocking the autoresearch pipeline.
+
+### Step 9: Suppress completion announce
+
+After the handoff file has been written successfully, your final response must be exactly `ANNOUNCE_SKIP` and nothing else. Disk handoff is the only result transport.
 
 ```
 === HB-AUTORESEARCH HANDOFF ===

@@ -17,6 +17,7 @@ import { loadEngramConfig, resolveSubagentModel } from "./config.js";
 import { parseHandoff, applyHandoff, defaultHandoffHandlers } from "./process-handoff-core.js";
 import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary, shouldInlineNoopDailyNote, DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN } from "./domains-runner.js";
 import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerivedStatus, hasAutoDerivedMarker } from "./_lib/auto-derive-status.js";
+import { runtimeSpawnLabel, transitionSpawnRecord } from "./spawn-lifecycle.js";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -361,7 +362,7 @@ async function listPendingAutoExperiments() {
 
 function isWorkerRunning(state, phase) {
   const run = state.subagentRuns?.[phase];
-  return Boolean(run && (run.status === "running" || run.status === "queued"));
+  return Boolean(run && (run.status === "running" || run.status === "queued" || run.status === "spawned"));
 }
 
 function staleWorker(state, phase, legacyStartedAtKey, ttlHours) {
@@ -369,9 +370,11 @@ function staleWorker(state, phase, legacyStartedAtKey, ttlHours) {
     ? Boolean(state.rethinkInProgress)
     : phase === "hb-autoresearch"
       ? Boolean(state.autoresearchInProgress)
-      : Boolean(state.rethink2InProgress);
+      : phase === "hb-rethink2"
+        ? Boolean(state.rethink2InProgress)
+        : false;
   if (!legacyFlag && !isWorkerRunning(state, phase)) return false;
-  const startedAt = state.subagentRuns?.[phase]?.startedAt || state[legacyStartedAtKey] || null;
+  const startedAt = state.subagentRuns?.[phase]?.startedAt || (legacyStartedAtKey ? state[legacyStartedAtKey] : null) || null;
   return hoursSince(startedAt) > ttlHours;
 }
 
@@ -396,7 +399,7 @@ function toPosixPath(p) {
 async function queueSpawnRequest({ phase, runId, label, task, experimentId = null, model = resolveSubagentModel(workspace, label) }) {
   const dir = join(workspace, "workspace", "ops", "heartbeat-spawns");
   mkdirSync(dir, { recursive: true });
-  const payload = { runId, phase, label, model, cleanup: "delete", status: "queued", createdAt: localIso(), experimentId, task };
+  const payload = { runId, phase, label, runtimeLabel: runtimeSpawnLabel(label, runId), model, cleanup: "delete", status: "queued", createdAt: localIso(), experimentId, task };
   const path = join(dir, runId + ".json");
   await atomicWrite(path, JSON.stringify(payload, null, 2) + "\n");
   return { path: toPosixPath(path), payload };
@@ -480,6 +483,11 @@ async function buildOllTask(phase, context) {
     "```json",
     JSON.stringify(context, null, 2),
     "```",
+    "",
+    "## Completion Contract (MANDATORY — LAST INSTRUCTION)",
+    "First persist the complete handoff block to the exact absolute `handoffPath` above.",
+    "Then your entire final assistant response must be exactly the single token below, with no Markdown, heading, explanation, or handoff text:",
+    "ANNOUNCE_SKIP",
   ].join("\n");
 }
 
@@ -761,6 +769,17 @@ async function applyDomainHandoffs() {
         summary.warnings.push("hb-domains-write apply: " + file + " — moved to done failed: " + (err && err.message ? err.message : String(err)));
         continue;
       }
+      const runId = file.slice(0, -3);
+      const lifecycle = await transitionSpawnRecord({
+        spawnsDir,
+        runId,
+        phase: "hb-domains-write",
+        status: "done",
+        handoffPath: destPath,
+      });
+      if (!lifecycle.ok && lifecycle.error !== "record-not-found") {
+        summary.warnings.push("hb-domains-write lifecycle: " + file + " — " + lifecycle.error);
+      }
       applied++;
     } catch (err) {
       failed++;
@@ -854,6 +873,22 @@ async function applyRethinkHandoffs() {
         failed++;
         summary.warnings.push("hb-rethink apply: " + file + " — moved to done failed: " + (err && err.message ? err.message : String(err)));
         continue;
+      }
+      const runId = file.slice(0, -3);
+      const phaseByType = {
+        "HB-RETHINK": "hb-rethink",
+        "HB-RETHINK2": "hb-rethink2",
+        "HB-AUTORESEARCH": "hb-autoresearch",
+      };
+      const lifecycle = await transitionSpawnRecord({
+        spawnsDir,
+        runId,
+        phase: phaseByType[parsed.type],
+        status: "done",
+        handoffPath: destPath,
+      });
+      if (!lifecycle.ok && lifecycle.error !== "record-not-found") {
+        summary.warnings.push("hb-rethink lifecycle: " + file + " — " + lifecycle.error);
       }
       applied++;
     } catch (err) {
@@ -1018,15 +1053,18 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
     rethink: staleWorker(state, "hb-rethink", "rethinkStartedAt", ollStale.rethinkHours),
     autoresearch: staleWorker(state, "hb-autoresearch", "autoresearchStartedAt", ollStale.autoresearchHours),
     rethink2: staleWorker(state, "hb-rethink2", "rethink2StartedAt", ollStale.rethink2Hours),
+    domainsWrite: staleWorker(state, "hb-domains-write", null, ollStale.rethinkHours),
   };
 
   const recovered = [];
   if (opts["recover-stale-oll-locks"]) {
     const recoveryPatches = {};
+    const staleRecords = [];
     if (stale.rethink) {
       recoveryPatches.rethinkInProgress = false;
       recoveryPatches.rethinkStartedAt = null;
       recoveryPatches["subagentRuns.hb-rethink.status"] = "stale-reset";
+      staleRecords.push({ phase: "hb-rethink", runId: state.subagentRuns?.["hb-rethink"]?.runId });
       recovered.push("hb-rethink");
     }
     if (stale.autoresearch) {
@@ -1034,15 +1072,38 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
       recoveryPatches.autoresearchStartedAt = null;
       recoveryPatches.currentExperiment = null;
       recoveryPatches["subagentRuns.hb-autoresearch.status"] = "stale-reset";
+      staleRecords.push({ phase: "hb-autoresearch", runId: state.subagentRuns?.["hb-autoresearch"]?.runId });
       recovered.push("hb-autoresearch");
     }
     if (stale.rethink2) {
       recoveryPatches.rethink2InProgress = false;
       recoveryPatches.rethink2StartedAt = null;
       recoveryPatches["subagentRuns.hb-rethink2.status"] = "stale-reset";
+      staleRecords.push({ phase: "hb-rethink2", runId: state.subagentRuns?.["hb-rethink2"]?.runId });
       recovered.push("hb-rethink2");
     }
-    if (recovered.length > 0) state = await patchState(recoveryPatches);
+    if (stale.domainsWrite) {
+      recoveryPatches["subagentRuns.hb-domains-write.status"] = "stale-reset";
+      staleRecords.push({ phase: "hb-domains-write", runId: state.subagentRuns?.["hb-domains-write"]?.runId });
+      recovered.push("hb-domains-write");
+    }
+    if (recovered.length > 0) {
+      state = await patchState(recoveryPatches);
+      const spawnsDir = join(workspace, "workspace", "ops", "heartbeat-spawns");
+      for (const record of staleRecords) {
+        if (!record.runId) continue;
+        const lifecycle = await transitionSpawnRecord({
+          spawnsDir,
+          runId: record.runId,
+          phase: record.phase,
+          status: "failed",
+          error: "stale-missing-handoff",
+        });
+        if (!lifecycle.ok && lifecycle.error !== "record-not-found") {
+          summary.warnings.push("spawn lifecycle stale recovery: " + record.runId + " — " + lifecycle.error);
+        }
+      }
+    }
   }
 
   const rethinkInProgress = Boolean(state.rethinkInProgress);
@@ -1076,7 +1137,8 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
     if (!enabled || !due) return null;
     const label = spawnLabel(phase);
     const runId = spawnRunId(phase);
-    const task = await buildOllTask(phase, { ...context, runId, label, date: today, workspace });
+    const handoffPath = toPosixPath(join(workspace, "workspace", "ops", "heartbeat-spawns", "handoff", runId + ".md"));
+    const task = await buildOllTask(phase, { ...context, runId, label, date: today, workspace, handoffPath });
     const request = await queueSpawnRequest({ phase, runId, label, task, experimentId: context.experimentId || null });
     await markOllWorkerQueued({ phase, runId, label, requestPath: request.path, experimentId: context.experimentId || null });
     const queued = { phase, runId, label, requestPath: request.path, experimentId: context.experimentId || null };
@@ -1133,6 +1195,11 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
     const dueList = domainScan.domains.filter((d) => d && d.enabled && d.due);
     suppressedCount = dueList.filter((d) => d.suppressedByLastCheckedAt).length;
     let activeList = dueList.filter((d) => !d.suppressedByLastCheckedAt);
+    let workerDeferred = 0;
+    if (isWorkerRunning(state, "hb-domains-write")) {
+      workerDeferred = activeList.length;
+      activeList = [];
+    }
 
     // Inline noop apply: for topic-thread domains whose bound-session daily note
     // has an empty "## Events" section, advance lastCheckedAt via
@@ -1196,7 +1263,7 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
       activeList = stillDue;
     }
 
-    deferred = Math.max(0, activeList.length - batchSize);
+    deferred = workerDeferred + Math.max(0, activeList.length - batchSize);
     for (const due of activeList.slice(0, batchSize)) {
       const sessionKey = registryTopics[due.name] || null;
       const dailyNotePath = sessionKey ? notePathFor(sessionKey) : "";
@@ -1790,6 +1857,11 @@ if (!import.meta.main) {
     discoverQmdCollections,
     qmdCommandArgs,
     shouldApplyDomainHandoffs,
+    isWorkerRunning,
+    staleWorker,
+    buildOllTask,
+    runtimeSpawnLabel,
+    transitionSpawnRecord,
     planSessionReconciliation,
   };
 }

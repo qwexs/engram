@@ -3,11 +3,14 @@
 Read this document top to bottom and execute each phase sequentially.
 **State mutations:** use `bun skills/engram/scripts/heartbeat-state.js --set <path> <value>` for all state writes (`true`/`false`/`null`/numbers/JSON all parsed correctly). Read via `--get-all`.
 
-> **ARCHITECTURE NOTE — Fire-and-Forget**
-> `sessions_spawn` is asynchronous: it returns immediately and auto-announces via system message.
-> **Never poll or wait for a spawned subagent in the same response turn.**
-> The heartbeat run spawns subagents and returns `HEARTBEAT_OK` without waiting.
-> Subagent results are processed separately via the **Handoff Handler** (see below).
+> **ARCHITECTURE NOTE — durable handoff, suppressed announce**
+> `sessions_spawn` is asynchronous. The cron requester dispatches every claimed child and finishes
+> without waiting. Each child writes its handoff to the exact absolute `handoffPath` injected in
+> Runner Context. The spawn uses `expectsCompletionMessage=false`, so runtime does not register a
+> completion announce; the child also returns `ANNOUNCE_SKIP` as a compatibility fallback. This
+> intentionally suppresses completion announce
+> because isolated cron runs are finalized before long-running children complete. The next runner
+> tick applies the handoff idempotently and closes the spawn JSON lifecycle.
 
 ---
 
@@ -361,13 +364,13 @@ bun skills/engram/scripts/install-cron.js install --agent-id <id> --workspace <p
 bun skills/engram/scripts/init.js --with-cron --agent-id <id>
 ```
 
-This creates (or updates) a cron job named "Heartbeat (Engram runner)" with the 4-step prose payload (runner → spawn-claim → sessions_spawn → reply). Idempotent — safe to re-run. Schedule defaults to every 30 minutes.
+This creates (or updates) a cron job named `Heartbeat (Engram runner) — <agent-id>` with the 4-step prose payload (runner → spawn-claim → sessions_spawn → reply). Child results travel only through durable handoff files; completion announce is deliberately suppressed. The agent-specific name prevents one workspace from editing another workspace's global cron job. Idempotent — safe to re-run. Schedule defaults to every 30 minutes.
 
 The installer:
 
-- Detects the existing job by `--cron-name` (default `"Heartbeat (Engram runner)"`)
-- If the payload is already on the new 4-step prose form (contains both "Step 1 — Run the heartbeat runner" and "Step 2 — Drain the subagent-spawn queue"), prints `✅ already up to date` and exits 0
-- If the payload is on an older form (e.g. runner-only), calls `openclaw cron edit <id> --name … --message …` to patch the prose. **Does NOT touch** `agentId`, `schedule`, `model`, `thinking`, `timeoutSeconds`, `lightContext`, `sessionTarget`, `delivery`, or `sessionKey`
+- Detects the existing job by `--cron-name` (default `Heartbeat (Engram runner) — <agent-id>`)
+- If the payload uses unique runtime labels and the durable-handoff/`expectsCompletionMessage=false` contract, prints `✅ already up to date` and exits 0
+- If the payload is on an older form, calls `openclaw cron edit <id> --name … --message … --tools …` to patch the prose and allow-list. It preserves `agentId`, schedule, `sessionTarget`, delivery, and `sessionKey`.
 - If no matching job exists, builds the full spec and calls `openclaw cron add …` with all flags (every 30m, model from `engram.json → models.subagents_default`, thinking medium, timeoutSeconds 900, lightContext true, no-deliver, isolated session)
 - `--dry-run` prints the full spec JSON to stdout without invoking `openclaw` — useful for CI and for reviewing the spec before applying
 

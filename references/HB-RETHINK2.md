@@ -68,24 +68,26 @@ From research findings, identify new OLL signals:
 
 ### Step 6: Handoff
 
-End your response with the HB-RETHINK2 HANDOFF block (MUST be your last output).
+Construct the HB-RETHINK2 HANDOFF block shown below. It will be persisted to disk, not returned through announce.
 
 ### Step 7: Persist handoff to disk (MANDATORY for apply)
 
-Before your final message, write the **exact** handoff block you produced
-in Step 6 to disk so the runner can apply it on the next tick:
+Write the **exact** handoff block you produced in Step 6 to disk so the runner can apply it on the next tick:
 
-- **Path:** `<workspace>/workspace/ops/heartbeat-spawns/handoff/<Run-Id>.md`
-  Use the `runId` value from the Runner Context JSON block.
+- **Path:** use the exact absolute `handoffPath` value from the Runner Context JSON block. Do not derive it yourself.
 - **Content:** the full text of the handoff, including the
   `=== HB-RETHINK2 HANDOFF ===` opener and the `=== END ===` closer.
-  Same body bytes as your final message.
+  These are the authoritative result bytes.
 - **Encoding:** UTF-8, LF line endings preferred.
 - **Overwrite** if the file already exists.
 
 If you skip this step, the runner cannot apply your results —
 `rethink2InProgress` will not clear and `pendingRethink2` will not reset,
 blocking the autoresearch pipeline.
+
+### Step 8: Suppress completion announce
+
+After the handoff file has been written successfully, your final response must be exactly `ANNOUNCE_SKIP` and nothing else. Disk handoff is the only result transport.
 
 ```
 === HB-RETHINK2 HANDOFF ===

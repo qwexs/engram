@@ -243,17 +243,19 @@ function cronListJob({ id, name, message, toolsAllow }) {
   };
 }
 
-const NEW_PAYLOAD = `You are the cron job for the Clawd engram heartbeat.
+function newPayload(workspace = "/tmp/ws", agentId = "main") { return `You are the cron job for the Clawd engram heartbeat.
 
 Step 1 — Run the heartbeat runner:
-Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace /tmp/ws --agent-id work --session main --all-active-sessions --timeout-ms 300000 --label-prefix work-hb"
+Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace ${workspace} --agent-id ${agentId} --session main --label-prefix hb --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2"
 
 Step 2 — Drain the subagent-spawn queue (Phase 5.5):
-Call tools.shell_command with command="bun ./skills/engram/scripts/spawn-claim.js --workspace /tmp/ws --agent-id work"
-workdir="/tmp/ws" timeout_ms=60000.
+Call tools.shell_command with command="bun ./skills/engram/scripts/spawn-claim.js --workspace ${workspace} --agent-id ${agentId}"
+workdir="${workspace}" timeout_ms=60000.
 
 Step 3 — For each line in claim.stdout that parses as JSON with action="spawn":
-Call tools.sessions_spawn(...).
+Call tools.sessions_spawn with label=<rec.runtimeLabel>, expectsCompletionMessage=false.
+
+Children persist the exact absolute handoffPath and finish with \`ANNOUNCE_SKIP\`.
 
 Step 4 — Final reply (CONCISE, NO ECHO):
 Delivery is \`none\` — your reply is only stored in the session log, never sent to a chat. Keep it short.
@@ -261,7 +263,7 @@ Delivery is \`none\` — your reply is only stored in the session log, never sen
 Look at \`runner.summary.status\` and \`runner.summary.warnings\`:
 - status == "ok" and warnings empty → reply EXACTLY: \`HEARTBEAT_OK\`
 - status == "ok" with warnings → reply with up to 5 one-liners, then \`HEARTBEAT_OK\`
-- status == "error" → reply with up to 2 one-liners, then \`NO_REPLY\``;
+- status == "error" → reply with up to 2 one-liners, then \`NO_REPLY\``; }
 
 const OLD_PAYLOAD = `Run the heartbeat. One command:
 bun ./skills/engram/scripts/heartbeat-runner.js --workspace /tmp/ws
@@ -309,13 +311,17 @@ describe("install-cron.js", () => {
     });
     expect(r.exitCode).toBe(0);
     const spec = JSON.parse(r.stdout);
-    expect(spec.name).toBe("Heartbeat (Engram runner)");
+    expect(spec.name).toBe("Heartbeat (Engram runner) — main");
     expect(spec.agentId).toBe("main");
     expect(spec.schedule).toEqual({ kind: "every", everyMs: 1800000 });
     expect(spec.sessionTarget).toBe("isolated");
     expect(spec.payload.kind).toBe("agentTurn");
     expect(spec.payload.message).toContain("Step 1 — Run the heartbeat runner");
     expect(spec.payload.message).toContain("Step 2 — Drain the subagent-spawn queue");
+    expect(spec.payload.message).toContain("expectsCompletionMessage=false");
+    expect(spec.payload.message).toContain("label=<rec.runtimeLabel>");
+    expect(spec.payload.message).not.toContain("tools.sessions_yield");
+    expect(spec.payload.toolsAllow).toEqual(["exec", "sessions_spawn", "read"]);
     expect(spec.payload.message).toContain(`workdir="${tmp}"`);
     expect(spec.payload.message).toContain("--label-prefix hb");
     expect(spec.payload.message).toContain("--agent-id main");
@@ -325,7 +331,7 @@ describe("install-cron.js", () => {
 
   test("3. status: with mock job — prints job state JSON", async () => {
     fake.setCronList({
-      jobs: [cronListJob({ id: "abc-123", name: "Heartbeat (Engram runner)", message: NEW_PAYLOAD })],
+      jobs: [cronListJob({ id: "abc-123", name: "Heartbeat (Engram runner) — main", message: newPayload() })],
       total: 1,
     });
     const r = await runInstallCron({
@@ -336,7 +342,7 @@ describe("install-cron.js", () => {
     expect(r.exitCode).toBe(0);
     const parsed = JSON.parse(r.stdout);
     expect(parsed.id).toBe("abc-123");
-    expect(parsed.name).toBe("Heartbeat (Engram runner)");
+    expect(parsed.name).toBe("Heartbeat (Engram runner) — main");
     expect(parsed.payload.message).toContain("Step 1 — Run the heartbeat runner");
   });
 
@@ -383,8 +389,8 @@ describe("install-cron.js", () => {
       jobs: [
         cronListJob({
           id: "job-new-1",
-          name: "Heartbeat (Engram runner)",
-          message: NEW_PAYLOAD,
+          name: "Heartbeat (Engram runner) — main",
+          message: newPayload(tmp),
           toolsAllow: ["exec", "sessions_spawn", "read"],
         }),
       ],
@@ -415,7 +421,7 @@ describe("install-cron.js", () => {
     // the new message format but no toolsAllow. install-cron must
     // detect the divergence and patch via `cron edit --tools`.
     fake.setCronList({
-      jobs: [cronListJob({ id: "job-no-tools", name: "Heartbeat (Engram runner)", message: NEW_PAYLOAD })],
+      jobs: [cronListJob({ id: "job-no-tools", name: "Heartbeat (Engram runner) — main", message: newPayload(tmp) })],
       total: 1,
     });
     const r = await runInstallCron({
@@ -425,7 +431,7 @@ describe("install-cron.js", () => {
     });
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain("updated");
-    expect(r.stdout).toContain("tools allow-list");
+    expect(r.stdout).toContain("old-format");
     expect(r.stdout).toContain("job-no-tools");
     const calls = readCallLog(fake.logFile);
     const editCall = calls.find(
@@ -441,7 +447,7 @@ describe("install-cron.js", () => {
 
   test("7. install on existing job with old payload — emits 'cron edit' call, prints 'updated'", async () => {
     fake.setCronList({
-      jobs: [cronListJob({ id: "job-old-1", name: "Heartbeat (Engram runner)", message: OLD_PAYLOAD })],
+      jobs: [cronListJob({ id: "job-old-1", name: "Heartbeat (Engram runner) — main", message: OLD_PAYLOAD })],
       total: 1,
     });
     const r = await runInstallCron({
@@ -462,7 +468,7 @@ describe("install-cron.js", () => {
     const messageIdx = editCall.args.indexOf("--message");
     expect(nameIdx).toBeGreaterThan(-1);
     expect(messageIdx).toBeGreaterThan(-1);
-    expect(editCall.args[nameIdx + 1]).toBe("Heartbeat (Engram runner)");
+    expect(editCall.args[nameIdx + 1]).toBe("Heartbeat (Engram runner) — main");
     expect(editCall.args[messageIdx + 1]).toContain(
       "Step 1 — Run the heartbeat runner"
     );
@@ -472,6 +478,7 @@ describe("install-cron.js", () => {
     // Verify the FULL multi-line message is preserved (not truncated by cmd.exe).
     // This is the regression test for the Windows/cmd.exe newline bug.
     expect(editCall.args[messageIdx + 1]).toContain("Step 3 — For each line");
+    expect(editCall.args[messageIdx + 1]).toContain("expectsCompletionMessage=false");
     expect(editCall.args[messageIdx + 1]).toContain("Step 4 — Final reply");
     const addCall = calls.find(
       (c) => c.args[0] === "cron" && c.args[1] === "add"
@@ -529,7 +536,7 @@ describe("install-cron.js", () => {
 
   test("11. uninstall with existing job — emits 'cron rm <id>', prints 'removed'", async () => {
     fake.setCronList({
-      jobs: [cronListJob({ id: "rm-target-1", name: "Heartbeat (Engram runner)", message: NEW_PAYLOAD })],
+      jobs: [cronListJob({ id: "rm-target-1", name: "Heartbeat (Engram runner) — main", message: newPayload() })],
       total: 1,
     });
     const r = await runInstallCron({
@@ -672,7 +679,7 @@ describe("install-cron.js", () => {
     expect(addCall).toBeDefined();
     const argv = addCall.args;
     expect(argv).toContain("--name");
-    expect(argv).toContain("Heartbeat (Engram runner)");
+    expect(argv).toContain("Heartbeat (Engram runner) — main");
     expect(argv).toContain("--agent");
     expect(argv).toContain("main");
     expect(argv).toContain("--session");
@@ -892,7 +899,7 @@ describe("install-cron.js", () => {
       ENGRAM_WORKSPACE: tmp,
       ENGRAM_OPENCLAW_NODE_SCRIPT: "",
       ENGRAM_OPENCLAW: "",
-      PATH: "/usr/bin:/bin",
+      PATH: join(tmp, "empty-path"),
     };
     const proc = Bun.spawn({
       cmd,

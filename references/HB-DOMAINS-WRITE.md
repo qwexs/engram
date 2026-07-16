@@ -144,14 +144,12 @@ the domain will re-fire on the next tick.
 
 ### Step 8: Persist handoff to disk (MANDATORY for apply)
 
-Before your final message, write the **exact** handoff block you produced
-in Step 6 or Step 7 to disk so the runner can apply it on the next tick:
+Write the **exact** handoff block you produced in Step 6 or Step 7 to disk so the runner can apply it on the next tick:
 
-- **Path:** `<workspace>/workspace/ops/heartbeat-spawns/handoff/<Run-Id>.md`
-  (the workspace path is given in the runtime context above).
+- **Path:** use the exact absolute `handoffPath` value from the Runner Context. Do not derive it yourself.
 - **Content:** the full text of the handoff, including the
   `=== HB-DOMAINS HANDOFF ===` opener and the `=== END ===` closer.
-  Same body bytes as your final message.
+  These are the authoritative result bytes.
 - **Encoding:** UTF-8, LF line endings preferred.
 - **Overwrite** if the file already exists (e.g. on retry).
 
@@ -179,8 +177,8 @@ suppress the domain for the next cadence window.
 6. **Cross-domain writes are forbidden.** Only write to this domain's
    files. Never edit other domains or workspace-level files.
 7. **No Telegram / external posts.** Just write the handoff and stop.
-8. **Fire-and-forget.** Your final message must be the handoff block.
-   Do not include prose after the handoff.
+8. **Fire-and-forget.** After the handoff file is written successfully,
+   your final message must be exactly `ANNOUNCE_SKIP` and nothing else.
 9. **Use Russian for entries** if the existing changelog.md is in
    Russian (which is the default for this workspace's domains; match the
    existing language and tone of each domain's existing entries).
@@ -188,6 +186,6 @@ suppress the domain for the next cadence window.
     file the runner cannot advance `lastCheckedAt`, and your work will be
     re-processed on every tick until a handoff file is picked up.
 
-## Handoff (MUST be your LAST output)
+## Handoff (MUST be persisted before final output)
 
-Either the full handoff (Step 6) or the no-events handoff (Step 7).
+Persist either the full handoff (Step 6) or the no-events handoff (Step 7), then return `ANNOUNCE_SKIP`.

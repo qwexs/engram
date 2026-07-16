@@ -9,7 +9,7 @@
  *   1. shell_command: bun skills/engram/scripts/heartbeat-runner.js ...
  *   2. shell_command: bun skills/engram/scripts/spawn-claim.js ...
  *   3. for each JSON line with action="spawn": sessions_spawn(...)
- *   4. reply with runner output + "[phase-5.5] ..." + HEARTBEAT_OK
+ *   4. concise reply + "[phase-5.5] ..." + HEARTBEAT_OK
  *
  * This script is idempotent: re-running it detects drift (old payload
  * format, model mismatch vs engram.json, stale --agent-id / workspace,
@@ -67,7 +67,7 @@
  *   --workspace <path>    Workspace path (default: $ENGRAM_WORKSPACE or cwd)
  *   --session <key>       Session key for runner (default: main)
  *   --label-prefix <p>    Label prefix for spawned subagents (default: hb)
- *   --cron-name <name>    Job name to look for (default: "Heartbeat (Engram runner)")
+ *   --cron-name <name>    Job name (default: "Heartbeat (Engram runner) — <agent-id>")
  *   --schedule <expr>     Schedule: "30m" (default), "5m", "1h", or cron expr
  *   --dry-run             Print cron job spec JSON, no openclaw calls
  *   -h, --help            Show this help
@@ -160,7 +160,7 @@ Options:
   --workspace <path>    Workspace path (default: \$ENGRAM_WORKSPACE or cwd)
   --session <key>       Session key (default: main)
   --label-prefix <p>    Label prefix for spawned subagents (default: hb)
-  --cron-name <name>    Job name to look for (default: "Heartbeat (Engram runner)")
+  --cron-name <name>    Job name (default: "Heartbeat (Engram runner) — <agent-id>")
   --schedule <expr>     Schedule: "30m" (default), "5m", "1h", or cron expr
   --dry-run             Print cron job spec JSON, no openclaw calls
   -h, --help            Show this help
@@ -200,7 +200,10 @@ const agentId =
   args["agent-id"] || config.agent.replace(/^agent-/, "") || "main";
 const session = args.session || "main";
 const labelPrefix = args["label-prefix"] || "hb";
-const cronName = args["cron-name"] || "Heartbeat (Engram runner)";
+// Cron jobs are global to the gateway, while Engram workspaces are not.
+// A shared default name makes a second workspace edit the first workspace's
+// job. Include the logical Engram agent id so fresh installs are isolated.
+const cronName = args["cron-name"] || `Heartbeat (Engram runner) — ${agentId}`;
 const schedule = args.schedule || "30m";
 const dryRun = !!args["dry-run"];
 
@@ -434,7 +437,9 @@ The runner enqueues subagent spawn requests into workspace/ops/heartbeat-spawns/
 Call tools.shell_command with command="bun ./skills/engram/scripts/spawn-claim.js --workspace <WORKSPACE> --agent-id <AGENT_ID>", workdir="<WORKSPACE>", timeout_ms=60000. Capture the output as \`claim\`.
 
 Step 3 — For each line in \`claim.stdout\` that parses as JSON with action="spawn":
-Call tools.sessions_spawn with task=<rec.task>, label=<rec.label>, model=<rec.model>, cleanup="delete", cwd="<WORKSPACE>". Count successful calls as \`spawnedCount\`. Ignore the final {action:"summary",...} line and any non-spawn lines.
+Call tools.sessions_spawn with task=<rec.task>, label=<rec.runtimeLabel>, model=<rec.model>, cleanup="delete", cwd="<WORKSPACE>", expectsCompletionMessage=false. Count successful calls as \`spawnedCount\`. \`rec.runtimeLabel\` is unique per run; do not replace it with the stable phase label in \`rec.label\`. Ignore the final {action:"summary",...} line and any non-spawn lines.
+
+The exact absolute handoffPath embedded in each child task is the authoritative result transport. \`expectsCompletionMessage=false\` prevents runtime from registering a completion announce; children also finish with \`ANNOUNCE_SKIP\` as a compatibility fallback. Do not poll, wait, call sessions_yield, parse, or apply a child result in this cron turn — the next heartbeat-runner tick applies durable handoffs idempotently.
 
 Step 4 — Final reply (CONCISE, NO ECHO):
 Delivery is \`none\` — your reply is only stored in the session log, never sent to a chat. Keep it short.
@@ -486,6 +491,10 @@ const NEW_PAYLOAD_MARKER_4 = "--all-active-sessions --timeout-ms 300000";
 // цена нулевая пока триггеры не сработали. Закрывает OLL bootstrap chicken-and-egg loop
 // на свежих установках.
 const NEW_PAYLOAD_MARKER_5 = "--spawn-rethink --spawn-rethink2";
+// 2026-07-16+: unique labels plus disk-authoritative handoff. Children end
+// with ANNOUNCE_SKIP because isolated cron sessions cannot receive completion
+// reliably after their turn is finalized.
+const NEW_PAYLOAD_MARKER_6 = "expectsCompletionMessage=false";
 
 function buildPayloadMessage({ workspace, agentId, session, labelPrefix }) {
   return PROSE_TEMPLATE
@@ -503,6 +512,7 @@ function isOnNewFormat(payload) {
     payload.message.includes(NEW_PAYLOAD_MARKER_3) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_4) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_5) &&
+    payload.message.includes(NEW_PAYLOAD_MARKER_6) &&
     // toolsAllow must be present and match HEARTBEAT_TOOLS_ALLOW.
     // If absent (older install) or divergent, we re-apply via edit.
     Array.isArray(payload.toolsAllow) &&

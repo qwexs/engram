@@ -463,12 +463,19 @@ function collectMetaDomainCollections(registry, engram) {
   return refs;
 }
 
-function expectedMaintenanceCollections(workspace, registry, engram) {
+function expectedMaintenanceCollections(workspace, registry, engram, indexCollections = new Map()) {
   const expected = new Set(["openclaw-root", "life"]);
   const primary = engram?.qmd?.collection ? String(engram.qmd.collection) : "";
   if (primary) {
     expected.add(primary);
     if (primary.endsWith("-memory")) expected.add(primary.replace(/-memory$/, "-domains"));
+  }
+  const workspaceKg = engram?.qmd?.workspaceKgCollection
+    ? String(engram.qmd.workspaceKgCollection)
+    : "";
+  if (workspaceKg) expected.add(workspaceKg);
+  for (const [name, meta] of indexCollections.entries()) {
+    if (meta?.path && isInsideDir(workspace, meta.path)) expected.add(name);
   }
   for (const slug of listDirs(join(workspace, "memory", "domains"))) {
     expected.add(`domain-${slug}`);
@@ -498,7 +505,8 @@ function checkQmdMaintenanceCollections(workspace, registry, engram, findings) {
     return;
   }
 
-  const expected = expectedMaintenanceCollections(workspace, registry, engram);
+  const indexCollections = readQmdIndexCollections(workspace, findings);
+  const expected = expectedMaintenanceCollections(workspace, registry, engram, indexCollections);
   const metaAccess = new Set(metaRefs.map((r) => r.collection));
   const overreach = maintenance
     .filter((collection) => metaAccess.has(collection) && !expected.has(collection))

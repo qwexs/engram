@@ -220,6 +220,46 @@ describe("workspace watchdog core", () => {
     expect(codes(report)).not.toContain("WD-QMD-009");
   });
 
+  test("accepts custom-named maintenance collections owned by the audited workspace", () => {
+    writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+      agent: "agent-alpha",
+      qmd: {
+        command: "qmd",
+        index: "alpha",
+        workspaceKgCollection: "alpha-life",
+        collections: ["alpha-life", "alpha-outline", "child-topic-memory"],
+      },
+      cron: { expectedJobName: "Heartbeat (Alpha Engram runner)" },
+    }, null, 2) + "\n");
+    writeFileSync(join(workspace, "memory", "domains", "registry.json"), JSON.stringify({
+      domains: {
+        general: {
+          type: "meta-domain",
+          topic: { chatId: "-1001", topicId: "1" },
+          qmdCollections: ["alpha-life", "alpha-outline", "child-topic-memory"],
+        },
+      },
+    }, null, 2) + "\n");
+    mkdirSync(join(workspace, "memory", "domains", "general"), { recursive: true });
+    mkdirSync(join(workspace, ".qmd"), { recursive: true });
+    writeFileSync(join(workspace, ".qmd", "index.yml"), `collections:
+  alpha-life:
+    path: ${join(workspace, "life")}
+    pattern: "**/*.md"
+  alpha-outline:
+    path: ${join(workspace, "docs")}
+    pattern: "**/*.md"
+  child-topic-memory:
+    path: ${join(workspace, "memory", "agent-alpha", "topic-2")}
+    pattern: "**/*.md"
+models:
+  embed: test
+`);
+
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).not.toContain("WD-QMD-009");
+  });
+
   test("QMD parser captures path, pattern, and zero-file collections", () => {
     const parsed = parseQmdCollections(`Collections (2):
 

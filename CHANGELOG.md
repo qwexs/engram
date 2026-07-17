@@ -41,6 +41,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [references/meta-domain.md](references/meta-domain.md).
 
 ### Fixed
+- `watchdog` no longer reports workspace-owned, custom-named QMD collections as
+  vertical child overreach (`WD-QMD-009`). Ownership is resolved from the
+  workspace-local `.qmd/index.yml`; external child collections remain flagged.
 - `domains-runner.js` `parseHandoffField` / `parseJsonStrict`: accept LLM-style
   fenced ` ```json ` blocks for `Base-Hashes` and `Changelog-Entries`. The old
   single-line regex used `\s*` after the colon, which swallowed the newline and

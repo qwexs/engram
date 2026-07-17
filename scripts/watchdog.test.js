@@ -12,7 +12,12 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { auditWorkspace, parseQmdCollections, parseQmdIndexCollections } from "./_lib/workspace-watchdog.js";
+import {
+  auditWorkspace,
+  parseQmdCollections,
+  parseQmdIndexCollections,
+  qmdCollectionListArgs,
+} from "./_lib/workspace-watchdog.js";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "watchdog.js");
 let workspace;
@@ -258,6 +263,13 @@ models:
 
     const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(codes(report)).not.toContain("WD-QMD-009");
+  });
+
+  test("QMD collection listing uses the workspace named index", () => {
+    expect(qmdCollectionListArgs({ qmd: { index: "alpha" } })).toEqual([
+      "--index", "alpha", "collection", "list",
+    ]);
+    expect(qmdCollectionListArgs({ qmd: {} })).toEqual(["collection", "list"]);
   });
 
   test("QMD parser captures path, pattern, and zero-file collections", () => {

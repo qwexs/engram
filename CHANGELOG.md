@@ -41,6 +41,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [references/meta-domain.md](references/meta-domain.md).
 
 ### Fixed
+- `watchdog` now passes `engram.json`'s `qmd.index` to `qmd collection list`,
+  so named-index workspaces are audited against their own collections instead
+  of the default QMD index.
 - `watchdog` no longer reports workspace-owned, custom-named QMD collections as
   vertical child overreach (`WD-QMD-009`). Ownership is resolved from the
   workspace-local `.qmd/index.yml`; external child collections remain flagged.

@@ -367,6 +367,14 @@ function runValidate(workspace, findings) {
   }
 }
 
+export function qmdCollectionListArgs(engram) {
+  const args = [];
+  const index = engram?.qmd?.index ? String(engram.qmd.index) : "";
+  if (index) args.push("--index", index);
+  args.push("collection", "list");
+  return args;
+}
+
 function checkQmd(workspace, registry, engram, findings, options = {}) {
   const qmd = resolveQmdCommand(workspace);
   const refs = [...collectRegistryQmdRefs(registry), ...collectEngramQmdRefs(engram)];
@@ -374,7 +382,7 @@ function checkQmd(workspace, registry, engram, findings, options = {}) {
 
   const list = options.qmdListStdout != null
     ? { status: 0, stdout: String(options.qmdListStdout), stderr: "", error: null }
-    : runCommand(qmd, ["collection", "list"], workspace, 30000);
+    : runCommand(qmd, qmdCollectionListArgs(engram), workspace, 30000);
   if (list.error || list.status !== 0) {
     findings.push(makeFinding({
       code: "WD-QMD-000",

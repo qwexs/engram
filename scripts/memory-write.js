@@ -69,6 +69,12 @@ if (!VALID_CATEGORIES.includes(opts.category)) {
   process.exit(1);
 }
 
+const confidence = opts.confidence === undefined ? 0.8 : Number(opts.confidence);
+if (typeof opts.confidence === "boolean" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+  console.error("❌ --confidence должен быть числом от 0 до 1");
+  process.exit(1);
+}
+
 const entity = opts.entity.replace(/\\/g, "/");
 const entityDir = join(WORKSPACE, "life", entity);
 const itemsPath = join(entityDir, "items.json");
@@ -243,7 +249,7 @@ const newFact = {
   fact: opts.fact,
   ...(description !== undefined && { description }),
   category: opts.category,
-  confidence: parseFloat(opts.confidence || "0.8"),
+  confidence,
   abstractionLevel: opts.abstraction || "episode",
   tags: opts.tags ? opts.tags.split(",").map(t => t.trim()) : [],
   timestamp: today,

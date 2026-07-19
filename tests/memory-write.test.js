@@ -125,6 +125,19 @@ describe("memory-write — argument validation", () => {
       expect(result?.fact?.category).toBe(cat);
     }
   }, 30000);
+
+  test.each(["null", "NaN", "Infinity", "-0.1", "1.01"])("rejects invalid confidence %s before writing", async (confidence) => {
+    createEntity();
+    const { exitCode, stderr } = await run([
+      "--entity", TEST_ENTITY,
+      "--fact", `Invalid confidence ${confidence}`,
+      "--category", "context",
+      "--confidence", confidence,
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--confidence должен быть числом от 0 до 1");
+    expect(readItems().facts).toEqual([]);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────

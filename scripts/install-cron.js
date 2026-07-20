@@ -499,7 +499,7 @@ Look at \`runner.summary.status\` and \`runner.summary.warnings\` (the JSON has 
 - status == "error" → reply with up to 2 one-liners summarizing the first failures (≤200 chars each), then \`NO_REPLY\`
 If \`claim.stdout\` was non-empty, append one final line: \`[phase-5.5] scanned N, claimed M, errors E, spawned K\` (use the {action:"summary",...} JSON line).
 
-Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or any tool result verbatim. Do NOT call any tool beyond what is specified above. The whole reply must fit in ≤512 tokens.`;
+Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or any tool result verbatim. Do NOT call any tool beyond what is specified above. Do NOT use exec to run sleep or any polling loop. The whole reply must fit in ≤512 tokens.`;
 
 // --- Heartbeat tool allow-list ---
 // The heartbeat cron-job is a deterministic runner: it shells out to

@@ -117,10 +117,12 @@ Render `memory/domains/{slug}/agents.md` из `templates/spawn-prompts/_shared/a
 ## memory-repair.js — Repair corrupted items.json
 
 ```bash
-bun skills/engram/scripts/memory-repair.js [--dry-run] [--entity <path>]
+bun skills/engram/scripts/memory-repair.js --entity <path> --id <fact-id> \
+  [--confidence <0-1>] [--abstraction episode|pattern|principle] [--dry-run]
 ```
 
-Repair corrupted `items.json`: orphaned `supersedeBy`, broken date, missing confidence/abstractionLevel/tags. Backfill v2 schema defaults. Idempotent.
+Repair schema fields on an existing fact without changing its factual content.
+Supports confidence and abstractionLevel corrections. Idempotent.
 
 ## derive-facts.js — Build Derived Facts Layer
 

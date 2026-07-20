@@ -420,9 +420,11 @@ if (existsSync(domainsDir)) {
   }
   if (spawnPromptsUseWorkflow.size > 0) {
     for (const entry of domainEntries) {
-      // topic-thread domains are bound to a Telegram topic and never spawned,
-      // so spawn-prompts/{{workflow}} does not apply to them.
-      if (registeredDomainTypes && registeredDomainTypes[entry.name] === 'topic-thread') continue;
+      // Topic-thread and meta-domain entries are bound conversation contours,
+      // not spawnable worker domains, so spawn-prompts/{{workflow}} does not
+      // apply to them.
+      const domainType = registeredDomainTypes && registeredDomainTypes[entry.name];
+      if (domainType === 'topic-thread' || domainType === 'meta-domain') continue;
       const workflowPath = join(domainsDir, entry.name, 'workflow.md');
       if (!existsSync(workflowPath)) {
         warn(`Domain "${entry.name}" has no workflow.md (used by spawn-prompts: ${[...spawnPromptsUseWorkflow].join(', ')})`);

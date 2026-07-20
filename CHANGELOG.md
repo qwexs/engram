@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `memory-repair.js` can now repair invalid `abstractionLevel` values as well
+  as confidence, and its optional validation uses the workspace's configured
+  agent instead of forcing `main`.
+- `validate.js` no longer requests `workflow.md` for `meta-domain` conversation
+  contours, matching the existing topic-thread and domains-runner contracts.
 - Documented the QMD runtime boundary: indexes are SQLite files, CLI embeds
   are short-lived processes, and the embed lock is scoped to one physical
   index. Separate workspace indexes may embed concurrently, so host-level

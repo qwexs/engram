@@ -117,6 +117,7 @@ export function collectDailyCandidates(content) {
     if (!text || text.length < 12) continue;
     if (/^(Extraction|Synthesis|Domains|Maintenance):/i.test(text)) continue;
     if (/^Flag:/i.test(text)) continue;
+    if (isExtractionNoise(text, { source: "daily" })) continue;
 
     const category = section === "Decisions" ? "decision" : section === "Learnings" ? "context" : "milestone";
     candidates.push({ line: i + 1, section: section || "Events", text, category, source: "daily" });
@@ -175,8 +176,8 @@ export function collectSessionCandidates(file) {
     if (roleMatch && trimmed.length < 1000) {
       const role = roleMatch[1].toLowerCase();
       const text = trimmed.replace(/^(assistant|user|system)\s*:\s*/i, "").trim();
-      if (isSessionNoise(text, role)) continue;
-      const signal = classifyText(text);
+      if (isExtractionNoise(text, { role, source: "session" })) continue;
+      const signal = classifyText(text, { role });
       if (!signal) continue;
       candidates.push({ line: i + 1, section: "Session", text, category: signal, source: "session", sessionFile: file.name });
     }
@@ -184,22 +185,45 @@ export function collectSessionCandidates(file) {
   return candidates;
 }
 
-function isSessionNoise(text, role = "user") {
+const TECHNICAL_PROCESS_NOISE = [
+  /\b(?:embed|embedding)\s+process\b/i,
+  /\bqmd\s+embed\b/i,
+  /\bpid\s*[:=#]?\s*\d+\b/i,
+  /\bprocess\s*(?:\(\s*\d+\s*\)|#?\d+)?\s+(?:already\s+)?(?:finished|completed|exited|gone|running)\b/i,
+  /\bnetwork traffic\b/i,
+];
+
+function hasTechnicalProcessNoise(text) {
+  return TECHNICAL_PROCESS_NOISE.some((pattern) => pattern.test(text));
+}
+
+function hasDurableCompletionContext(text) {
+  return /(?:\b(?:deploy(?:ment|ed)?|release(?:d)?|migration|implementation|integration|upgrade|backup|feature|project|phase|milestone|configuration|setup|rollout|refactor|fix(?:ed)?|pipeline|workflow|service|server|application|app|database|schema|version)\b|д[её]плой|релиз|миграц|реализац|интеграц|обновлен|настройк|проект|этап|функц|исправлен|сервис|сервер|приложен|баз[аы]\s+данных|схем)/i.test(text);
+}
+
+function isExtractionNoise(text, { role = "user", source = "session" } = {}) {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized || normalized.length < 12) return true;
   if (/\b(Exec completed|Script completed|Script failed|Exit code:|Wall time:|stdout|stderr)\b/i.test(normalized)) return true;
   if (/\b(remote: !|deploy lock|Run 'apps:unlock'|Assertion failed|SyntaxError:)\b/i.test(normalized)) return true;
   if (/\[[0-9;]{1,12}m/.test(normalized)) return true;
   if (/^\[[0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}/.test(normalized)) return true;
+  // Shared guard for raw telemetry accidentally copied into either session
+  // summaries or structured daily-note Events.
+  if (hasTechnicalProcessNoise(normalized)) return true;
   if (role === "assistant") {
     if (/^(Готово|Ок|Да|Проверил|Сделал|Добавил|Исправил|Запустил)[.!,:\s]/i.test(normalized)) return true;
     if (/^(Now let me|Let me|I'll|I will|I’m going to|I am going to)\b/i.test(normalized)) return true;
     if (/\b(bun test|pass\s*\/\s*0 fail|tests? passed|зел[её]н(?:ый|ая)|full gate)\b/i.test(normalized)) return true;
+    // Bare assistant completion language is too easy to trigger from status
+    // narration. Keep real deploy/release/migration outcomes, reject generic
+    // "finished/completed" prose without durable project context.
+    if (/\b(finished|completed)\b/i.test(normalized) && !hasDurableCompletionContext(normalized)) return true;
   }
   return false;
 }
 
-function classifyText(text) {
+function classifyText(text, { role = "user" } = {}) {
   // Decision: explicit decisions, agreements, plans to act
   if (/(решил[аи]?|решили|принято решение|давай будем|будем делать|договорились|согласовали|утвердили|we decided|decision made|let\x27s go with|agreed to|approved)/i.test(text)) return "decision";
   // Preference: likes/dislikes, tool/language/framework choices
@@ -207,7 +231,8 @@ function classifyText(text) {
   // Correction: fixing wrong assumptions, clarifying
   if (/(на самом деле|поправ|correction|actually|I meant|не так|ошибся|исправил)/i.test(text)) return "correction";
   // Milestone: completed work, deployments, status changes
-  if (/(запустили|задеплоили|завершили|готово|deployed|launched|finished|released|completed|зафиксировал|обновил|настроил|проверил|добавил|удалил|исправил|починил|установил|создал|написал|сделал)/i.test(text)) return "milestone";
+  if (/(запустили|задеплоили|завершили|готово|deployed|launched|released|зафиксировал|обновил|настроил|проверил|добавил|удалил|исправил|починил|установил|создал|написал|сделал)/i.test(text)) return "milestone";
+  if (/\b(finished|completed)\b/i.test(text) && (role !== "assistant" || hasDurableCompletionContext(text))) return "milestone";
   // Context: notable findings, observations, status updates
   if (/(обнаружил|нашёл|выяснил|проверил|убедился|оказалось|статус|состояние|found out|discovered|turned out|status update)/i.test(text)) return "context";
   return null;

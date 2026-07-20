@@ -4,6 +4,11 @@
 // test runs can never read or mutate an operator's production QMD state.
 const args = process.argv.slice(2);
 
+if (process.env.FAKE_QMD_LOG) {
+  const { appendFileSync } = await import("node:fs");
+  appendFileSync(process.env.FAKE_QMD_LOG, JSON.stringify(args) + "\n");
+}
+
 if (args[0] === "--help") {
   console.log("fake-qmd");
   process.exit(0);
@@ -23,6 +28,13 @@ if (args[0] === "collection" && ["add", "remove"].includes(args[1])) {
 }
 
 if (["update", "embed"].includes(args[0])) {
+  process.exit(0);
+}
+
+if (args[0] === "query") {
+  const delayMs = Number(process.env.FAKE_QMD_QUERY_DELAY_MS || 0);
+  if (delayMs > 0) await Bun.sleep(delayMs);
+  console.log("[]");
   process.exit(0);
 }
 

@@ -34,12 +34,12 @@ function readItems() {
   return JSON.parse(readFileSync(join(TEST_ENTITY_DIR, "items.json"), "utf-8"));
 }
 
-async function run(args, cwd = ENGRAM_DIR) {
+async function run(args, cwd = ENGRAM_DIR, envOverrides = {}) {
   const proc = Bun.spawn(["bun", join(SCRIPTS_DIR, "memory-write.js"), ...args], {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ENGRAM_WORKSPACE: TEST_WORKSPACE },
+    env: { ...process.env, ENGRAM_WORKSPACE: TEST_WORKSPACE, ...envOverrides },
   });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -49,8 +49,8 @@ async function run(args, cwd = ENGRAM_DIR) {
   return { stdout, stderr, exitCode: proc.exitCode };
 }
 
-async function runJson(args) {
-  const { stdout, stderr, exitCode } = await run(args);
+async function runJson(args, envOverrides = {}) {
+  const { stdout, stderr, exitCode } = await run(args, ENGRAM_DIR, envOverrides);
   try {
     return { result: JSON.parse(stdout), stderr, exitCode };
   } catch {
@@ -598,6 +598,50 @@ const qmdIndexExists = existsSync(join(ENGRAM_DIR, ".qmd", "index.db")) ||
   existsSync(join(ENGRAM_DIR, "workspace", ".qmd", "index.db"));
 
 describe("memory-write — semantic check (qmd integration)", () => {
+  test("sanitizes/caps qmd query and keeps the exact fact in KG", async () => {
+    createEntity();
+    const qmdLog = join(TEST_WORKSPACE, "fake-qmd.log");
+    const fakeQmd = `bun ${join(import.meta.dir, "fixtures", "fake-qmd.js")}`;
+    const longFact = `Durable migration completed successfully ${"diagnostic-noise ".repeat(40)}`;
+    const { result } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", longFact,
+      "--category", "milestone",
+      "--semantic-check",
+    ], {
+      ENGRAM_QMD: fakeQmd,
+      FAKE_QMD_LOG: qmdLog,
+    });
+
+    expect(result.status).toBe("created");
+    expect(result.fact.fact).toBe(longFact);
+    const calls = readFileSync(qmdLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const queryCall = calls.find((call) => call[0] === "query");
+    expect(queryCall).toBeDefined();
+    expect(queryCall[1].length).toBeLessThanOrEqual(300);
+    expect(queryCall).toContain("-n");
+    expect(queryCall).toContain("10");
+  });
+
+  test("qmd query timeout is fail-open and does not affect qmd update/embed limits", async () => {
+    createEntity();
+    const fakeQmd = `bun ${join(import.meta.dir, "fixtures", "fake-qmd.js")}`;
+    const { result, exitCode } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Engram release migration completed with a bounded semantic check",
+      "--category", "milestone",
+      "--semantic-check",
+    ], {
+      ENGRAM_QMD: fakeQmd,
+      ENGRAM_QMD_QUERY_TIMEOUT_MS: "100",
+      FAKE_QMD_QUERY_DELAY_MS: "2000",
+    });
+
+    expect(exitCode).toBe(0);
+    expect(result.status).toBe("created");
+    expect(result.warnings?.semanticCheck?.[0]?.type).toBe("timeout");
+  });
+
   test("writes unique fact without semantic warnings", async () => {
     if (!qmdIndexExists) return; // skip: QMD index not available in this env
     createEntity();

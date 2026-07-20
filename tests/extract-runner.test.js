@@ -65,6 +65,37 @@ describe("extract-runner session candidates", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("rejects technical process telemetry from session and daily-note extraction", () => {
+    const incident = "The embed process (1508602) already finished — it's gone. Let me check network traffic.";
+    const sessionCandidates = collectSessionCandidates({
+      name: "2026-07-20-172903-incident.md",
+      content: `# Session: 2026-07-20 17:29:03 UTC\n\nassistant: ${incident}\n`,
+    });
+    expect(sessionCandidates).toHaveLength(0);
+
+    const daily = collectDailyCandidates(`# 2026-07-20\n\n## Events\n- ${incident}\n`);
+    expect(daily.candidates).toHaveLength(0);
+  });
+
+  test("keeps durable assistant completion milestones but rejects bare completion prose", () => {
+    const candidates = collectSessionCandidates({
+      name: "2026-07-20-180000-completion.md",
+      content: [
+        "# Session: 2026-07-20 18:00:00 UTC",
+        "",
+        "assistant: Production deployment finished successfully for the Engram release.",
+        "assistant: The operation finished successfully and is gone.",
+        "user: I finished the migration to the new memory schema.",
+      ].join("\n"),
+    });
+
+    expect(candidates.map((candidate) => candidate.text)).toEqual([
+      "Production deployment finished successfully for the Engram release.",
+      "I finished the migration to the new memory schema.",
+    ]);
+    expect(candidates.every((candidate) => candidate.category === "milestone")).toBe(true);
+  });
 });
 
 describe("extract-runner dry run", () => {

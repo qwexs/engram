@@ -192,7 +192,7 @@ bun skills/engram/scripts/memory-write.js --entity <path> --fact <text> --catego
 bun skills/engram/scripts/memory-write.js --access --entity <path> --id <fact-id>
 ```
 
-Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Use `--entity-create` to create new entities on the fly. Use `--access` mode to bump a fact's recency (important for decay tiers).
+Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Semantic dedup sanitizes and caps only the `qmd query` text and fails open after a 30-second query timeout; this limit does not apply to `qmd update` or `qmd embed`. Use `--entity-create` to create new entities on the fly. Use `--access` mode to bump a fact's recency (important for decay tiers).
 
 ## memory-dedup.js — Deduplication index
 

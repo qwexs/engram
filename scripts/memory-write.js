@@ -87,6 +87,31 @@ const entityDir = join(WORKSPACE, "life", entity);
 const itemsPath = join(entityDir, "items.json");
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
 const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
+const SEMANTIC_QUERY_TIMEOUT_MS = 30_000;
+const SEMANTIC_QUERY_MAX_CHARS = 300;
+
+function buildSemanticQuery(text) {
+  return String(text ?? "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\x1B\[[0-?]*[ -\/]*[@-~]/g, " ")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, SEMANTIC_QUERY_MAX_CHARS)
+    .trim();
+}
+
+async function killSemanticQuery(proc) {
+  try { proc.kill(); } catch {}
+  if (process.platform === "win32" && proc.pid) {
+    try {
+      Bun.spawnSync(["taskkill", "/PID", String(proc.pid), "/T", "/F"], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+    } catch {}
+  }
+}
 
 // 1. Дедупликация (read-only check, регистрация после записи)
 const dedupResult = await isDuplicate(opts.fact);
@@ -133,6 +158,7 @@ const factHash = dedupResult.hash;
 
 // 1.5. Семантическая проверка по множественным коллекциям (опционально)
 let semanticWarnings = [];
+let semanticCheckWarnings = [];
 if (opts["semantic-check"]) {
   const searchCollections = opts["search-collections"]
     ? opts["search-collections"].split(",").map(c => c.trim()).filter(Boolean)
@@ -159,13 +185,42 @@ if (opts["semantic-check"]) {
     // qmd query --json (BM25 + vectors + rerank) для лучшего качества dedup
     // QMD может быть "qmd.cmd" или "qmd.cmd --index <name>" — split by whitespace
     const qmdPrefix = QMD.split(/\s+/).filter(Boolean);
-    const qmdArgs = [...qmdPrefix, "query", opts.fact, "--json"];
+    const semanticQuery = buildSemanticQuery(opts.fact);
+    const qmdArgs = [...qmdPrefix, "query", semanticQuery, "--json", "-n", "10"];
     for (const col of searchCollections) {
       qmdArgs.push("-c", col);
     }
     const proc = Bun.spawn(qmdArgs, { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
-    const output = await new Response(proc.stdout).text();
-    await proc.exited;
+    const stdoutPromise = new Response(proc.stdout).text().catch(() => "");
+    const stderrPromise = new Response(proc.stderr).text().catch(() => "");
+    const completion = Promise.all([stdoutPromise, stderrPromise, proc.exited])
+      .then(([output, stderr, exitCode]) => ({ type: "completed", output, stderr, exitCode }));
+    const timeoutMs = Number(process.env.ENGRAM_QMD_QUERY_TIMEOUT_MS) || SEMANTIC_QUERY_TIMEOUT_MS;
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ type: "timeout" }), timeoutMs);
+    });
+    const outcome = await Promise.race([completion, timeout]);
+    clearTimeout(timer);
+
+    if (outcome.type === "timeout") {
+      await killSemanticQuery(proc);
+      semanticCheckWarnings.push({
+        type: "timeout",
+        message: `qmd query exceeded ${timeoutMs}ms; semantic dedup skipped`,
+      });
+      throw new Error("__semantic_timeout_handled__");
+    }
+
+    let output = outcome.output;
+    if (outcome.exitCode !== 0) {
+      const detail = outcome.stderr.trim().slice(0, 200);
+      semanticCheckWarnings.push({
+        type: "error",
+        message: `qmd query exited with code ${outcome.exitCode}; semantic dedup skipped${detail ? `: ${detail}` : ""}`,
+      });
+      output = "[]";
+    }
 
     // Парсинг JSON вывода QMD
     // Формат: [{ file: "qmd://...", score: 0.85, snippet: "...", body: "..." }]
@@ -201,7 +256,10 @@ if (opts["semantic-check"]) {
       }
     }
   } catch (e) {
-    console.error(`⚠️ Semantic check ошибка: ${e.message}`);
+    if (e.message !== "__semantic_timeout_handled__") {
+      semanticCheckWarnings.push({ type: "error", message: e.message });
+      console.error(`⚠️ Semantic check ошибка: ${e.message}`);
+    }
   }
 }
 
@@ -384,5 +442,9 @@ if (contradictions) {
 if (semanticWarnings.length > 0) {
   result.warnings = result.warnings || {};
   result.warnings.semanticSimilar = semanticWarnings;
+}
+if (semanticCheckWarnings.length > 0) {
+  result.warnings = result.warnings || {};
+  result.warnings.semanticCheck = semanticCheckWarnings;
 }
 console.log(JSON.stringify(result));

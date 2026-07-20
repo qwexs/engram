@@ -116,6 +116,24 @@ Rule of thumb: add only self-owned collections here. Child workspaces should
 maintain their own embeddings. Watchdog reports missing or over-broad
 maintenance allowlists as `WD-QMD-008` / `WD-QMD-009`.
 
+## Index isolation and embed concurrency
+
+An index is a physical SQLite file, not a persistent QMD process. With normal
+CLI usage, each `qmd embed` invocation starts its own process, loads the model,
+and releases it when the command exits.
+
+Keep private workspaces on separate indexes. A workspace-local
+`.qmd/index.sqlite` is selected from that workspace's working directory; an
+explicit `engram.json -> qmd.index` selects a named index instead. The QMD
+embed lock protects one physical index only. It prevents duplicate embed work
+inside that index, but it does not serialize embeds against other index files.
+
+Consequently, simultaneous heartbeat runs for separate workspaces may load
+multiple model instances and add their RAM/VRAM usage. Stagger heartbeat jobs
+operationally. If measurements show memory pressure, add a host-level embed
+concurrency limiter (for example, a semaphore allowing one or two processes)
+without combining private indexes or their collections.
+
 ## Commands
 
 ```bash
@@ -146,6 +164,7 @@ qmd collection list
 - Use `qmd query` with `-c` flag for session-isolated search
 - Run `qmd update` after writing new memory (instant, safe to run often)
 - Run `qmd embed` during heartbeats only (resource-intensive)
+- Treat the index-local lock as a correctness guard, not a host-wide resource limiter
 - Top 2-3 results are usually sufficient
 - Read full files only when QMD results indicate need
 - Use multi-collection (`-c col1 -c col2`) for cross-cutting searches (e.g., KG + daily notes)

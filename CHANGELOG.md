@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Documented the QMD runtime boundary: indexes are SQLite files, CLI embeds
+  are short-lived processes, and the embed lock is scoped to one physical
+  index. Separate workspace indexes may embed concurrently, so host-level
+  RAM/VRAM limits belong in scheduler orchestration rather than data layout.
 - Added capability-aware watchdog warning `WD-QMD-014` for heartbeat
   configurations that pass multiple `-c` collections to a QMD version without
   multi-collection embed support. Heartbeat now requests the structured

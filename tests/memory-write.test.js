@@ -108,6 +108,32 @@ describe("memory-write — argument validation", () => {
     expect(stderr).toContain("Неверная категория");
   });
 
+  test("exits with error for invalid abstractionLevel", async () => {
+    createEntity();
+    const before = readFileSync(join(TEST_ENTITY_DIR, "items.json"), "utf-8");
+    const { exitCode, stderr } = await run([
+      "--entity", TEST_ENTITY,
+      "--fact", "Test fact",
+      "--category", "context",
+      "--abstraction", "context",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Неверный --abstraction");
+    expect(readFileSync(join(TEST_ENTITY_DIR, "items.json"), "utf-8")).toBe(before);
+  });
+
+  test("rejects --abstraction without a value", async () => {
+    createEntity();
+    const { exitCode, stderr } = await run([
+      "--entity", TEST_ENTITY,
+      "--fact", "Test fact",
+      "--category", "context",
+      "--abstraction",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Неверный --abstraction");
+  });
+
   test("accepts all valid categories", async () => { // slow: 7 spawns × ~2s each
     const categories = ["relationship", "milestone", "status", "preference", "context", "decision", "correction"];
     for (const cat of categories) {

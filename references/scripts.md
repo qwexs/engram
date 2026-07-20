@@ -118,11 +118,15 @@ Render `memory/domains/{slug}/agents.md` из `templates/spawn-prompts/_shared/a
 
 ```bash
 bun skills/engram/scripts/memory-repair.js --entity <path> --id <fact-id> \
-  [--confidence <0-1>] [--abstraction episode|pattern|principle] [--dry-run]
+  [--confidence <0-1>] [--abstraction episode|pattern|principle] \
+  [--dry-run] [--validate] [--qmd-update]
 ```
 
 Repair schema fields on an existing fact without changing its factual content.
-Supports confidence and abstractionLevel corrections. Idempotent.
+Supports confidence and abstractionLevel corrections. After a write, refreshes
+the derived facts projection and the repaired entity's decayed summary. Use
+`--validate` for a full workspace check and `--qmd-update` to refresh the index.
+Idempotent.
 
 ## derive-facts.js — Build Derived Facts Layer
 

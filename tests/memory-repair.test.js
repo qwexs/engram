@@ -47,6 +47,9 @@ describe("memory-repair", () => {
     expect(fact.fact).toBe("Test");
     expect(fact.abstractionLevel).toBe("episode");
     expect(fact.confidence).toBe(0.8);
+    expect(existsSync(join(workspace, "life", "_derived", "facts-active.md"))).toBe(true);
+    const summary = readFileSync(join(workspace, "life", "areas", "project", "summary.md"), "utf8");
+    expect(summary).toContain("Test");
   });
 
   test("rejects an invalid abstractionLevel without writing", async () => {

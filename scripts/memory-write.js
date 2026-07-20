@@ -69,6 +69,13 @@ if (!VALID_CATEGORIES.includes(opts.category)) {
   process.exit(1);
 }
 
+const VALID_ABSTRACTIONS = ["episode", "pattern", "principle"];
+const abstractionLevel = opts.abstraction === undefined ? "episode" : opts.abstraction;
+if (typeof abstractionLevel !== "string" || !VALID_ABSTRACTIONS.includes(abstractionLevel)) {
+  console.error(`❌ Неверный --abstraction "${String(abstractionLevel)}". Допустимые: ${VALID_ABSTRACTIONS.join(", ")}`);
+  process.exit(1);
+}
+
 const confidence = opts.confidence === undefined ? 0.8 : Number(opts.confidence);
 if (typeof opts.confidence === "boolean" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
   console.error("❌ --confidence должен быть числом от 0 до 1");
@@ -250,7 +257,7 @@ const newFact = {
   ...(description !== undefined && { description }),
   category: opts.category,
   confidence,
-  abstractionLevel: opts.abstraction || "episode",
+  abstractionLevel,
   tags: opts.tags ? opts.tags.split(",").map(t => t.trim()) : [],
   timestamp: today,
   source: opts.source || today,

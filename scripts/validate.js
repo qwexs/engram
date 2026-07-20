@@ -420,11 +420,10 @@ if (existsSync(domainsDir)) {
   }
   if (spawnPromptsUseWorkflow.size > 0) {
     for (const entry of domainEntries) {
-      // Topic-thread and meta-domain entries are bound conversation contours,
-      // not spawnable worker domains, so spawn-prompts/{{workflow}} does not
-      // apply to them.
+      // Chat-bound entries are conversation contours, not spawnable worker
+      // domains, so spawn-prompts/{{workflow}} does not apply to them.
       const domainType = registeredDomainTypes && registeredDomainTypes[entry.name];
-      if (domainType === 'topic-thread' || domainType === 'meta-domain') continue;
+      if (['topic-thread', 'peer-direct', 'group-direct', 'meta-domain'].includes(domainType)) continue;
       const workflowPath = join(domainsDir, entry.name, 'workflow.md');
       if (!existsSync(workflowPath)) {
         warn(`Domain "${entry.name}" has no workflow.md (used by spawn-prompts: ${[...spawnPromptsUseWorkflow].join(', ')})`);

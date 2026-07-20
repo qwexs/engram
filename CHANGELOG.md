@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Follow-up hardening for schema repair: `memory-write.js` now rejects invalid
+  abstraction levels at the write boundary; `memory-repair.js` refreshes the
+  derived facts projection and entity summary after repairs; validation skips
+  `workflow.md` for all chat-bound domain types; CLI docs now list the optional
+  validation and QMD update flags accurately.
 - `memory-repair.js` can now repair invalid `abstractionLevel` values as well
   as confidence, and its optional validation uses the workspace's configured
   agent instead of forcing `main`.

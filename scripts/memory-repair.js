@@ -64,8 +64,8 @@ if (opts.help || opts.h) {
     "",
     "Optional:",
     "  --dry-run            Show what would change without writing",
-    "  --validate           Run validate.js --agent-id main after repair",
-    "  --qmd-update         Run qmd update after repair",
+    "  --validate           Run validate.js using the workspace-configured agent",
+    "  --qmd-update         Run qmd update after refreshing derived files",
   ].join("\n"));
   process.exit(0);
 }
@@ -152,6 +152,26 @@ facts[idx] = {
   ...(abstractionChanged && { abstractionLevel: newAbstraction }),
 };
 await Bun.write(entityPath, JSON.stringify(payload, null, 2) + "\n");
+
+// Keep the two QMD-facing projections consistent with items.json. Repairs can
+// change summary ranking/decay and the abstraction shown in facts-active.md.
+for (const [name, args] of [
+  ["deriveFacts", ["bun", join(import.meta.dir, "derive-facts.js")]],
+  ["rebuildSummary", ["bun", join(import.meta.dir, "rebuild-summaries.js"), "--entity", entity, "--apply-decay", "--json"]],
+]) {
+  try {
+    const proc = Bun.spawn(args, { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
+    const out = await new Response(proc.stdout).text();
+    const err = await new Response(proc.stderr).text();
+    await proc.exited;
+    result[name] = {
+      status: proc.exitCode,
+      ...(proc.exitCode !== 0 && { stdoutPreview: out.slice(0, 1000), stderrPreview: err.slice(0, 1000) }),
+    };
+  } catch (e) {
+    result[name] = { status: -1, error: e.message };
+  }
+}
 
 if (opts.validate) {
   try {

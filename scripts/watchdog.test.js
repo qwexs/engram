@@ -272,6 +272,88 @@ models:
     expect(qmdCollectionListArgs({ qmd: {} })).toEqual(["collection", "list"]);
   });
 
+  test("warns when heartbeat qmd embed can cover only the first configured collection", () => {
+    writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+      agent: "agent-main",
+      qmd: {
+        command: "qmd",
+        collection: "alpha-memory",
+        collections: ["alpha-memory", "life", "alpha-domains"],
+      },
+      cron: { expectedJobName: "Heartbeat (Engram runner) — alpha" },
+    }, null, 2) + "\n");
+
+    const qmdList = `Collections (3):
+
+alpha-memory (qmd://alpha-memory/)
+  Files:    3
+
+life (qmd://life/)
+  Files:    2
+
+alpha-domains (qmd://alpha-domains/)
+  Files:    4
+`;
+    const report = auditWorkspace(workspace, {
+      core: false,
+      qmd: true,
+      hooks: false,
+      qmdListStdout: qmdList,
+      qmdCapabilitiesStdout: JSON.stringify({ schema: "qmd.capabilities.v1", embed: { multipleCollections: false } }),
+    });
+    const finding = report.findings.find((f) => f.code === "WD-QMD-014");
+    expect(finding).toBeTruthy();
+    expect(finding.details).toEqual({
+      embeddedCollection: "alpha-memory",
+      uncoveredCollections: ["life", "alpha-domains"],
+      configuredCollections: ["alpha-memory", "life", "alpha-domains"],
+      capabilitySchema: "qmd.capabilities.v1",
+      multipleCollections: false,
+    });
+  });
+
+  test("accepts multiple heartbeat collections when QMD reports support", () => {
+    writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+      agent: "agent-main",
+      qmd: { collections: ["alpha-memory", "life", "alpha-domains"] },
+    }, null, 2) + "\n");
+    const qmdList = ["alpha-memory", "life", "alpha-domains"]
+      .map((name) => `${name} (qmd://${name}/)\n  Files:    1`)
+      .join("\n\n");
+
+    const report = auditWorkspace(workspace, {
+      core: false,
+      qmd: true,
+      hooks: false,
+      qmdListStdout: `Collections (3):\n\n${qmdList}\n`,
+      qmdCapabilitiesStdout: JSON.stringify({
+        schema: "qmd.capabilities.v1",
+        embed: { multipleCollections: true, indexScopedLock: true, structuredOutput: true },
+      }),
+    });
+    expect(codes(report)).not.toContain("WD-QMD-014");
+  });
+
+  test("does not warn about qmd embed coverage for a single maintenance collection", () => {
+    writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+      agent: "agent-main",
+      qmd: {
+        command: "qmd",
+        collection: "alpha-memory",
+        collections: ["alpha-memory"],
+      },
+      cron: { expectedJobName: "Heartbeat (Engram runner) — alpha" },
+    }, null, 2) + "\n");
+
+    const qmdList = `Collections (1):
+
+alpha-memory (qmd://alpha-memory/)
+  Files:    3
+`;
+    const report = auditWorkspace(workspace, { core: false, qmd: true, hooks: false, qmdListStdout: qmdList });
+    expect(codes(report)).not.toContain("WD-QMD-014");
+  });
+
   test("QMD parser captures path, pattern, and zero-file collections", () => {
     const parsed = parseQmdCollections(`Collections (2):
 

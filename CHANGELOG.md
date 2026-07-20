@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added capability-aware watchdog warning `WD-QMD-014` for heartbeat
+  configurations that pass multiple `-c` collections to a QMD version without
+  multi-collection embed support. Heartbeat now requests the structured
+  `qmd.embed.v1` result and records lock-held/no-work/embedded outcomes.
 - Decoupled the heartbeat cron orchestrator model from subagent defaults. Configure it with `models.heartbeat.orchestrator` (or `ENGRAM_HEARTBEAT_ORCHESTRATOR_MODEL`); when unset, existing cron models are preserved and new jobs use the OpenClaw agent default.
 - Added watchdog CLI coverage for explicit multi-workspace selection via repeated `--workspace`, including duplicate-path deduplication and exclusion of unselected workspaces.
 - **test(hooks): align domain-load coverage with v4** — replaced the v3 daily-note / system-event / spawn-mock assertions in `tests/engram-topic-domain-load.test.ts` and `hooks/engram-topic-domain-load/tests/handler.test.ts` with a single consolidated v4 test file (26 tests) that verifies the actual contract: payload is delivered via `event.messages` (no daily-note file write, no `openclaw` spawn, no system event). Coverage now exercises bound/unbound topic resolution, chatId sign symmetry, OC66 event-shape fallbacks, event-surface gating, failure modes, unarchive-on-message, and a documented pin of v4's no-idempotency design. The old `tests/engram-topic-domain-load.test.ts` was deleted as a duplicate. The new file no longer mutates `process.env` at module load, which also resolves the `scripts/hooks-state.test.ts` "session-start registers active session" TZ pollution (Cluster 3 of the 2026-07-17 test audit).

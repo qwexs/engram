@@ -32,7 +32,30 @@ import {
 // imported as a non-entry-point module. This avoids re-running main()'s
 // side effects (cron state mutations, qmd discovery, etc.).
 import "../scripts/heartbeat-runner.js";
-const { shouldApplyDomainHandoffs, isWorkerRunning, staleWorker, buildOllTask, planSessionReconciliation } = globalThis.__engramHeartbeatRunnerExports;
+const { shouldApplyDomainHandoffs, isWorkerRunning, staleWorker, buildOllTask, planSessionReconciliation, qmdCommandArgs, describeQmdEmbedOutcome } = globalThis.__engramHeartbeatRunnerExports;
+
+describe("QMD embed orchestration", () => {
+  test("requests the structured embed result", () => {
+    const args = qmdCommandArgs("embed");
+    expect(args.slice(-2)).toEqual(["--format", "json"]);
+  });
+
+  test("does not add embed-only output flags to update", () => {
+    expect(qmdCommandArgs("update")).not.toContain("--format");
+  });
+
+  test("surfaces a partial structured result as a maintenance warning", () => {
+    const outcome = describeQmdEmbedOutcome({ status: 0 }, {
+      schema: "qmd.embed.v1",
+      status: "partial",
+      documentsEmbedded: 3,
+      pendingAfter: 2,
+      errors: 1,
+    });
+    expect(outcome.label).toBe("qmd embed partial (3 docs; 2 pending; 1 errors)");
+    expect(outcome.warning).toContain("completed partially");
+  });
+});
 
 describe("ISS-14: shouldApplyDomainHandoffs — drain-queue gate regression", () => {
   test("A1. default (no opts) → apply runs on every cron tick", () => {

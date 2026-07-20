@@ -125,6 +125,9 @@ parse human output for repairs; it treats non-zero exit as a core error.
 - `WD-QMD-011` — a collection recursively indexes the entire workspace.
 - `WD-QMD-012` — an unreferenced domain collection indexes zero files.
 - `WD-QMD-013` — a collection path is outside the workspace without an explicit meta-domain declaration.
+- `WD-QMD-014` — `qmd.collections` contains multiple maintenance collections,
+  but `qmd capabilities --format json` does not report multi-collection embed
+  support. Newer QMD versions that advertise the capability pass this check.
 
 Sources checked:
 

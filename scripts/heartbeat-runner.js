@@ -263,6 +263,25 @@ function parseLastJsonLine(output) {
   return null;
 }
 
+function describeQmdEmbedOutcome(result, embedResult, skipped = false) {
+  if (skipped) return { label: "qmd embed skipped", warning: null };
+  if (result?.status !== 0) return { label: "qmd embed error", warning: null };
+  if (embedResult?.schema !== "qmd.embed.v1") return { label: "qmd embed ok", warning: null };
+  if (embedResult.skippedReason === "lock-held") {
+    return { label: "qmd embed skipped (index lock held)", warning: null };
+  }
+  if (embedResult.status === "partial" || Number(embedResult.errors || 0) > 0) {
+    return {
+      label: `qmd embed partial (${embedResult.documentsEmbedded ?? 0} docs; ${embedResult.pendingAfter ?? "?"} pending; ${embedResult.errors ?? 0} errors)`,
+      warning: `qmd embed completed partially: ${embedResult.errors ?? 0} errors, ${embedResult.pendingAfter ?? "unknown"} pending`,
+    };
+  }
+  return {
+    label: `qmd embed ok (${embedResult.documentsEmbedded ?? 0} docs; ${embedResult.pendingAfter ?? "?"} pending)`,
+    warning: null,
+  };
+}
+
 function formatSynthesisStats(stats) {
   if (!stats) return "ok (runner apply-decay)";
   const parts = [
@@ -1339,24 +1358,30 @@ async function runMaintenance() {
   const qmdEmbed = opts["no-embed"]
     ? { status: 0, stdout: "skipped", stderr: "", error: null, command: "qmd embed skipped", signal: null, elapsedMs: 0 }
     : run(qmdCommand, qmdCommandArgs("embed"), { timeoutMs: Math.max(timeoutMs, 600000) });
+  const qmdEmbedResult = opts["no-embed"] ? null : parseLastJsonLine(qmdEmbed.stdout);
+  const qmdEmbedOutcome = describeQmdEmbedOutcome(qmdEmbed, qmdEmbedResult, Boolean(opts["no-embed"]));
 
   summary.phases.maintenance = {
     validate: summarizeCommand(validate),
     deriveFacts: summarizeCommand(deriveFacts),
     qmdUpdate: summarizeCommand(qmdUpdate),
-    qmdEmbed: summarizeCommand(qmdEmbed),
+    qmdEmbed: {
+      ...summarizeCommand(qmdEmbed),
+      ...(qmdEmbedResult?.schema === "qmd.embed.v1" ? { result: qmdEmbedResult } : {}),
+    },
   };
 
   summary.maintenance = [
     validate.status === 0 ? "validate ok" : "validate error",
     deriveFacts.status === 0 ? "derive-facts ok" : "derive-facts error",
     qmdUpdate.status === 0 ? "qmd update ok" : "qmd update error",
-    opts["no-embed"] ? "qmd embed skipped" : (qmdEmbed.status === 0 ? "qmd embed ok" : "qmd embed error"),
+    qmdEmbedOutcome.label,
   ].join("; ");
 
   for (const result of [validate, deriveFacts, qmdUpdate, qmdEmbed]) {
     if (result.status !== 0) summary.warnings.push(result.stderr || result.stdout || result.error || result.command + " failed");
   }
+  if (qmdEmbedOutcome.warning) summary.warnings.push(qmdEmbedOutcome.warning);
 }
 
 // 2026-07-05: P2 — auto-seed observation из validate.js warnings/errors.
@@ -1420,6 +1445,7 @@ function qmdCommandArgs(command) {
   for (const collection of collections) {
     if (collection) args.push("-c", String(collection));
   }
+  if (command === "embed") args.push("--format", "json");
   return args;
 }
 
@@ -1868,6 +1894,7 @@ if (!import.meta.main) {
     parseQmdCollectionList,
     discoverQmdCollections,
     qmdCommandArgs,
+    describeQmdEmbedOutcome,
     shouldApplyDomainHandoffs,
     isWorkerRunning,
     staleWorker,

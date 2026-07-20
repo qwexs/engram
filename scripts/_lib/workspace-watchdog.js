@@ -375,6 +375,19 @@ export function qmdCollectionListArgs(engram) {
   return args;
 }
 
+export function qmdCapabilitiesArgs() {
+  return ["capabilities", "--format", "json"];
+}
+
+function parseQmdCapabilities(stdout) {
+  try {
+    const parsed = JSON.parse(String(stdout || "").trim());
+    return parsed?.schema === "qmd.capabilities.v1" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function checkQmd(workspace, registry, engram, findings, options = {}) {
   const qmd = resolveQmdCommand(workspace);
   const refs = [...collectRegistryQmdRefs(registry), ...collectEngramQmdRefs(engram)];
@@ -397,6 +410,19 @@ function checkQmd(workspace, registry, engram, findings, options = {}) {
   const indexCollections = readQmdIndexCollections(workspace, findings);
   const collections = new Map(cliCollections);
   enrichQmdMetadata(collections, indexCollections);
+  const maintenanceCollections = Array.isArray(engram?.qmd?.collections)
+    ? [...new Set(engram.qmd.collections.map((c) => String(c)).filter(Boolean))]
+    : [];
+  let qmdCapabilities = null;
+  if (maintenanceCollections.length > 1) {
+    const capabilities = options.qmdCapabilitiesStdout != null
+      ? { status: 0, stdout: String(options.qmdCapabilitiesStdout), stderr: "", error: null }
+      : runCommand(qmd, qmdCapabilitiesArgs(), workspace, 30000);
+    if (!capabilities.error && capabilities.status === 0) {
+      qmdCapabilities = parseQmdCapabilities(capabilities.stdout);
+    }
+  }
+  checkQmdEmbedCoverage(engram, findings, qmdCapabilities);
   const referencedCollections = new Set(uniqueRefs.map((r) => r.collection));
   const allowedExternalCollections = new Set(
     collectMetaDomainCollections(registry, engram).map((r) => r.collection)
@@ -450,6 +476,28 @@ function checkQmd(workspace, registry, engram, findings, options = {}) {
       }));
     }
   }
+}
+
+export function checkQmdEmbedCoverage(engram, findings, capabilities = null) {
+  const maintenance = Array.isArray(engram?.qmd?.collections)
+    ? [...new Set(engram.qmd.collections.map((c) => String(c)).filter(Boolean))]
+    : [];
+  if (maintenance.length <= 1) return;
+  if (capabilities?.embed?.multipleCollections === true) return;
+
+  findings.push(makeFinding({
+    code: "WD-QMD-014",
+    level: "warn",
+    message: "Heartbeat lists multiple qmd embed collections, but the installed QMD does not report multi-collection embed support.",
+    path: "engram.json",
+    details: {
+      embeddedCollection: maintenance[0],
+      uncoveredCollections: maintenance.slice(1),
+      configuredCollections: maintenance,
+      capabilitySchema: capabilities?.schema ?? null,
+      multipleCollections: capabilities?.embed?.multipleCollections ?? false,
+    },
+  }));
 }
 
 function collectMetaDomainCollections(registry, engram) {

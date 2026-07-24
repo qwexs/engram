@@ -99,7 +99,7 @@ if (opts.help || opts.h) {
     "  --spawn-autoresearch     Queue hb-autoresearch for the next pending auto experiment.",
     "  --spawn-rethink2         Queue hb-rethink2 when pendingRethink2 is set.",
     "  --force-rethink-once     Bootstrap path: queue hb-rethink even if no trigger is due",
-    "                           (bypasses the 7-day gate AND weekly-synthesis proximity check for this tick only).",
+    "                           (bypasses the 7-day gate and post-synthesis check for this tick only).",
     "  --apply-low-risk-proposals",
     "                           After rethink handoff apply: audit [PROPOSAL:low-risk] blocks from the latest",
     "                           done/ rethink handoff into workspace/ops/heartbeat-spawns/rethink-applied-*.json",
@@ -316,20 +316,8 @@ function hoursSince(iso, fallback = 999) {
   return Math.floor((Date.now() - ms) / 3600000);
 }
 
-// lastWeeklySynthesis is typically a Monday date string (YYYY-MM-DD) written by
-// runSynthesis / HB-SYNTHESIS handoff. Anchor date-only values at local noon to
-// reduce UTC-midnight TZ skew when checking "within last 24h".
-function isWeeklySynthesisRecent(lastWeeklySynthesis, nowMs = Date.now()) {
-  if (!lastWeeklySynthesis) return false;
-  const raw = String(lastWeeklySynthesis).trim();
-  if (!raw) return false;
-  const anchor = raw.includes("T") ? raw : `${raw}T12:00:00`;
-  const ms = new Date(anchor).getTime();
-  if (!Number.isFinite(ms)) return false;
-  const deltaMs = nowMs - ms;
-  // Allow small negative slack for TZ/clock skew; require < 24h elapsed.
-  return deltaMs < 24 * 3600000 && deltaMs >= -12 * 3600000;
-}
+// Rethink is now a phase inside runSynthesis() — fires right after synthesis
+// completes on Monday. No separate gate or proximity check needed.
 
 // Audit-only: extract [PROPOSAL:low-risk] / [PROPOSAL:human-review] blocks from
 // the most recent rethink handoff in done/. Does NOT edit source files.
@@ -1187,16 +1175,15 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   const rethinkReasons = [];
   if (score >= 15) rethinkReasons.push("score>=15");
   if (tensions >= 3) rethinkReasons.push("tensions>=3");
-  // Weekly cadence (2026-07-25): 7-day floor + must follow a recent weekly
-  // synthesis (lastWeeklySynthesis within 24h). Synthesis runs Monday and
-  // stores the Monday date string; rethink is meant to fire right after it.
-  const weeklySynthesisRecent = isWeeklySynthesisRecent(state.lastWeeklySynthesis);
-  const weeklyCadenceDue = daysSinceRethink >= 7 && weeklySynthesisRecent;
-  if (weeklyCadenceDue) rethinkReasons.push("lastRethink>=7d+weekly-synthesis");
-  // 2026-07-05 / 2026-07-25: --force-rethink-once bypasses the 7-day gate AND
-  // the weekly-synthesis proximity check for a single tick. Bootstrap path on
-  // fresh installs / post-init cold-start. Does NOT modify state.lastRethink —
-  // it persists via the actual hb-rethink handoff apply path (applyRethinkHandoffs).
+  // Weekly cadence: rethink fires as a phase after weekly synthesis.
+  // runSynthesis() runs on Mondays and sets lastWeeklySynthesis = today.
+  // When that flag matches today, synthesis just completed in this tick —
+  // fire rethink right after. daysSinceRethink >= 7 prevents double-fire
+  // if synthesis runs twice (e.g. state reset). --force-rethink-once
+  // bypasses both checks for bootstrap on fresh installs.
+  const synthesisRanThisTick = state.lastWeeklySynthesis === today;
+  const weeklyCadenceDue = daysSinceRethink >= 7 && synthesisRanThisTick;
+  if (weeklyCadenceDue) rethinkReasons.push("post-synthesis (weekly)");
   if (opts["force-rethink-once"] && !weeklyCadenceDue) {
     rethinkReasons.push("force-rethink-once");
   }

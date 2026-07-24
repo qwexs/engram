@@ -128,12 +128,58 @@ parse human output for repairs; it treats non-zero exit as a core error.
 - `WD-QMD-014` — `qmd.collections` contains multiple maintenance collections,
   but `qmd capabilities --format json` does not report multi-collection embed
   support. Newer QMD versions that advertise the capability pass this check.
+- `WD-QMD-015` — optional `qmd.verticalAccess` contract is invalid.
+- `WD-QMD-016` — an expected vertical collection is missing from the physical
+  QMD SQLite index.
+- `WD-QMD-017` — an expected vertical collection is registered with a path
+  different from its declared canonical path.
+- `WD-QMD-018` — an expected vertical collection is absent from every
+  meta-domain search contour.
+- `WD-QMD-019` — an expected vertical collection has active documents without
+  stored vectors.
+- `WD-QMD-020` — the configured SQLite index could not be inspected read-only.
 
 Sources checked:
 
 - `memory/domains/registry.json -> domains.*.qmdCollections`
 - `engram.json -> qmd.collection`
 - `engram.json -> domains.*.qmdCollections`
+
+### Optional vertical workspace access
+
+Flat and single-workspace Engram installations need no extra configuration.
+The vertical audit runs only when `engram.json.qmd.verticalAccess.enabled` is
+`true`; when the section is absent or explicitly disabled, watchdog behavior is
+unchanged.
+
+```json
+{
+  "qmd": {
+    "verticalAccess": {
+      "enabled": true,
+      "indexPath": "/srv/openclaw/workspaces/upper/.qmd/index.sqlite",
+      "collections": {
+        "project-memory": {
+          "path": "/srv/openclaw/workspaces/project/memory/agent-project"
+        },
+        "project-domains": {
+          "path": "/srv/openclaw/workspaces/project/memory/domains"
+        }
+      },
+      "requireMetaDomainReference": true,
+      "checkEmbeddings": true
+    }
+  }
+}
+```
+
+`collections` is the complete expected external collection set for that
+physical index. Do not add child collection names to `qmd.collections`; that
+field remains the heartbeat maintenance allowlist for collections owned by the
+current workspace.
+
+The vertical check opens only the explicit `indexPath` with SQLite read-only.
+It does not run `qmd update`, start `qmd embed`, or acquire QMD locks.
 
 ### Domain registry ↔ filesystem
 
@@ -180,7 +226,8 @@ added, should be a separate explicitly-invoked tool or guarded phase.
 
 ## Read-only guarantee
 
-The auditor only reads files and invokes read-only commands (`validate.js` and
+The auditor only reads files, opens an explicitly configured QMD SQLite index
+read-only, and invokes read-only commands (`validate.js` and
 `qmd collection list`). It does not:
 
 - edit workspace files;

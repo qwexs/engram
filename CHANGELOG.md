@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added opt-in `qmd.verticalAccess` checks to the built-in workspace watchdog.
+  Hierarchical deployments can declare the complete expected external
+  collection set and detect missing registrations, path drift, missing
+  meta-domain references, and active documents without vectors
+  (`WD-QMD-015`…`WD-QMD-020`). Flat deployments remain unchanged when the
+  section is absent or disabled.
+
+## Unreleased
+
 - Follow-up hardening for schema repair: `memory-write.js` now rejects invalid
   abstraction levels at the write boundary; `memory-repair.js` refreshes the
   derived facts projection and entity summary after repairs; validation skips

@@ -15,6 +15,7 @@ import {
 import { join, relative, dirname, resolve, isAbsolute, win32 } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { Database } from "bun:sqlite";
 import { loadEngramConfig, resolveQmdCommand } from "../config.js";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -517,6 +518,183 @@ function collectMetaDomainCollections(registry, engram) {
     }
   }
   return refs;
+}
+
+export function normalizeVerticalAccess(engram) {
+  const raw = engram?.qmd?.verticalAccess;
+  if (raw == null || raw?.enabled === false) {
+    return { enabled: false, errors: [], config: null };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {
+      enabled: true,
+      errors: ["verticalAccess must be an object"],
+      config: null,
+    };
+  }
+
+  const errors = [];
+  const collections = new Map();
+  if (!raw.indexPath || typeof raw.indexPath !== "string") {
+    errors.push("verticalAccess.indexPath must be an explicit SQLite path");
+  }
+  if (!raw.collections || typeof raw.collections !== "object" || Array.isArray(raw.collections)) {
+    errors.push("verticalAccess.collections must be a non-empty object map");
+  } else {
+    for (const [name, spec] of Object.entries(raw.collections)) {
+      if (!name.trim()) {
+        errors.push("collection names must be non-empty");
+        continue;
+      }
+      if (spec != null && (typeof spec !== "object" || Array.isArray(spec))) {
+        errors.push(`collections.${name} must be an object`);
+        continue;
+      }
+      collections.set(name, { path: spec?.path ? String(spec.path) : null });
+    }
+  }
+  if (collections.size === 0) {
+    errors.push("verticalAccess.collections must contain at least one collection");
+  }
+
+  return {
+    enabled: true,
+    errors,
+    config: {
+      indexPath: raw.indexPath ? String(raw.indexPath) : null,
+      collections,
+      requireMetaDomainReference: raw.requireMetaDomainReference !== false,
+      checkEmbeddings: raw.checkEmbeddings !== false,
+    },
+  };
+}
+
+export function inspectVerticalIndex(indexPath, expectedNames, checkEmbeddings = true) {
+  if (!indexPath || !existsSync(indexPath)) {
+    throw new Error("configured QMD SQLite index not found");
+  }
+
+  const names = [...new Set(expectedNames.map(String).filter(Boolean))];
+  const db = new Database(indexPath, { readonly: true });
+  try {
+    const registered = new Map();
+    for (const row of db.query("SELECT name, path, pattern FROM store_collections").all()) {
+      registered.set(String(row.name), {
+        path: String(row.path),
+        pattern: String(row.pattern || ""),
+      });
+    }
+
+    const unembedded = new Map(names.map((name) => [name, 0]));
+    if (checkEmbeddings && names.length > 0) {
+      const placeholders = names.map(() => "?").join(",");
+      const rows = db.query(`
+        SELECT d.collection AS collection, COUNT(DISTINCT d.hash) AS count
+        FROM documents d
+        WHERE d.active = 1 AND d.collection IN (${placeholders})
+          AND NOT EXISTS (
+            SELECT 1 FROM content_vectors cv WHERE cv.hash = d.hash
+          )
+        GROUP BY d.collection
+      `).all(...names);
+      for (const row of rows) {
+        unembedded.set(String(row.collection), Number(row.count || 0));
+      }
+    }
+    return { registered, unembedded };
+  } finally {
+    db.close();
+  }
+}
+
+export function auditVerticalAccess(workspace, registry, engram, findings) {
+  const normalized = normalizeVerticalAccess(engram);
+  if (!normalized.enabled) return;
+
+  if (normalized.errors.length > 0) {
+    findings.push(makeFinding({
+      code: "WD-QMD-015",
+      level: "warn",
+      message: "Invalid optional vertical QMD access contract.",
+      path: "engram.json#qmd.verticalAccess",
+      details: { errors: normalized.errors },
+    }));
+    return;
+  }
+
+  const cfg = normalized.config;
+  let inspected;
+  try {
+    inspected = inspectVerticalIndex(
+      resolve(workspace, cfg.indexPath),
+      [...cfg.collections.keys()],
+      cfg.checkEmbeddings
+    );
+  } catch (error) {
+    findings.push(makeFinding({
+      code: "WD-QMD-020",
+      level: "info",
+      message: "Vertical QMD SQLite inspection could not be completed read-only.",
+      path: "engram.json#qmd.verticalAccess",
+      details: {
+        error: error?.message || String(error),
+        indexPath: cfg.indexPath,
+      },
+    }));
+    return;
+  }
+
+  const metaRefs = new Set(
+    collectMetaDomainCollections(registry, engram).map((ref) => ref.collection)
+  );
+  for (const [name, spec] of cfg.collections) {
+    const actual = inspected.registered.get(name);
+    if (!actual) {
+      findings.push(makeFinding({
+        code: "WD-QMD-016",
+        level: "error",
+        message: `Expected vertical QMD collection is missing: ${name}`,
+        path: "engram.json#qmd.verticalAccess",
+        details: { collection: name },
+      }));
+      continue;
+    }
+
+    if (spec.path) {
+      const expectedPath = normalizePathForCompare(workspace, spec.path);
+      const actualPath = normalizePathForCompare(workspace, actual.path);
+      if (actualPath !== expectedPath) {
+        findings.push(makeFinding({
+          code: "WD-QMD-017",
+          level: "error",
+          message: `Vertical QMD collection path mismatch: ${name}`,
+          path: "engram.json#qmd.verticalAccess",
+          details: { collection: name, expectedPath, actualPath },
+        }));
+      }
+    }
+
+    if (cfg.requireMetaDomainReference && !metaRefs.has(name)) {
+      findings.push(makeFinding({
+        code: "WD-QMD-018",
+        level: "warn",
+        message: `Expected vertical collection is not referenced by a meta-domain: ${name}`,
+        path: "engram.json#qmd.verticalAccess",
+        details: { collection: name },
+      }));
+    }
+
+    const unembeddedDocuments = inspected.unembedded.get(name) || 0;
+    if (cfg.checkEmbeddings && unembeddedDocuments > 0) {
+      findings.push(makeFinding({
+        code: "WD-QMD-019",
+        level: "warn",
+        message: `Vertical QMD collection has active documents without vectors: ${name}`,
+        path: "engram.json#qmd.verticalAccess",
+        details: { collection: name, unembeddedDocuments },
+      }));
+    }
+  }
 }
 
 function expectedMaintenanceCollections(workspace, registry, engram, indexCollections = new Map()) {
@@ -1195,7 +1373,10 @@ export function auditWorkspace(workspaceInput, options = {}) {
   checkKg(workspace, findings);
   checkOllState(workspace, findings);
   checkSkillGeneratedArtifacts(findings, options);
-  if (options.qmd !== false) checkQmd(workspace, registry, engram, findings, options);
+  if (options.qmd !== false) {
+    checkQmd(workspace, registry, engram, findings, options);
+    auditVerticalAccess(workspace, registry, engram, findings);
+  }
   checkQmdMaintenanceCollections(workspace, registry, engram, findings);
   if (options.hooks !== false) checkHooks(workspace, findings, options);
   checkCronConfig(workspace, engram, findings);

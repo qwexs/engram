@@ -35,6 +35,17 @@ const VALID_KG_CATEGORIES = new Set([
 const TEST_ARTIFACT_RE = /(^|[\\/]|[-_])(test|tests|fixture|fixtures|dummy|sample)([-_]|$|[\\/])/i;
 const TEST_TAGS = new Set(["test", "tests", "fixture", "fixtures", "dummy", "sample"]);
 
+// Patterns that indicate heartbeat extraction garbage in KG
+const HB_GARBAGE_RE = /^(hb-rethink-|hb-domains-write-|hb-extract-|hb-synthesis-)/;
+const HB_GARBAGE_PHRASES = [
+  "No tensions in queue",
+  "No tensions to evaluate",
+  "No patterns",
+  "No new content patterns",
+  "No formal pattern",
+];
+const HB_GARBAGE_TAG_SET = new Set(["heartbeat", "extraction", "daily"]);
+
 export function makeFinding({ code, level = "warn", message, path, fixable = false, details = {} }) {
   return {
     code,
@@ -695,6 +706,48 @@ export function auditVerticalAccess(workspace, registry, engram, findings) {
       }));
     }
   }
+
+  // WD-QMD-021: vertical collections not included in heartbeat embed args.
+  // heartbeat-runner.js qmdCommandArgs("embed") must list verticalAccess
+  // collections alongside local qmd.collections, otherwise qmd embed only
+  // covers local collections and vertical documents stay without vectors.
+  const localCollections = new Set(
+    Array.isArray(engram?.qmd?.collections)
+      ? engram.qmd.collections.map((c) => String(c)).filter(Boolean)
+      : []
+  );
+  const verticalNames = [...cfg.collections.keys()];
+  const missingFromEmbed = verticalNames.filter((n) => !localCollections.has(n));
+  if (missingFromEmbed.length > 0) {
+    // Check if heartbeat-runner.js has the vertical-merge patch by inspecting
+    // the source. If the patch is present, the collections ARE included at
+    // runtime even though they're not in qmd.collections. We detect this by
+    // looking for the verticalAccess merge code in heartbeat-runner.js.
+    const hbRunnerPath = join(SCRIPTS_DIR, "heartbeat-runner.js");
+    let hbHasVerticalMerge = false;
+    try {
+      if (existsSync(hbRunnerPath)) {
+        const hbSrc = readFileSync(hbRunnerPath, "utf-8");
+        hbHasVerticalMerge = hbSrc.includes('qmd.verticalAccess')
+          && hbSrc.includes('command === "embed"');
+      }
+    } catch { /* ignore */ }
+
+    if (!hbHasVerticalMerge) {
+      findings.push(makeFinding({
+        code: "WD-QMD-021",
+        level: "error",
+        message: `Vertical QMD collections are not included in heartbeat qmd embed: ${missingFromEmbed.join(", ")}. heartbeat-runner.js qmdCommandArgs() does not merge verticalAccess.collections into embed args — vertical documents will never get vectors.`,
+        path: "engram.json#qmd.verticalAccess",
+        details: {
+          missingFromEmbed,
+          localCollections: [...localCollections],
+          verticalCollections: verticalNames,
+          fix: "Patch qmdCommandArgs() in heartbeat-runner.js to merge verticalAccess.collections when command==='embed'",
+        },
+      }));
+    }
+  }
 }
 
 function expectedMaintenanceCollections(workspace, registry, engram, indexCollections = new Map()) {
@@ -993,6 +1046,38 @@ function checkHeartbeatState(workspace, registry, findings) {
     }
   }
 
+  // WD-SESSION-006: daily notes consistently empty (only heartbeat reports)
+  // Check the most recent 7 daily notes for each active session — if all have
+  // 0 events/decisions/learnings, the agent is not recording session activity.
+  for (const session of activeSessions) {
+    const sessionDir = join(agentDir, session);
+    if (!isDir(sessionDir)) continue;
+    const notes = readdirSync(sessionDir)
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .sort()
+      .slice(-7);
+    if (notes.length < 3) continue; // need at least 3 days to evaluate
+    let emptyCount = 0;
+    for (const note of notes) {
+      const text = readFileSync(join(sessionDir, note), "utf-8");
+      // Check if Events/Decisions/Learnings sections have any content
+      const eventsMatch = text.match(/## Events\n\n([\s\S]*?)(?:\n## |$)/);
+      const decisionsMatch = text.match(/## Decisions\n\n([\s\S]*?)(?:\n## |$)/);
+      const learningsMatch = text.match(/## Learnings\n\n([\s\S]*?)(?:\n## |$)/);
+      const hasContent = (eventsMatch?.[1]?.trim() || decisionsMatch?.[1]?.trim() || learningsMatch?.[1]?.trim());
+      if (!hasContent) emptyCount++;
+    }
+    if (emptyCount === notes.length) {
+      findings.push(makeFinding({
+        code: "WD-SESSION-006",
+        level: "warn",
+        message: `Daily notes for session "${session}" are empty for ${emptyCount} consecutive days — agent is not recording events/decisions/learnings`,
+        path: `memory/agent-${agentId}/${session}`,
+        details: { session, emptyDays: emptyCount, checkedDays: notes.length },
+      }));
+    }
+  }
+
   for (const [slug, entry] of Object.entries(registry?.domains || {})) {
     const session = sessionKeyForTopic(entry?.topic);
     if (session && !sessionDirs.has(session) && !stateSessions.has(session)) {
@@ -1102,6 +1187,8 @@ function checkKg(workspace, findings) {
       const tags = Array.isArray(fact?.tags) ? fact.tags.map((t) => String(t).toLowerCase()) : [];
       const hasTestTag = tags.some((tag) => TEST_TAGS.has(tag));
       const text = String(fact?.fact || fact?.content || fact?.description || "");
+
+      // WD-KG-004: test pollution
       if (TEST_ARTIFACT_RE.test(label) || hasTestTag || TEST_ARTIFACT_RE.test(text)) {
         findings.push(makeFinding({
           code: "WD-KG-004",
@@ -1111,7 +1198,42 @@ function checkKg(workspace, findings) {
           details: { tags },
         }));
       }
+
+      // WD-KG-005: heartbeat extraction garbage
+      if (fact?.status === "active") {
+        const factTags = new Set(tags);
+        const isHbTagged = factTags.has("heartbeat") && factTags.has("extraction") && factTags.has("daily");
+        const isHbRunId = HB_GARBAGE_RE.test(text);
+        const isHbPhrase = HB_GARBAGE_PHRASES.some((p) => text.startsWith(p) || text === p);
+        if (isHbTagged || isHbRunId || isHbPhrase) {
+          findings.push(makeFinding({
+            code: "WD-KG-005",
+            level: "warn",
+            message: "Heartbeat extraction garbage in KG — fact is a heartbeat artifact, not a real memory",
+            path: factPath,
+            fixable: true,
+            details: {
+              reason: isHbRunId ? "heartbeat-run-id" : (isHbPhrase ? "heartbeat-phrase" : "heartbeat-tags"),
+              text: text.slice(0, 120),
+              fix: 'Supersede via: bun skills/engram/scripts/memory-write.js --entity "' + (data.entityId || 'unknown') + '" --supersede ' + fact?.id,
+            },
+          }));
+        }
+      }
     });
+
+    // WD-KG-006: entity with all facts superseded
+    const activeCount = data.facts.filter((f) => f?.status === "active").length;
+    const supersededCount = data.facts.filter((f) => f?.status === "superseded").length;
+    if (activeCount === 0 && supersededCount > 0) {
+      findings.push(makeFinding({
+        code: "WD-KG-006",
+        level: "info",
+        message: `KG entity has 0 active facts (${supersededCount} superseded) — consider removing the entity or re-seeding`,
+        path: label,
+        details: { entityId: data.entityId, activeCount, supersededCount },
+      }));
+    }
   }
 }
 

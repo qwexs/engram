@@ -1240,7 +1240,8 @@ function checkOllState(workspace, findings) {
   }
 
   // Check: lastRethink is null AND rethinkInProgress is false —
-  // rethink will trigger on every tick via daysSinceRethink>=14d (999)
+  // rethink time-gate alone needs daysSinceRethink>=7d plus recent weekly synthesis;
+  // without lastRethink, daysSinceRethink is 999 so the 7d floor is satisfied once synthesis is recent
   if (!state.lastRethink && !state.rethinkInProgress && (state.rethinkCount || 0) === 0) {
     // This is normal for a fresh install, but only if subagentRuns.hb-rethink doesn't show prior spawns
     const rethinkRuns = state.subagentRuns?.["hb-rethink"];

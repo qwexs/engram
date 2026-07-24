@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-25
+
+- feat(heartbeat): weekly rethink cadence (7-day gate + weekly-synthesis proximity check)
+- feat(memory): BOILERPLATE_DENYLIST in memory-write.js — skip extraction artifacts before KG write
+- feat(heartbeat): --apply-low-risk-proposals flag for rethink proposal audit trail
+
 ## Unreleased
 
 - Added opt-in `qmd.verticalAccess` checks to the built-in workspace watchdog.

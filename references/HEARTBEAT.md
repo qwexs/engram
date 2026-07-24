@@ -189,7 +189,8 @@ If the heartbeat model is too weak for summarization, defer to next interactive 
 5. Check trigger conditions (any one):
    - `weighted >= 15`
    - `tension_count >= 3`
-   - `daysSinceRethink >= 14`
+   - weekly cadence: `daysSinceRethink >= 7` AND `lastWeeklySynthesis` within the last 24h (rethink follows weekly synthesis)
+   - `--force-rethink-once` bypasses the 7-day gate and synthesis proximity check
 
 6. If trigger AND `rethinkInProgress !== true`:
    - Spawn hb-rethink subagent:

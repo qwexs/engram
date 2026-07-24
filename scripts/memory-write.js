@@ -9,6 +9,38 @@ import { resolveQmdCommand } from "./config.js";
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 const QMD = resolveQmdCommand(WORKSPACE);
 
+// Extraction artifacts from heartbeat daily-note text that must never become KG facts.
+const BOILERPLATE_DENYLIST = [
+  /^Поправил\.\s*\*\*Скажи Сергею:/i,
+  /^Поправил\.\s*$/i,
+  /^Скажи Сергею:/i,
+  /^Fixed:/i,
+  /^\*\*Default query\*\*/i,
+  /^\*\*Topic-agent домена/i,
+  /^Operator\s*\(см\./i,
+  /^❌\s*\*\*Telegram-сообщения/i,
+  /^✅\s*\*\*Своя daily note/i,
+  /^✅\s*\*\*Daily note/i,
+  /^✅\s*Писать:/i,
+  /^❌\s*Не писать:/i,
+  /^⚠️\s*`memory/i,
+  /^❌\s*`life\//i,
+  /^❌\s*\*\*`life\//i,
+  /^❌\s*\*\*Workspace-уровень/i,
+  /^❌\s*\*\*`memory\/domains/i,
+  /^Полный контракт топик-агента/i,
+  /^Domain structure и lifecycle/i,
+  /^Hook mechanics:/i,
+  /^Better делегировать/i,
+  /^Пустые `Events`/i,
+  /^Heartbeat-runner триггерит/i,
+  /^\*\*Свой KG entity/i,
+  /^`-c domains`/i,
+  /^`-c life`/i,
+  /^✅ `memory\/domains\/engram/i,
+  /^✅ `life\/projects\/engram/i,
+];
+
 // Парсинг аргументов
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -153,6 +185,15 @@ const factHash = dedupResult.hash;
         }
       }
     }
+  }
+}
+
+// Boilerplate filter — skip extraction artifacts
+const factText = String(opts.fact).trim();
+for (const pattern of BOILERPLATE_DENYLIST) {
+  if (pattern.test(factText)) {
+    console.log(JSON.stringify({ status: "skipped", reason: "Boilerplate denylist match", pattern: pattern.source }));
+    process.exit(0);
   }
 }
 

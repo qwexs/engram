@@ -63,7 +63,7 @@ Phase 5 computes weighted score и решает, какой subagent spawn'ит�
 
 | Subagent | Trigger condition | Phase |
 |----------|-------------------|-------|
-| `hb-rethink` | weighted≥15 OR pending tensions≥3 OR ≥14 days since last rethink | 5 (direct spawn) |
+| `hb-rethink` | weighted≥15 OR pending tensions≥3 OR weekly cadence (≥7 days since last rethink AND lastWeeklySynthesis within 24h) | 5 (direct spawn) |
 | `hb-rethink2` | hb-rethink returned alert OR weights не распустились | 5.5 (queued) |
 | `hb-autoresearch` | после успешного rethink, для self-experiment PROPOSAL | 5.5 (queued) |
 
@@ -71,7 +71,9 @@ Phase 5 пытается direct spawn через `sessions_spawn`; если не
 
 **Etalon default**: cron payload includes `--spawn-rethink --spawn-rethink2` so the OLL loop bootstraps end-to-end on fresh installs without manual seeding. Cost is zero on ticks where triggers don't fire because `maybeQueue` filters by `wouldRunRethink` / `wouldRunRethink2`.
 
-`--force-rethink-once` is a one-shot escape hatch — bypasses `daysSinceRethink>=14` for a single run when the days gate isn't satisfied, queues hb-rethink anyway. Used during init / cold-start or for ad-hoc reviews.
+`--force-rethink-once` is a one-shot escape hatch — bypasses the 7-day gate AND weekly-synthesis proximity check for a single run when the weekly cadence isn't satisfied, queues hb-rethink anyway. Used during init / cold-start or for ad-hoc reviews.
+
+`--apply-low-risk-proposals` is audit-only: after rethink handoff apply, scan the latest `done/` rethink handoff for `[PROPOSAL:low-risk]` / `[PROPOSAL:human-review]` blocks and write `workspace/ops/heartbeat-spawns/rethink-applied-{timestamp}.json`. Does not auto-edit source files.
 
 ## Auto-seed from Maintenance
 

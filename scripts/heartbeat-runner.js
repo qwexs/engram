@@ -99,7 +99,11 @@ if (opts.help || opts.h) {
     "  --spawn-autoresearch     Queue hb-autoresearch for the next pending auto experiment.",
     "  --spawn-rethink2         Queue hb-rethink2 when pendingRethink2 is set.",
     "  --force-rethink-once     Bootstrap path: queue hb-rethink even if no trigger is due",
-    "                           (forces the daysSinceRethink>=14 gate to fire for this tick only).",
+    "                           (bypasses the 7-day gate AND weekly-synthesis proximity check for this tick only).",
+    "  --apply-low-risk-proposals",
+    "                           After rethink handoff apply: audit [PROPOSAL:low-risk] blocks from the latest",
+    "                           done/ rethink handoff into workspace/ops/heartbeat-spawns/rethink-applied-*.json",
+    "                           (audit trail only — does not auto-edit source files).",
     "  --spawn-hb-domains-write Queue hb-domains-write per due domain (writes to memory/domains/<slug>/{changelog,status}.md via HB-DOMAINS HANDOFF).",
     "  --hb-domains-write-batch-size <n>",
     "                           Max hb-domains-write subagents to queue per tick. Default: 1 (sequential to avoid provider rate limits). Other phases stay parallel.",
@@ -310,6 +314,118 @@ function hoursSince(iso, fallback = 999) {
   const ms = new Date(iso).getTime();
   if (!Number.isFinite(ms)) return fallback;
   return Math.floor((Date.now() - ms) / 3600000);
+}
+
+// lastWeeklySynthesis is typically a Monday date string (YYYY-MM-DD) written by
+// runSynthesis / HB-SYNTHESIS handoff. Anchor date-only values at local noon to
+// reduce UTC-midnight TZ skew when checking "within last 24h".
+function isWeeklySynthesisRecent(lastWeeklySynthesis, nowMs = Date.now()) {
+  if (!lastWeeklySynthesis) return false;
+  const raw = String(lastWeeklySynthesis).trim();
+  if (!raw) return false;
+  const anchor = raw.includes("T") ? raw : `${raw}T12:00:00`;
+  const ms = new Date(anchor).getTime();
+  if (!Number.isFinite(ms)) return false;
+  const deltaMs = nowMs - ms;
+  // Allow small negative slack for TZ/clock skew; require < 24h elapsed.
+  return deltaMs < 24 * 3600000 && deltaMs >= -12 * 3600000;
+}
+
+// Audit-only: extract [PROPOSAL:low-risk] / [PROPOSAL:human-review] blocks from
+// the most recent rethink handoff in done/. Does NOT edit source files.
+function extractRethinkProposalBlocks(text) {
+  const source = String(text || "");
+  const lowRisk = [];
+  const humanReview = [];
+  const re = /\[PROPOSAL:(low-risk|human-review)\]([^\[]*(?:\[(?!PROPOSAL:)[^\[]*)*)/gi;
+  let match;
+  while ((match = re.exec(source)) !== null) {
+    const kind = String(match[1] || "").toLowerCase();
+    const body = String(match[0] || "").trim();
+    if (!body) continue;
+    if (kind === "low-risk") lowRisk.push(body);
+    else if (kind === "human-review") humanReview.push(body);
+  }
+  return { lowRisk, humanReview };
+}
+
+async function applyLowRiskProposalsAudit() {
+  const spawnsDir = join(workspace, "workspace", "ops", "heartbeat-spawns");
+  const doneDir = join(spawnsDir, "done");
+  const empty = { lowRisk: 0, humanReview: 0, sourcePath: null, source: null };
+  if (!existsSync(doneDir)) {
+    console.log(`[rethink-proposals] found 0 low-risk, 0 human-review`);
+    return empty;
+  }
+  let files;
+  try {
+    files = await readdir(doneDir);
+  } catch (err) {
+    summary.warnings.push("rethink-proposals audit: cannot read done/: " + (err && err.message ? err.message : String(err)));
+    console.log(`[rethink-proposals] found 0 low-risk, 0 human-review`);
+    return empty;
+  }
+  // Prefer HB-RETHINK handoffs; fall back to any *.md by mtime/name.
+  const mdFiles = files.filter((f) => typeof f === "string" && f.endsWith(".md"));
+  if (mdFiles.length === 0) {
+    console.log(`[rethink-proposals] found 0 low-risk, 0 human-review`);
+    return empty;
+  }
+  const scored = [];
+  for (const file of mdFiles) {
+    const filePath = join(doneDir, file);
+    let mtimeMs = 0;
+    try {
+      mtimeMs = statSync(filePath).mtimeMs || 0;
+    } catch {
+      mtimeMs = 0;
+    }
+    let text = "";
+    try {
+      text = await readFile(filePath, "utf8");
+    } catch {
+      continue;
+    }
+    const isRethink = /HB-RETHINK/i.test(text) || /rethink/i.test(file);
+    scored.push({ file, filePath, mtimeMs, text, isRethink });
+  }
+  scored.sort((a, b) => {
+    if (a.isRethink !== b.isRethink) return a.isRethink ? -1 : 1;
+    return b.mtimeMs - a.mtimeMs || b.file.localeCompare(a.file);
+  });
+  const latest = scored.find((s) => s.isRethink) || scored[0];
+  if (!latest) {
+    console.log(`[rethink-proposals] found 0 low-risk, 0 human-review`);
+    return empty;
+  }
+  const { lowRisk, humanReview } = extractRethinkProposalBlocks(latest.text);
+  const stamp = localIso().replace(/[:.]/g, "-").replace(/[^+\dT-]/g, "");
+  const outName = `rethink-applied-${stamp}.json`;
+  const outPath = join(spawnsDir, outName);
+  const record = {
+    createdAt: localIso(),
+    sourceHandoff: latest.file,
+    sourcePath: latest.filePath,
+    lowRiskCount: lowRisk.length,
+    humanReviewCount: humanReview.length,
+    lowRisk,
+    humanReview,
+    note: "audit-only — proposals recorded, source files not modified",
+  };
+  try {
+    mkdirSync(spawnsDir, { recursive: true });
+    await writeFile(outPath, JSON.stringify(record, null, 2) + "\n", "utf8");
+  } catch (err) {
+    summary.warnings.push("rethink-proposals audit: write failed: " + (err && err.message ? err.message : String(err)));
+  }
+  console.log(`[rethink-proposals] found ${lowRisk.length} low-risk, ${humanReview.length} human-review`);
+  return {
+    lowRisk: lowRisk.length,
+    humanReview: humanReview.length,
+    source: latest.file,
+    sourcePath: latest.filePath,
+    auditPath: outPath,
+  };
 }
 
 async function readJsonIfExists(path, fallback) {
@@ -1071,12 +1187,17 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   const rethinkReasons = [];
   if (score >= 15) rethinkReasons.push("score>=15");
   if (tensions >= 3) rethinkReasons.push("tensions>=3");
-  if (daysSinceRethink >= 14) rethinkReasons.push("lastRethink>=14d");
-  // 2026-07-05: --force-rethink-once bypasses the daysSinceRethink gate for
-  // a single tick. Bootstrap path on fresh installs / post-init cold-start.
-  // Does NOT modify state.lastRethink — it persists the bootstrap timestamp
-  // via the actual hb-rethink handoff apply path (applyRethinkHandoff).
-  if (opts["force-rethink-once"] && daysSinceRethink < 14) {
+  // Weekly cadence (2026-07-25): 7-day floor + must follow a recent weekly
+  // synthesis (lastWeeklySynthesis within 24h). Synthesis runs Monday and
+  // stores the Monday date string; rethink is meant to fire right after it.
+  const weeklySynthesisRecent = isWeeklySynthesisRecent(state.lastWeeklySynthesis);
+  const weeklyCadenceDue = daysSinceRethink >= 7 && weeklySynthesisRecent;
+  if (weeklyCadenceDue) rethinkReasons.push("lastRethink>=7d+weekly-synthesis");
+  // 2026-07-05 / 2026-07-25: --force-rethink-once bypasses the 7-day gate AND
+  // the weekly-synthesis proximity check for a single tick. Bootstrap path on
+  // fresh installs / post-init cold-start. Does NOT modify state.lastRethink —
+  // it persists via the actual hb-rethink handoff apply path (applyRethinkHandoffs).
+  if (opts["force-rethink-once"] && !weeklyCadenceDue) {
     rethinkReasons.push("force-rethink-once");
   }
 
@@ -1838,6 +1959,12 @@ async function main() {
       applied: rethinkApplyResult.applied,
       failed: rethinkApplyResult.failed,
     };
+    // Audit trail for rethink proposals (opt-in). Scans latest done/ handoff;
+    // does not auto-edit source files.
+    if (opts["apply-low-risk-proposals"]) {
+      const proposalAudit = await applyLowRiskProposalsAudit();
+      summary.phases["rethink-proposals-audit"] = proposalAudit;
+    }
     if (shouldApplyDomainHandoffs(opts)) {
       const applyResult = await applyDomainHandoffs();
       summary.phases = summary.phases || {};

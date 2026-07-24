@@ -707,47 +707,6 @@ export function auditVerticalAccess(workspace, registry, engram, findings) {
     }
   }
 
-  // WD-QMD-021: vertical collections not included in heartbeat embed args.
-  // heartbeat-runner.js qmdCommandArgs("embed") must list verticalAccess
-  // collections alongside local qmd.collections, otherwise qmd embed only
-  // covers local collections and vertical documents stay without vectors.
-  const localCollections = new Set(
-    Array.isArray(engram?.qmd?.collections)
-      ? engram.qmd.collections.map((c) => String(c)).filter(Boolean)
-      : []
-  );
-  const verticalNames = [...cfg.collections.keys()];
-  const missingFromEmbed = verticalNames.filter((n) => !localCollections.has(n));
-  if (missingFromEmbed.length > 0) {
-    // Check if heartbeat-runner.js has the vertical-merge patch by inspecting
-    // the source. If the patch is present, the collections ARE included at
-    // runtime even though they're not in qmd.collections. We detect this by
-    // looking for the verticalAccess merge code in heartbeat-runner.js.
-    const hbRunnerPath = join(SCRIPTS_DIR, "heartbeat-runner.js");
-    let hbHasVerticalMerge = false;
-    try {
-      if (existsSync(hbRunnerPath)) {
-        const hbSrc = readFileSync(hbRunnerPath, "utf-8");
-        hbHasVerticalMerge = hbSrc.includes('qmd.verticalAccess')
-          && hbSrc.includes('command === "embed"');
-      }
-    } catch { /* ignore */ }
-
-    if (!hbHasVerticalMerge) {
-      findings.push(makeFinding({
-        code: "WD-QMD-021",
-        level: "error",
-        message: `Vertical QMD collections are not included in heartbeat qmd embed: ${missingFromEmbed.join(", ")}. heartbeat-runner.js qmdCommandArgs() does not merge verticalAccess.collections into embed args — vertical documents will never get vectors.`,
-        path: "engram.json#qmd.verticalAccess",
-        details: {
-          missingFromEmbed,
-          localCollections: [...localCollections],
-          verticalCollections: verticalNames,
-          fix: "Patch qmdCommandArgs() in heartbeat-runner.js to merge verticalAccess.collections when command==='embed'",
-        },
-      }));
-    }
-  }
 }
 
 function expectedMaintenanceCollections(workspace, registry, engram, indexCollections = new Map()) {

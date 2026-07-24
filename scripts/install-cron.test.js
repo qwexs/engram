@@ -265,7 +265,18 @@ Delivery is \`none\` — your reply is only stored in the session log, never sen
 Look at \`runner.summary.status\` and \`runner.summary.warnings\`:
 - status == "ok" and warnings empty → reply EXACTLY: \`HEARTBEAT_OK\`
 - status == "ok" with warnings → reply with up to 5 one-liners, then \`HEARTBEAT_OK\`
-- status == "error" → reply with up to 2 one-liners, then \`NO_REPLY\``; }
+- status == "error" → reply with up to 2 one-liners, then \`NO_REPLY\`
+If \`claim.stdout\` was non-empty, append one final line: \`[phase-5.5] scanned N, claimed M, errors E, spawned K\` (use the {action:\"summary\",...} JSON line).
+
+FAIL-FAST / NO WAIT-LOOP (mandatory):
+- NEVER sleep, wait, poll, retry-wait, or call process/poll on background exec sessions.
+- If Step 1 or Step 2 returns "Command still running", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Immediately finish Step 4.
+- In that fail-fast case reply with one line summarizing the incomplete step (≤200 chars), then \`HEARTBEAT_OK\` if only incomplete/lock/still-running, else \`NO_REPLY\` on hard error.
+- Do NOT re-run heartbeat-runner.js in the same cron turn.
+- Do NOT inspect long runner logs beyond what is needed for a ≤200 char summary.
+- Allowed tools only: exec, sessions_spawn, read. No process tool. No message tool.
+
+Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or any tool result verbatim. Do NOT call any tool beyond what is specified above. Do NOT use exec to run sleep, wait, poll, process, or any polling loop. The whole reply must fit in ≤512 tokens.`; }
 
 const OLD_PAYLOAD = `Run the heartbeat. One command:
 bun ./skills/engram/scripts/heartbeat-runner.js --workspace /tmp/ws

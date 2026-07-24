@@ -475,7 +475,7 @@ function buildSchedule(s) {
 const PROSE_TEMPLATE = `You are the cron job for the Clawd engram heartbeat. Do these steps in order using your available tools (do not write or run any JavaScript or shell scripts; call the tools directly).
 
 Step 1 — Run the heartbeat runner:
-Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2", workdir="<WORKSPACE>", timeout_ms=900000. Capture the output as \`runner\`.
+Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2", workdir="<WORKSPACE>", timeout_ms=420000. Capture the output as \`runner\`.
 
 Note: --recover-stale-oll-locks clears stale worker locks that exceeded TTL (2h default), preventing permanent lockout when a subagent fails without producing a handoff.
 
@@ -497,9 +497,17 @@ Look at \`runner.summary.status\` and \`runner.summary.warnings\` (the JSON has 
 - status == "ok" and warnings empty → reply EXACTLY: \`HEARTBEAT_OK\` (one line, no other text)
 - status == "ok" with warnings → reply with up to 5 one-liners (one per warning, each ≤200 chars), then \`HEARTBEAT_OK\`
 - status == "error" → reply with up to 2 one-liners summarizing the first failures (≤200 chars each), then \`NO_REPLY\`
-If \`claim.stdout\` was non-empty, append one final line: \`[phase-5.5] scanned N, claimed M, errors E, spawned K\` (use the {action:"summary",...} JSON line).
+If \`claim.stdout\` was non-empty, append one final line: \`[phase-5.5] scanned N, claimed M, errors E, spawned K\` (use the {action:\"summary\",...} JSON line).
 
-Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or any tool result verbatim. Do NOT call any tool beyond what is specified above. Do NOT use exec to run sleep or any polling loop. The whole reply must fit in ≤512 tokens.`;
+FAIL-FAST / NO WAIT-LOOP (mandatory):
+- NEVER sleep, wait, poll, retry-wait, or call process/poll on background exec sessions.
+- If Step 1 or Step 2 returns \"Command still running\", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Immediately finish Step 4.
+- In that fail-fast case reply with one line summarizing the incomplete step (≤200 chars), then \`HEARTBEAT_OK\` if only incomplete/lock/still-running, else \`NO_REPLY\` on hard error.
+- Do NOT re-run heartbeat-runner.js in the same cron turn.
+- Do NOT inspect long runner logs beyond what is needed for a ≤200 char summary.
+- Allowed tools only: exec, sessions_spawn, read. No process tool. No message tool.
+
+Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or any tool result verbatim. Do NOT call any tool beyond what is specified above. Do NOT use exec to run sleep, wait, poll, process, or any polling loop. The whole reply must fit in ≤512 tokens.`;
 
 // --- Heartbeat tool allow-list ---
 // The heartbeat cron-job is a deterministic runner: it shells out to
@@ -544,6 +552,8 @@ const NEW_PAYLOAD_MARKER_5 = "--spawn-rethink --spawn-rethink2";
 // with ANNOUNCE_SKIP because isolated cron sessions cannot receive completion
 // reliably after their turn is finalized.
 const NEW_PAYLOAD_MARKER_6 = "expectsCompletionMessage=false";
+// 2026-07-20+: fail-fast no wait-loop.
+const NEW_PAYLOAD_MARKER_7 = "FAIL-FAST / NO WAIT-LOOP";
 
 function buildPayloadMessage({ workspace, agentId, session, labelPrefix }) {
   return PROSE_TEMPLATE
@@ -562,6 +572,7 @@ function isOnNewFormat(payload) {
     payload.message.includes(NEW_PAYLOAD_MARKER_4) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_5) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_6) &&
+    payload.message.includes(NEW_PAYLOAD_MARKER_7) &&
     // toolsAllow must be present and match HEARTBEAT_TOOLS_ALLOW.
     // If absent (older install) or divergent, we re-apply via edit.
     Array.isArray(payload.toolsAllow) &&
@@ -625,7 +636,7 @@ function buildCronSpec() {
       labelPrefix,
     }),
     thinking: "medium",
-    timeoutSeconds: 900,
+    timeoutSeconds: 420,
     lightContext: true,
     toolsAllow: [...HEARTBEAT_TOOLS_ALLOW],
   };

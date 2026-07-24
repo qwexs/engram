@@ -1434,6 +1434,20 @@ function qmdCommandArgs(command) {
   if (qmd.index) args.push("--index", String(qmd.index));
   args.push(command);
   let collections = Array.isArray(qmd.collections) ? qmd.collections : [];
+  // Include vertical-access collections for embed so they get vectors too.
+  // qmd update already re-scans all registered collections regardless of -c,
+  // but qmd embed respects the -c filter — without this, vertical documents
+  // stay unembedded and hybrid search (embeddings + rerank) never covers them.
+  // Safe because: each workspace has its own index/lock; cron slots are
+  // staggered 10 min apart; embed is bounded by pending count (~2 min max).
+  if (command === "embed") {
+    const va = qmd.verticalAccess;
+    if (va && va.enabled && va.collections && typeof va.collections === "object") {
+      const merged = new Set(collections);
+      for (const name of Object.keys(va.collections)) merged.add(name);
+      collections = Array.from(merged);
+    }
+  }
   if (qmd.autoDiscoverCollections) {
     const discovered = discoverQmdCollections();
     if (discovered.length) {

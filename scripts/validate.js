@@ -519,7 +519,7 @@ if (!cronCfg || !cronCfg.expectedJobName) {
   const expectedSchedule = cronCfg.expectedSchedule || { kind: 'cron', expr: '*/30 * * * *' };
   const requireAllActive = cronCfg.requireAllActiveSessions !== false; // default true
   const staleMin = Number(cronCfg.staleRunMinutes || 90);
-  const cronProbe = spawnSync('openclaw', ['cron', 'list', '--json'], { encoding: 'utf8', shell: false, timeout: 30000 });
+  const cronProbe = spawnSync('openclaw', ['cron', 'list', '--agent', agentId, '--json'], { encoding: 'utf8', shell: false, timeout: 30000 });
   if (cronProbe.error || cronProbe.status !== 0) {
     warn(`openclaw cron list unavailable (${cronProbe.error?.message || 'exit ' + cronProbe.status}) — skipping cron drift check`);
   } else {
@@ -541,6 +541,10 @@ if (!cronCfg || !cronCfg.expectedJobName) {
           } else {
             ok(`Cron job present and enabled (id ${job.id}, agent=${job.agentId})`);
           }
+          // 8a. Agent ownership check — job must belong to this workspace's agent.
+          if (job.agentId && job.agentId !== agentId) {
+            error(`Cron job agentId is "${job.agentId}", expected "${agentId}" — job belongs to a different agent. Run \`openclaw cron add --agent ${agentId}\` to create the correct job.`);
+          }
           const sched = job.schedule || {};
           if (sched.kind === expectedSchedule.kind && (expectedSchedule.kind !== 'cron' || sched.expr === expectedSchedule.expr)) {
             const schedDesc = sched.kind === 'cron' ? `${sched.expr} ${sched.tz || 'local'}` : `every ${Math.round((sched.everyMs || 0) / 60000)}m`;
@@ -553,6 +557,17 @@ if (!cronCfg || !cronCfg.expectedJobName) {
             if (requireAllActive) ok('Payload contains --all-active-sessions (per-session daily notes enabled)');
           } else {
             error(`Payload missing --all-active-sessions — only "main" daily note will be created. Update via \`openclaw cron update ${job.id} --patch '{"payload":{"message":"<new>"}}'\` or \`bun skills/engram/scripts/heartbeat-runner.js … --all-active-sessions\``);
+          }
+          // 8c. Payload workspace/agent-id check — payload must target this workspace.
+          if (msg.includes(`--workspace ${WORKSPACE}`) || msg.includes(`--workspace ${WORKSPACE}/`)) {
+            ok(`Payload --workspace targets this workspace`);
+          } else {
+            error(`Payload --workspace does not match this workspace (${WORKSPACE}). Update the cron job payload to use --workspace ${WORKSPACE}.`);
+          }
+          if (msg.includes(`--agent-id ${agentId}`)) {
+            ok(`Payload --agent-id matches this agent (${agentId})`);
+          } else {
+            error(`Payload --agent-id does not match this agent (expected "${agentId}"). Update the cron job payload to use --agent-id ${agentId}.`);
           }
           if (job.payload?.lightContext !== true) {
             warn(`Payload lightContext is ${job.payload?.lightContext}, expected true (cron should not load full workspace bootstrap)`);

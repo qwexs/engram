@@ -21,7 +21,12 @@ Trigger reason: {{trigger_reason}}
 ## Task
 
 You are the hb-rethink subagent. Your job is **meta-cognitive review**: analyze accumulated
-operational observations and tensions, identify patterns, and generate actionable proposals.
+operational observations and tensions, identify patterns, and decide on actions.
+
+**Core principle: you ACT autonomously, then explain what you did and why — in business language.**
+The handler (process-handoff.js) will execute your proposed actions automatically and then
+send a business-language report to the user. The user sees what happened and why, and can
+react or revert if they disagree.
 
 ### Step 1: Score observations
 
@@ -64,48 +69,36 @@ For each tension:
 
 Decision: RESOLVE (one fact supersedes other) | DISSOLVE (not actually contradictory) | KEEP PENDING
 
-### Step 4: Generate proposals
+### Step 4: Decide on actions and write business-language rationale
 
-For patterns that suggest a workflow fix, write a `[PROPOSAL]`:
-- `[PROPOSAL:low-risk]` — safe to auto-execute (archive noise, minor changes)
-- `[PROPOSAL:human-review]` — requires agent decision (file edits, workflow changes)
+For each action you decide to take (archive, promote, resolve tension, create experiment),
+write a **Proposed-Action** with business-language rationale. Each action must include:
 
-Keep proposals concrete: name the file and describe the change.
+1. **reason** — why this action is being taken (what problem/friction caused it)
+2. **if_done** — what improves as a result (positive consequence)
+3. **if_not_done** — what stays broken if this action were skipped (cost of inaction)
+
+**Language: business, not technical.** Write so a stakeholder can understand:
+- ✅ "Экстракция пропускает факты из коротких сообщений — архивирую устаревшее наблюдение, чтобы не зашумлять анализ. Если архивирую — анализ будет фокусироваться на активных проблемах. Если нет — шум будет накапливаться."
+- ❌ "obs-0007 has score 5, promoting to people/alice with confidence 0.8, tags: extraction,heartbeat"
 
 ### Step 5: Generate Experiment Specs
 
-For each pattern/observation where the resolution requires RESEARCH (not just a config change or workflow fix):
-
-1. **Formulate a hypothesis**: What do you need to verify or discover?
-2. **Determine experiment type**: research | analysis | comparison | validation
-3. **Define actions**: Concrete research steps (search docs, compare implementations, analyze data)
-4. **Estimate budget**:
-   - `estimated_tokens`: rough estimate based on type:
-     - research: 50000 tokens (comprehensive web search + synthesis)
-     - analysis: 30000 tokens (codebase/data analysis)
-     - comparison: 50000 tokens (multi-source comparison)
-     - validation: 40000 tokens (hypothesis testing)
-   - `estimated_cost_usd`: tokens × $0.015/1K (Sonnet 4.6 rate)
-   - `manual_hours_saved`: how many hours of manual work this research would save
-   - `roi_estimate`: (manual_hours_saved × 30) / estimated_cost_usd (assume $30/hour value)
-   - `decision`:
-     - `auto`: ROI > 10 AND (blocker=true OR deadline < 14 days) — execute immediately
-     - `propose`: ROI 3-10 — require human approval
-     - `skip`: ROI < 3 — not worth the cost
-
-5. **Only generate specs for `auto` and `propose` decisions** (skip low-ROI research)
+For research that needs external work, include experiment specs with ROI assessment.
+All experiments are auto-created by the handler — your job is to provide the spec and business rationale.
 
 Each spec should include:
 - `hypothesis`: What you're trying to verify
 - `type`: research | analysis | comparison | validation
 - `source_observations`: List of obs-IDs that triggered this research
 - `actions`: Step-by-step research plan
-- `metric`: What to measure (e.g., "time saved", "error rate", "adoption rate")
-- `baseline`: Current state (e.g., "manual process takes 2h", "current error rate unknown")
+- `metric`: What to measure
+- `baseline`: Current state
 - `success_criteria`: How to determine if hypothesis is confirmed
 - `budget`: Full budget object with ROI calculation
-- `output`: Where to save report (`path`, `publish_to`)
-- `delivery`: How to deliver results (`report`, `daily_note`, optional `outline` config)
+  - `decision`: `auto` (ROI > 10) or `propose` (ROI 3-10) — handler auto-creates both
+- `output`: Where to save report
+- `delivery`: How to deliver results
 
 **Format**: JSON array (will be parsed by process-handoff.js)
 
@@ -171,10 +164,10 @@ Your response MUST end with this block:
 ```
 === HB-RETHINK HANDOFF ===
 Status: {ok | error}
-Summary: {one line, e.g. "analyzed 5 obs, 1 tension; 2 proposals generated"}
-Stats: {"observations_analyzed": N, "tensions_analyzed": N, "patterns_found": N, "proposals": N, "weighted_score": N, "archived": ["obs-id", ...], "promoted": [{"obsId": "obs-id", "entity": "...", "fact": "...", "category": "...", "confidence": 0.8, "abstraction": "pattern", "tags": "...", "description": "..."}]}
+Summary: {one line, e.g. "analyzed 5 obs, 1 tension; 3 actions executed"}
+Stats: {"observations_analyzed": N, "tensions_analyzed": N, "patterns_found": N, "actions": N, "weighted_score": N}
 Flags: []
-Alerts: ["[ALERT] /rethink report ready — N proposals, see daily note ## OLL Rethink {date}"]
+Alerts: ["[ALERT] OLL Rethink {date} — N actions executed. See daily note ## OLL Rethink {date}"]
 Rethink-Report: |
   ## Patterns Found
   
@@ -184,23 +177,22 @@ Rethink-Report: |
   
   {per-tension analysis}
   
-  ## Proposals
+  ## Actions Taken
   
-  {proposals with rationale}
+  {business-language summary of what was done and why}
 
-Tensions-Resolved: [{"id": "tension-id", "resolution": "fact-abc superseded by fact-xyz", "action": "resolve"}, {"id": "tension-id", "resolution": "dissolved: facts are scope-dependent", "action": "dissolve"}]
-Experiment-Specs: [{"hypothesis": "...", "type": "research", "source_observations": ["obs-0001"], "actions": ["Search for best practices in X", "Compare approach A vs B", "Analyze implementation Y"], "metric": "time saved per week", "baseline": "current manual process takes 2 hours", "success_criteria": "find automated solution that saves >1h/week", "budget": {"estimated_tokens": 50000, "estimated_cost_usd": 0.75, "value": {"blocker": true, "deadline_days": 28, "manual_hours_saved": 3}, "roi_estimate": 120, "decision": "auto"}, "output": {"path": "research/topic-name.md", "publish_to": "daily_note"}, "delivery": {"report": true, "daily_note": true}}]
+Proposed-Actions: [{"id": "act-001", "type": "archive", "obs_id": "obs-0003", "reason": "шум, не относится к активным проблемам", "if_done": "анализ фокусируется на активных проблемах", "if_not_done": "шум накапливается"}, {"id": "act-002", "type": "promote", "obs_id": "obs-0005", "entity": "projects/engram", "fact": "...", "category": "...", "confidence": 0.8, "abstraction": "pattern", "tags": "...", "reason": "значимый паттерн для будущих решений", "if_done": "KG пополняется полезным фактом", "if_not_done": "инсайт остаётся в obs и не используется"}, {"id": "act-003", "type": "resolve_tension", "tension_id": "tension-0002", "resolution": "fact-abc superseded by fact-xyz", "action": "resolve", "reason": "противоречие разрешено — новый факт точнее", "if_done": "KG консистентен", "if_not_done": "противоречие остаётся и путает"}]
+Experiment-Specs: [{"hypothesis": "...", "type": "research", "source_observations": ["obs-0001"], "actions": ["..."], "metric": "...", "baseline": "...", "success_criteria": "...", "budget": {"estimated_tokens": 50000, "estimated_cost_usd": 0.75, "value": {"blocker": true, "deadline_days": 28, "manual_hours_saved": 3}, "roi_estimate": 120, "decision": "auto"}, "output": {"path": "research/topic-name.md", "publish_to": "daily_note"}, "delivery": {"report": true, "daily_note": true}}]
 === END ===
 ```
 
 **Rules:**
-1. `Stats.archived` — list of obs IDs to auto-archive (will be executed by process-handoff.js)
-2. `Stats.promoted` — list of obs to auto-promote to KG (will be executed by process-handoff.js)
-3. `Rethink-Report` — multi-line field, all content indented by 2 spaces after `|`
-4. `Tensions-Resolved` — only tensions you can confidently resolve/dissolve; leave ambiguous ones out
-5. `Experiment-Specs` — JSON array of experiment specifications (can be empty `[]`)
-6. `Alerts` — always include at least one ALERT with the full report text (not just "report ready")
-7. If no observations or tensions to review, still complete the task with empty analysis
-8. **Persist handoff to disk (Step 7).** Without the on-disk handoff
+1. `Proposed-Actions` — actions the handler WILL auto-execute (archive, promote, resolve tension). Each includes `reason`, `if_done`, `if_not_done` for the business report.
+2. `Rethink-Report` — multi-line field with business-language summary of patterns and actions taken, indented by 2 spaces after `|`
+3. `Experiment-Specs` — JSON array, handler auto-creates experiments (both `auto` and `propose` decisions)
+4. `Alerts` — the handler will build a business-language report from executed actions and surface it to the user
+5. If no observations or tensions to review, still complete the task with empty analysis
+6. **Agent acts, then reports.** The handoff drives auto-execution + business-language transparency.
+7. **Persist handoff to disk (Step 7).** Without the on-disk handoff
    file the runner cannot advance `lastRethink`, and rethink will
    re-fire on every tick — wasting tokens and blocking the OLL loop.

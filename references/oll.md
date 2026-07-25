@@ -79,7 +79,7 @@ Phase 5 пытается direct spawn через `sessions_spawn`; если не
 
 When `validate.js` produces ≥1 `❌` error or `⚠️` warning AND no auto-seed fired in the last 24h (`lastAutoSeedAt` in `heartbeat-state.json`), `hb-runner` writes a low-confidence friction observation via `memory-observe.js`. This converts maintenance warnings into observation signal so the OLL loop has continuous input on quiet workspaces.
 
-`hb-rethink` (model from `engram.json → models.heartbeat.subagents["hb-rethink"]`) reviews observations + tensions, identifies patterns, generates proposals, and returns a `HB-RETHINK HANDOFF` block. `process-handoff.js` auto-executes low-risk actions (archive noise, promote facts) and surfaces an ALERT.
+`hb-rethink` (model from `engram.json → models.heartbeat.subagents["hb-rethink"]`) reviews observations + tensions, identifies patterns, decides on actions, and returns a `HB-RETHINK HANDOFF` block with business-language rationale for each action. `process-handoff.js` **auto-executes** all actions (archive, promote, resolve tensions, create experiments) and then **surfaces a business-language report to the user** explaining what was done, why, and what improves as a result. The user sees the outcome and can react or revert — agent acts, then explains.
 
 ## Resolving Tensions
 

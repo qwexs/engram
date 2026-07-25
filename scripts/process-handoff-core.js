@@ -355,34 +355,53 @@ export async function applyRethinkHandoff(handoff, context = {}) {
     return result(ctx, handoff, { status: "ok" });
   }
   const reportText = parseMultilineField(handoff.body, "Rethink-Report");
-  const tensionsResolved = parseJsonField(parseField(handoff.body, "Tensions-Resolved") ?? "[]", []);
+  const proposedActions = parseJsonField(parseField(handoff.body, "Proposed-Actions") ?? "[]", []);
   const experimentSpecs = parseJsonField(parseField(handoff.body, "Experiment-Specs") ?? "[]", []);
   if (reportText.trim()) {
     appendToDailyNote(ctx, `\n## OLL Rethink ${ctx.date}\n\n${reportText.trim()}\n`);
     log(ctx, "[hb-rethink] Report written to daily note");
   }
+
+  // === AUTO-EXECUTE actions (agent is autonomous) ===
+  // Then surface a business-language report of what was done and why.
   let archiveCount = 0;
-  for (const obsId of Array.isArray(handoff.stats.archived) ? handoff.stats.archived : []) {
-    if (await runScript(ctx, "memory-promote.js", ["--archive", "--obs-id", String(obsId), "--reason", "hb-rethink: noise observation auto-archived"])) archiveCount++;
+  const archiveDetails = [];
+  for (const action of proposedActions) {
+    if (action.type === "archive" && action.obs_id) {
+      if (await runScript(ctx, "memory-promote.js", ["--archive", "--obs-id", String(action.obs_id), "--reason", action.reason || "hb-rethink: noise observation"])) {
+        archiveCount++;
+        archiveDetails.push({ id: action.obs_id, reason: action.reason, if_done: action.if_done, if_not_done: action.if_not_done });
+      }
+    }
   }
   let promoteCount = 0;
-  for (const item of Array.isArray(handoff.stats.promoted) ? handoff.stats.promoted : []) {
-    if (!item.obsId || !item.entity || !item.fact || !item.category || !item.confidence) continue;
-    const args = ["--obs-id", String(item.obsId), "--entity", item.entity, "--fact", item.fact, "--category", item.category, "--confidence", String(item.confidence)];
-    if (item.abstraction) args.push("--abstraction", item.abstraction);
-    if (item.tags) args.push("--tags", item.tags);
-    if (item.description) args.push("--description", item.description);
-    if (await runScript(ctx, "memory-promote.js", args)) promoteCount++;
+  const promoteDetails = [];
+  for (const action of proposedActions) {
+    if (action.type === "promote" && action.obs_id && action.entity && action.fact && action.category && action.confidence) {
+      const args = ["--obs-id", String(action.obs_id), "--entity", action.entity, "--fact", action.fact, "--category", action.category, "--confidence", String(action.confidence)];
+      if (action.abstraction) args.push("--abstraction", action.abstraction);
+      if (action.tags) args.push("--tags", action.tags);
+      if (action.description) args.push("--description", action.description);
+      if (await runScript(ctx, "memory-promote.js", args)) {
+        promoteCount++;
+        promoteDetails.push({ id: action.obs_id, entity: action.entity, reason: action.reason, if_done: action.if_done, if_not_done: action.if_not_done });
+      }
+    }
   }
-  for (const tension of tensionsResolved) {
-    if (!tension.id || !tension.resolution) continue;
-    const args = ["--id", String(tension.id), "--resolution", tension.resolution];
-    if (tension.action === "dissolve") args.push("--dissolved");
-    await runScript(ctx, "memory-tension-resolve.js", args);
+  let tensionResolvedCount = 0;
+  const tensionDetails = [];
+  for (const action of proposedActions) {
+    if (action.type === "resolve_tension" && action.tension_id && action.resolution) {
+      const args = ["--id", String(action.tension_id), "--resolution", action.resolution];
+      if (action.action === "dissolve") args.push("--dissolved");
+      if (await runScript(ctx, "memory-tension-resolve.js", args)) {
+        tensionResolvedCount++;
+        tensionDetails.push({ id: action.tension_id, resolution: action.resolution, reason: action.reason, if_done: action.if_done, if_not_done: action.if_not_done });
+      }
+    }
   }
   const createdExperiments = [];
-  const proposedExperiments = [];
-  const extraAlerts = [];
+  const experimentDetails = [];
   for (const spec of experimentSpecs) {
     if (!spec.hypothesis || !spec.type || !spec.budget) continue;
     try {
@@ -397,31 +416,64 @@ export async function applyRethinkHandoff(handoff, context = {}) {
         continue;
       }
       const created = JSON.parse(res.stdout);
-      if (spec.budget.decision === "auto") {
-        createdExperiments.push(created.id);
-        const shortHyp = spec.hypothesis.slice(0, 60) + (spec.hypothesis.length > 60 ? "..." : "");
-        appendToDailyNote(ctx, `\n- **Autoresearch**: created ${created.id} (${shortHyp})\n`);
-        log(ctx, `[hb-rethink] Created auto experiment: ${created.id}`);
-      } else if (spec.budget.decision === "propose") {
-        proposedExperiments.push(created.id);
-        const shortHyp = spec.hypothesis.slice(0, 80) + (spec.hypothesis.length > 80 ? "..." : "");
-        extraAlerts.push(`[PROPOSE] Experiment ${created.id}: ${shortHyp} — approve or skip?`);
-        log(ctx, `[hb-rethink] Created proposed experiment: ${created.id}`);
-      }
+      createdExperiments.push(created.id);
+      const shortHyp = spec.hypothesis.slice(0, 80) + (spec.hypothesis.length > 80 ? "..." : "");
+      appendToDailyNote(ctx, `\n- **Autoresearch**: created ${created.id} (${shortHyp})\n`);
+      experimentDetails.push({ id: created.id, hypothesis: shortHyp, cost: spec.budget.estimated_cost_usd, reason: `Research: ${shortHyp}` });
+      log(ctx, `[hb-rethink] Created experiment: ${created.id}`);
     } catch (error) {
       log(ctx, `[hb-rethink] Failed to create experiment: ${error.message}`);
     }
   }
+
+  // === BUILD BUSINESS-LANGUAGE REPORT ===
+  // Agent acted autonomously. Now explain what was done and why, in business terms.
+  const reportLines = [];
+  if (archiveCount > 0) {
+    reportLines.push(`**Архивировано наблюдений: ${archiveCount}**`);
+    for (const d of archiveDetails) {
+      reportLines.push(`• ${d.id}: ${d.reason || "шум"}`);
+      if (d.if_done) reportLines.push(`  → ${d.if_done}`);
+    }
+  }
+  if (promoteCount > 0) {
+    reportLines.push(`**Продвинуто в KG: ${promoteCount}**`);
+    for (const d of promoteDetails) {
+      reportLines.push(`• ${d.id} → ${d.entity}: ${d.reason || "значимый факт"}`);
+      if (d.if_done) reportLines.push(`  → ${d.if_done}`);
+    }
+  }
+  if (tensionResolvedCount > 0) {
+    reportLines.push(`**Разрешено противоречий: ${tensionResolvedCount}**`);
+    for (const d of tensionDetails) {
+      reportLines.push(`• ${d.id}: ${d.reason || d.resolution}`);
+      if (d.if_done) reportLines.push(`  → ${d.if_done}`);
+    }
+  }
+  if (createdExperiments.length > 0) {
+    reportLines.push(`**Запущено экспериментов: ${createdExperiments.length}**`);
+    for (const d of experimentDetails) {
+      const cost = d.cost ? ` (~$${d.cost})` : "";
+      reportLines.push(`• ${d.id}: ${d.hypothesis}${cost}`);
+    }
+  }
+  const businessReport = reportLines.length > 0 ? reportLines.join("\n") : (reportText.trim() || "Нет действий за этот цикл.");
+
   patchState(ctx, (state) => {
     setPath(state, "lastRethink", ctx.now);
     if (handoff.stats.weighted_score !== undefined) setPath(state, "lastRethinkScore", handoff.stats.weighted_score);
     setPath(state, "subagentRuns.hb-rethink.status", "ok");
     state.rethinkCount = (state.rethinkCount || 0) + 1;
   });
-  await updateReport(ctx, "rethink", `ok — ${handoff.summary}; archived ${archiveCount}, promoted ${promoteCount}, experiments ${createdExperiments.length + proposedExperiments.length}`);
-  if (!handoff.alerts.length) extraAlerts.push(reportText.trim() ? `OLL Rethink ${ctx.date}\n\n${reportText.trim()}` : `/rethink report ready — see daily note ## OLL Rethink ${ctx.date}`);
-  log(ctx, `[hb-rethink] ✅ ${handoff.summary} | archived: ${archiveCount}, promoted: ${promoteCount}, resolved: ${tensionsResolved.length}, experiments: ${createdExperiments.length} auto + ${proposedExperiments.length} proposed`);
-  return result(ctx, handoff, { alerts: extraAlerts, details: { archiveCount, promoteCount, resolved: tensionsResolved.length, createdExperiments, proposedExperiments } });
+  await updateReport(ctx, "rethink", `ok — ${handoff.summary}; archived ${archiveCount}, promoted ${promoteCount}, tensions ${tensionResolvedCount}, experiments ${createdExperiments.length}`);
+
+  // Surface the business-language report as an alert
+  const extraAlerts = [];
+  const alertHeader = `OLL Rethink ${ctx.date}\n\n${businessReport}`;
+  extraAlerts.push(alertHeader);
+
+  log(ctx, `[hb-rethink] ✅ ${handoff.summary} | archived: ${archiveCount}, promoted: ${promoteCount}, tensions: ${tensionResolvedCount}, experiments: ${createdExperiments.length}`);
+  return result(ctx, handoff, { alerts: extraAlerts, details: { archiveCount, promoteCount, tensionResolvedCount, createdExperiments, archiveDetails, promoteDetails, tensionDetails, experimentDetails } });
 }
 
 export async function applyAutoresearchHandoff(handoff, context = {}) {

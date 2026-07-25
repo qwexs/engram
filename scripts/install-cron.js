@@ -505,7 +505,7 @@ FAIL-FAST / NO WAIT-LOOP (mandatory):
 - In that fail-fast case reply with one line summarizing the incomplete step (≤200 chars), then \`HEARTBEAT_OK\` if only incomplete/lock/still-running, else \`NO_REPLY\` on hard error.
 - Do NOT re-run heartbeat-runner.js in the same cron turn.
 - Do NOT inspect long runner logs beyond what is needed for a ≤200 char summary.
-- Allowed tools only: exec, sessions_spawn, read. No process tool. No message tool.
+- Allowed tools only: exec, sessions_spawn, sessions_send, read. No process tool. No message tool.
 
 Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or any tool result verbatim. Do NOT call any tool beyond what is specified above. Do NOT use exec to run sleep, wait, poll, process, or any polling loop. The whole reply must fit in ≤512 tokens.`;
 
@@ -526,7 +526,7 @@ Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or
 // If a future heartbeat step needs a new tool (e.g. message for ALERT
 // delivery), add it here AND verify the heartbeat message template
 // still works under the new allow-list.
-const HEARTBEAT_TOOLS_ALLOW = ["exec", "sessions_spawn", "read"];
+const HEARTBEAT_TOOLS_ALLOW = ["exec", "sessions_spawn", "sessions_send", "read"];
 
 // Format for `openclaw cron add --tools` / `cron edit --tools`: comma-
 // separated list is the canonical form (space-separated also accepted).

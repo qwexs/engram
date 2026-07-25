@@ -1285,7 +1285,7 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
     return queued;
   }
 
-  await maybeQueue("hb-rethink", Boolean(opts["spawn-rethink"]), wouldRunRethink, { observations: observationsFull, tensions: tensionsFull, score, daysSinceRethink, reasons: rethinkReasons });
+  await maybeQueue("hb-rethink", Boolean(opts["spawn-rethink"]), wouldRunRethink, { observations: observationsFull, tensions: tensionsFull, score, daysSinceRethink, reasons: rethinkReasons, agentId });
   const nextExperiment = pendingAutoExperiments[0] || null;
   await maybeQueue("hb-autoresearch", Boolean(opts["spawn-autoresearch"]), wouldRunAutoresearch, { experimentId: nextExperiment?.id || null, experiment: nextExperiment });
   await maybeQueue("hb-rethink2", Boolean(opts["spawn-rethink2"]), wouldRunRethink2, { experimentId: state.pendingRethink2 || null });

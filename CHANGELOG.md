@@ -5,6 +5,9 @@
 - feat(heartbeat): weekly rethink cadence (7-day gate + weekly-synthesis proximity check)
 - feat(memory): BOILERPLATE_DENYLIST in memory-write.js — skip extraction artifacts before KG write
 - feat(heartbeat): --apply-low-risk-proposals flag for rethink proposal audit trail
+- refactor(heartbeat): replace isWeeklySynthesisRecent() with direct synthesis-tick check
+- feat(rethink): proposals summary sent to main session via sessions_send (business language)
+- feat(cron): add sessions_send to HEARTBEAT_TOOLS_ALLOW for rethink subagent
 
 ## Unreleased
 

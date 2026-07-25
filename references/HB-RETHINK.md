@@ -123,37 +123,9 @@ again on every heartbeat tick, wasting tokens. Persist the handoff
 even if you have no observations to report (empty analysis handoff
 still advances `lastRethink`).
 
-### Step 8: Send proposals summary to main session
+### Step 8: Suppress completion announce
 
-After persisting the handoff, if you generated any `[PROPOSAL:low-risk]` or `[PROPOSAL:human-review]` blocks,
-send a concise business-language summary to the main session.
-
-Use `sessions_send` with `sessionKey: "agent:{{agent_id}}:main"` (the `agent_id` value is in the Runner Context JSON below).
-
-Message format (business language — concise, actionable, no jargon):
-
-```
-📋 Rethink review complete ({{date}})
-
-Score: {{weighted_score}} | Patterns: N | Proposals: N | Archived: N obs
-
-Proposals:
-• [low-risk] Short title — one-line description of what to change and why
-• [human-review] Short title — one-line description of what needs decision
-
-Next: low-risk proposals are audit-logged. human-review need your decision.
-```
-
-Rules:
-- Skip this step if zero proposals were generated (go straight to Step 9)
-- Keep each proposal line ≤ 120 chars
-- No code, no file paths, no technical noise — business language only
-- One message, not multiple
-
-### Step 9: Suppress completion announce
-
-After the handoff file has been written AND the proposals message has been sent (or skipped),
-your final response must be exactly `ANNOUNCE_SKIP` and nothing else.
+After the handoff file has been written successfully, your final response must be exactly `ANNOUNCE_SKIP` and nothing else. The handler (`process-handoff-core.js`) will auto-execute your `Proposed-Actions`, build a business-language report, and surface it to the user — you do not need to send any messages yourself.
 
 ---
 

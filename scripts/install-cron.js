@@ -9,7 +9,8 @@
  *   1. shell_command: bun skills/engram/scripts/heartbeat-runner.js ...
  *   2. shell_command: bun skills/engram/scripts/spawn-claim.js ...
  *   3. for each JSON line with action="spawn": sessions_spawn(...)
- *   4. concise reply + "[phase-5.5] ..." + HEARTBEAT_OK
+ *   4. forward OLL rethink alerts to main session (sessions_send)
+ *   5. concise reply + "[phase-5.5] ..." + HEARTBEAT_OK
  *
  * This script is idempotent: re-running it detects drift (old payload
  * format, orchestrator model mismatch vs engram.json, stale --agent-id / workspace,
@@ -490,7 +491,10 @@ Call tools.sessions_spawn with task=<rec.task>, label=<rec.runtimeLabel>, model=
 
 The exact absolute handoffPath embedded in each child task is the authoritative result transport. \`expectsCompletionMessage=false\` prevents runtime from registering a completion announce; children also finish with \`ANNOUNCE_SKIP\` as a compatibility fallback. Do not poll, wait, call sessions_yield, parse, or apply a child result in this cron turn — the next heartbeat-runner tick applies durable handoffs idempotently.
 
-Step 4 — Final reply (CONCISE, NO ECHO):
+Step 4 — Forward OLL rethink alerts (if any):
+Check \`runner.summary.rethinkAlerts\` — if present and non-empty, the heartbeat applied a rethink handoff with business-language alerts. For each alert string, call tools.sessions_send with sessionKey="agent:<AGENT_ID>:main", message=<the alert text>. This delivers rethink reports to the main session so the agent (and user) see them. Skip if rethinkAlerts is absent or empty.
+
+Step 5 — Final reply (CONCISE, NO ECHO):
 Delivery is \`none\` — your reply is only stored in the session log, never sent to a chat. Keep it short.
 
 Look at \`runner.summary.status\` and \`runner.summary.warnings\` (the JSON has them at the top level):
@@ -501,7 +505,7 @@ If \`claim.stdout\` was non-empty, append one final line: \`[phase-5.5] scanned 
 
 FAIL-FAST / NO WAIT-LOOP (mandatory):
 - NEVER sleep, wait, poll, retry-wait, or call process/poll on background exec sessions.
-- If Step 1 or Step 2 returns \"Command still running\", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Immediately finish Step 4.
+- If Step 1 or Step 2 returns \"Command still running\", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Immediately finish Step 5.
 - In that fail-fast case reply with one line summarizing the incomplete step (≤200 chars), then \`HEARTBEAT_OK\` if only incomplete/lock/still-running, else \`NO_REPLY\` on hard error.
 - Do NOT re-run heartbeat-runner.js in the same cron turn.
 - Do NOT inspect long runner logs beyond what is needed for a ≤200 char summary.
@@ -538,7 +542,7 @@ const NEW_PAYLOAD_MARKER_2 = "Step 2 — Drain the subagent-spawn queue";
 // ≤512-token reply cap). Presence of this string confirms the cron
 // payload is on the current format; absence means an older echo-style
 // prompt and a cron edit is required to upgrade.
-const NEW_PAYLOAD_MARKER_3 = "Step 4 — Final reply (CONCISE, NO ECHO)";
+const NEW_PAYLOAD_MARKER_3 = "Step 5 — Final reply (CONCISE, NO ECHO)";
 // 2026-06-29+: --all-active-sessions flag in Step 1 command, for workspace-scope heartbeat
 // coverage (instead of session-only). Maintained by the engram team; absence means the cron
 // is on a pre-2026-06-29 payload and should be re-installed to upgrade.

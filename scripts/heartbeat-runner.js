@@ -978,6 +978,14 @@ async function applyRethinkHandoffs() {
         summary.warnings.push("hb-rethink apply: " + file + " — " + (result.error || "apply error"));
         continue;
       }
+      // Capture alerts from handoff apply so the cron agent can forward them.
+      // Without this, business-language reports from rethink are silently dropped.
+      if (Array.isArray(result.alerts) && result.alerts.length > 0) {
+        if (!summary.rethinkAlerts) summary.rethinkAlerts = [];
+        for (const alert of result.alerts) {
+          if (alert && alert.trim()) summary.rethinkAlerts.push(alert.trim());
+        }
+      }
       if (parsed.type === "HB-RETHINK") {
         // Clear rethinkInProgress on successful apply
         await patchState({
@@ -1493,26 +1501,46 @@ async function runMaintenance() {
 }
 
 // 2026-07-05: P2 — auto-seed observation из validate.js warnings/errors.
-// Trigger: validate.js produced >= 1 ❌ или ⚠️ AND no auto-seed in last 24h.
+// 2026-07-26: Filtered per hb-rethink 2026-07-16 proposal — only seed for
+// ERRORS (❌), or warnings (⚠️) >= 5. Known-benign warnings are ignore-listed.
+// Skip observations whose text starts with "Fixed:" — post-mortems, not friction.
+// Trigger: validate.js produced signal AND no auto-seed in last 24h.
 // Создаёт friction observation через memory-observe.js, помечает lastAutoSeedAt.
 // Закрывает OLL bootstrap chicken-and-egg: пустой observations dir не блокирует OLL,
 // потому что validate.js warnings становятся signal.
+
+// Known-benign validate.js warnings that should never auto-seed observations.
+const VALIDATE_BENIGN_WARNINGS = [
+  /Session dir ".+" not in heartbeat-state\.json/i,
+  /Could not locate OpenClaw hooks directory/i,
+  /Skill hooks dir missing/i,
+  /Last run \d+m ago \(expected ≤\d+m\)/i,  // heartbeat timing — operational, not friction
+  /Payload lightContext is \w+, expected true/i,
+  /Schedule unexpected:/i,
+];
+
 async function maybeAutoSeedFromValidate(validateResult) {
   if (!validateResult) return;
   const out = `${validateResult.stdout ?? ""}\n${validateResult.stderr ?? ""}`;
   const errorCount = (out.match(/❌/g) || []).length;
-  const warnCount = (out.match(/⚠️/g) || []).length;
-  if (errorCount === 0 && warnCount === 0) return;
+  const allWarnLines = out.split("\n").filter((l) => /⚠️/.test(l));
+  // Filter out known-benign warnings
+  const realWarnLines = allWarnLines.filter((l) => {
+    return !VALIDATE_BENIGN_WARNINGS.some((re) => re.test(l));
+  });
+  const warnCount = realWarnLines.length;
+
+  // Only seed for errors, or >= 5 non-benign warnings
+  if (errorCount === 0 && warnCount < 5) return;
 
   const state = await readJson(statePath, {});
   const last = state.lastAutoSeedAt ? new Date(state.lastAutoSeedAt).getTime() : 0;
   const sinceMs = Date.now() - last;
   if (sinceMs < 24 * 60 * 60 * 1000) return; // throttle 24h
 
-  // Берём первые 3 distinct warning/error строки для контекста
-  const sample = out
-    .split("\n")
-    .filter((l) => /❌|⚠️/.test(l))
+  // Берём первые 3 distinct error/non-benign warning строки для контекста
+  const sample = realWarnLines
+    .concat(out.split("\n").filter((l) => /❌/.test(l)))
     .slice(0, 3)
     .map((l) => l.replace(/^.*?(❌|⚠️)\s*/, "$1 "))
     .join(" | ")
@@ -1520,12 +1548,12 @@ async function maybeAutoSeedFromValidate(validateResult) {
     .trim()
     .slice(0, 400);
 
-  const text = `validate.js выдал ${errorCount} errors и ${warnCount} warnings: ${sample}`;
+  const text = `validate.js выдал ${errorCount} errors и ${warnCount} non-benign warnings: ${sample}`;
   const obsResult = run("bun", [
     scriptPath("memory-observe.js"),
     "--observation", text,
     "--category", "friction",
-    "--description", "auto-seeded из heartbeat maintenance (validate warnings)",
+    "--description", "auto-seeded из heartbeat maintenance (validate errors/non-benign warnings)",
   ]);
 
   if (obsResult.status === 0) {

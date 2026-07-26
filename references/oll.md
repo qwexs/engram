@@ -77,7 +77,13 @@ Phase 5 пытается direct spawn через `sessions_spawn`; если не
 
 ## Auto-seed from Maintenance
 
-When `validate.js` produces ≥1 `❌` error or `⚠️` warning AND no auto-seed fired in the last 24h (`lastAutoSeedAt` in `heartbeat-state.json`), `hb-runner` writes a low-confidence friction observation via `memory-observe.js`. This converts maintenance warnings into observation signal so the OLL loop has continuous input on quiet workspaces.
+When `validate.js` produces ≥1 `❌` error OR ≥5 non-benign `⚠️` warnings AND no auto-seed fired in the last 24h (`lastAutoSeedAt` in `heartbeat-state.json`), `hb-runner` writes a friction observation via `memory-observe.js`.
+
+**Benign warning ignore-list** (added 2026-07-26 per hb-rethink proposal): timing warnings (`Last run Xm ago`), session dir checks, hooks dir checks, lightContext drift, schedule drift — these never auto-seed. Only real errors and non-benign warnings (≥5) become observations.
+
+**Why:** before the filter, auto-seed produced only noise — timing warnings archived by rethink before becoming patterns. The filter ensures auto-seed is a safety net for real issues, not a noise generator.
+
+**Primary signal source:** the agent itself, writing observations via `memory-observe.js` when it encounters friction/surprise/pattern during sessions. Auto-seed is secondary.
 
 `hb-rethink` (model from `engram.json → models.heartbeat.subagents["hb-rethink"]`) reviews observations + tensions, identifies patterns, decides on actions, and returns a `HB-RETHINK HANDOFF` block with business-language rationale for each action. `process-handoff.js` **auto-executes** all actions (archive, promote, resolve tensions, create experiments) and then **surfaces a business-language report to the user** explaining what was done, why, and what improves as a result. The user sees the outcome and can react or revert — agent acts, then explains.
 

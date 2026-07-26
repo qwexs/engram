@@ -1148,6 +1148,7 @@ function checkKg(workspace, findings) {
       const text = String(fact?.fact || fact?.content || fact?.description || "");
 
       // WD-KG-004: test pollution
+      if (fact?.status === 'superseded') return;
       if (TEST_ARTIFACT_RE.test(label) || hasTestTag || TEST_ARTIFACT_RE.test(text)) {
         findings.push(makeFinding({
           code: "WD-KG-004",
@@ -1204,6 +1205,32 @@ function checkCronConfig(workspace, engram, findings) {
       message: "engram.json has no cron.expectedJobName; cron drift checks are limited/disabled",
       path: "engram.json",
     }));
+  }
+}
+
+// WD-CRON-007: check that the live cron payload is current by verifying
+// the Step 4 (Forward OLL rethink alerts) marker is present in the job
+// message. This catches workspaces where install-cron.js was updated but
+// the live job was not re-installed, so rethink alerts never reach main.
+function checkCronPayloadVersion(workspace, findings) {
+  const result = runCommand("openclaw", ["cron", "list", "--json"], workspace, 30000);
+  if (result.status !== 0 || !result.stdout) return;
+  let jobs;
+  try { jobs = JSON.parse(result.stdout); } catch { return; }
+  if (!Array.isArray(jobs)) return;
+  for (const job of jobs) {
+    if (!job?.name?.includes?.("Heartbeat") || !job?.payload?.message) continue;
+    const msg = job.payload.message;
+    if (!msg.includes("Forward OLL rethink alerts")) {
+      findings.push(makeFinding({
+        code: "WD-CRON-007",
+        level: "warn",
+        message: "Heartbeat cron payload is outdated — missing Step 4 (Forward OLL rethink alerts). Rethink alerts will not reach main session. Re-run: bun skills/engram/scripts/install-cron.js install",
+        path: `cron:${job.name}`,
+        fixable: true,
+      }));
+    }
+    return; // only check first heartbeat job
   }
 }
 
@@ -1326,6 +1353,58 @@ function checkOllState(workspace, findings) {
           path: rel(workspace, handoffDir),
           details: { count: handoffFiles.length },
         }));
+      }
+    } catch { /* ignore */ }
+  }
+
+  // WD-OLL-008: observations pipeline health
+  const obsDir = join(workspace, "workspace", "ops", "observations");
+  const obsIndex = safeJson(join(obsDir, "index.json"), [], "WD-OLL-008", "workspace/ops/observations/index.json");
+  if (obsIndex.ok && obsIndex.data) {
+    const total = obsIndex.data.lastId || 0;
+    const pending = (obsIndex.data.observations || []).length;
+    const stats = obsIndex.data.stats || {};
+    const archived = stats.archived || 0;
+    if (total === 0 && (state.rethinkCount || 0) > 0) {
+      findings.push(makeFinding({
+        code: "WD-OLL-008",
+        level: "warn",
+        message: `OLL has run rethink ${state.rethinkCount || 0} time(s) but no observations exist. Pipeline is on idle — agent should write observations via memory-observe.js.`,
+        path: "workspace/ops/observations/index.json",
+        fixable: false,
+      }));
+    }
+    if (total > 0 && pending === 0 && archived >= total) {
+      findings.push(makeFinding({
+        code: "WD-OLL-008",
+        level: "info",
+        message: `All ${total} observations archived — pipeline has no active signal. Normal after rethink cleanup, but if persistent, agent is not capturing friction.`,
+        path: "workspace/ops/observations/index.json",
+      }));
+    }
+  }
+
+  // WD-OLL-009: unapplied human-review proposals in recent rethink handoffs
+  const doneDir = join(workspace, "workspace", "ops", "heartbeat-spawns", "done");
+  if (existsSync(doneDir)) {
+    try {
+      const rethinkFiles = readdirSync(doneDir)
+        .filter((f) => f.includes("hb-rethink") && f.endsWith(".md"))
+        .sort()
+        .reverse()
+        .slice(0, 3);
+      for (const file of rethinkFiles) {
+        const text = readFileSync(join(doneDir, file), "utf8");
+        if (/\[PROPOSAL:human-review\]/i.test(text)) {
+          findings.push(makeFinding({
+            code: "WD-OLL-009",
+            level: "info",
+            message: `Rethink handoff ${file} has human-review proposals. Review and implement or dismiss — audit trail records them but does not auto-edit source files.`,
+            path: rel(workspace, join(doneDir, file)),
+            fixable: false,
+          }));
+          break;
+        }
       }
     } catch { /* ignore */ }
   }
@@ -1462,6 +1541,7 @@ export function auditWorkspace(workspaceInput, options = {}) {
   checkQmdMaintenanceCollections(workspace, registry, engram, findings);
   if (options.hooks !== false) checkHooks(workspace, findings, options);
   checkCronConfig(workspace, engram, findings);
+  checkCronPayloadVersion(workspace, findings);
 
   return finalizeReport(workspace, findings, options);
 }

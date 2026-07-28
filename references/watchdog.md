@@ -167,7 +167,7 @@ unchanged.
         }
       },
       "requireMetaDomainReference": true,
-      "checkEmbeddings": true
+      "checkEmbeddings": false
     }
   }
 }
@@ -177,6 +177,12 @@ unchanged.
 physical index. Do not add child collection names to `qmd.collections`; that
 field remains the heartbeat maintenance allowlist for collections owned by the
 current workspace.
+
+`checkEmbeddings` defaults to `false`. Enable it only when the upper workspace
+deliberately owns vector maintenance for those external collections. In the
+normal isolated-index hierarchy, child workspaces maintain their own vectors
+and upper workspaces keep vertical registrations for read/query access without
+re-embedding them on every heartbeat.
 
 The vertical check opens only the explicit `indexPath` with SQLite read-only.
 It does not run `qmd update`, start `qmd embed`, or acquire QMD locks.

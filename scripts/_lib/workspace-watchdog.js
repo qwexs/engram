@@ -575,7 +575,10 @@ export function normalizeVerticalAccess(engram) {
       indexPath: raw.indexPath ? String(raw.indexPath) : null,
       collections,
       requireMetaDomainReference: raw.requireMetaDomainReference !== false,
-      checkEmbeddings: raw.checkEmbeddings !== false,
+      // Vertical collections are read/query registrations, not heartbeat
+      // maintenance ownership. Vector auditing is opt-in because an upper
+      // workspace normally embeds only its own qmd.collections.
+      checkEmbeddings: raw.checkEmbeddings === true,
     },
   };
 }

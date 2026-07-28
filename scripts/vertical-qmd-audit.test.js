@@ -110,14 +110,18 @@ describe("optional vertical QMD audit", () => {
     expect(codes(findings)).toContain("WD-QMD-018");
   });
 
-  test("missing vectors are reported", () => {
-    const finding = audit(config(fixture()))
+  test("missing vectors are reported when explicitly requested", () => {
+    const finding = audit(config(fixture(), { checkEmbeddings: true }))
       .find((item) => item.code === "WD-QMD-019");
     expect(finding.details.unembeddedDocuments).toBe(1);
   });
 
-  test("fully embedded collection passes", () => {
-    expect(audit(config(fixture({ embedded: true })))).toEqual([]);
+  test("fully embedded collection passes when vector auditing is enabled", () => {
+    expect(audit(config(fixture({ embedded: true }), { checkEmbeddings: true }))).toEqual([]);
+  });
+
+  test("does not require vectors for read-only vertical access by default", () => {
+    expect(audit(config(fixture()))).toEqual([]);
   });
 
   test("missing SQLite index is informational", () => {

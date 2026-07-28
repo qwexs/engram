@@ -11,6 +11,11 @@
 
 ## Unreleased
 
+- Fixed a heartbeat regression that merged `qmd.verticalAccess.collections`
+  into every `qmd embed` invocation. `qmd.collections` is again the sole
+  maintenance allowlist, so upper-level workspaces do not repeatedly embed
+  child workspaces. Vertical vector auditing is now explicitly opt-in via
+  `verticalAccess.checkEmbeddings: true`.
 - Added opt-in `qmd.verticalAccess` checks to the built-in workspace watchdog.
   Hierarchical deployments can declare the complete expected external
   collection set and detect missing registrations, path drift, missing

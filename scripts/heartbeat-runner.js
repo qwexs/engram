@@ -1564,26 +1564,21 @@ async function maybeAutoSeedFromValidate(validateResult) {
   }
 }
 
+function qmdMaintenanceCollections(qmd = {}) {
+  return Array.isArray(qmd.collections)
+    ? qmd.collections.map(String).filter(Boolean)
+    : [];
+}
+
 function qmdCommandArgs(command) {
   const qmd = config.qmd || {};
   const args = [];
   if (qmd.index) args.push("--index", String(qmd.index));
   args.push(command);
-  let collections = Array.isArray(qmd.collections) ? qmd.collections : [];
-  // Include vertical-access collections for embed so they get vectors too.
-  // qmd update already re-scans all registered collections regardless of -c,
-  // but qmd embed respects the -c filter — without this, vertical documents
-  // stay unembedded and hybrid search (embeddings + rerank) never covers them.
-  // Safe because: each workspace has its own index/lock; cron slots are
-  // staggered 10 min apart; embed is bounded by pending count (~2 min max).
-  if (command === "embed") {
-    const va = qmd.verticalAccess;
-    if (va && va.enabled && va.collections && typeof va.collections === "object") {
-      const merged = new Set(collections);
-      for (const name of Object.keys(va.collections)) merged.add(name);
-      collections = Array.from(merged);
-    }
-  }
+  let collections = qmdMaintenanceCollections(qmd);
+  // qmd.collections is the workspace-owned maintenance allowlist. External
+  // verticalAccess collections are registered for read/query access only and
+  // must not be re-embedded by every upper-level workspace heartbeat.
   if (qmd.autoDiscoverCollections) {
     const discovered = discoverQmdCollections();
     if (discovered.length) {
@@ -2050,6 +2045,7 @@ if (!import.meta.main) {
     parseQmdCollectionList,
     discoverQmdCollections,
     qmdCommandArgs,
+    qmdMaintenanceCollections,
     describeQmdEmbedOutcome,
     shouldApplyDomainHandoffs,
     isWorkerRunning,

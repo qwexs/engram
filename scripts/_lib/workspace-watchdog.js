@@ -1492,6 +1492,204 @@ function checkHooks(workspace, findings, options = {}) {
   }
 }
 
+/**
+ * Load OpenClaw platform config (openclaw.json).
+ * Returns { agents, groups } or null if unavailable.
+ */
+function loadOpenclawConfig() {
+  const stateDir = process.env.OPENCLAW_STATE_DIR
+    || (process.env.OPENCLAW_CONFIG_PATH ? dirname(process.env.OPENCLAW_CONFIG_PATH) : null)
+    || join(process.env.HOME || process.env.USERPROFILE || "", ".openclaw");
+  const configPath = join(stateDir, "openclaw.json");
+  if (!existsSync(configPath)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+    const defaultsWorkspace = raw?.agents?.defaults?.workspace ? String(raw.agents.defaults.workspace) : null;
+    const agents = (raw?.agents?.list || []).map((a) => ({
+      id: String(a?.id || ""),
+      workspace: a?.workspace ? String(a.workspace) : null,
+    }));
+    const groups = raw?.channels?.telegram?.groups || {};
+    return { agents, groups, configPath, defaultsWorkspace };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Scan session trajectory files of all agents to find actual group+topic → agent mappings.
+ * Session files are named by UUID, but the sessionKey (containing group+topic)
+ * is stored in the first line of *.trajectory.jsonl.
+ * Returns Map of "groupId:topicId" → Set of agentIds that handled sessions there.
+ */
+function scanSessionRouting(agents) {
+  const stateDir = process.env.OPENCLAW_STATE_DIR
+    || (process.env.OPENCLAW_CONFIG_PATH ? dirname(process.env.OPENCLAW_CONFIG_PATH) : null)
+    || join(process.env.HOME || process.env.USERPROFILE || "", ".openclaw");
+  const agentsDir = join(stateDir, "agents");
+  const routing = new Map(); // "groupId:topicId" → Set<agentId>
+  const ROUTE_RE = /^agent:([a-zA-Z0-9_-]+):telegram:group:(-?\d+):topic:(\d+)$/;
+
+  for (const agent of agents) {
+    const agentSessionsDir = join(agentsDir, agent.id, "sessions");
+    if (!isDir(agentSessionsDir)) continue;
+    for (const file of readdirSync(agentSessionsDir)) {
+      if (!file.endsWith(".trajectory.jsonl")) continue;
+      const filePath = join(agentSessionsDir, file);
+      try {
+        // Only read first line — session.started event has sessionKey
+        const fd = readFileSync(filePath, { encoding: "utf-8", flag: "r" });
+        const firstLine = fd.split(/\r?\n/, 1)[0];
+        if (!firstLine) continue;
+        const parsed = JSON.parse(firstLine);
+        const sessionKey = parsed?.sessionKey;
+        if (!sessionKey) continue;
+        const m = sessionKey.match(ROUTE_RE);
+        if (!m) continue;
+        const agentId = m[1];
+        const groupId = m[2];
+        const topicId = m[3];
+        const key = `${groupId}:${topicId}`;
+        if (!routing.has(key)) routing.set(key, new Set());
+        routing.get(key).add(agentId);
+      } catch { /* skip unreadable files */ }
+    }
+  }
+
+  return routing;
+}
+
+/**
+ * WD-ROUTE: Check Telegram topic routing — detect topics that landed on the
+ * wrong agent (or on main as fallback) because they were missing from the
+ * channel config.
+ *
+ * Runs once from the platform-default workspace (agents.defaults.workspace)
+ * to avoid duplicating global findings across per-workspace audits.
+ * Read-only: scans session transcripts and compares with channel config.
+ */
+function checkTelegramRouting(workspace, findings, options = {}) {
+  if (options.routing === false) return;
+
+  const openclawCfg = loadOpenclawConfig();
+  if (!openclawCfg) {
+    findings.push(makeFinding({
+      code: "WD-ROUTE-000",
+      level: "info",
+      message: "openclaw.json not found; Telegram routing check skipped",
+      path: "openclaw.json",
+    }));
+    return;
+  }
+
+  // Only run from the platform-default workspace to avoid duplicate findings
+  const defaultWorkspace = openclawCfg.defaultsWorkspace;
+  if (!defaultWorkspace || resolve(workspace) !== resolve(defaultWorkspace)) return;
+
+  const { agents, groups } = openclawCfg;
+  const agentIds = new Set(agents.map((a) => a.id));
+
+  // Build expected routing from config: "groupId:topicId" → agentId
+  const expected = new Map(); // "groupId:topicId" → agentId
+  const groupHasTopics = new Map(); // groupId → boolean (has explicit topic config)
+
+  for (const [groupId, groupCfg] of Object.entries(groups)) {
+    const topics = groupCfg?.topics || {};
+    groupHasTopics.set(groupId, Object.keys(topics).length > 0);
+    for (const [topicId, topicCfg] of Object.entries(topics)) {
+      const key = `${groupId}:${topicId}`;
+      const assignedAgent = topicCfg?.agentId ? String(topicCfg.agentId) : null;
+      if (assignedAgent) {
+        expected.set(key, assignedAgent);
+      }
+    }
+  }
+
+  // Scan actual session transcripts across all agents
+  const actual = scanSessionRouting(agents);
+
+  // Compare actual vs expected
+  for (const [key, actualAgents] of actual) {
+    const [groupId, topicId] = key.split(":");
+    const expectedAgent = expected.get(key);
+    const groupCfg = groups[groupId];
+    const isKnownGroup = Boolean(groupCfg);
+
+    for (const actualAgent of actualAgents) {
+      // Skip legacy/test sessions
+      if (actualAgent === "zu") continue;
+
+      if (!isKnownGroup) {
+        // WD-ROUTE-003: messages from a group not in config at all
+        findings.push(makeFinding({
+          code: "WD-ROUTE-003",
+          level: "warn",
+          message: `Session exists for group ${groupId} topic ${topicId} on agent "${actualAgent}", but group is not in channels.telegram.groups config`,
+          path: `agent:${actualAgent}:sessions`,
+          details: { groupId, topicId, actualAgent, expectedAgent: null },
+        }));
+        continue;
+      }
+
+      if (!groupHasTopics.get(groupId)) {
+        // Group has no topic-level config — all topics go to the group's default agent.
+        // This is fine if the group is not a forum, but worth noting for forums.
+        // We skip this: non-forum groups or groups where all topics go to one agent.
+        continue;
+      }
+
+      if (!expectedAgent) {
+        // WD-ROUTE-001: topic is active but not in config → fell back to main
+        findings.push(makeFinding({
+          code: "WD-ROUTE-001",
+          level: "error",
+          message: `Topic ${topicId} in group ${groupId} has sessions on agent "${actualAgent}" but is not configured in channels.telegram.groups — messages fall back to default agent instead of the intended project agent`,
+          path: `channels.telegram.groups["${groupId}"].topics["${topicId}"]`,
+          fixable: true,
+          details: {
+            groupId,
+            topicId,
+            actualAgent,
+            expectedAgent: null,
+            fix: `Add topic "${topicId}" with the correct agentId to group ${groupId} in openclaw.json`,
+          },
+        }));
+        continue;
+      }
+
+      if (expectedAgent !== actualAgent) {
+        // WD-ROUTE-002: topic configured for agent A but sessions exist on agent B
+        findings.push(makeFinding({
+          code: "WD-ROUTE-002",
+          level: "error",
+          message: `Topic ${topicId} in group ${groupId} is configured for agent "${expectedAgent}" but sessions found on agent "${actualAgent}" — routing conflict or stale sessions from before config change`,
+          path: `channels.telegram.groups["${groupId}"].topics["${topicId}"]`,
+          details: {
+            groupId,
+            topicId,
+            actualAgent,
+            expectedAgent,
+          },
+        }));
+      }
+    }
+  }
+
+  // WD-ROUTE-004: configured topic has no sessions at all (info, not error)
+  for (const [key, expectedAgent] of expected) {
+    if (!actual.has(key)) {
+      const [groupId, topicId] = key.split(":");
+      findings.push(makeFinding({
+        code: "WD-ROUTE-004",
+        level: "info",
+        message: `Topic ${topicId} in group ${groupId} is configured for agent "${expectedAgent}" but has no sessions yet`,
+        path: `channels.telegram.groups["${groupId}"].topics["${topicId}"]`,
+        details: { groupId, topicId, expectedAgent },
+      }));
+    }
+  }
+}
+
 export function auditWorkspace(workspaceInput, options = {}) {
   const workspace = resolve(String(workspaceInput || process.cwd()));
   const findings = [];
@@ -1545,6 +1743,7 @@ export function auditWorkspace(workspaceInput, options = {}) {
   if (options.hooks !== false) checkHooks(workspace, findings, options);
   checkCronConfig(workspace, engram, findings);
   checkCronPayloadVersion(workspace, findings);
+  checkTelegramRouting(workspace, findings, options);
 
   return finalizeReport(workspace, findings, options);
 }

@@ -1,8 +1,16 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { collectDailyCandidates, collectSessionCandidates, collectSessionFiles, extractLastWatermark, findSupersedeTarget } from "../scripts/extract-runner.js";
+import {
+  collectDailyCandidates,
+  collectSessionCandidates,
+  collectSessionFiles,
+  extractLastWatermark,
+  findSupersedeTarget,
+  resolveDomainForSession,
+  shouldExtractToKg,
+} from "../scripts/extract-runner.js";
 
 function makeWorkspace() {
   const root = mkdtempSync(join(tmpdir(), "engram-extract-"));
@@ -149,6 +157,119 @@ describe("extract-runner session candidates", () => {
       "I finished the migration to the new memory schema.",
     ]);
     expect(candidates.every((candidate) => candidate.category === "milestone")).toBe(true);
+  });
+});
+
+describe("domain-first KG policy", () => {
+  const registry = {
+    domains: {
+      "managers-general": {
+        type: "meta-domain",
+        metaDomain: true,
+        topic: { chatId: "-1004363932821", topicId: "1" },
+      },
+      "managers-clients": {
+        type: "topic-thread",
+        topic: { chatId: "-1004363932821", topicId: "15" },
+      },
+      "elena-general": {
+        type: "meta-domain",
+        metaDomain: true,
+        peer: { chatId: "100000001" },
+      },
+    },
+  };
+
+  test("main and meta-domain (General) allow KG extract", () => {
+    const main = resolveDomainForSession(registry, "main");
+    expect(main.kind).toBe("main");
+    expect(shouldExtractToKg(main).allow).toBe(true);
+
+    const general = resolveDomainForSession(registry, "telegram-group--1004363932821-topic-1");
+    expect(general.domain).toBe("managers-general");
+    expect(general.meta).toBe(true);
+    expect(shouldExtractToKg(general).allow).toBe(true);
+
+    const peerMeta = resolveDomainForSession(registry, "telegram-direct-100000001");
+    expect(peerMeta.domain).toBe("elena-general");
+    expect(shouldExtractToKg(peerMeta).allow).toBe(true);
+  });
+
+  test("topic-thread sessions skip KG (domain-first)", () => {
+    const clients = resolveDomainForSession(registry, "telegram-group--1004363932821-topic-15");
+    expect(clients.domain).toBe("managers-clients");
+    expect(clients.meta).toBe(false);
+    const policy = shouldExtractToKg(clients);
+    expect(policy.allow).toBe(false);
+    expect(policy.reason).toContain("domain-first");
+  });
+
+  test("unbound chat sessions skip KG under domain-first", () => {
+    const unbound = resolveDomainForSession(registry, "telegram-group--100999-topic-99");
+    expect(unbound.kind).toBe("unbound");
+    expect(shouldExtractToKg(unbound).allow).toBe(false);
+  });
+
+  test("kgPolicy all re-enables topic KG extract", () => {
+    const clients = resolveDomainForSession(registry, "telegram-group--1004363932821-topic-15");
+    expect(shouldExtractToKg(clients, { extraction: { kgPolicy: "all" } }).allow).toBe(true);
+  });
+
+  test("kgPolicy main-only blocks meta-domain", () => {
+    const general = resolveDomainForSession(registry, "telegram-group--1004363932821-topic-1");
+    expect(shouldExtractToKg(general, { extraction: { kgPolicy: "main-only" } }).allow).toBe(false);
+    expect(shouldExtractToKg({ kind: "main", meta: false }, { extraction: { kgPolicy: "main-only" } }).allow).toBe(true);
+  });
+
+  test("topic-thread extract-runner does not write KG facts", async () => {
+    const root = makeWorkspace();
+    try {
+      const session = "telegram-group--1004363932821-topic-15";
+      const sessionDir = join(root, "memory", "agent-main", session);
+      mkdirSync(sessionDir, { recursive: true });
+      mkdirSync(join(root, "memory", "domains"), { recursive: true });
+      writeFileSync(join(root, "memory", "domains", "registry.json"), JSON.stringify({
+        domains: {
+          "managers-clients": {
+            type: "topic-thread",
+            topic: { chatId: "-1004363932821", topicId: "15" },
+          },
+        },
+      }));
+      const notePath = join(sessionDir, "2026-05-21.md");
+      writeFileSync(notePath, [
+        "# 2026-05-21",
+        "",
+        "## Events",
+        "- Chromolab six-month plan approved with content volumes",
+        "",
+        "## Decisions",
+        "- Client approved final commercial proposal structure",
+        "",
+      ].join("\n"));
+
+      const proc = Bun.spawn([
+        "bun",
+        join(import.meta.dir, "..", "scripts", "extract-runner.js"),
+        "--workspace", root,
+        "--agent-id", "main",
+        "--session", session,
+        "--date", "2026-05-21",
+      ], { stdout: "pipe", stderr: "pipe" });
+      const exitCode = await proc.exited;
+      const stdout = await new Response(proc.stdout).text();
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("domain-first skip KG");
+      expect(stdout).toContain('"kg_extract":false');
+      expect(stdout).toContain('"facts_written":0');
+      expect(stdout).toContain('"facts_domain_only":2');
+      // No life/ entities created
+      expect(existsSync(join(root, "life", "projects"))).toBe(false);
+      // Watermark still advanced so extract does not thrash
+      expect(readFileSync(notePath, "utf8")).toMatch(/<!-- extracted:L\d+/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

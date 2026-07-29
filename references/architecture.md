@@ -88,6 +88,21 @@ summary.md (decay-aware summaries)
 
 `daily-note-append.js` writes Events / Decisions / Learnings into named sections near the **top** of the file; Heartbeat Report + watermark sit at the **bottom**. Therefore extract always rescans high-signal sections in full. Already-promoted bullets are skipped by `memory-write.js` hash/semantic dedup (same path as inline extraction). Heartbeat Report and `## Next` are never extraction candidates.
 
+### Domain-first write policy
+
+Consumer sessions do **not** all feed the Knowledge Graph:
+
+| Session | Primary durable memory | KG extract (`life/`) |
+|---------|------------------------|----------------------|
+| `main` | daily + KG + MEMORY.md | **yes** |
+| `meta-domain` (e.g. General topic) | domain files + QMD search | **yes** (cross-cutting) |
+| `topic-thread` / project domains | **domain** `decisions` / `status` / `changelog` | **no** (default) |
+| unbound chat sessions | daily notes | **no** (default) |
+
+Override: `engram.json` → `extraction.kgPolicy`: `domain-first` (default) | `all` | `main-only`.
+
+Topic signal is promoted by `hb-domains-write`, not by dumping every bullet into `life/`.
+
 ### Real-Time Extraction
 
 In addition to heartbeat extraction, high-signal facts are extracted **inline during conversations** (no 30-min delay):

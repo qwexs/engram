@@ -7,7 +7,7 @@
  * memory-write.js, and advances watermarks only after successful processing.
  */
 
-import { existsSync, mkdirSync, readdirSync, statSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, renameSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -278,8 +278,8 @@ function classifyText(text, { role = "user" } = {}) {
 
 function inferEntity(text) {
   const lower = text.toLowerCase();
-  // Generic defaults only — workspace-specific project/client routing belongs in
-  // engram.json (see entityRoutes), not in the shared skill.
+  // Generic defaults only. Domain-first sessions should not reach KG write;
+  // entity inference matters for main / meta-domain extract only.
   const rules = [
     [/\b(engram|heartbeat|hb-|memory|kg|qmd|oll|autoresearch)\b/i, "projects/engram"],
     [/\b(openclaw|gateway|telegram|cron|runner)\b/i, "projects/openclaw"],
@@ -290,23 +290,100 @@ function inferEntity(text) {
     [/\b(qmd)\b/i, "projects/qmd"],
     [/\balice|алис[аыуеой]\b/i, "people/alice"],
   ];
-  // Optional per-workspace map: engram.json → extraction.entityRoutes
-  // { "acme|acme-corp": "projects/acme", ... } — regex source → entity path
-  const configured = config?.extraction?.entityRoutes;
-  if (configured && typeof configured === "object" && !Array.isArray(configured)) {
-    for (const [pattern, entity] of Object.entries(configured)) {
-      if (!pattern || !entity) continue;
-      try {
-        if (new RegExp(pattern, "i").test(text)) return String(entity);
-      } catch {
-        // ignore invalid regex in config
-      }
-    }
-  }
   for (const [re, entity] of rules) {
     if (re.test(lower)) return entity;
   }
   return "projects/engram";
+}
+
+function loadDomainRegistry(ws) {
+  const registryPath = join(ws, "memory", "domains", "registry.json");
+  if (!existsSync(registryPath)) return { domains: {} };
+  try {
+    return JSON.parse(readFileSync(registryPath, "utf8"));
+  } catch {
+    return { domains: {} };
+  }
+}
+
+/**
+ * Map a canonical session directory name to a registry domain binding.
+ * Session keys match heartbeat / topic-domain-load conventions:
+ *   main
+ *   telegram-group--{absChatId}-topic-{topicId}
+ *   telegram-group--{absChatId}
+ *   telegram-{account}-direct-{userId} / telegram-direct-{userId}
+ */
+export function resolveDomainForSession(registry, sessionName) {
+  const session = String(sessionName || "main");
+  if (session === "main") {
+    return { kind: "main", domain: null, type: null, meta: false };
+  }
+
+  const domains = registry?.domains || {};
+  for (const [name, entry] of Object.entries(domains)) {
+    if (!entry || typeof entry !== "object") continue;
+    const type = entry.type ? String(entry.type) : null;
+    const meta = type === "meta-domain" || entry.metaDomain === true;
+
+    if (entry.topic?.chatId != null && entry.topic?.topicId != null) {
+      const absChatId = String(entry.topic.chatId).replace(/^-/, "");
+      const key = `telegram-group--${absChatId}-topic-${entry.topic.topicId}`;
+      if (session === key) {
+        return { kind: "bound", domain: name, type, meta };
+      }
+    }
+    if (entry.group?.chatId != null && entry.topic == null) {
+      const absChatId = String(entry.group.chatId).replace(/^-/, "");
+      const key = `telegram-group--${absChatId}`;
+      if (session === key) {
+        return { kind: "bound", domain: name, type, meta };
+      }
+    }
+    if (entry.peer?.chatId != null) {
+      const chatId = String(entry.peer.chatId).replace(/^-/, "");
+      // Accept both historical shapes used in the wild.
+      const keys = [
+        `telegram-direct-${chatId}`,
+        `telegram-${chatId}-direct-${chatId}`,
+      ];
+      // Also match telegram-{accountId}-direct-{userId} when peer chatId == userId
+      const peerDirect = session.match(/^telegram-(.+)-direct-(.+)$/);
+      if (keys.includes(session) || (peerDirect && peerDirect[2] === chatId)) {
+        return { kind: "bound", domain: name, type, meta };
+      }
+    }
+  }
+
+  return { kind: "unbound", domain: null, type: null, meta: false };
+}
+
+/**
+ * Domain-first KG policy (default):
+ *   - main → write KG
+ *   - meta-domain (e.g. General topic) → write KG
+ *   - topic-thread / peer / group / other bound domains → NO KG
+ *     (promotion lives in domain decisions/status/changelog)
+ *   - unbound chat sessions → NO KG (avoid dumping topic noise into life/)
+ *
+ * Override via engram.json:
+ *   extraction.kgPolicy: "domain-first" | "all" | "main-only"
+ */
+export function shouldExtractToKg(resolved, engramConfig = {}) {
+  const mode = String(engramConfig?.extraction?.kgPolicy || "domain-first").toLowerCase();
+  if (mode === "all") return { allow: true, reason: "kg-policy-all" };
+  if (mode === "main-only") {
+    return resolved.kind === "main"
+      ? { allow: true, reason: "main-session" }
+      : { allow: false, reason: "kg-policy-main-only" };
+  }
+  // domain-first (default)
+  if (resolved.kind === "main") return { allow: true, reason: "main-session" };
+  if (resolved.meta) return { allow: true, reason: "meta-domain" };
+  if (resolved.kind === "bound") {
+    return { allow: false, reason: `domain-first:${resolved.type || "bound"}:${resolved.domain}` };
+  }
+  return { allow: false, reason: "domain-first:unbound-session" };
 }
 
 function buildFact(candidate, date) {
@@ -463,6 +540,10 @@ export async function runExtraction() {
   try { state = JSON.parse(await readFile(statePath, "utf8")); } catch {}
   const lastSessionExtracted = opts["last-session-extracted"] || state.lastSessionExtracted?.[session] || null;
 
+  const registry = loadDomainRegistry(workspace);
+  const resolvedDomain = resolveDomainForSession(registry, session);
+  const kgPolicy = shouldExtractToKg(resolvedDomain, config);
+
   const dailyContent = await readFile(notePath, "utf8");
   const daily = collectDailyCandidates(dailyContent);
   const sessions = await collectSessionFiles({ workspace, agentDir, session, lastSessionExtracted });
@@ -478,11 +559,47 @@ export async function runExtraction() {
   let factsWritten = 0;
   let factsSkipped = 0;
   let factsPlanned = 0;
+  let factsDomainOnly = 0;
   let supersededCount = 0;
   let supersedeAmbiguousCount = 0;
   let supersedeMinSim = null;
   const tensions = [];
   const flags = [];
+
+  // Domain-first: topic/project sessions promote via hb-domains-write, not life/.
+  // Still advance watermark so extract phase does not re-queue the same day.
+  if (!kgPolicy.allow) {
+    factsDomainOnly = allCandidates.length;
+    const watermarkAdvanced = !noWrite || advanceWatermarkOnNoWrite;
+    const newWatermark = watermarkAdvanced
+      ? await updateWatermark(notePath, daily.lastLine)
+      : (daily.watermark?.watermark ?? 0);
+    const stats = {
+      facts_written: 0,
+      facts_skipped_dedup: 0,
+      facts_planned: 0,
+      facts_domain_only: factsDomainOnly,
+      kg_extract: false,
+      kg_policy: kgPolicy.reason,
+      domain: resolvedDomain.domain,
+      domain_type: resolvedDomain.type,
+      superseded_count: 0,
+      supersede_ambiguous_count: 0,
+      supersede_min_jaccard: null,
+      new_watermark: `L${newWatermark}`,
+      previous_watermark: `L${daily.watermark?.watermark ?? 0}`,
+      last_session_file: watermarkAdvanced ? lastSessionFile : null,
+      sessions_processed: sessions.files.length,
+      daily_candidates: daily.candidates.length,
+      session_candidates: sessionCandidates.length,
+      scan_mode: daily.scanMode || "full-high-signal",
+      dry_run: noWrite,
+      watermark_advanced: watermarkAdvanced,
+    };
+    const summary = `domain-first skip KG (${kgPolicy.reason}; ${factsDomainOnly} candidates → domains path), daily L${daily.watermark?.watermark ?? 0}->L${newWatermark}${watermarkAdvanced ? "" : " (watermark not advanced)"}`;
+    const block = handoffBlock({ status: "ok", summary, stats, flags, tensions });
+    return { handoff: parseHandoff(block), block };
+  }
 
   for (const candidate of allCandidates) {
     const result = await runMemoryWriteWithSupersede(buildFact(candidate, date));
@@ -529,6 +646,11 @@ export async function runExtraction() {
     facts_written: factsWritten,
     facts_skipped_dedup: factsSkipped,
     facts_planned: factsPlanned,
+    facts_domain_only: 0,
+    kg_extract: true,
+    kg_policy: kgPolicy.reason,
+    domain: resolvedDomain.domain,
+    domain_type: resolvedDomain.type,
     superseded_count: supersededCount,
     supersede_ambiguous_count: supersedeAmbiguousCount,
     supersede_min_jaccard: supersedeMinSim !== null ? Number(supersedeMinSim.toFixed(3)) : null,

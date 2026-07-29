@@ -11,6 +11,12 @@
 
 ## Unreleased
 
+- **feat(extract): Domain-first KG policy.** By default, heartbeat extract
+  writes to `life/` only for `main` and `meta-domain` sessions (e.g. General).
+  Topic-thread / project / unbound chat sessions skip KG; durable memory is
+  domain `decisions` / `status` / `changelog` via `hb-domains-write`. Watermark
+  still advances so extract does not thrash. Override:
+  `engram.json` → `extraction.kgPolicy` = `domain-first` | `all` | `main-only`.
 - **fix(extract): rescans high-signal daily sections above EOF watermark.**
   `collectDailyCandidates` no longer starts at the physical line of
   `<!-- extracted:L… -->`. Agents write Events/Decisions/Learnings via

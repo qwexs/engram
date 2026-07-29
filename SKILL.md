@@ -103,6 +103,7 @@ bun skills/engram/scripts/daily-note-append.js \
 - **Entity creation**: when 2+ facts reference same entity, create KG entity
 - **No-Deletion Rule**: facts are NEVER deleted. Set `status: "superseded"` and link via `supersededBy`.
 - Fact Schema: [references/fact-schema.md](references/fact-schema.md)
+- **Domain-first (heartbeat extract):** KG writes only from `main` and `meta-domain` (e.g. General). Topic/project sessions promote via domain files (`hb-domains-write`), not `life/`. Override: `engram.json` → `extraction.kgPolicy` (`domain-first` | `all` | `main-only`).
 
 ### Memory Decay
 
@@ -216,11 +217,11 @@ bun skills/engram/scripts/daily-note-append.js \
 |-------|------|-----------|
 | 0 | inline | Fast Init: state, lock, check |
 | 0.5 | inline | Rotation: daily notes >1000 lines |
-| 1 | subagent | Extraction: hb-extract |
+| 1 | subagent | Extraction: hb-extract (KG only for main/meta; topics → domain-first skip) |
 | 1.5 | inline | Stub Summary |
 | 2 | subagent | Synthesis: hb-synthesis (Mon only) |
 | 3 | subagent | Domains Status: hb-domains |
-| 3.5 | subagent | Domains Write: hb-domains-write |
+| 3.5 | subagent | Domains Write: hb-domains-write (primary durable path for topics) |
 | 4 | inline | Maintenance: validate, qmd update/embed |
 | 5 | inline | OLL Check: rethink triggers |
 | 5.5 | inline | OLL Spawn Queue |

@@ -36,9 +36,21 @@ Last session extracted: {{last_session_extracted}}
 
 **Session files isolation:** only read files from `{{session_files_dir}}`. Never read session files from other sessions.
 
+## Domain-first scope
+
+Before extracting to the Knowledge Graph (`life/`), check the session kind:
+
+- **`main`** and **`meta-domain`** (General / director meta) → extract to KG as below.
+- **`topic-thread` and other project/chat domains** → **do not** write KG facts.
+  Those sessions promote via domain files (`hb-domains-write`: decisions/status/changelog).
+  Orchestrator `extract-runner` already skips KG for them and advances the watermark.
+
+If you are the legacy LLM subagent path and the session is a non-meta topic, return a
+handoff with `facts_written: 0` and note domain-first skip — do not invent `life/` facts.
+
 ## What to Extract
 
-Durable facts -- things worth remembering across sessions:
+Durable facts -- things worth remembering across sessions (main / meta only):
 - **relationship** -- people, connections between entities
 - **milestone** -- project events, achievements, completions
 - **status** -- current state of a project/task/person

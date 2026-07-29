@@ -112,7 +112,7 @@ const HIGH_SIGNAL_SECTIONS = new Set([
  * a mid-file scan cursor. Idempotency for already-promoted bullets is handled
  * by memory-write.js hash/semantic dedup — not by skipping lines above the
  * comment. Scanning only after `watermark.line` permanently missed real Events/
- * Decisions (managers Chromolab incident: 0 facts while content existed).
+ * and Decisions written above the EOF marker.
  */
 export function collectDailyCandidates(content) {
   const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -290,8 +290,8 @@ function inferEntity(text) {
     [/\b(qmd)\b/i, "projects/qmd"],
     [/\balice|алис[аыуеой]\b/i, "people/alice"],
   ];
-  // Optional workspace map: engram.json → extraction.entityRoutes
-  // { "chromolab|hromolab": "projects/hromolab", ... } — regex source → entity path
+  // Optional per-workspace map: engram.json → extraction.entityRoutes
+  // { "acme|acme-corp": "projects/acme", ... } — regex source → entity path
   const configured = config?.extraction?.entityRoutes;
   if (configured && typeof configured === "object" && !Array.isArray(configured)) {
     for (const [pattern, entity] of Object.entries(configured)) {

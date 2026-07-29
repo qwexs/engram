@@ -278,13 +278,9 @@ function classifyText(text, { role = "user" } = {}) {
 
 function inferEntity(text) {
   const lower = text.toLowerCase();
-  // Order matters: more specific project/client names before generic infra.
+  // Generic defaults only — workspace-specific project/client routing belongs in
+  // engram.json (see entityRoutes), not in the shared skill.
   const rules = [
-    [/\b(chromolab|hromolab|хромолаб)\b/i, "projects/hromolab"],
-    [/\b(bakhtiyarov|бахтияров)\b/i, "projects/bakhtiyarov"],
-    [/\b(kurare|кураре)\b/i, "projects/kurare"],
-    [/\b(rutube|vk\b|вконтакте)\b/i, "projects/managers-ops"],
-    [/\b(takeron|такерон)\b/i, "areas/takeron"],
     [/\b(engram|heartbeat|hb-|memory|kg|qmd|oll|autoresearch)\b/i, "projects/engram"],
     [/\b(openclaw|gateway|telegram|cron|runner)\b/i, "projects/openclaw"],
     [/\b(vpn|wireguard|dnsmasq|apriori-vm)\b/i, "projects/vpn"],
@@ -294,6 +290,19 @@ function inferEntity(text) {
     [/\b(qmd)\b/i, "projects/qmd"],
     [/\balice|алис[аыуеой]\b/i, "people/alice"],
   ];
+  // Optional workspace map: engram.json → extraction.entityRoutes
+  // { "chromolab|hromolab": "projects/hromolab", ... } — regex source → entity path
+  const configured = config?.extraction?.entityRoutes;
+  if (configured && typeof configured === "object" && !Array.isArray(configured)) {
+    for (const [pattern, entity] of Object.entries(configured)) {
+      if (!pattern || !entity) continue;
+      try {
+        if (new RegExp(pattern, "i").test(text)) return String(entity);
+      } catch {
+        // ignore invalid regex in config
+      }
+    }
+  }
   for (const [re, entity] of rules) {
     if (re.test(lower)) return entity;
   }

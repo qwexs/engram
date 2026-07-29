@@ -6,8 +6,9 @@
  * (Phase 5.5: heartbeat-runner.js → spawn-claim.js → sessions_spawn).
  *
  * The cron payload is a 4-step agent turn:
- *   1. shell_command: bun skills/engram/scripts/heartbeat-runner.js ...
- *   2. shell_command: bun skills/engram/scripts/spawn-claim.js ...
+ *   0. exec: spawn-claim.js (drain STALE queue left by prior fail-fast ticks)
+ *   1. exec: bun skills/engram/scripts/heartbeat-runner.js ...
+ *   2. exec: bun skills/engram/scripts/spawn-claim.js ... (this tick)
  *   3. for each JSON line with action="spawn": sessions_spawn(...)
  *   4. forward OLL rethink alerts to main session (sessions_send)
  *   5. concise reply + "[phase-5.5] ..." + HEARTBEAT_OK
@@ -475,16 +476,24 @@ function buildSchedule(s) {
 //     savings are 5-10x because the old echo path is fully eliminated.
 const PROSE_TEMPLATE = `You are the cron job for the Clawd engram heartbeat. Do these steps in order using your available tools (do not write or run any JavaScript or shell scripts; call the tools directly).
 
+Use tools.exec only (shell_command is not on the allow-list). workdir always "<WORKSPACE>".
+
+Step 0 — Drain STALE subagent-spawn queue (mandatory, BEFORE the runner):
+Previous ticks may have enqueued workspace/ops/heartbeat-spawns/*.json and then fail-fasted before claim. Always drain first.
+Call tools.exec with command="bun ./skills/engram/scripts/spawn-claim.js --workspace <WORKSPACE> --agent-id <AGENT_ID>", workdir="<WORKSPACE>", timeout_ms=60000. Capture as \`claim0\`.
+For each line in \`claim0.stdout\` that parses as JSON with action="spawn": Call tools.sessions_spawn with task=<rec.task>, label=<rec.runtimeLabel>, model=<rec.model>, cleanup="delete", cwd="<WORKSPACE>", expectsCompletionMessage=false. Count as \`spawnedStale\`.
+Ignore the final {action:"summary",...} line. If claim0 is empty / 0 claimed, continue immediately.
+
 Step 1 — Run the heartbeat runner:
-Call tools.shell_command with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2", workdir="<WORKSPACE>", timeout_ms=420000. Capture the output as \`runner\`.
+Call tools.exec with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2", workdir="<WORKSPACE>", timeout_ms=420000. Capture the output as \`runner\`.
 
 Note: --recover-stale-oll-locks clears stale worker locks that exceeded TTL (2h default), preventing permanent lockout when a subagent fails without producing a handoff.
 
 Note on spawn flags: --spawn-hb-domains-write, --spawn-rethink, --spawn-rethink2 only open the gate for hb-rethink/rethink2/domains-write to be queued when their respective triggers fire. heartbeat-runner.js filters internally (wouldRunRethink, wouldRunRethink2, domainsWriteDue); cost is zero on ticks where triggers don't fire. This is the etalon default — fresh installs bootstrap the OLL loop end-to-end without manual seeding.
 
-Step 2 — Drain the subagent-spawn queue (Phase 5.5):
-The runner enqueues subagent spawn requests into workspace/ops/heartbeat-spawns/*.json (Bun scripts have no LLM tool access and cannot call sessions_spawn directly). You claim and dispatch them.
-Call tools.shell_command with command="bun ./skills/engram/scripts/spawn-claim.js --workspace <WORKSPACE> --agent-id <AGENT_ID>", workdir="<WORKSPACE>", timeout_ms=60000. Capture the output as \`claim\`.
+Step 2 — Drain THIS tick's subagent-spawn queue (Phase 5.5):
+The runner enqueues new spawn requests into workspace/ops/heartbeat-spawns/*.json (Bun scripts have no LLM tool access and cannot call sessions_spawn). Claim and dispatch them even if Step 1 only partially succeeded.
+Call tools.exec with command="bun ./skills/engram/scripts/spawn-claim.js --workspace <WORKSPACE> --agent-id <AGENT_ID>", workdir="<WORKSPACE>", timeout_ms=60000. Capture the output as \`claim\`.
 
 Step 3 — For each line in \`claim.stdout\` that parses as JSON with action="spawn":
 Call tools.sessions_spawn with task=<rec.task>, label=<rec.runtimeLabel>, model=<rec.model>, cleanup="delete", cwd="<WORKSPACE>", expectsCompletionMessage=false. Count successful calls as \`spawnedCount\`. \`rec.runtimeLabel\` is unique per run; do not replace it with the stable phase label in \`rec.label\`. Ignore the final {action:"summary",...} line and any non-spawn lines.
@@ -492,21 +501,23 @@ Call tools.sessions_spawn with task=<rec.task>, label=<rec.runtimeLabel>, model=
 The exact absolute handoffPath embedded in each child task is the authoritative result transport. \`expectsCompletionMessage=false\` prevents runtime from registering a completion announce; children also finish with \`ANNOUNCE_SKIP\` as a compatibility fallback. Do not poll, wait, call sessions_yield, parse, or apply a child result in this cron turn — the next heartbeat-runner tick applies durable handoffs idempotently.
 
 Step 4 — Forward OLL rethink alerts (if any):
-Check \`runner.summary.rethinkAlerts\` — if present and non-empty, the heartbeat applied a rethink handoff with business-language alerts. For each alert string, call tools.sessions_send with sessionKey="agent:<AGENT_ID>:main", message=<the alert text>. This delivers rethink reports to the main session so the agent (and user) see them. Skip if rethinkAlerts is absent or empty.
+Check \`runner.summary.rethinkAlerts\` — if present and non-empty, the heartbeat applied a rethink handoff with business-language alerts. For each alert string, call tools.sessions_send with sessionKey="agent:<AGENT_ID>:main", message=<the alert text>. This delivers rethink reports to the main session so the agent (and user) see them. Skip if rethinkAlerts is absent or empty, or if \`runner\` was incomplete.
 
 Step 5 — Final reply (CONCISE, NO ECHO):
 Delivery is \`none\` — your reply is only stored in the session log, never sent to a chat. Keep it short.
 
-Look at \`runner.summary.status\` and \`runner.summary.warnings\` (the JSON has them at the top level):
+Look at \`runner.summary.status\` and \`runner.summary.warnings\` (the JSON has them at the top level) when runner completed:
 - status == "ok" and warnings empty → reply EXACTLY: \`HEARTBEAT_OK\` (one line, no other text)
 - status == "ok" with warnings → reply with up to 5 one-liners (one per warning, each ≤200 chars), then \`HEARTBEAT_OK\`
 - status == "error" → reply with up to 2 one-liners summarizing the first failures (≤200 chars each), then \`NO_REPLY\`
-If \`claim.stdout\` was non-empty, append one final line: \`[phase-5.5] scanned N, claimed M, errors E, spawned K\` (use the {action:\"summary\",...} JSON line).
+If either claim drained work, append one final line: \`[phase-5.5] staleSpawned=S thisTickClaimed=M thisTickSpawned=K\` (numbers from claim0/claim summaries + your spawn counts).
 
 FAIL-FAST / NO WAIT-LOOP (mandatory):
 - NEVER sleep, wait, poll, retry-wait, or call process/poll on background exec sessions.
-- If Step 1 or Step 2 returns \"Command still running\", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Immediately finish Step 5.
-- In that fail-fast case reply with one line summarizing the incomplete step (≤200 chars), then \`HEARTBEAT_OK\` if only incomplete/lock/still-running, else \`NO_REPLY\` on hard error.
+- Step 0 MUST always run first, even if you expect the runner lock to be held.
+- If Step 1 returns \"Command still running\", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Still attempt Step 2 (drain whatever is already queued), then finish Step 5.
+- If Step 0 or Step 2 returns still-running/empty: skip only that drain's sessions_spawn loop; do not block the other steps.
+- In fail-fast for incomplete runner reply with one line summarizing the incomplete step (≤200 chars), then \`HEARTBEAT_OK\` if only incomplete/lock/still-running, else \`NO_REPLY\` on hard error.
 - Do NOT re-run heartbeat-runner.js in the same cron turn.
 - Do NOT inspect long runner logs beyond what is needed for a ≤200 char summary.
 - Allowed tools only: exec, sessions_spawn, sessions_send, read. No process tool. No message tool.
@@ -523,8 +534,9 @@ Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or
 // the minimum set cuts the system-prompt footprint drastically while
 // keeping every step the message asks for working.
 //
-//   exec           — run heartbeat-runner.js + spawn-claim.js (Step 1+2)
-//   sessions_spawn — dispatch Phase 5.5 subagents (Step 3)
+//   exec           — run heartbeat-runner.js + spawn-claim.js (Step 0/1/2)
+//   sessions_spawn — dispatch Phase 5.5 subagents (Step 0/3)
+//   sessions_send  — forward rethink alerts to main (Step 4)
 //   read           — diagnose failures (read heartbeat-state.json etc.)
 //
 // If a future heartbeat step needs a new tool (e.g. message for ALERT
@@ -536,9 +548,12 @@ const HEARTBEAT_TOOLS_ALLOW = ["exec", "sessions_spawn", "sessions_send", "read"
 // separated list is the canonical form (space-separated also accepted).
 const HEARTBEAT_TOOLS_ALLOW_CLI = HEARTBEAT_TOOLS_ALLOW.join(",");
 
+// 2026-07-30+: pre-drain stale spawn queue before runner so fail-fast on a
+// long/backgrounded runner cannot leave hb-domains-write queued forever.
+const NEW_PAYLOAD_MARKER_0 = "Step 0 — Drain STALE subagent-spawn queue";
 const NEW_PAYLOAD_MARKER_1 = "Step 1 — Run the heartbeat runner";
-const NEW_PAYLOAD_MARKER_2 = "Step 2 — Drain the subagent-spawn queue";
-// Marker for the 2026-06-23+ concise Step 4 (no echo, decision tree,
+const NEW_PAYLOAD_MARKER_2 = "Step 2 — Drain THIS tick's subagent-spawn queue";
+// Marker for the 2026-06-23+ concise final reply (no echo, decision tree,
 // ≤512-token reply cap). Presence of this string confirms the cron
 // payload is on the current format; absence means an older echo-style
 // prompt and a cron edit is required to upgrade.
@@ -558,6 +573,8 @@ const NEW_PAYLOAD_MARKER_5 = "--spawn-rethink --spawn-rethink2";
 const NEW_PAYLOAD_MARKER_6 = "expectsCompletionMessage=false";
 // 2026-07-20+: fail-fast no wait-loop.
 const NEW_PAYLOAD_MARKER_7 = "FAIL-FAST / NO WAIT-LOOP";
+// 2026-07-30+: tools.exec (allow-list), not tools.shell_command.
+const NEW_PAYLOAD_MARKER_8 = "tools.exec";
 
 function buildPayloadMessage({ workspace, agentId, session, labelPrefix }) {
   return PROSE_TEMPLATE
@@ -570,6 +587,7 @@ function buildPayloadMessage({ workspace, agentId, session, labelPrefix }) {
 function isOnNewFormat(payload) {
   if (!payload || !payload.message) return false;
   return (
+    payload.message.includes(NEW_PAYLOAD_MARKER_0) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_1) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_2) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_3) &&
@@ -577,6 +595,8 @@ function isOnNewFormat(payload) {
     payload.message.includes(NEW_PAYLOAD_MARKER_5) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_6) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_7) &&
+    payload.message.includes(NEW_PAYLOAD_MARKER_8) &&
+    !payload.message.includes("Call tools.shell_command") &&
     // toolsAllow must be present and match HEARTBEAT_TOOLS_ALLOW.
     // If absent (older install) or divergent, we re-apply via edit.
     Array.isArray(payload.toolsAllow) &&

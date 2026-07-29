@@ -11,6 +11,12 @@
 
 ## Unreleased
 
+- **fix(cron): drain spawn queue before runner + use tools.exec.** Heartbeat
+  cron payload now runs `spawn-claim` as Step 0 (stale queue) before
+  `heartbeat-runner`, and again after the runner for this tick. Fail-fast on a
+  long/backgrounded runner no longer leaves `hb-domains-write` queued forever.
+  Payload calls `tools.exec` (allow-list), not `tools.shell_command`. Re-run
+  `install-cron.js install` on each workspace to re-sync cron messages.
 - **feat(extract): Domain-first KG policy.** By default, heartbeat extract
   writes to `life/` only for `main` and `meta-domain` sessions (e.g. General).
   Topic-thread / project / unbound chat sessions skip KG; durable memory is

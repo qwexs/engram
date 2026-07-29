@@ -278,7 +278,13 @@ function classifyText(text, { role = "user" } = {}) {
 
 function inferEntity(text) {
   const lower = text.toLowerCase();
+  // Order matters: more specific project/client names before generic infra.
   const rules = [
+    [/\b(chromolab|hromolab|хромолаб)\b/i, "projects/hromolab"],
+    [/\b(bakhtiyarov|бахтияров)\b/i, "projects/bakhtiyarov"],
+    [/\b(kurare|кураре)\b/i, "projects/kurare"],
+    [/\b(rutube|vk\b|вконтакте)\b/i, "projects/managers-ops"],
+    [/\b(takeron|такерон)\b/i, "areas/takeron"],
     [/\b(engram|heartbeat|hb-|memory|kg|qmd|oll|autoresearch)\b/i, "projects/engram"],
     [/\b(openclaw|gateway|telegram|cron|runner)\b/i, "projects/openclaw"],
     [/\b(vpn|wireguard|dnsmasq|apriori-vm)\b/i, "projects/vpn"],

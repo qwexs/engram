@@ -39,7 +39,7 @@ Two watermark types coexist in daily notes — **use distinct prefixes to avoid 
 - `<!-- extracted:L{N}:{ISO} -->` — written by heartbeat orchestrator only (marks extraction point)
 - `<!-- session:start:{ISO} -->` / `<!-- session:end:{ISO} -->` — written by agent at session boundaries
 
-Extraction watermark is always the **last line** of the file. Session boundaries are **inline** in text.
+Extraction watermark is always the **last line** of the file (completion marker). Session boundaries are **inline** in text. High-signal sections above the watermark are rescanned each extract; dedup skips already-written facts.
 
 ### 8. Three-Space Routing
 

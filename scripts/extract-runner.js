@@ -91,25 +91,49 @@ function removeWatermarks(content) {
     .replace(/\n*$/, "\n");
 }
 
+// High-signal daily-note sections written by agents / daily-note-append.js.
+// Heartbeat Report is operational noise and must never become KG candidates.
+const HIGH_SIGNAL_SECTIONS = new Set([
+  "Events",
+  "Decisions",
+  "Learnings",
+  "Active Threads",
+]);
+
+/**
+ * Collect extractable bullets from a daily note.
+ *
+ * Contract (matches daily-note-append.js + EOF watermark layout):
+ * - Agents append into named sections near the top of the file.
+ * - Heartbeat writes `## Heartbeat Report` and `<!-- extracted:L… -->` at EOF.
+ * - Therefore new content almost always sits ABOVE the watermark comment.
+ *
+ * Watermark is a completion marker ("extract ran for this note version"), not
+ * a mid-file scan cursor. Idempotency for already-promoted bullets is handled
+ * by memory-write.js hash/semantic dedup — not by skipping lines above the
+ * comment. Scanning only after `watermark.line` permanently missed real Events/
+ * Decisions (managers Chromolab incident: 0 facts while content existed).
+ */
 export function collectDailyCandidates(content) {
   const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const lines = normalized.split("\n");
   const watermark = extractLastWatermark(normalized);
-  const startLine = watermark?.line ?? 0;
   const candidates = [];
   let section = null;
   let inHeartbeatReport = false;
+  let inHighSignal = false;
 
-  for (let i = startLine; i < lines.length; i++) {
+  for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
     const trimmed = raw.trim();
     const heading = trimmed.match(/^##\s+(.+)$/);
     if (heading) {
       section = heading[1].trim();
       inHeartbeatReport = section === "Heartbeat Report";
+      inHighSignal = HIGH_SIGNAL_SECTIONS.has(section);
       continue;
     }
-    if (!trimmed || inHeartbeatReport) continue;
+    if (!trimmed || inHeartbeatReport || !inHighSignal) continue;
     if (/^<!--\s*(session:|extracted:)/.test(trimmed)) continue;
     if (!trimmed.startsWith("- ")) continue;
 
@@ -119,11 +143,25 @@ export function collectDailyCandidates(content) {
     if (/^Flag:/i.test(text)) continue;
     if (isExtractionNoise(text, { source: "daily" })) continue;
 
-    const category = section === "Decisions" ? "decision" : section === "Learnings" ? "context" : "milestone";
-    candidates.push({ line: i + 1, section: section || "Events", text, category, source: "daily" });
+    const category =
+      section === "Decisions" ? "decision"
+        : section === "Learnings" ? "context"
+          : "milestone";
+    candidates.push({
+      line: i + 1,
+      section: section || "Events",
+      text,
+      category,
+      source: "daily",
+    });
   }
 
-  return { watermark, candidates, lastLine: lineCount(normalized) };
+  return {
+    watermark,
+    candidates,
+    lastLine: lineCount(normalized),
+    scanMode: "full-high-signal",
+  };
 }
 
 function parseSessionTimestamp(path, content) {
@@ -463,6 +501,15 @@ export async function runExtraction() {
   const newWatermark = watermarkAdvanced
     ? await updateWatermark(notePath, daily.lastLine)
     : (daily.watermark?.watermark ?? 0);
+  // Observability: high-signal daily bullets with zero writes and zero skips
+  // means every write failed soft-path or dry-run planned nothing unexpected.
+  // Dedup skips are healthy (facts_skipped > 0). Real anomalies get a flag.
+  if (!noWrite && daily.candidates.length > 0 && factsWritten === 0 && factsSkipped === 0) {
+    flags.push(
+      `HIGH_SIGNAL_NOT_PROMOTED: ${daily.candidates.length} daily candidate(s) produced 0 created/skipped writes`
+    );
+  }
+
   const stats = {
     facts_written: factsWritten,
     facts_skipped_dedup: factsSkipped,
@@ -476,6 +523,7 @@ export async function runExtraction() {
     sessions_processed: sessions.files.length,
     daily_candidates: daily.candidates.length,
     session_candidates: sessionCandidates.length,
+    scan_mode: daily.scanMode || "full-high-signal",
     dry_run: noWrite,
     watermark_advanced: watermarkAdvanced,
   };

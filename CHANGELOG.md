@@ -11,6 +11,17 @@
 
 ## Unreleased
 
+- **fix(extract): rescans high-signal daily sections above EOF watermark.**
+  `collectDailyCandidates` no longer starts at the physical line of
+  `<!-- extracted:L… -->`. Agents write Events/Decisions/Learnings via
+  `daily-note-append.js` above Heartbeat Report + watermark at EOF; the old
+  cursor permanently produced `0 facts` while content existed (managers
+  Chromolab). Watermark remains a completion marker; idempotency is via
+  `memory-write.js` dedup. Heartbeat Report / `## Next` stay non-candidates.
+- **fix(domains): inline-noop peeks Decisions and Learnings, not only Events.**
+  Decision-only topic days (empty Events) spawn `hb-domains-write`. Keyword
+  gate against domain `decisions.md` applies only to Events-only notes so new
+  topics are not suppressed by stale keywords.
 - Fixed a heartbeat regression that merged `qmd.verticalAccess.collections`
   into every `qmd embed` invocation. `qmd.collections` is again the sole
   maintenance allowlist, so upper-level workspaces do not repeatedly embed

@@ -15,10 +15,10 @@ Last session extracted: {{last_session_extracted}}
 ### Phase 1 — Daily Note
 
 1. Read the daily note file at the path above
-2. Start reading from line {{watermark}} (e.g., L47 means start at line 47). If L1, read the entire file.
-3. For each durable fact found, write it via memory-write.js (see CLI Reference below)
+2. Rescan high-signal sections in full: Events, Decisions, Learnings, Active Threads. Ignore `## Heartbeat Report` and `## Next`. The EOF `<!-- extracted:L… -->` marker is a completion stamp written by the orchestrator — do not treat it as a mid-file scan cursor (agent content is written above it via daily-note-append.js).
+3. For each durable fact found, write it via memory-write.js (see CLI Reference below). Dedup/skips are expected on re-scan.
 4. Count facts written and facts skipped (dedup)
-5. Note the last line number you processed
+5. Note the last line number of the file for the orchestrator watermark
 
 ### Phase 2 — Session Files
 
@@ -97,10 +97,10 @@ bun skills/engram/scripts/memory-write.js \
 
 ## Rules
 
-1. Extract ALL durable facts from the daily note content after the watermark
+1. Extract ALL durable facts from high-signal daily-note sections (full rescan; dedup handles already-written facts)
 2. Use the exact --category values listed above (no variations)
 3. Use the confidence lookup table (no guessing)
-4. Always use `--semantic-check --search-collections "life"` when calling memory-write.js — this catches near-duplicates (same fact, different wording) that content-hash dedup misses. Critical when watermark resets to L1 and the file is re-processed.
+4. Always use `--semantic-check --search-collections "life"` when calling memory-write.js — this catches near-duplicates (same fact, different wording) that content-hash dedup misses. Critical on full re-scan after a prior extract.
 5. Do NOT write watermarks to the daily note -- the orchestrator handles this
 6. Do NOT update heartbeat-state.json -- the orchestrator handles this
 7. Do NOT read or write MEMORY.md, AGENTS.md, or any file outside the extraction task

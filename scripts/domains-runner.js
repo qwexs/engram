@@ -192,18 +192,29 @@ function formatDailyNoteDate(d) {
 // Configurable via opts.min-daily-bytes-for-spawn in heartbeat-runner.js.
 export const DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN = 100;
 
-// ISS-9 fix A6: should the inline-noop fast-path trigger for this domain?
-// Returns true when the daily note is unambiguously empty:
-//   1. file missing (ENOENT → safe to noop)
-//   2. `## Events` section missing or shorter than 30 chars (existing v3.3
-//      behavior, preserved for backward compatibility)
-//   3. (A6) file size below DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN (default 100)
-//   4. (A6) `## Events` exists, file is reasonably-sized, but no token from
-//      `decisions.md` keywords matches the events content — the subagent
-//      would noop anyway, so we save the LLM-call.
+function sectionBody(noteContent, sectionName) {
+  const re = new RegExp(`## ${sectionName}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`);
+  const m = noteContent.match(re);
+  return (m ? m[1] : "").trim();
+}
+
+// ISS-9 fix A6 (+ 2026-07-29 domain promotion fix):
+// should the inline-noop fast-path trigger for this domain?
 //
-// `decisionsPath` is optional; when null/missing, condition 4 is skipped
-// (preserves v3.3 behavior for domains without decisions.md yet).
+// Returns true when the bound daily note is unambiguously empty of domain-
+// relevant signal. High-signal sections are Events, Decisions, and Learnings
+// (same surface agents write via daily-note-append.js). Decisions-only days
+// (e.g. Chromolab plan approval with empty Events) must spawn domains-write.
+//
+// Gates:
+//   1. file missing (ENOENT → safe to noop)
+//   2. file size below DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN (default 100)
+//   3. combined Events+Decisions+Learnings body shorter than 30 chars
+//   4. keyword overlap vs domain decisions.md — ONLY for Events-only notes.
+//      Decisions/Learnings content is always treated as domain-relevant and
+//      bypasses the keyword gate (new topics would never match old keywords).
+//
+// `decisionsPath` is optional; when null/missing, condition 4 is skipped.
 export function shouldInlineNoopDailyNote({ dailyPath, decisionsPath = null, minBytes = DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN } = {}) {
   let noteBytes = 0;
   let noteContent = "";
@@ -214,19 +225,27 @@ export function shouldInlineNoopDailyNote({ dailyPath, decisionsPath = null, min
     // Missing daily note → safe to noop (no events to write).
     return true;
   }
-  // (A6 #3) Below size threshold → noop. Catches the common "agent created
-  // the daily-note template but hasn't written anything" case.
+  // Below size threshold → noop. Catches the common "agent created the
+  // daily-note template but hasn't written anything" case.
   if (noteBytes < minBytes) {
     return true;
   }
-  // (existing v3.3) Parse `## Events` section. Empty/truncated → noop.
-  const m = noteContent.match(/## Events\s*\n([\s\S]*?)(?=\n## |$)/);
-  const events = (m ? m[1] : "").trim();
-  if (events.length < 30 || /^##\s/.test(events)) {
+
+  const events = sectionBody(noteContent, "Events");
+  const decisions = sectionBody(noteContent, "Decisions");
+  const learnings = sectionBody(noteContent, "Learnings");
+  const signal = [events, decisions, learnings].filter(Boolean).join("\n").trim();
+
+  if (signal.length < 30) {
     return true;
   }
-  // (A6 #4) Try key-words check against decisions.md. Skip if decisions is
-  // absent/empty (preserves v3.3 default behavior).
+
+  // Decisions / Learnings are curated high-signal by construction — always spawn.
+  if (decisions.length >= 12 || learnings.length >= 12) {
+    return false;
+  }
+
+  // Events-only path: optional keyword gate against domain decisions.md.
   let keywords = null;
   try {
     if (decisionsPath && existsSync(decisionsPath)) {
@@ -244,7 +263,7 @@ export function shouldInlineNoopDailyNote({ dailyPath, decisionsPath = null, min
       return false; // Match found → spawn.
     }
   }
-  return true; // No keyword overlap → noop.
+  return true; // Events-only with no keyword overlap → noop.
 }
 
 // Extract lowercase tokens (length >= 4) from decisions.md that mark

@@ -12,17 +12,71 @@ function makeWorkspace() {
 }
 
 describe("extract-runner daily candidates", () => {
-  test("reads only after the last extraction watermark", () => {
-    const note = `# 2026-05-21\n\n## Events\n- Old event\n<!-- extracted:L4:2026-05-21T00:00:00+03:00 -->\n- New Engram heartbeat event\n`;
+  test("finds high-signal bullets above an EOF watermark (daily-note-append layout)", () => {
+    // Production layout: agents write Events/Decisions near the top;
+    // heartbeat appends Heartbeat Report + extracted marker at EOF.
+    // Scanning only after watermark.line permanently missed this content.
+    const note = [
+      "# 2026-05-21",
+      "",
+      "## Events",
+      "- Chromolab six-month plan approved with content volumes",
+      "",
+      "## Decisions",
+      "- Елена утвердила структуру плана Chromolab на месяцы 1-2",
+      "",
+      "## Heartbeat Report",
+      "- **Extraction**: ok (0 facts, 0 skipped, 0 sessions, L20->L20)",
+      "<!-- extracted:L20:2026-05-21T00:00:00+03:00 -->",
+      "",
+    ].join("\n");
     const result = collectDailyCandidates(note);
-    expect(result.watermark.watermark).toBe(4);
-    expect(result.candidates.map((c) => c.text)).toEqual(["New Engram heartbeat event"]);
+    expect(result.watermark.watermark).toBe(20);
+    expect(result.scanMode).toBe("full-high-signal");
+    expect(result.candidates.map((c) => c.text)).toEqual([
+      "Chromolab six-month plan approved with content volumes",
+      "Елена утвердила структуру плана Chromolab на месяцы 1-2",
+    ]);
+    expect(result.candidates.map((c) => c.category)).toEqual(["milestone", "decision"]);
   });
 
-  test("tracks the last watermark even when old reports are above it", () => {
+  test("still finds content when watermark sits mid-file (legacy append-after layout)", () => {
+    const note = `# 2026-05-21\n\n## Events\n- Old event already known from prior extract run\n<!-- extracted:L4:2026-05-21T00:00:00+03:00 -->\n- New Engram heartbeat event after marker\n`;
+    const result = collectDailyCandidates(note);
+    expect(result.watermark.watermark).toBe(4);
+    // Full high-signal scan: both bullets are candidates; memory-write dedup
+    // skips the already-promoted "Old event" on write.
+    expect(result.candidates.map((c) => c.text)).toEqual([
+      "Old event already known from prior extract run",
+      "New Engram heartbeat event after marker",
+    ]);
+  });
+
+  test("tracks the last watermark and still collects Decisions after it", () => {
     const note = `# 2026-05-21\n\n## Heartbeat Report\n- **Extraction**: ok\n<!-- extracted:L4:old -->\n\n## Decisions\n- Решили оставить heartbeat-runner entrypoint.\n`;
     expect(extractLastWatermark(note).watermark).toBe(4);
     expect(collectDailyCandidates(note).candidates[0].category).toBe("decision");
+  });
+
+  test("ignores Heartbeat Report bullets and ## Next operational notes", () => {
+    const note = [
+      "# 2026-05-21",
+      "",
+      "## Events",
+      "- Durable project milestone about release readiness",
+      "",
+      "## Next",
+      "- Tomorrow call the client about invoice details",
+      "",
+      "## Heartbeat Report",
+      "- **Extraction**: ok (0 facts)",
+      "- **Domains**: ok",
+      "<!-- extracted:L12:2026-05-21T00:00:00+03:00 -->",
+    ].join("\n");
+    const result = collectDailyCandidates(note);
+    expect(result.candidates.map((c) => c.text)).toEqual([
+      "Durable project milestone about release readiness",
+    ]);
   });
 });
 

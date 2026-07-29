@@ -63,7 +63,7 @@ Scan recent daily notes for durable facts:
 
 **How to extract:**
 1. Read today's + yesterday's daily notes
-   - **Watermark check**: Look for `<!-- extracted:L{N}:{timestamp} -->` at the end of each note. If found, parse only lines **after** the last watermark. If no watermark exists, parse the entire file (backward compatible). Multiple watermarks may exist — always use the last one.
+   - **Watermark**: Look for `<!-- extracted:L{N}:{timestamp} -->` at the end of each note (completion marker). High-signal sections (Events / Decisions / Learnings / Active Threads) are always rescanned in full; dedup skips already-written facts. Do **not** treat the watermark line as a scan cursor — agent content is written above it via `daily-note-append.js`.
 2. For each durable fact:
    - Add to existing entity's `items.json` (or create new entity)
    - Set confidence using rubric

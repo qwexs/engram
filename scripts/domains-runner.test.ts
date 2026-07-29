@@ -596,9 +596,8 @@ describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
     expect(shouldInlineNoopDailyNote({ dailyPath: p })).toBe(true);
   });
 
-  test("daily note large with empty `## Events` (whitespace-only) → inline-noop (existing v3.3)", () => {
-    // Padding lives BEFORE `## Events` so the Events section itself is
-    // whitespace-only (< 30 chars after trim) → existing v3.3 gate fires.
+  test("daily note large with empty high-signal sections → inline-noop", () => {
+    // Padding lives BEFORE `## Events` so E/D/L bodies stay short.
     const padding = "# 2026-07-01\n\n" + ("x".repeat(150)) + "\n\n## Events\n   \n\n## Decisions\n\n";
     const p = writeDailyNote(padding);
     expect(shouldInlineNoopDailyNote({ dailyPath: p })).toBe(true);
@@ -610,6 +609,41 @@ describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
     expect(shouldInlineNoopDailyNote({ dailyPath: p })).toBe(false);
   });
 
+  test("decisions-only daily note (empty Events) → spawn", () => {
+    // Production: Chromolab plan approvals often land in ## Decisions only.
+    const text = [
+      "# 2026-07-01",
+      "",
+      "## Events",
+      "",
+      "## Decisions",
+      "",
+      "- Елена утвердила структуру плана Chromolab на месяцы 1-2 и бюджеты.",
+      "",
+      "## Learnings",
+      "",
+    ].join("\n");
+    const p = writeDailyNote(text);
+    expect(shouldInlineNoopDailyNote({ dailyPath: p })).toBe(false);
+  });
+
+  test("learnings-only daily note → spawn", () => {
+    const text = [
+      "# 2026-07-01",
+      "",
+      "## Events",
+      "",
+      "## Decisions",
+      "",
+      "## Learnings",
+      "",
+      "- Outline doc «Референсы для Такерон» is the source of truth for brand refs.",
+      "",
+    ].join("\n");
+    const p = writeDailyNote(text);
+    expect(shouldInlineNoopDailyNote({ dailyPath: p })).toBe(false);
+  });
+
   test("daily note with real events + matching decision keyword → spawn", () => {
     writeDecisions("# Решения: test-domain\n\n## Принятые решения\n\n### 2026-06-30 — Архитектура runner\n\n**Решение**: использовать событийный pipeline с retry.\n");
     const text = "# 2026-07-01\n\n## Events\n\n- 12:00 утвердили событийный pipeline, проверили retry.\n\n";
@@ -617,11 +651,31 @@ describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
     expect(shouldInlineNoopDailyNote({ dailyPath: p, decisionsPath: join(workspace, "memory", "domains", "test-domain", "decisions.md") })).toBe(false);
   });
 
-  test("daily note with real events + no matching keyword → inline-noop (A6 key-words gate)", () => {
+  test("events-only + no matching keyword → inline-noop (A6 key-words gate)", () => {
     writeDecisions("# Решения: test-domain\n\n## Принятые решения\n\n### 2026-06-30 — База данных\n\n**Решение**: мигрировать на postgres.\n");
     const text = "# 2026-07-01\n\n## Events\n\n- 12:00 обсудили новый UI для runner, выбрали цвета.\n\n";
     const p = writeDailyNote(text);
     expect(shouldInlineNoopDailyNote({ dailyPath: p, decisionsPath: join(workspace, "memory", "domains", "test-domain", "decisions.md") })).toBe(true);
+  });
+
+  test("decisions section bypasses events-only keyword gate for new topics", () => {
+    // Old domain keywords (postgres) must not suppress a Chromolab decision day.
+    writeDecisions("# Решения: test-domain\n\n## Принятые решения\n\n### 2026-06-30 — База данных\n\n**Решение**: мигрировать на postgres.\n");
+    const text = [
+      "# 2026-07-01",
+      "",
+      "## Events",
+      "",
+      "## Decisions",
+      "",
+      "- Утвердили финальное КП Chromolab на 6 месяцев.",
+      "",
+    ].join("\n");
+    const p = writeDailyNote(text);
+    expect(shouldInlineNoopDailyNote({
+      dailyPath: p,
+      decisionsPath: join(workspace, "memory", "domains", "test-domain", "decisions.md"),
+    })).toBe(false);
   });
 
   test("pinned: marker counts as keyword", () => {
@@ -634,7 +688,7 @@ describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
   test("custom minBytes threshold is respected", () => {
     const text = "# 2026-07-01\n\n## Events\n\n- событие\n";  // ~50 bytes
     const p = writeDailyNote(text);
-    expect(shouldInlineNoopDailyNote({ dailyPath: p, minBytes: 30 })).toBe(true); // events < 30 → noop
+    expect(shouldInlineNoopDailyNote({ dailyPath: p, minBytes: 30 })).toBe(true); // signal < 30 → noop
     expect(shouldInlineNoopDailyNote({ dailyPath: p, minBytes: 200 })).toBe(true); // size < 200 → noop
   });
 });

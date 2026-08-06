@@ -50,6 +50,7 @@ try {
   console.error(`[heartbeat-report] File not found: ${notePath}`);
   process.exit(1);
 }
+const originalContent = content;
 
 // Keep the extraction watermark as the final line of the note. Older runner
 // versions wrote the report after the watermark, so normalize that shape too.
@@ -125,6 +126,12 @@ let updated = prefix + newSection + (suffix || "\n");
 if (extractionWatermark) {
   updated = updated.trimEnd() + "\n" + extractionWatermark + "\n";
 }
+
+if (updated === originalContent) {
+  console.log(`[heartbeat-report] Unchanged: ${notePath}`);
+  process.exit(0);
+}
+
 await Bun.write(notePath, updated);
 
 console.log(`[heartbeat-report] Updated: ${notePath}`);

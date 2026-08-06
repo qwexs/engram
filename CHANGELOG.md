@@ -11,6 +11,11 @@
 
 ## Unreleased
 
+- **fix(qmd): remove duplicate heartbeat maintenance.** The bootstrap QMD hook
+  now skips cron, heartbeat, subagent, and ephemeral sessions, leaving Phase 4
+  as the single `qmd update` owner for cron-driven Engram heartbeat. Interactive
+  bootstrap freshness is unchanged. Heartbeat reports also avoid rewriting an
+  unchanged daily note, preventing service-only index churn.
 - **fix(cron): drain spawn queue before runner + use tools.exec.** Heartbeat
   cron payload now runs `spawn-claim` as Step 0 (stale queue) before
   `heartbeat-runner`, and again after the runner for this tick. Fail-fast on a

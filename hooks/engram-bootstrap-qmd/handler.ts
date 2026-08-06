@@ -1,11 +1,43 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, openSync, closeSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
 
 const TTL_MS = 15 * 60 * 1000; // 15 minutes
 
-const handler = async (event: any) => {
+export function bootstrapQmdSkipReason(event: any): "cron" | "heartbeat" | "ephemeral" | null {
+  const rawKey = String(event?.context?.sessionKey || event?.sessionKey || "").trim();
+  const parsed = splitAgentAndSession(rawKey);
+  const sessionSegment = String(parsed?.sessionKey || rawKey.replace(/^agent:[^:]+:/, "").replace(/:/g, "-")).toLowerCase();
+
+  if (/^cron(?:-|$)/.test(sessionSegment)) return "cron";
+  if (/^heartbeat(?:-|$)/.test(sessionSegment)) return "heartbeat";
+  if (/^(?:subagent|ephemeral)(?:-|$)/.test(sessionSegment)) return "ephemeral";
+
+  const runtimeHint = String(
+    event?.context?.runKind ||
+    event?.context?.sessionType ||
+    event?.context?.triggerKind ||
+    "",
+  ).toLowerCase();
+  if (runtimeHint === "cron") return "cron";
+  if (runtimeHint === "heartbeat") return "heartbeat";
+  if (runtimeHint === "subagent" || runtimeHint === "ephemeral") return "ephemeral";
+  return null;
+}
+
+type BootstrapQmdDeps = {
+  execSync: typeof execSync;
+};
+
+const handler = async (event: any, deps: BootstrapQmdDeps = { execSync }) => {
   if (event.type !== "agent" || event.action !== "bootstrap") return;
+
+  const skipReason = bootstrapQmdSkipReason(event);
+  if (skipReason) {
+    console.log(`[engram-bootstrap-qmd] skipped (${skipReason} session; heartbeat Phase 4 owns maintenance)`);
+    return;
+  }
 
   const workspaceDir = event.context?.workspaceDir;
   if (!workspaceDir) return;
@@ -36,7 +68,7 @@ const handler = async (event: any) => {
   writeFileSync(lockFile, String(Date.now()));
 
   try {
-    execSync("qmd update", {
+    deps.execSync("qmd update", {
       timeout: 15_000,
       stdio: "pipe",
       cwd: workspaceDir,

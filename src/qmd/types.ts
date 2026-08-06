@@ -70,6 +70,54 @@ export type QmdInvocationRequest =
 
 export type QmdOperationClass = "diagnostic" | "read" | "maintenance";
 
+export type QmdCallerKind =
+  | "operator"
+  | "main"
+  | "topic"
+  | "subagent"
+  | "heartbeat"
+  | "provisioning";
+
+export type QmdCallerCapability = "diagnostics" | "read" | "maintenance";
+
+export type QmdCallerContext = {
+  kind: QmdCallerKind;
+  sessionKey?: string;
+  domain?: string;
+  allowedCollections: string[];
+  capabilities: QmdCallerCapability[];
+};
+
+export type QmdCallerSummary = Pick<QmdCallerContext, "kind">;
+
+export type QmdPolicyDecisionCode =
+  | "ALLOW_OPERATOR_DIAGNOSTIC"
+  | "ALLOW_INTERNAL_DIAGNOSTIC"
+  | "ALLOW_COLLECTION_READ"
+  | "ALLOW_OWNED_EMBED"
+  | "ALLOW_INDEX_UPDATE"
+  | "DENY_UNSUPPORTED_OPERATION"
+  | "DENY_CALLER_CAPABILITY"
+  | "DENY_EMPTY_COLLECTION_SCOPE"
+  | "DENY_COLLECTION_SCOPE"
+  | "DENY_EFFECTIVE_SCOPE"
+  | "DENY_MAINTENANCE_CALLER";
+
+export type QmdPolicyDecision = {
+  schema: "engram.qmd.policy-decision.v1";
+  allowed: boolean;
+  code: QmdPolicyDecisionCode;
+  reason: string;
+  caller: QmdCallerContext;
+  operation: QmdOperation;
+  effectiveScope: QmdEffectiveScope;
+  collections: string[];
+};
+
+export type QmdPolicyDecisionSummary = Omit<QmdPolicyDecision, "caller"> & {
+  caller: QmdCallerSummary;
+};
+
 export type RedactedQmdInvocation = Omit<QmdInvocation, "argv"> & {
   argv: string[];
 };
@@ -84,8 +132,8 @@ export type QmdOperationRecord = {
   indexKey: string;
   effectiveScope: QmdEffectiveScope;
   collections: string[];
-  caller: { kind: "operator" };
-  policyDecision: "not-evaluated";
+  caller: QmdCallerSummary;
+  policyDecision: QmdPolicyDecisionSummary;
   invocation: RedactedQmdInvocation;
   startedAt: string;
   completedAt: string;

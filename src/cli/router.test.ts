@@ -52,4 +52,12 @@ describe("route", () => {
   test("marks unknown root commands as usage errors", async () => {
     await expect(route(parseArgv(["unknown"]))).rejects.toThrow("Unknown command: unknown");
   });
+
+  test("does not expose caller, scope, or admin elevation flags", async () => {
+    await expect(route(parseArgv(["qmd", "capabilities", "--caller", "heartbeat"])))
+      .rejects.toThrow("does not accept command arguments");
+    await expect(route(parseArgv(["qmd", "status", "--scope=index"])))
+      .rejects.toThrow("does not accept command arguments");
+    expect(() => parseArgv(["--admin", "qmd", "doctor"])).toThrow("Unknown global option");
+  });
 });

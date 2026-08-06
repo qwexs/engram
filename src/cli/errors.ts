@@ -61,6 +61,10 @@ export function contextError(message: string, details?: Record<string, unknown>)
   return new CliError("CONTEXT", message, EXIT_CODES.CONTEXT_ERROR, details);
 }
 
+export function policyError(message: string, details?: Record<string, unknown>): CliError {
+  return new CliError("POLICY_DENIED", message, EXIT_CODES.POLICY_DENIED, details);
+}
+
 export function dependencyError(message: string, details?: Record<string, unknown>): CliError {
   return new CliError("DEPENDENCY_UNAVAILABLE", message, EXIT_CODES.DEPENDENCY_ERROR, details);
 }

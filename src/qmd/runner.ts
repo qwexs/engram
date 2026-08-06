@@ -1,16 +1,24 @@
 import { performance } from "node:perf_hooks";
+import { policyError } from "../cli/errors.ts";
 import { redactQmdInvocation, requestsStructuredOutput } from "./invocation.ts";
+import { decideQmdPolicy, summarizeQmdPolicyDecision } from "./policy.ts";
 import type {
   QmdContext,
+  QmdCallerContext,
   QmdInvocation,
   QmdOperationClass,
   QmdOperationRecord,
+  QmdPolicyDecision,
   QmdRunResult,
 } from "./types.ts";
 
-export type QmdRunnerOptions = {
+export type QmdProcessOptions = {
   env?: Record<string, string | undefined>;
-  caller?: { kind: "operator" };
+};
+
+export type QmdRunnerOptions = QmdProcessOptions & {
+  caller: QmdCallerContext;
+  decision: QmdPolicyDecision;
 };
 
 function terminateProcessTree(proc: Bun.Subprocess): void {
@@ -39,6 +47,19 @@ function isoNow(): string {
   return new Date().toISOString();
 }
 
+function sameValues(left: string[] | undefined, right: string[] | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sameCaller(left: QmdCallerContext, right: QmdCallerContext): boolean {
+  return left.kind === right.kind
+    && left.sessionKey === right.sessionKey
+    && left.domain === right.domain
+    && sameValues(left.allowedCollections, right.allowedCollections)
+    && sameValues(left.capabilities, right.capabilities);
+}
+
 function operationRecord(
   context: QmdContext,
   invocation: QmdInvocation,
@@ -48,7 +69,8 @@ function operationRecord(
   exitCode: number | null,
   signal: string | null,
   timedOut: boolean,
-  caller: { kind: "operator" },
+  caller: QmdCallerContext,
+  decision: QmdPolicyDecision,
 ): QmdOperationRecord {
   return {
     schema: "engram.qmd.operation.v1",
@@ -60,8 +82,8 @@ function operationRecord(
     indexKey: invocation.indexKey,
     effectiveScope: invocation.effectiveScope,
     collections: [...invocation.collections],
-    caller,
-    policyDecision: "not-evaluated",
+    caller: { kind: caller.kind },
+    policyDecision: summarizeQmdPolicyDecision(decision),
     invocation: redactQmdInvocation(invocation),
     startedAt,
     completedAt,
@@ -75,11 +97,22 @@ function operationRecord(
 export async function runQmdInvocation(
   context: QmdContext,
   invocation: QmdInvocation,
-  options: QmdRunnerOptions = {},
+  options: QmdRunnerOptions,
 ): Promise<QmdRunResult> {
   const startedAt = isoNow();
   const started = performance.now();
-  const caller = options.caller ?? { kind: "operator" };
+  const { caller, decision } = options;
+  const currentDecision = decideQmdPolicy(context, invocation, caller);
+  if (!currentDecision.allowed
+    || !decision.allowed
+    || decision.operation !== invocation.operation
+    || decision.effectiveScope !== invocation.effectiveScope
+    || !sameValues(decision.collections, invocation.collections)
+    || !sameCaller(decision.caller, caller)) {
+    throw policyError("Runner requires a current matching allowed QMD policy decision.", {
+      decision: summarizeQmdPolicyDecision(currentDecision),
+    });
+  }
   let stdout = "";
   let stderr = "";
   let exitCode: number | null = null;
@@ -129,6 +162,7 @@ export async function runQmdInvocation(
     signal,
     timedOut,
     caller,
+    decision,
   );
   const result: QmdRunResult = {
     schema: "engram.qmd.run.v1",

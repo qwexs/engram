@@ -8,8 +8,9 @@ import {
 } from "../cli/errors.ts";
 import { canonicalizePath } from "./context.ts";
 import { buildQmdInvocation } from "./invocation.ts";
-import { runQmdInvocation, type QmdRunnerOptions } from "./runner.ts";
-import type { QmdContext, QmdOperationRecord, QmdRunResult } from "./types.ts";
+import { authorizeQmdInvocation, OPERATOR_CALLER } from "./policy.ts";
+import { runQmdInvocation, type QmdProcessOptions } from "./runner.ts";
+import type { QmdCallerContext, QmdContext, QmdOperationRecord, QmdRunResult } from "./types.ts";
 
 type CapabilityPayload = {
   schema: "qmd.capabilities.v1";
@@ -61,7 +62,8 @@ export type QmdDoctorData = {
 
 export type DiagnosticOptions = {
   timeoutMs?: number;
-  runner?: QmdRunnerOptions;
+  runner?: QmdProcessOptions;
+  caller?: QmdCallerContext;
 };
 
 function recordDetails(result: QmdRunResult): Record<string, unknown> {
@@ -121,7 +123,9 @@ export async function inspectQmdCapabilities(
     operation: "capabilities",
     timeoutMs: options.timeoutMs,
   });
-  const result = await runQmdInvocation(context, invocation, options.runner);
+  const caller = options.caller ?? OPERATOR_CALLER;
+  const decision = authorizeQmdInvocation(context, invocation, caller);
+  const result = await runQmdInvocation(context, invocation, { ...options.runner, caller, decision });
   requireSuccessfulRun(result);
   if (result.parseError || result.structuredData === undefined) {
     throw qmdOperationError("QMD capabilities returned malformed JSON.", {
@@ -162,7 +166,9 @@ export async function inspectQmdStatus(
     operation: "status",
     timeoutMs: options.timeoutMs,
   });
-  const result = await runQmdInvocation(context, invocation, options.runner);
+  const caller = options.caller ?? OPERATOR_CALLER;
+  const decision = authorizeQmdInvocation(context, invocation, caller);
+  const result = await runQmdInvocation(context, invocation, { ...options.runner, caller, decision });
   requireSuccessfulRun(result);
   const reported = parseStatusIndex(result.stdout);
   if (!reported) {

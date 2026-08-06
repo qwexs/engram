@@ -9,6 +9,42 @@ if (process.env.FAKE_QMD_LOG) {
   appendFileSync(process.env.FAKE_QMD_LOG, JSON.stringify(args) + "\n");
 }
 
+if (process.env.FAKE_QMD_MODE === "inspect") {
+  console.log(JSON.stringify({ args, cwd: process.cwd(), pwd: process.env.PWD }));
+  process.exit(0);
+}
+
+if (process.env.FAKE_QMD_MODE === "large-output") {
+  const { writeFileSync } = await import("node:fs");
+  const bytes = Number(process.env.FAKE_QMD_OUTPUT_BYTES || 1048576);
+  writeFileSync(1, "o".repeat(bytes));
+  writeFileSync(2, "e".repeat(bytes));
+  process.exit(0);
+}
+
+if (process.env.FAKE_QMD_MODE === "non-zero") {
+  console.log("fake stdout");
+  console.error("fake stderr");
+  process.exit(Number(process.env.FAKE_QMD_EXIT_CODE || 9));
+}
+
+if (process.env.FAKE_QMD_MODE === "timeout") {
+  await Bun.sleep(Number(process.env.FAKE_QMD_DELAY_MS || 60000));
+  process.exit(0);
+}
+
+if (process.env.FAKE_QMD_MODE === "timeout-child") {
+  const marker = process.env.FAKE_QMD_CHILD_MARKER;
+  if (!marker) throw new Error("FAKE_QMD_CHILD_MARKER is required");
+  Bun.spawn([
+    process.execPath,
+    "-e",
+    `await Bun.sleep(400); await Bun.write(${JSON.stringify(marker)}, "orphan")`,
+  ], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  await Bun.sleep(60000);
+  process.exit(0);
+}
+
 if (args[0] === "--help") {
   console.log("fake-qmd");
   process.exit(0);

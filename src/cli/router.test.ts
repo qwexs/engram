@@ -9,7 +9,7 @@ describe("route", () => {
     expect(route(parseArgv([]))).toMatchObject({ kind: "help" });
     expect(route(parseArgv(["qmd", "--help"]))).toMatchObject({
       kind: "help",
-      text: expect.stringContaining("QMD commands are not available"),
+      text: expect.stringContaining("resolve"),
     });
   });
 
@@ -22,7 +22,7 @@ describe("route", () => {
     expect(VERSION).toBe(packageJson.version);
   });
 
-  test("marks unavailable qmd commands as usage errors", () => {
+  test("marks unknown qmd commands as usage errors", () => {
     try {
       route(parseArgv(["qmd", "status"]));
       throw new Error("expected route to throw");

@@ -32,11 +32,15 @@ export async function runCli(argv: string[], io: RunIo = {}): Promise<number> {
     if (json) {
       writeJsonSuccess(stdout, result.command, {
         elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
-        workspace: invocation.options.workspace.value,
+        workspace: result.kind === "qmd-context"
+          ? result.data.workspace
+          : invocation.options.workspace.value,
       }, result.kind === "help"
         ? { kind: result.kind, text: result.text }
-        : { kind: result.kind, version: result.version });
-    } else if (result.kind === "help") {
+        : result.kind === "version"
+          ? { kind: result.kind, version: result.version }
+          : result.data);
+    } else if (result.kind === "help" || result.kind === "qmd-context") {
       stdout(result.text);
     } else {
       stdout(`${result.version}\n`);

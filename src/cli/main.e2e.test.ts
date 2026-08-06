@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { dirname, resolve } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -55,9 +57,36 @@ describe("engram executable", () => {
       ok: false,
       error: {
         code: "USAGE",
-        message: "QMD commands are not available in this build.",
+        message: "Unknown QMD command: status",
       },
     });
+  });
+
+  test("resolves QMD context without invoking QMD", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "engram-cli-resolve-"));
+    try {
+      writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+        qmd: { collections: ["test-memory"], command: "definitely-not-an-executable" },
+      }));
+      const result = await invoke(["--json", "--workspace", workspace, "qmd", "resolve"]);
+      expect(result).toEqual(expect.objectContaining({ exitCode: 0, stderr: "" }));
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        schema: "engram.cli.result.v1",
+        ok: true,
+        command: "qmd.resolve",
+        meta: { workspace },
+        data: {
+          schema: "engram.qmd.context.v1",
+          workspace,
+          workspaceSource: "explicit",
+          selector: { kind: "global" },
+          command: { executable: "definitely-not-an-executable", prefixArgs: [] },
+          policy: { ownedCollections: ["test-memory"], readableCollections: ["test-memory"] },
+        },
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   test("returns a JSON usage envelope even when parsing fails", async () => {

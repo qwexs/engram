@@ -57,6 +57,10 @@ export function usageError(message: string, details?: Record<string, unknown>): 
   return new CliError("USAGE", message, EXIT_CODES.USAGE_ERROR, details);
 }
 
+export function contextError(message: string, details?: Record<string, unknown>): CliError {
+  return new CliError("CONTEXT", message, EXIT_CODES.CONTEXT_ERROR, details);
+}
+
 export function normalizeError(error: unknown): CliError {
   if (error instanceof CliError) return error;
 

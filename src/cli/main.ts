@@ -27,20 +27,24 @@ export async function runCli(argv: string[], io: RunIo = {}): Promise<number> {
     const invocation = parseArgv(argv);
     json = invocation.options.json;
     verbose = invocation.options.verbose;
-    const result = route(invocation);
+    const result = await route(invocation);
 
     if (json) {
       writeJsonSuccess(stdout, result.command, {
         elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
         workspace: result.kind === "qmd-context"
           ? result.data.workspace
+          : result.kind === "qmd-diagnostic"
+            ? ("context" in result.data
+                ? result.data.context.workspace
+                : result.data.operationRecord.workspace)
           : invocation.options.workspace.value,
       }, result.kind === "help"
         ? { kind: result.kind, text: result.text }
         : result.kind === "version"
           ? { kind: result.kind, version: result.version }
           : result.data);
-    } else if (result.kind === "help" || result.kind === "qmd-context") {
+    } else if (result.kind === "help" || result.kind === "qmd-context" || result.kind === "qmd-diagnostic") {
       stdout(result.text);
     } else {
       stdout(`${result.version}\n`);

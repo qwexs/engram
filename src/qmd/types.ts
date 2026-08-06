@@ -93,6 +93,10 @@ export type QmdOperationRecord = {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  qmd?: {
+    version: string;
+    capabilities: Record<string, boolean>;
+  };
 };
 
 export type QmdRunResult = {

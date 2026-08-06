@@ -61,6 +61,18 @@ export function contextError(message: string, details?: Record<string, unknown>)
   return new CliError("CONTEXT", message, EXIT_CODES.CONTEXT_ERROR, details);
 }
 
+export function dependencyError(message: string, details?: Record<string, unknown>): CliError {
+  return new CliError("DEPENDENCY_UNAVAILABLE", message, EXIT_CODES.DEPENDENCY_ERROR, details);
+}
+
+export function qmdOperationError(message: string, details?: Record<string, unknown>): CliError {
+  return new CliError("QMD_OPERATION_FAILED", message, EXIT_CODES.QMD_OPERATION_FAILED, details);
+}
+
+export function timeoutError(message: string, details?: Record<string, unknown>): CliError {
+  return new CliError("TIMEOUT_CANCELLED", message, EXIT_CODES.TIMEOUT_CANCELLED, details);
+}
+
 export function normalizeError(error: unknown): CliError {
   if (error instanceof CliError) return error;
 

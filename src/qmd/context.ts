@@ -24,13 +24,13 @@ function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function canonicalize(path: string): string {
+export function canonicalizePath(path: string): string {
   const absolute = resolve(path);
   if (existsSync(absolute)) return realpathSync(absolute);
 
   const parent = dirname(absolute);
   if (parent === absolute) return absolute;
-  return join(canonicalize(parent), absolute.slice(parent.length + (parent.endsWith("/") ? 0 : 1)));
+  return join(canonicalizePath(parent), absolute.slice(parent.length + (parent.endsWith("/") ? 0 : 1)));
 }
 
 function parseConfig(workspace: string): UnknownRecord {
@@ -246,7 +246,7 @@ export function resolveQmdContext(
   const warnings: QmdContextWarning[] = [];
   const ownedCollections = resolveOwnedCollections(qmd, warnings);
   const selector = resolveSelector(qmd, workspace, warnings);
-  const path = canonicalize(physicalPath(selector, workspace, runtime));
+  const path = canonicalizePath(physicalPath(selector, workspace, runtime));
   const readableCollections = resolveReadableCollections(workspace, config, qmd, ownedCollections, warnings);
 
   return {

@@ -1,14 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
-async function invoke(args: string[]) {
+async function invoke(args: string[], env: Record<string, string> = {}) {
   const proc = Bun.spawn([process.execPath, "bin/engram", ...args], {
     cwd: root,
+    env: {
+      ...process.env,
+      ENGRAM_WORKSPACE: undefined,
+      ENGRAM_QMD: undefined,
+      ...env,
+    },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -47,7 +53,7 @@ describe("engram executable", () => {
   });
 
   test("uses one JSON stdout envelope and no stderr for JSON errors", async () => {
-    const result = await invoke(["--json", "qmd", "status"]);
+    const result = await invoke(["--json", "qmd", "unknown"]);
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toBe("");
     expect(result.stdout.endsWith("\n")).toBe(true);
@@ -57,7 +63,7 @@ describe("engram executable", () => {
       ok: false,
       error: {
         code: "USAGE",
-        message: "Unknown QMD command: status",
+        message: "Unknown QMD command: unknown",
       },
     });
   });
@@ -97,5 +103,71 @@ describe("engram executable", () => {
       ok: false,
       error: { code: "USAGE" },
     });
+  });
+
+  test("exposes read-only capabilities, status, and doctor diagnostics", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "engram-cli-diagnostics-"));
+    try {
+      const fixture = join(root, "tests", "fixtures", "fake-qmd.js");
+      mkdirSync(join(workspace, ".qmd"));
+      writeFileSync(join(workspace, ".qmd", "index.yml"), "collections: {}\n");
+      writeFileSync(join(workspace, ".qmd", "index.sqlite"), "");
+      writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+        qmd: {
+          localIndex: true,
+          collections: ["test-memory"],
+          command: process.execPath,
+          commandArgs: [fixture],
+        },
+      }));
+
+      const capabilities = await invoke(["--json", "--workspace", workspace, "qmd", "capabilities"]);
+      expect(capabilities).toEqual(expect.objectContaining({ exitCode: 0, stderr: "" }));
+      expect(JSON.parse(capabilities.stdout)).toMatchObject({
+        command: "qmd.capabilities",
+        data: { schema: "engram.qmd.capabilities.v1", compatible: true },
+      });
+
+      const status = await invoke(
+        ["--workspace", workspace, "qmd", "status"],
+        { FAKE_QMD_STATUS_INDEX: join(workspace, ".qmd", "index.sqlite") },
+      );
+      expect(status).toEqual(expect.objectContaining({ exitCode: 0, stderr: "" }));
+      expect(status.stdout).toContain("Context match: yes");
+
+      const doctor = await invoke(["--json", "--workspace", workspace, "qmd", "doctor"]);
+      expect(doctor.exitCode).toBe(0);
+      expect(JSON.parse(doctor.stdout)).toMatchObject({
+        command: "qmd.doctor",
+        data: { schema: "engram.qmd.doctor.v1", healthy: true, strict: false },
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("doctor strict preserves one-envelope JSON errors", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "engram-cli-doctor-strict-"));
+    try {
+      const fixture = join(root, "tests", "fixtures", "fake-qmd.js");
+      writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+        qmd: {
+          localIndex: true,
+          collection: "legacy-memory",
+          command: process.execPath,
+          commandArgs: [fixture],
+        },
+      }));
+      const result = await invoke(["--json", "--workspace", workspace, "qmd", "doctor", "--strict"]);
+      expect(result).toEqual(expect.objectContaining({ exitCode: 3, stderr: "" }));
+      expect(result.stdout.trim().split("\n")).toHaveLength(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        schema: "engram.cli.error.v1",
+        ok: false,
+        error: { code: "CONTEXT", message: "QMD doctor strict checks failed." },
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });

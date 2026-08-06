@@ -3,6 +3,7 @@
 // Hermetic QMD stub for tests. It deliberately has no persistent index, so
 // test runs can never read or mutate an operator's production QMD state.
 const args = process.argv.slice(2);
+const commandArgs = args[0] === "--index" ? args.slice(2) : args;
 
 if (process.env.FAKE_QMD_LOG) {
   const { appendFileSync } = await import("node:fs");
@@ -45,29 +46,58 @@ if (process.env.FAKE_QMD_MODE === "timeout-child") {
   process.exit(0);
 }
 
-if (args[0] === "--help") {
+if (commandArgs[0] === "capabilities") {
+  const mode = process.env.FAKE_QMD_CAPABILITIES_MODE || "success";
+  if (mode === "malformed") {
+    console.log("{");
+    process.exit(0);
+  }
+  const payload = {
+    schema: mode === "schema-mismatch" ? "qmd.capabilities.v0" : "qmd.capabilities.v1",
+    version: mode === "version-missing" ? undefined : "2.6.3-fork.2",
+    embed: {
+      multipleCollections: mode !== "missing-capability",
+      indexScopedLock: true,
+      structuredOutput: true,
+    },
+  };
+  console.log(JSON.stringify(payload));
+  process.exit(0);
+}
+
+if (commandArgs[0] === "status") {
+  if (process.env.FAKE_QMD_STATUS_MODE === "malformed") {
+    console.log("QMD Status without an index");
+    process.exit(0);
+  }
+  const index = process.env.FAKE_QMD_STATUS_INDEX || `${process.cwd()}/.qmd/index.sqlite`;
+  console.log(`QMD Status\n\nIndex: ${index}\nSize: 0 B`);
+  process.exit(0);
+}
+
+if (commandArgs[0] === "--help") {
   console.log("fake-qmd");
   process.exit(0);
 }
 
-if (args[0] === "collection" && args[1] === "list") {
+if (commandArgs[0] === "collection" && commandArgs[1] === "list") {
   console.log("Collections (0):");
   process.exit(0);
 }
 
-if (args[0] === "collection" && args[1] === "show") {
+if (commandArgs[0] === "collection" && commandArgs[1] === "show") {
   process.exit(1);
 }
 
-if (args[0] === "collection" && ["add", "remove"].includes(args[1])) {
+if (commandArgs[0] === "collection" && ["add", "remove"].includes(commandArgs[1])) {
   process.exit(0);
 }
 
-if (["update", "embed"].includes(args[0])) {
+if (["update", "embed"].includes(commandArgs[0])) {
   process.exit(0);
 }
 
-if (args[0] === "query") {
+if (commandArgs[0] === "query") {
   const delayMs = Number(process.env.FAKE_QMD_QUERY_DELAY_MS || 0);
   if (delayMs > 0) await Bun.sleep(delayMs);
   console.log("[]");

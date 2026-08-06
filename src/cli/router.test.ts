@@ -5,16 +5,16 @@ import { CliError, EXIT_CODES, EXIT_CODE_SEMANTICS } from "./errors.ts";
 import { route, VERSION } from "./router.ts";
 
 describe("route", () => {
-  test("routes root and qmd help without invoking QMD", () => {
-    expect(route(parseArgv([]))).toMatchObject({ kind: "help" });
-    expect(route(parseArgv(["qmd", "--help"]))).toMatchObject({
+  test("routes root and qmd help without invoking QMD", async () => {
+    expect(await route(parseArgv([]))).toMatchObject({ kind: "help" });
+    expect(await route(parseArgv(["qmd", "--help"]))).toMatchObject({
       kind: "help",
       text: expect.stringContaining("resolve"),
     });
   });
 
-  test("returns the CLI version", () => {
-    expect(route(parseArgv(["--version"]))).toEqual({
+  test("returns the CLI version", async () => {
+    expect(await route(parseArgv(["--version"]))).toEqual({
       kind: "version",
       command: "version",
       version: VERSION,
@@ -22,9 +22,9 @@ describe("route", () => {
     expect(VERSION).toBe(packageJson.version);
   });
 
-  test("marks unknown qmd commands as usage errors", () => {
+  test("marks unknown qmd commands as usage errors", async () => {
     try {
-      route(parseArgv(["qmd", "status"]));
+      await route(parseArgv(["qmd", "unknown"]));
       throw new Error("expected route to throw");
     } catch (error) {
       expect(error).toBeInstanceOf(CliError);
@@ -49,7 +49,7 @@ describe("route", () => {
     expect(EXIT_CODE_SEMANTICS[8]).toBe("deferred or partial");
   });
 
-  test("marks unknown root commands as usage errors", () => {
-    expect(() => route(parseArgv(["unknown"]))).toThrow("Unknown command: unknown");
+  test("marks unknown root commands as usage errors", async () => {
+    await expect(route(parseArgv(["unknown"]))).rejects.toThrow("Unknown command: unknown");
   });
 });

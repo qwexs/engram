@@ -3,6 +3,9 @@ CLAUDE.md
 docs
 .claude
 
+# Bun package-manager installation directory.
+node_modules/
+
 # Operational state for live heartbeat runs. Not source — contains
 # full filesystem paths and per-machine data. Workspace/memory-state/
 # is still tracked (only the fact-hashes.json file inside it).

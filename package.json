@@ -1,0 +1,21 @@
+{
+  "name": "@qwexs/engram",
+  "version": "3.5.0",
+  "private": true,
+  "description": "Engram command-line interface",
+  "type": "module",
+  "bin": {
+    "engram": "./bin/engram"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "bun": ">=1.3.0 <2"
+  }
+}

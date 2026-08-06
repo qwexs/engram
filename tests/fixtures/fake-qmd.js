@@ -97,10 +97,12 @@ if (["update", "embed"].includes(commandArgs[0])) {
   process.exit(0);
 }
 
-if (commandArgs[0] === "query") {
+if (["search", "query", "vsearch"].includes(commandArgs[0])) {
   const delayMs = Number(process.env.FAKE_QMD_QUERY_DELAY_MS || 0);
   if (delayMs > 0) await Bun.sleep(delayMs);
-  console.log("[]");
+  if (process.env.FAKE_QMD_READ_MODE === "malformed") console.log("{");
+  else if (process.env.FAKE_QMD_READ_MODE === "object") console.log("{}");
+  else console.log(JSON.stringify([{ file: "qmd://life/example.md", score: 0.9 }]));
   process.exit(0);
 }
 

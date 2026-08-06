@@ -1,5 +1,6 @@
 import type { ParsedInvocation } from "./args.ts";
 import { usageError } from "./errors.ts";
+import { parseQmdReadArgs } from "./qmd-read-args.ts";
 import { resolveQmdContext } from "../qmd/context.ts";
 import {
   inspectQmdCapabilities,
@@ -9,6 +10,7 @@ import {
   type QmdDoctorData,
   type QmdStatusData,
 } from "../qmd/diagnostics.ts";
+import { executeQmdRead, type QmdReadData, type QmdReadOperation } from "../qmd/read.ts";
 import type { QmdContextData } from "../qmd/types.ts";
 
 export const VERSION = "3.5.0";
@@ -28,6 +30,9 @@ Commands:
   qmd capabilities    Validate QMD runtime capabilities (read-only)
   qmd status          Verify the physical QMD index (read-only)
   qmd doctor          Run read-only QMD checks
+  qmd search          Keyword search in explicit collections
+  qmd query           Hybrid search in explicit collections
+  qmd vsearch         Vector search in explicit collections
 
 ${GLOBAL_OPTIONS_HELP}
 `;
@@ -39,6 +44,9 @@ QMD commands:
   capabilities        Validate the QMD capability contract
   status              Verify QMD uses the resolved physical index
   doctor [--strict]   Run read-only checks; strict fails on warnings
+  search <query> -c <collection>... [--limit <n>]
+  query <query> -c <collection>... [--limit <n>]
+  vsearch <query> -c <collection>... [--limit <n>]
 
 ${GLOBAL_OPTIONS_HELP}
 `;
@@ -51,6 +59,12 @@ export type RoutedSuccess =
       kind: "qmd-diagnostic";
       command: "qmd.capabilities" | "qmd.status" | "qmd.doctor";
       data: QmdCapabilitiesData | QmdStatusData | QmdDoctorData;
+      text: string;
+    }
+  | {
+      kind: "qmd-read";
+      command: "qmd.search" | "qmd.query" | "qmd.vsearch";
+      data: QmdReadData;
       text: string;
     };
 
@@ -148,6 +162,21 @@ export async function route(invocation: ParsedInvocation): Promise<RoutedSuccess
       const context = resolveQmdContext(options.workspace);
       const data = await inspectQmdDoctor(context, args[0] === "--strict", { timeoutMs: options.timeoutMs });
       return { kind: "qmd-diagnostic", command: "qmd.doctor", data, text: formatDoctor(data) };
+    }
+    if (subcommand === "search" || subcommand === "query" || subcommand === "vsearch") {
+      const parsed = parseQmdReadArgs(args);
+      const context = resolveQmdContext(options.workspace);
+      const result = await executeQmdRead(context, {
+        operation: subcommand as QmdReadOperation,
+        ...parsed,
+        timeoutMs: options.timeoutMs,
+      });
+      return {
+        kind: "qmd-read",
+        command: `qmd.${subcommand}`,
+        data: result.data,
+        text: result.stdout,
+      };
     }
     throw usageError(subcommand === undefined
       ? "A QMD command is required."

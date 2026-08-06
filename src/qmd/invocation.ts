@@ -9,6 +9,7 @@ import type {
 } from "./types.ts";
 
 export const DEFAULT_QMD_TIMEOUT_MS = 30_000;
+export const MAX_QMD_READ_LIMIT = 100;
 
 const STRUCTURED_OPERATIONS = new Set<QmdOperation>([
   "capabilities",
@@ -53,6 +54,14 @@ function normalizedCollections(values: string[], operation: QmdOperation): strin
   return collections;
 }
 
+function normalizedReadLimit(limit: number | undefined): number | undefined {
+  if (limit === undefined) return undefined;
+  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_QMD_READ_LIMIT) {
+    throw contextError(`QMD read limit must be an integer from 1 to ${MAX_QMD_READ_LIMIT}.`, { limit });
+  }
+  return limit;
+}
+
 function collectionArgs(collections: string[]): string[] {
   return collections.flatMap((collection) => ["-c", collection]);
 }
@@ -71,18 +80,21 @@ export function buildQmdInvocation(
   argv.push(operation);
 
   let collections: string[] = [];
+  let readLimit: number | undefined;
   if (operation === "search" || operation === "query" || operation === "vsearch") {
     if (typeof request.query !== "string" || request.query.trim() === "") {
       throw contextError(`QMD ${operation} requires a non-empty query.`, { operation });
     }
     collections = normalizedCollections(request.collections, operation);
     argv.push(request.query);
+    readLimit = normalizedReadLimit(request.limit);
   } else if (operation === "embed") {
     collections = normalizedCollections(context.policy.ownedCollections, operation);
   }
 
   if (requestsStructuredOutput(operation)) argv.push("--format", "json");
   if (collections.length > 0) argv.push(...collectionArgs(collections));
+  if (readLimit !== undefined) argv.push("-n", String(readLimit));
 
   return {
     executable: context.command.executable,

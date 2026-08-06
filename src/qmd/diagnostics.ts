@@ -9,8 +9,9 @@ import {
 import { canonicalizePath } from "./context.ts";
 import { buildQmdInvocation } from "./invocation.ts";
 import { authorizeQmdInvocation, OPERATOR_CALLER } from "./policy.ts";
+import { qmdRunDetails, requireSuccessfulQmdRun } from "./result.ts";
 import { runQmdInvocation, type QmdProcessOptions } from "./runner.ts";
-import type { QmdCallerContext, QmdContext, QmdOperationRecord, QmdRunResult } from "./types.ts";
+import type { QmdCallerContext, QmdContext, QmdOperationRecord } from "./types.ts";
 
 type CapabilityPayload = {
   schema: "qmd.capabilities.v1";
@@ -66,30 +67,6 @@ export type DiagnosticOptions = {
   caller?: QmdCallerContext;
 };
 
-function recordDetails(result: QmdRunResult): Record<string, unknown> {
-  return {
-    operationRecord: result.operationRecord,
-    exitCode: result.exitCode,
-    signal: result.signal,
-    stderrBytes: Buffer.byteLength(result.stderr),
-  };
-}
-
-function requireSuccessfulRun(result: QmdRunResult): void {
-  if (result.timedOut) {
-    throw timeoutError(`QMD ${result.operationRecord.operation} timed out.`, recordDetails(result));
-  }
-  if (result.spawnError) {
-    throw dependencyError("QMD executable is unavailable.", {
-      ...recordDetails(result),
-      cause: result.spawnError.message,
-    });
-  }
-  if (!result.ok) {
-    throw qmdOperationError(`QMD ${result.operationRecord.operation} failed.`, recordDetails(result));
-  }
-}
-
 function capabilityPayload(value: unknown, operationRecord: QmdOperationRecord): CapabilityPayload {
   const details = { operationRecord };
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -126,10 +103,10 @@ export async function inspectQmdCapabilities(
   const caller = options.caller ?? OPERATOR_CALLER;
   const decision = authorizeQmdInvocation(context, invocation, caller);
   const result = await runQmdInvocation(context, invocation, { ...options.runner, caller, decision });
-  requireSuccessfulRun(result);
+  requireSuccessfulQmdRun(result);
   if (result.parseError || result.structuredData === undefined) {
     throw qmdOperationError("QMD capabilities returned malformed JSON.", {
-      ...recordDetails(result),
+      ...qmdRunDetails(result),
       parseError: result.parseError?.message,
     });
   }
@@ -169,7 +146,7 @@ export async function inspectQmdStatus(
   const caller = options.caller ?? OPERATOR_CALLER;
   const decision = authorizeQmdInvocation(context, invocation, caller);
   const result = await runQmdInvocation(context, invocation, { ...options.runner, caller, decision });
-  requireSuccessfulRun(result);
+  requireSuccessfulQmdRun(result);
   const reported = parseStatusIndex(result.stdout);
   if (!reported) {
     throw qmdOperationError("QMD status did not report an Index path.", {

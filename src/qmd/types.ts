@@ -66,6 +66,7 @@ export type QmdInvocationRequest =
       operation: "search" | "query" | "vsearch";
       query: string;
       collections: string[];
+      limit?: number;
     });
 
 export type QmdOperationClass = "diagnostic" | "read" | "maintenance";

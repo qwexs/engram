@@ -38,13 +38,20 @@ export async function runCli(argv: string[], io: RunIo = {}): Promise<number> {
             ? ("context" in result.data
                 ? result.data.context.workspace
                 : result.data.operationRecord.workspace)
-          : invocation.options.workspace.value,
+            : result.kind === "qmd-read"
+              ? result.data.operationRecord.workspace
+              : invocation.options.workspace.value,
       }, result.kind === "help"
         ? { kind: result.kind, text: result.text }
         : result.kind === "version"
           ? { kind: result.kind, version: result.version }
           : result.data);
-    } else if (result.kind === "help" || result.kind === "qmd-context" || result.kind === "qmd-diagnostic") {
+    } else if (
+      result.kind === "help"
+      || result.kind === "qmd-context"
+      || result.kind === "qmd-diagnostic"
+      || result.kind === "qmd-read"
+    ) {
       stdout(result.text);
     } else {
       stdout(`${result.version}\n`);

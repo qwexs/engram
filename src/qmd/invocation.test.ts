@@ -23,13 +23,14 @@ describe("buildQmdInvocation", () => {
       operation: "query",
       query: "how does memory work?",
       collections: ["life", "child"],
+      limit: 10,
     });
 
     expect(invocation).toEqual({
       executable: "/bin with spaces/qmd",
       argv: [
         "--no-gpu", "--index", "team", "query", "how does memory work?",
-        "--format", "json", "-c", "life", "-c", "child",
+        "--format", "json", "-c", "life", "-c", "child", "-n", "10",
       ],
       cwd: "/workspace with spaces",
       operation: "query",
@@ -73,6 +74,7 @@ describe("buildQmdInvocation", () => {
     expect(() => buildQmdInvocation(context(), { operation: "status", timeoutMs: 0 })).toThrow(CliError);
     expect(() => buildQmdInvocation(context(), { operation: "search", query: "", collections: ["life"] })).toThrow("non-empty query");
     expect(() => buildQmdInvocation(context(), { operation: "query", query: "term", collections: [] })).toThrow("at least one collection");
+    expect(() => buildQmdInvocation(context(), { operation: "query", query: "term", collections: ["life"], limit: 101 })).toThrow("1 to 100");
   });
 });
 

@@ -170,4 +170,57 @@ describe("engram executable", () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  test("runs controlled reads with one JSON envelope and explicit collections", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "engram-cli-read-"));
+    try {
+      const fixture = join(root, "tests", "fixtures", "fake-qmd.js");
+      writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+        qmd: {
+          collections: ["life", "child"],
+          command: process.execPath,
+          commandArgs: [fixture],
+        },
+      }));
+      const result = await invoke([
+        "--json", "--workspace", workspace, "qmd", "search", "term",
+        "-c", "life", "-c", "child", "--limit", "10",
+      ]);
+      expect(result).toEqual(expect.objectContaining({ exitCode: 0, stderr: "" }));
+      expect(result.stdout.trim().split("\n")).toHaveLength(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        schema: "engram.cli.result.v1",
+        ok: true,
+        command: "qmd.search",
+        meta: { workspace },
+        data: {
+          schema: "engram.qmd.search.v1",
+          query: "term",
+          collections: ["life", "child"],
+          limit: 10,
+          results: [{ file: "qmd://life/example.md", score: 0.9 }],
+          operationRecord: { operation: "search", caller: { kind: "operator" } },
+        },
+      });
+
+      const human = await invoke(["--workspace", workspace, "qmd", "query", "term", "-c", "life"]);
+      expect(human).toEqual(expect.objectContaining({ exitCode: 0, stderr: "" }));
+      expect(JSON.parse(human.stdout)).toEqual([{ file: "qmd://life/example.md", score: 0.9 }]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects missing collection and caller controls as usage errors before context resolution", async () => {
+    for (const args of [
+      ["--json", "qmd", "query", "term"],
+      ["--json", "qmd", "query", "term", "-c", "life", "--caller", "heartbeat"],
+      ["--json", "qmd", "query", "term", "-c", "life", "--scope", "index"],
+    ]) {
+      const result = await invoke(args);
+      expect(result).toEqual(expect.objectContaining({ exitCode: 2, stderr: "" }));
+      expect(result.stdout.trim().split("\n")).toHaveLength(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, error: { code: "USAGE" } });
+    }
+  });
 });

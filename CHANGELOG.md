@@ -11,6 +11,20 @@
 
 ## Unreleased
 
+- **feat(cli): add the Bun-based Engram QMD CLI.** Added canonical workspace /
+  physical-index resolution, argv-safe QMD execution, typed operation policy,
+  read-only diagnostics, and controlled `search` / `query` / `vsearch` with
+  mandatory collection scopes. JSON output uses stable result/error envelopes
+  and exit-code semantics. Generic passthrough and public `update` / `embed`
+  commands are intentionally absent.
+- **feat(cli): add a safe launcher installer and architecture gate.**
+  `scripts/install-cli.js` supports dry-run, idempotent install, version
+  post-check, and ownership-safe uninstall in the Bun bin directory. The raw
+  QMD audit freezes 27 reviewed legacy call sites until later migration PRs.
+- **docs(cli): document install, protocol, rollout, and rollback.** Added the
+  operator contract, trust boundary, canary procedure, four-heartbeat
+  observation gate, and state-free rollback runbook.
+
 - **fix(qmd): remove duplicate heartbeat maintenance.** The bootstrap QMD hook
   now skips cron, heartbeat, subagent, and ephemeral sessions, leaving Phase 4
   as the single `qmd update` owner for cron-driven Engram heartbeat. Interactive

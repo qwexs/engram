@@ -136,6 +136,24 @@ without combining private indexes or their collections.
 
 ## Commands
 
+Для новых operator read-вызовов используйте Engram CLI. Он сам выбирает workspace, QMD selector и физический индекс, а коллекции проверяет до запуска QMD.
+
+```bash
+bun bin/engram --workspace /path/to/workspace qmd resolve
+bun bin/engram --workspace /path/to/workspace qmd capabilities
+bun bin/engram --workspace /path/to/workspace qmd status
+bun bin/engram --workspace /path/to/workspace qmd doctor --strict
+
+bun bin/engram --workspace /path/to/workspace \
+  qmd search "search text" -c <collection>
+bun bin/engram --workspace /path/to/workspace \
+  qmd query "search text" -c <collection> -c <collection>
+```
+
+Новая команда без `-c` или с коллекцией вне readable allowlist завершится до `Bun.spawn`. CLI v1 не экспортирует `update` и `embed`: существующие maintenance call sites остаются legacy до coordinator и host governor.
+
+Ниже приведены прямые команды QMD для настройки коллекций, maintenance и диагностики legacy-интеграций. Не добавляйте новые raw QMD-вызовы в runtime-код: architecture audit фиксирует текущий migration debt.
+
 ```bash
 # Hybrid search (BM25 + vectors + rerank)
 qmd query "search text" -c <collection>
@@ -169,3 +187,5 @@ qmd collection list
 - Read full files only when QMD results indicate need
 - Use multi-collection (`-c col1 -c col2`) for cross-cutting searches (e.g., KG + daily notes)
 - Use `qmd search` (BM25-only) as fallback when GPU is busy or unavailable
+
+CLI contract и JSON schemas: [qmd-cli.md](qmd-cli.md). Production canary и rollback: [qmd-cli-rollout.md](qmd-cli-rollout.md).

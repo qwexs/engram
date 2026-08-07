@@ -33,7 +33,7 @@ function usage() {
 Install a local \`engram\` launcher for this checkout.
 
 Options:
-  --bin-dir <path>  Destination directory (default: $XDG_BIN_HOME or ~/.local/bin)
+  --bin-dir <path>  Destination directory (default: $BUN_INSTALL/bin or ~/.bun/bin)
   --dry-run         Print the action without changing files
   --uninstall       Remove only the exact launcher created by this script
   -h, --help        Show help
@@ -71,7 +71,7 @@ function assertBunRuntime() {
 }
 
 function defaultBinDir() {
-  return process.env.XDG_BIN_HOME || join(homedir(), ".local", "bin");
+  return join(process.env.BUN_INSTALL || join(homedir(), ".bun"), "bin");
 }
 
 function shellQuote(value) {
@@ -138,6 +138,13 @@ export function installCli(argv = process.argv.slice(2)) {
   const expected = launcherContent();
 
   if (options.uninstall) {
+    if (!existsSync(path)) {
+      console.log(`Engram CLI launcher is not installed: ${path}`);
+      return;
+    }
+    if (!ownedLauncher(path, expected)) {
+      fail(`Refusing to remove foreign launcher: ${path}`);
+    }
     if (options.dryRun) {
       console.log(`Would remove managed launcher: ${path}`);
       return;

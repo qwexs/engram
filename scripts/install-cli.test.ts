@@ -25,11 +25,29 @@ function run(binDir: string, ...args: string[]) {
   });
 }
 
+function runWithEnvironment(environment: Record<string, string>, ...args: string[]) {
+  return Bun.spawnSync([process.execPath, installer, ...args], {
+    cwd: root,
+    env: { ...process.env, ...environment },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
 function stdout(result: Bun.Subprocess<"ignore", "pipe", "pipe">) {
   return new TextDecoder().decode(result.stdout);
 }
 
 describe("install-cli", () => {
+  test("defaults to the Bun installation bin directory", () => {
+    const bunInstall = temporaryBinDir();
+    const result = runWithEnvironment({ BUN_INSTALL: bunInstall }, "--dry-run");
+
+    expect(result.exitCode).toBe(0);
+    expect(stdout(result)).toContain(join(bunInstall, "bin", "engram"));
+    expect(existsSync(join(bunInstall, "bin", "engram"))).toBe(false);
+  });
+
   test("dry run leaves the destination untouched", () => {
     const binDir = temporaryBinDir();
     const result = run(binDir, "--dry-run");
@@ -48,8 +66,18 @@ describe("install-cli", () => {
 
     expect(run(binDir).exitCode).toBe(1);
     expect(readFileSync(launcher, "utf8")).toBe(foreign);
+    expect(run(binDir, "--uninstall", "--dry-run").exitCode).toBe(1);
+    expect(readFileSync(launcher, "utf8")).toBe(foreign);
     expect(run(binDir, "--uninstall").exitCode).toBe(1);
     expect(readFileSync(launcher, "utf8")).toBe(foreign);
+  });
+
+  test("uninstall is idempotent when no launcher exists", () => {
+    const binDir = temporaryBinDir();
+    const result = run(binDir, "--uninstall");
+
+    expect(result.exitCode).toBe(0);
+    expect(stdout(result)).toContain("launcher is not installed");
   });
 
   test("installs idempotently and targets this checkout's CLI entrypoint", () => {

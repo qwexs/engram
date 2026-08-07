@@ -154,6 +154,19 @@ export function decideQmdPolicy(
     return decision(invocation, caller, true, "ALLOW_INDEX_UPDATE", "Maintenance caller may update the resolved index.");
   }
 
+  if (invocation.operation === "collection-add") {
+    if (caller.kind !== "provisioning" || !hasCapability(caller, "provisioning")) {
+      return decision(invocation, caller, false, "DENY_CALLER_CAPABILITY", "Collection provisioning requires its dedicated trusted capability.");
+    }
+    if (invocation.effectiveScope !== "collections" || invocation.collections.length !== 1) {
+      return decision(invocation, caller, false, "DENY_EFFECTIVE_SCOPE", "Collection provisioning must identify exactly one collection.");
+    }
+    if (!caller.allowedCollections.includes(invocation.collections[0]!)) {
+      return decision(invocation, caller, false, "DENY_COLLECTION_SCOPE", "Collection is outside the provisioning manifest allowlist.");
+    }
+    return decision(invocation, caller, true, "ALLOW_COLLECTION_PROVISION", "Trusted provisioning caller may add the manifest collection.");
+  }
+
   return decision(invocation, caller, false, "DENY_UNSUPPORTED_OPERATION", "Operation is not present in the QMD policy matrix.");
 }
 

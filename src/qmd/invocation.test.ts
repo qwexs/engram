@@ -76,6 +76,21 @@ describe("buildQmdInvocation", () => {
     expect(invocation.argv).not.toContain("-f");
   });
 
+  test("builds argv-safe named-index collection provisioning", () => {
+    const invocation = buildQmdInvocation(context(), {
+      operation: "collection-add",
+      collection: "sample-memory",
+      path: "/workspace with spaces/memory",
+      mask: "**/*.md",
+    });
+    expect(invocation.argv).toEqual([
+      "--no-gpu", "--index", "team", "collection", "add",
+      "/workspace with spaces/memory", "--name", "sample-memory", "--mask", "**/*.md",
+    ]);
+    expect(invocation).toMatchObject({ effectiveScope: "collections", collections: ["sample-memory"] });
+    expect(invocation.argv).not.toContain("-c");
+  });
+
   test.each(["search", "query", "vsearch"] as const)("uses explicit collections for %s", (operation) => {
     const request: QmdInvocationRequest = { operation, query: "term", collections: ["life"] };
     const invocation = buildQmdInvocation(context({ selector: { kind: "local" } }), request);
@@ -88,6 +103,8 @@ describe("buildQmdInvocation", () => {
     expect(() => buildQmdInvocation(context(), { operation: "search", query: "", collections: ["life"] })).toThrow("non-empty query");
     expect(() => buildQmdInvocation(context(), { operation: "query", query: "term", collections: [] })).toThrow("at least one collection");
     expect(() => buildQmdInvocation(context(), { operation: "query", query: "term", collections: ["life"], limit: 101 })).toThrow("1 to 100");
+    expect(() => buildQmdInvocation(context(), { operation: "collection-add", collection: "bad/name", path: "/tmp/x", mask: "**/*.md" })).toThrow("non-path");
+    expect(() => buildQmdInvocation(context(), { operation: "collection-add", collection: "good", path: "relative", mask: "**/*.md" })).toThrow("absolute");
   });
 });
 

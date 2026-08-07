@@ -227,6 +227,16 @@ function physicalPath(
   return join(cacheHome, "qmd", `${name}.sqlite`);
 }
 
+export function resolveNamedQmdIndexPath(
+  name: string,
+  runtime: QmdContextRuntime = defaultRuntime,
+): string {
+  if (name.trim() === "" || /[\\/]/.test(name)) {
+    throw contextError("QMD named index must be a non-path name.", { name });
+  }
+  return canonicalizePath(physicalPath({ kind: "named", name: name.trim() }, "", runtime));
+}
+
 export function resolveQmdContext(
   workspaceResolution: Workspace,
   runtime: QmdContextRuntime = defaultRuntime,

@@ -42,6 +42,7 @@ export type QmdOperation =
   | "search"
   | "query"
   | "vsearch"
+  | "collection-add"
   | "update"
   | "embed";
 
@@ -64,13 +65,19 @@ export type QmdInvocationRequest =
   | (QmdBaseRequest & { operation: "capabilities" | "status" | "update" })
   | (QmdBaseRequest & { operation: "embed"; collections?: string[] })
   | (QmdBaseRequest & {
+      operation: "collection-add";
+      collection: string;
+      path: string;
+      mask: string;
+    })
+  | (QmdBaseRequest & {
       operation: "search" | "query" | "vsearch";
       query: string;
       collections: string[];
       limit?: number;
     });
 
-export type QmdOperationClass = "diagnostic" | "read" | "maintenance";
+export type QmdOperationClass = "diagnostic" | "read" | "maintenance" | "provisioning";
 
 export type QmdCallerKind =
   | "operator"
@@ -81,7 +88,7 @@ export type QmdCallerKind =
   | "provisioning"
   | "coordinator";
 
-export type QmdCallerCapability = "diagnostics" | "read" | "maintenance";
+export type QmdCallerCapability = "diagnostics" | "read" | "maintenance" | "provisioning";
 
 export type QmdCallerContext = {
   kind: QmdCallerKind;
@@ -100,6 +107,7 @@ export type QmdPolicyDecisionCode =
   | "ALLOW_OWNED_EMBED"
   | "ALLOW_COORDINATED_EMBED"
   | "ALLOW_INDEX_UPDATE"
+  | "ALLOW_COLLECTION_PROVISION"
   | "DENY_UNSUPPORTED_OPERATION"
   | "DENY_CALLER_CAPABILITY"
   | "DENY_EMPTY_COLLECTION_SCOPE"

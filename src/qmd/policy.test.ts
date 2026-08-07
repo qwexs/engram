@@ -164,6 +164,33 @@ describe("QMD policy", () => {
     })).toMatchObject({ allowed: false, code: "DENY_EFFECTIVE_SCOPE" });
   });
 
+  test("allows collection provisioning only for the dedicated manifest scope", () => {
+    const ctx = context();
+    const invocation = buildQmdInvocation(ctx, {
+      operation: "collection-add",
+      collection: "sample-memory",
+      path: "/srv/sample/memory",
+      mask: "**/*.md",
+    });
+    const caller: QmdCallerContext = {
+      kind: "provisioning",
+      allowedCollections: ["sample-memory"],
+      capabilities: ["provisioning"],
+    };
+    expect(decideQmdPolicy(ctx, invocation, caller)).toMatchObject({
+      allowed: true,
+      code: "ALLOW_COLLECTION_PROVISION",
+    });
+    expect(decideQmdPolicy(ctx, invocation, { ...caller, allowedCollections: [] })).toMatchObject({
+      allowed: false,
+      code: "DENY_COLLECTION_SCOPE",
+    });
+    expect(decideQmdPolicy(ctx, invocation, { ...caller, kind: "operator" })).toMatchObject({
+      allowed: false,
+      code: "DENY_CALLER_CAPABILITY",
+    });
+  });
+
   test("authorization throws POLICY_DENIED/exit4 with its typed decision", () => {
     const ctx = context();
     const invocation = buildQmdInvocation(ctx, { operation: "vsearch", query: "term", collections: ["life"] });

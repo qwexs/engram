@@ -12,13 +12,6 @@ const temporaryDirectories: string[] = [];
 const BASELINE_RAW_QMD_CALLS = [
   "scripts/_lib/workspace-watchdog.js:410:: runCommand(qmd, qmdCollectionListArgs(engram), workspace, 30000);",
   "scripts/_lib/workspace-watchdog.js:432:: runCommand(qmd, qmdCapabilitiesArgs(), workspace, 30000);",
-  "scripts/add-domain.js:590:execSync(`${QMD} --help`, { stdio: 'pipe' });",
-  "scripts/add-domain.js:601:execSync(`${QMD} collection add \"${join(WORKSPACE, 'memory', 'domains')}\" --name domains --mask \"**/*.md\"`, { stdio: 'pipe' });",
-  "scripts/add-domain.js:610:execSync(`${QMD} collection add \"${join(WORKSPACE, 'memory', 'domains', domain)}\" --name \"domain-${domain}\" --mask \"**/*.md\"`, { stdio: 'pipe' });",
-  "scripts/add-domain.js:623:execSync(`${QMD} collection add \"${entityPath}\" --name \"life-projects-${domain}\" --mask \"**/*.md\"`, { stdio: 'pipe' });",
-  "scripts/add-domain.js:634:execSync(`${QMD} update`, { stdio: 'pipe' });",
-  "scripts/add-session.js:96:execSync(`${QMD} collection add \"${sessionPath}\" --name ${collectionName} --mask \"**/*.md\"`, { stdio: 'pipe' });",
-  "scripts/add-session.js:98:execSync(`${QMD} update`, { stdio: 'pipe' });",
   "scripts/init.js:159:execSync(`${QMD} --help`, { stdio: 'pipe' });",
   "scripts/init.js:651:execSync(`${QMD} collection show \"${collectionName}\"`, { stdio: 'pipe' });",
   "scripts/init.js:659:execSync(`${QMD} collection add \"${sessionPath}\" --name ${collectionName} --mask \"**/*.md\"`, { stdio: 'pipe' });",
@@ -27,9 +20,6 @@ const BASELINE_RAW_QMD_CALLS = [
   "scripts/install-qmd.js:71:execSync(`${QMD_CMD} --help`, { stdio: 'pipe' });",
   "scripts/install-qmd.js:105:const version = execSync(`${QMD_CMD} --version`, { encoding: 'utf-8' }).trim();",
   "scripts/install-qmd.js:341:const version = execSync(`${QMD_CMD} --version`, { encoding: 'utf-8' }).trim();",
-  "scripts/promote-domain.js:192:execSync(`${QMD} collection add \"${domainDir}\" --name \"domain-${domain}\" --mask \"**/*.md\"`, { stdio: 'pipe' });",
-  "scripts/promote-domain.js:201:execSync(`${QMD} collection add \"${entityPath}\" --name \"life-projects-${domain}\" --mask \"**/*.md\"`, { stdio: 'pipe' });",
-  "scripts/promote-domain.js:209:execSync(`${QMD} update`, { stdio: 'pipe' });",
 ].sort();
 
 const RAW_QMD_EXECUTION = [

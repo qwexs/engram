@@ -22,8 +22,7 @@
 import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
-import { execSync } from 'node:child_process';
-import { resolveQmdCommand } from './config.js';
+import { addQmdCollection } from './_lib/qmd-provision.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -70,7 +69,6 @@ const refreshQmd = args['refresh-qmd'];
 const force = args.force;
 
 const WORKSPACE = process.cwd();
-const QMD = resolveQmdCommand(WORKSPACE);
 
 // Валидация имени домена
 if (!/^[a-z][a-z0-9-]*$/.test(domain)) {
@@ -187,30 +185,37 @@ if (refreshTemplates) {
 
 // Опционально: пересоздать QMD collections
 if (refreshQmd) {
-  console.log('🔄 Пересоздаю QMD collections...');
+  console.log('🔄 Регистрирую QMD collections через Engram core...');
   try {
-    execSync(`${QMD} collection add "${domainDir}" --name "domain-${domain}" --mask "**/*.md"`, { stdio: 'pipe' });
-    console.log(`   ✅ domain-${domain}`);
-  } catch {
-    console.log(`   ℹ️  domain-${domain} уже есть`);
+    const provision = await addQmdCollection({
+      workspace: WORKSPACE,
+      collection: `domain-${domain}`,
+      path: domainDir,
+      mask: '**/*.md',
+    });
+    if (!provision.ok) throw new Error(provision.stderr.trim() || `QMD exited ${provision.exitCode}`);
+    console.log(`   ✅ domain-${domain} зарегистрирована`);
+  } catch (error) {
+    console.log(`   ℹ️  domain-${domain} не зарегистрирована: ${error.message}`);
   }
   if (entry.kgEntity) {
     const entityPath = join(WORKSPACE, 'life', entry.kgEntity);
     if (existsSync(entityPath)) {
       try {
-        execSync(`${QMD} collection add "${entityPath}" --name "life-projects-${domain}" --mask "**/*.md"`, { stdio: 'pipe' });
-        console.log(`   ✅ life-projects-${domain}`);
-      } catch {
-        console.log(`   ℹ️  life-projects-${domain} уже есть`);
+        const provision = await addQmdCollection({
+          workspace: WORKSPACE,
+          collection: `life-projects-${domain}`,
+          path: entityPath,
+          mask: '**/*.md',
+        });
+        if (!provision.ok) throw new Error(provision.stderr.trim() || `QMD exited ${provision.exitCode}`);
+        console.log(`   ✅ life-projects-${domain} зарегистрирована`);
+      } catch (error) {
+        console.log(`   ℹ️  life-projects-${domain} не зарегистрирована: ${error.message}`);
       }
     }
   }
-  try {
-    execSync(`${QMD} update`, { stdio: 'pipe' });
-    console.log('   ✅ QMD index updated');
-  } catch (e) {
-    console.warn(`   ⚠️  qmd update failed: ${e.message}`);
-  }
+  console.log('   ℹ️  QMD freshness is delegated to the maintenance coordinator.');
 }
 
 console.log(`

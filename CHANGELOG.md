@@ -123,6 +123,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   status until they can run through a controlled read path with trusted caller
   context; `--qmd-update` on `memory-repair.js` is retained as a deprecated
   compatibility flag and does not run maintenance.
+- **qmd:** session/domain registration and pending-domain promotion now use the
+  typed, argv-safe QMD collection provisioning core. They register explicit
+  collection scope only and never launch `update` or `embed`.
 
 ### Added
 - `engram.json` template now seeds `qmd.collections` as a heartbeat

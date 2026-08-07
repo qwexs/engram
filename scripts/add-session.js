@@ -6,8 +6,8 @@
 import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
-import { execSync } from 'node:child_process';
-import { loadEngramConfig, resolveQmdCommand } from './config.js';
+import { loadEngramConfig } from './config.js';
+import { addQmdCollection } from './_lib/qmd-provision.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -42,7 +42,6 @@ Examples:
 const { platform, id } = args;
 const WORKSPACE = process.cwd();
 const config = loadEngramConfig(WORKSPACE);
-const QMD = resolveQmdCommand(WORKSPACE);
 const agentId = args['agent-id'] || config.agent.replace(/^agent-/, '') || 'main';
 const sessionKey = `${platform}-${id}`;
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
@@ -93,13 +92,18 @@ if (existsSync(heartbeatPath)) {
 // 5. Add QMD collection
 const collectionName = `openclaw-memory-agent-${agentId}-${sessionKey}`;
 try {
-  execSync(`${QMD} collection add "${sessionPath}" --name ${collectionName} --mask "**/*.md"`, { stdio: 'pipe' });
-  console.log(`рџ”Ќ QMD collection: ${collectionName}`);
-  execSync(`${QMD} update`, { stdio: 'pipe' });
-  console.log(`рџ“Љ QMD index updated`);
-} catch {
-  console.log(`⚠️  QMD not available — add collection manually:`);
-  console.log(`   qmd collection add "${sessionPath}" --name ${collectionName} --mask "**/*.md"`);
+  const provision = await addQmdCollection({
+    workspace: WORKSPACE,
+    collection: collectionName,
+    path: sessionPath,
+    mask: "**/*.md",
+  });
+  if (!provision.ok) throw new Error(provision.stderr.trim() || `QMD exited ${provision.exitCode}`);
+  console.log(`рџ”Ќ QMD collection registered: ${collectionName}`);
+  console.log(`ℹ️  QMD freshness is delegated to the maintenance coordinator.`);
+} catch (error) {
+  console.log(`⚠️  QMD collection was not registered: ${error.message}`);
+  console.log(`   Retry through Engram provisioning after reviewing the workspace config.`);
 }
 
 // 6. Summary

@@ -7,8 +7,7 @@ import { parseArgs } from 'node:util';
 import { mkdirSync, readdirSync, existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerivedStatus } from './_lib/auto-derive-status.js';
 import { join, resolve, dirname, basename } from 'node:path';
-import { execSync } from 'node:child_process';
-import { resolveQmdCommand } from './config.js';
+import { addQmdCollection } from './_lib/qmd-provision.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -132,7 +131,6 @@ const telegramChatIdArg = args['telegram-chat-id'];
 const telegramIconColor = args['telegram-icon-color'];
 const pending = args.pending;
 const WORKSPACE = process.cwd();
-const QMD = resolveQmdCommand(WORKSPACE);
 const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'templates', 'domain');
@@ -584,89 +582,60 @@ if (typeDefaults.cadenceAdaptive) {
 }
 console.log(`  ✅ registry.json (${registryBits.join(', ')})`);
 
-// Регистрация QMD коллекции domains (одна на все домены)
-function qmdAvailable() {
+// Register QMD collections through the typed provisioning core. Registration
+// never performs qmd update or embed; freshness is a coordinator concern.
+const collectionsToRegister = [
+  { name: 'domains', path: join(WORKSPACE, 'memory', 'domains'), label: 'shared domains' },
+  { name: `domain-${domain}`, path: join(WORKSPACE, 'memory', 'domains', domain), label: `domain-${domain}` },
+];
+if (kgEntity) {
+  const entityPath = join(WORKSPACE, 'life', kgEntity);
+  if (existsSync(entityPath)) {
+    collectionsToRegister.push({ name: `life-projects-${domain}`, path: entityPath, label: `life-projects-${domain}` });
+  } else {
+    console.log(`Note: KG entity '${kgEntity}' does not exist yet — collection skipped. Create life/${kgEntity}/ and re-run add-domain to populate.`);
+  }
+}
+for (const entry of collectionsToRegister) {
   try {
-    execSync(`${QMD} --help`, { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
+    const provision = await addQmdCollection({
+      workspace: WORKSPACE,
+      collection: entry.name,
+      path: entry.path,
+      mask: '**/*.md',
+    });
+    if (!provision.ok) throw new Error(provision.stderr.trim() || `QMD exited ${provision.exitCode}`);
+    console.log(`QMD collection registered: ${entry.label}`);
+  } catch (error) {
+    console.log(`QMD collection not registered (${entry.label}): ${error.message}`);
   }
 }
 
-if (qmdAvailable()) {
-  // Shared 'domains' collection: indexes all domains together.
-  // Used by main-agent and topic-agent for explicit cross-topic queries.
-  try {
-    execSync(`${QMD} collection add "${join(WORKSPACE, 'memory', 'domains')}" --name domains --mask "**/*.md"`, { stdio: 'pipe' });
-    console.log('QMD shared domains collection created');
-  } catch {
-    console.log('QMD shared domains collection already exists');
-  }
-
-  // Per-domain 'domain-{slug}' collection: indexes one domain only.
-  // Default for topic-agents (matches their contour, smaller search space).
-  try {
-    execSync(`${QMD} collection add "${join(WORKSPACE, 'memory', 'domains', domain)}" --name "domain-${domain}" --mask "**/*.md"`, { stdio: 'pipe' });
-    console.log(`QMD per-domain domain-${domain} collection created`);
-  } catch {
-    console.log(`QMD per-domain domain-${domain} collection already exists`);
-  }
-
-  // Per-KG-entity 'life-projects-{slug}' collection (opt-in, only if --kg-entity given).
-  // Lets topic-agents run semantic search over their own KG entity without leaking
-  // into the broader workspace-life collection.
-  if (kgEntity) {
-    const entityPath = join(WORKSPACE, 'life', kgEntity);
-    if (existsSync(entityPath)) {
-      try {
-        execSync(`${QMD} collection add "${entityPath}" --name "life-projects-${domain}" --mask "**/*.md"`, { stdio: 'pipe' });
-        console.log(`QMD per-entity life-projects-${domain} collection created (KG: ${kgEntity})`);
-      } catch {
-        console.log(`QMD per-entity life-projects-${domain} collection already exists`);
-      }
-    } else {
-      console.log(`Note: KG entity '${kgEntity}' does not exist yet — collection skipped. Create life/${kgEntity}/ and re-run add-domain to populate.`);
-    }
-  }
-
-  try {
-    execSync(`${QMD} update`, { stdio: 'pipe' });
-    console.log('QMD index updated');
-  } catch {
-    console.warn('qmd update failed — run manually');
-  }
-
-  // === Auto-propagate QMD collections to meta-domains ===
-  // When a new domain is created, its QMD collection names should be added
-  // to any meta-domain in this registry so they get automatic vertical access.
-  // This prevents the "domain added but upper-level collections not updated" drift.
-  // Meta-domains do NOT propagate to other meta-domains (they manage their own qmdCollections).
-  const newCollections = [`domain-${domain}`];
-  if (kgEntity) newCollections.push(`life-projects-${domain}`);
-  let propagated = 0;
-  for (const [name, entry] of Object.entries(registry.domains || {})) {
-    if (entry.metaDomain === true && name !== domain && domainType !== 'meta-domain' && Array.isArray(entry.qmdCollections)) {
-      const added = [];
-      for (const col of newCollections) {
-        if (!entry.qmdCollections.includes(col)) {
-          entry.qmdCollections.push(col);
-          added.push(col);
-        }
-      }
-      if (added.length > 0) {
-        console.log(`  📡 Propagated collections to meta-domain "${name}": ${added.join(', ')}`);
-        propagated++;
+// === Auto-propagate QMD collections to meta-domains ===
+// When a new domain is created, its QMD collection names should be added
+// to any meta-domain in this registry so they get automatic vertical access.
+// Meta-domains do NOT propagate to other meta-domains (they manage their own qmdCollections).
+const newCollections = [`domain-${domain}`];
+if (kgEntity) newCollections.push(`life-projects-${domain}`);
+let propagated = 0;
+for (const [name, entry] of Object.entries(registry.domains || {})) {
+  if (entry.metaDomain === true && name !== domain && domainType !== 'meta-domain' && Array.isArray(entry.qmdCollections)) {
+    const added = [];
+    for (const col of newCollections) {
+      if (!entry.qmdCollections.includes(col)) {
+        entry.qmdCollections.push(col);
+        added.push(col);
       }
     }
+    if (added.length > 0) {
+      console.log(`  📡 Propagated collections to meta-domain "${name}": ${added.join(', ')}`);
+      propagated++;
+    }
   }
-  if (propagated > 0) {
-    await Bun.write(registryPath, JSON.stringify(registry, null, 2) + '\n');
-    console.log(`  ✅ qmdCollections propagated to ${propagated} meta-domain(s)`);
-  }
-} else {
-  console.log('QMD not found. Add collections manually:');
-  console.log(`   qmd collection add "${join(WORKSPACE, 'memory', 'domains', domain)}" --name "domain-${domain}" --mask "**/*.md"`);
+}
+if (propagated > 0) {
+  await Bun.write(registryPath, JSON.stringify(registry, null, 2) + '\n');
+  console.log(`  ✅ qmdCollections propagated to ${propagated} meta-domain(s)`);
 }
 
 console.log(`

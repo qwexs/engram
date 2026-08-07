@@ -1,0 +1,190 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import sessionStartHandler from "../hooks/engram-session-start/handler.ts";
+import sessionEndHandler from "../hooks/engram-session-end/handler.ts";
+import { resolveQmdContext } from "../src/qmd/context.ts";
+import {
+  resolveQmdMaintenanceStateRoot,
+  type QmdMaintenanceIntegrationRuntime,
+} from "../src/qmd/maintenance-integration.ts";
+import { readQmdMaintenanceState } from "../src/qmd/maintenance.ts";
+
+const repositoryRoot = resolve(import.meta.dir, "..");
+const roots: string[] = [];
+
+function makeWorkspace(): { workspace: string; stateDir: string } {
+  const root = mkdtempSync(join(tmpdir(), "engram-shadow-writers-"));
+  roots.push(root);
+  const workspace = join(root, "workspace");
+  const stateDir = join(root, "openclaw-state");
+  mkdirSync(join(workspace, "memory"), { recursive: true });
+  mkdirSync(join(workspace, "life", "areas", "test"), { recursive: true });
+  mkdirSync(join(workspace, "workspace", "memory-state"), { recursive: true });
+  writeFileSync(join(workspace, "workspace", "memory-state", "fact-hashes.json"), "{}");
+  writeFileSync(join(workspace, "life", "index.md"), "# Life\n");
+  writeFileSync(join(workspace, "life", "areas", "test", "items.json"), JSON.stringify({
+    entityId: "areas/test",
+    entityType: "area",
+    facts: [],
+  }));
+  writeFileSync(join(workspace, "life", "areas", "test", "summary.md"), "# Test\n");
+  writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+    agent: "agent-main",
+    qmd: {
+      index: "global",
+      command: join(repositoryRoot, "tests", "fixtures", "fake-qmd.js"),
+      collection: "alpha-memory",
+      collections: ["alpha-memory", "life"],
+      maintenance: { mode: "shadow" },
+    },
+  }));
+  return { workspace, stateDir };
+}
+
+function runtime(stateDir: string): QmdMaintenanceIntegrationRuntime {
+  return {
+    env: { OPENCLAW_STATE_DIR: stateDir, XDG_CACHE_HOME: join(stateDir, "cache") },
+    homedir: () => join(stateDir, "home"),
+    platform: "linux",
+    warn: () => {},
+    markDirty: async (stateRoot, input) => {
+      const { markQmdDirty } = await import("../src/qmd/maintenance.ts");
+      return markQmdDirty(stateRoot, input);
+    },
+  };
+}
+
+function readState(workspace: string, stateDir: string) {
+  const rt = runtime(stateDir);
+  const context = resolveQmdContext({ value: workspace, source: "explicit" }, rt);
+  return readQmdMaintenanceState(resolveQmdMaintenanceStateRoot(rt), context.physicalIndex.key);
+}
+
+async function spawnScript(script: string, args: string[], workspace: string, stateDir: string) {
+  const process = Bun.spawn(["bun", join(repositoryRoot, "scripts", script), ...args], {
+    cwd: workspace,
+    env: {
+      ...globalThis.process.env,
+      ENGRAM_WORKSPACE: workspace,
+      OPENCLAW_STATE_DIR: stateDir,
+      XDG_CACHE_HOME: join(stateDir, "cache"),
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(process.stdout).text(),
+    new Response(process.stderr).text(),
+    process.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
+afterEach(() => {
+  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+describe("shadow dirty marks from real writers", () => {
+  test("daily-note append marks the primary owned collection", async () => {
+    const { workspace, stateDir } = makeWorkspace();
+    const result = await spawnScript("daily-note-append.js", [
+      "--session", "main",
+      "--section", "events",
+      "--text", "shadow integration event",
+    ], workspace, stateDir);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).status).toBe("appended");
+    expect(readState(workspace, stateDir)).toMatchObject({
+      generation: 1,
+      dirty: { collections: ["alpha-memory"] },
+    });
+  });
+
+  test("duplicate session-start debounce does not create a second generation", async () => {
+    const { workspace, stateDir } = makeWorkspace();
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const previousCacheHome = process.env.XDG_CACHE_HOME;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    process.env.XDG_CACHE_HOME = join(stateDir, "cache");
+    try {
+      const event = {
+        type: "agent",
+        action: "bootstrap",
+        context: { workspaceDir: workspace, sessionKey: "agent:main:main" },
+      };
+      await sessionStartHandler(event);
+      await sessionStartHandler(event);
+    } finally {
+      if (previousStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
+      else process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      if (previousCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = previousCacheHome;
+    }
+
+    expect(readState(workspace, stateDir).generation).toBe(1);
+  });
+
+  test("duplicate session-end does not create a second generation", async () => {
+    const { workspace, stateDir } = makeWorkspace();
+    const date = new Date().toLocaleDateString("sv-SE", {
+      timeZone: process.env.ENGRAM_TZ || process.env.TZ || "UTC",
+    });
+    const noteDir = join(workspace, "memory", "agent-main", "main");
+    mkdirSync(noteDir, { recursive: true });
+    writeFileSync(join(noteDir, `${date}.md`), `# ${date}\n`);
+    const fakeBin = join(workspace, "test-bin");
+    mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, "qmd"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(fakeBin, "qmd"), 0o755);
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const previousCacheHome = process.env.XDG_CACHE_HOME;
+    const previousPath = process.env.PATH;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    process.env.XDG_CACHE_HOME = join(stateDir, "cache");
+    process.env.PATH = `${fakeBin}:${previousPath ?? ""}`;
+    try {
+      const event = {
+        type: "command",
+        action: "new",
+        sessionKey: "agent:main:main",
+        context: { workspaceDir: workspace },
+      };
+      await sessionEndHandler(event);
+      await sessionEndHandler(event);
+    } finally {
+      if (previousStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
+      else process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      if (previousCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = previousCacheHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+
+    expect(readState(workspace, stateDir).generation).toBe(1);
+  });
+
+  test("duplicate KG write is skipped without a second dirty generation", async () => {
+    const { workspace, stateDir } = makeWorkspace();
+    const args = [
+      "--entity", "areas/test",
+      "--fact", "The global coordinator owns maintenance for this physical index",
+      "--category", "decision",
+    ];
+    const first = await spawnScript("memory-write.js", args, workspace, stateDir);
+    const second = await spawnScript("memory-write.js", args, workspace, stateDir);
+
+    expect(first.exitCode).toBe(0);
+    expect(JSON.parse(first.stdout).status).toBe("created");
+    expect(second.exitCode).toBe(0);
+    expect(JSON.parse(second.stdout).status).toBe("skipped");
+    expect(readState(workspace, stateDir)).toMatchObject({
+      generation: 1,
+      dirty: { collections: ["life"] },
+    });
+    expect(JSON.parse(readFileSync(join(workspace, "life", "areas", "test", "items.json"), "utf8")).facts)
+      .toHaveLength(1);
+  });
+});

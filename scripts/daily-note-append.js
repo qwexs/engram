@@ -6,6 +6,7 @@
 import { join, dirname } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { loadEngramConfig } from "./config.js";
+import { markWorkspaceQmdDirty } from "../src/qmd/maintenance-integration.ts";
 
 // Т.к. скрипт в skills/engram/scripts/, workspace на 3 уровня выше
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
@@ -154,6 +155,11 @@ lines.splice(lastContentLine + 1, 0, entry);
 
 const newContent = lines.join("\n");
 await Bun.write(notePath, newContent);
+
+await markWorkspaceQmdDirty({
+  workspace,
+  reason: `daily-note-append:${sectionKey}`,
+});
 
 console.log(JSON.stringify({
   status: "appended",

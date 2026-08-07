@@ -1,7 +1,7 @@
 # Global QMD maintenance coordinator
 
-> Status: implementation plan for `feat/qmd-global-maintenance`.
-> Scope: coordinator/core only; production call sites and index migration remain disabled.
+> Status: coordinator core merged; shadow writer integration implemented.
+> Scope: production execution and index migration remain disabled.
 
 ## Decision
 
@@ -92,3 +92,39 @@ After this core is merged and released, separate PRs will migrate writers and
 hooks to `markDirty`, replace workspace heartbeat maintenance with one global
 job, build the canonical global collection registry, migrate indexes with
 backup/rollback, and remove the remaining raw QMD call allowlist.
+
+## Shadow writer integration
+
+Writer integration is controlled per workspace:
+
+```json
+{
+  "qmd": {
+    "maintenance": { "mode": "legacy" }
+  }
+}
+```
+
+- `legacy` (default) creates no coordinator state and preserves existing
+  behavior exactly;
+- `shadow` records a dirty generation after a successful write, but never
+  launches `qmd update` or `qmd embed`;
+- `coordinated` records the same state and is reserved for the later execution
+  cutover. Merely selecting it does not create an extra public QMD command.
+
+State lives under
+`$OPENCLAW_STATE_DIR/engram/qmd-maintenance/<index-key-hash>/`, or under
+`~/.openclaw/engram/qmd-maintenance/` when the state-dir override is absent.
+It is outside indexed workspace content.
+
+The first shadow call sites are:
+
+- daily-note appends;
+- successful KG fact writes (collection `life`);
+- non-debounced `session:start` and `session:end` markers.
+
+Duplicate/no-op paths return before marking. Requested collections must be
+owned by the writing workspace. State errors are logged and returned as a
+structured `error`, but are fail-open for the already completed content write.
+Legacy raw maintenance remains active during shadow observation and is removed
+only by the execution-cutover PR.

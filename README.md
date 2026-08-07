@@ -219,7 +219,10 @@ bun bin/engram --workspace /path/to/workspace \
 coordinator core хранит dirty generations по physical index, объединяет записи
 и выполняет защищённую последовательность index-wide `update` → scoped
 incremental `embed` без `-f`. Production call sites и topology остаются legacy
-до отдельного rollout. Контракт: [`references/qmd-global-maintenance.md`](references/qmd-global-maintenance.md).
+до отдельного rollout. Writer call sites уже поддерживают отключённый по
+умолчанию shadow-режим `qmd.maintenance.mode: "shadow"`: он только фиксирует
+dirty generations и не запускает дополнительный QMD maintenance. Контракт:
+[`references/qmd-global-maintenance.md`](references/qmd-global-maintenance.md).
 
 Launcher устанавливается в `$BUN_INSTALL/bin` или `~/.bun/bin`. Installer не перезаписывает и не удаляет чужие файлы.
 

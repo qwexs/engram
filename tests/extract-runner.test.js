@@ -28,10 +28,10 @@ describe("extract-runner daily candidates", () => {
       "# 2026-05-21",
       "",
       "## Events",
-      "- Chromolab six-month plan approved with content volumes",
+      "- Example Clinic six-month plan approved with content volumes",
       "",
       "## Decisions",
-      "- Елена утвердила структуру плана Chromolab на месяцы 1-2",
+      "- Руководитель утвердил структуру плана Example Clinic на месяцы 1-2",
       "",
       "## Heartbeat Report",
       "- **Extraction**: ok (0 facts, 0 skipped, 0 sessions, L20->L20)",
@@ -42,8 +42,8 @@ describe("extract-runner daily candidates", () => {
     expect(result.watermark.watermark).toBe(20);
     expect(result.scanMode).toBe("full-high-signal");
     expect(result.candidates.map((c) => c.text)).toEqual([
-      "Chromolab six-month plan approved with content volumes",
-      "Елена утвердила структуру плана Chromolab на месяцы 1-2",
+      "Example Clinic six-month plan approved with content volumes",
+      "Руководитель утвердил структуру плана Example Clinic на месяцы 1-2",
     ]);
     expect(result.candidates.map((c) => c.category)).toEqual(["milestone", "decision"]);
   });
@@ -166,13 +166,13 @@ describe("domain-first KG policy", () => {
       "managers-general": {
         type: "meta-domain",
         metaDomain: true,
-        topic: { chatId: "-1004363932821", topicId: "1" },
+        topic: { chatId: "-1000000001", topicId: "1" },
       },
       "managers-clients": {
         type: "topic-thread",
-        topic: { chatId: "-1004363932821", topicId: "15" },
+        topic: { chatId: "-1000000001", topicId: "15" },
       },
-      "elena-general": {
+      "executive-a-general": {
         type: "meta-domain",
         metaDomain: true,
         peer: { chatId: "100000001" },
@@ -185,18 +185,18 @@ describe("domain-first KG policy", () => {
     expect(main.kind).toBe("main");
     expect(shouldExtractToKg(main).allow).toBe(true);
 
-    const general = resolveDomainForSession(registry, "telegram-group--1004363932821-topic-1");
+    const general = resolveDomainForSession(registry, "telegram-group--1000000001-topic-1");
     expect(general.domain).toBe("managers-general");
     expect(general.meta).toBe(true);
     expect(shouldExtractToKg(general).allow).toBe(true);
 
     const peerMeta = resolveDomainForSession(registry, "telegram-direct-100000001");
-    expect(peerMeta.domain).toBe("elena-general");
+    expect(peerMeta.domain).toBe("executive-a-general");
     expect(shouldExtractToKg(peerMeta).allow).toBe(true);
   });
 
   test("topic-thread sessions skip KG (domain-first)", () => {
-    const clients = resolveDomainForSession(registry, "telegram-group--1004363932821-topic-15");
+    const clients = resolveDomainForSession(registry, "telegram-group--1000000001-topic-15");
     expect(clients.domain).toBe("managers-clients");
     expect(clients.meta).toBe(false);
     const policy = shouldExtractToKg(clients);
@@ -211,12 +211,12 @@ describe("domain-first KG policy", () => {
   });
 
   test("kgPolicy all re-enables topic KG extract", () => {
-    const clients = resolveDomainForSession(registry, "telegram-group--1004363932821-topic-15");
+    const clients = resolveDomainForSession(registry, "telegram-group--1000000001-topic-15");
     expect(shouldExtractToKg(clients, { extraction: { kgPolicy: "all" } }).allow).toBe(true);
   });
 
   test("kgPolicy main-only blocks meta-domain", () => {
-    const general = resolveDomainForSession(registry, "telegram-group--1004363932821-topic-1");
+    const general = resolveDomainForSession(registry, "telegram-group--1000000001-topic-1");
     expect(shouldExtractToKg(general, { extraction: { kgPolicy: "main-only" } }).allow).toBe(false);
     expect(shouldExtractToKg({ kind: "main", meta: false }, { extraction: { kgPolicy: "main-only" } }).allow).toBe(true);
   });
@@ -224,7 +224,7 @@ describe("domain-first KG policy", () => {
   test("topic-thread extract-runner does not write KG facts", async () => {
     const root = makeWorkspace();
     try {
-      const session = "telegram-group--1004363932821-topic-15";
+      const session = "telegram-group--1000000001-topic-15";
       const sessionDir = join(root, "memory", "agent-main", session);
       mkdirSync(sessionDir, { recursive: true });
       mkdirSync(join(root, "memory", "domains"), { recursive: true });
@@ -232,7 +232,7 @@ describe("domain-first KG policy", () => {
         domains: {
           "managers-clients": {
             type: "topic-thread",
-            topic: { chatId: "-1004363932821", topicId: "15" },
+            topic: { chatId: "-1000000001", topicId: "15" },
           },
         },
       }));
@@ -241,7 +241,7 @@ describe("domain-first KG policy", () => {
         "# 2026-05-21",
         "",
         "## Events",
-        "- Chromolab six-month plan approved with content volumes",
+        "- Example Clinic six-month plan approved with content volumes",
         "",
         "## Decisions",
         "- Client approved final commercial proposal structure",

@@ -54,7 +54,7 @@
   `<!-- extracted:L… -->`. Agents write Events/Decisions/Learnings via
   `daily-note-append.js` above Heartbeat Report + watermark at EOF; the old
   cursor permanently produced `0 facts` while content existed (managers
-  Chromolab). Watermark remains a completion marker; idempotency is via
+  an unrelated synthetic project). Watermark remains a completion marker; idempotency is via
   `memory-write.js` dedup. Heartbeat Report / `## Next` stay non-candidates.
 - **fix(domains): inline-noop peeks Decisions and Learnings, not only Events.**
   Decision-only topic days (empty Events) spawn `hb-domains-write`. Keyword

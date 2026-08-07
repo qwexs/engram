@@ -283,7 +283,7 @@ function inferEntity(text) {
   const rules = [
     [/\b(engram|heartbeat|hb-|memory|kg|qmd|oll|autoresearch)\b/i, "projects/engram"],
     [/\b(openclaw|gateway|telegram|cron|runner)\b/i, "projects/openclaw"],
-    [/\b(vpn|wireguard|dnsmasq|apriori-vm)\b/i, "projects/vpn"],
+    [/\b(vpn|wireguard|dnsmasq|sample-vm)\b/i, "projects/vpn"],
     [/\b(outline)\b/i, "projects/outline"],
     [/\b(projectmix)\b/i, "projects/projectmix"],
     [/\b(telemax)\b/i, "projects/telemax"],

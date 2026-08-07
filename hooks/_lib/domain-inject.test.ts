@@ -37,7 +37,7 @@ beforeEach(() => {
 const cfg: ResolveAgentsCfg = {
   qmdIndex: "default",
   kgCollection: "kg",
-  agentId: "apriori-tech",
+  agentId: "sample-agent",
   domainName: "engram",
   sessionSegment: "telegram-group--100xxxxxxxxxx-topic-1",
   kgEntity: "projects/engram",
@@ -269,7 +269,7 @@ describe("buildFallbackAgentsMd", () => {
     const body = buildFallbackAgentsMd(cfg);
     expect(body).toContain("engram");
     expect(body).toContain("default");
-    expect(body).toContain("apriori-tech");
+    expect(body).toContain("sample-agent");
     expect(body).toContain("domain-engram");
   });
 

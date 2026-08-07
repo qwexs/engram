@@ -213,13 +213,13 @@ Summary: 7 domains checked
 Stats: {"checked": 7}
 Observations: []
 Tensions: []
-Alerts: ["elena-ai-digest overdue by 3 days"]
+Alerts: ["executive-a-digest overdue by 3 days"]
 === END ===`;
 
     const { exitCode, stdout } = await runHandoff(block);
     expect(exitCode).toBe(2);
     expect(stdout).toContain("[ALERT]");
-    expect(stdout).toContain("elena-ai-digest");
+    expect(stdout).toContain("executive-a-digest");
   });
 
   test("continues gracefully when tension fact IDs are invalid", async () => {

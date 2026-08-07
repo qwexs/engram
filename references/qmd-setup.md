@@ -126,7 +126,7 @@ An index is a physical SQLite file, not a persistent QMD process. With normal
 CLI usage, each `qmd embed` invocation starts its own process, loads the model,
 and releases it when the command exits.
 
-The Takeron target is one global physical index with unique collections.
+The target deployment uses one global physical index with unique collections.
 Workspace/session collection scope controls access; the shared SQLite stores
 each document and vector once. Main uses the same index but its readable scope
 contains only technical collections.

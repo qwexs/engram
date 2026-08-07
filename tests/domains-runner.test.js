@@ -301,7 +301,7 @@ describe("domains-runner scan — meta-domain type", () => {
             qmdCollections: ["alice-memory"],
             cadenceDays: 2,
             staleAfterDays: 90,
-            description: "Elena meta-domain",
+            description: "Executive A meta-domain",
             created: "2026-07-14",
           },
         },

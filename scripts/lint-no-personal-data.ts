@@ -8,17 +8,11 @@
  *
  * What is flagged:
  *   1. Filesystem paths that contain the local OS username (Windows + Unix)
- *   2. Specific agentId values: medved, dobriy, agent-medved, agent-dobriy
- *      (Note: "apriori" is intentionally NOT in this list. It is a valid
- *      segment name in many workspaces — VM hostname (apriori-vm), project
- *      dirs (apriori-tech, apriori-life), etc. — and flagging it as a leak
- *      produces false positives in legitimate routing rules.)
+ *   2. Deployment identifiers supplied via `ENGRAM_LINT_IDENTIFIERS`
  *   3. Telegram chat ids in the supergroup range: -100… (10-digit ids)
  *   4. Telegram user IDs in explicit user/peer fields and direct-session keys
  *   5. OpenClaw bot tokens (long base64 chunks)
- *   6. Workspace-specific FQDNs (default: any subdomain of apriori.tech).
- *      Catches URLs like `https://outline.apriori.tech/...` in commit
- *      messages or sample configs. Override the host list via env
+ *   6. Workspace-specific FQDNs supplied via env
  *      `ENGRAM_LINT_HOSTS=host1.tld,host2.tld`.
  *
  * What is NOT flagged:
@@ -28,8 +22,7 @@
  *   - Comments or strings that quote the allowlist itself (we strip
  *     those lines before scanning, so this script's own matches do not
  *     self-trigger)
- *   - Bare segment names like "apriori-tech" or "apriori-vm" — only full
- *     FQDNs with a dot (e.g. outline.apriori.tech) are matched.
+ *   - Identifiers and hosts not configured by the local deployment
  *
  * Usage:
  *   bun scripts/lint-no-personal-data.ts [path-to-file ...]
@@ -55,10 +48,10 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-// Default hosts flagged by the workspace-host rule. Extend at runtime via
+// Hosts flagged by the workspace-host rule. Configure at runtime via
 // the ENGRAM_LINT_HOSTS env var (comma-separated, e.g.
 // `ENGRAM_LINT_HOSTS=foo.example.com,bar.io`).
-const DEFAULT_WORKSPACE_HOSTS: string[] = ["apriori.tech"];
+const DEFAULT_WORKSPACE_HOSTS: string[] = [];
 
 /** Build a regex matching any FQDN whose apex is one of the given hosts. */
 export function workspaceHostRegex(): RegExp {
@@ -71,12 +64,26 @@ export function workspaceHostRegex(): RegExp {
   );
   if (hosts.length === 0) {
     // Match nothing — a placeholder that never matches a real input.
-    return /^\bNO_WORKSPACE_HOSTS_CONFIGURED\b$/i;
+    return /^\bNO_WORKSPACE_HOSTS_CONFIGURED\b$/gi;
   }
   // Match `(<sub>.)*<host>` with a word boundary on the right so we
-  // don't accidentally match e.g. `outline.apriori.techy/`. Word
+  // don't accidentally match a longer, unrelated hostname. Word
   // boundary on the left is implicit in `\b(?:[a-z0-9-]+\.)*`.
   return new RegExp(`\\b(?:[a-z0-9-]+\\.)*(?:${hosts.join("|")})\\b`, "gi");
+}
+
+/** Build a Unicode-safe matcher for deployment-private names and slugs. */
+export function deploymentIdentifierRegex(): RegExp {
+  const identifiers = (process.env.ENGRAM_LINT_IDENTIFIERS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (identifiers.length === 0) return /^\bNO_DEPLOYMENT_IDENTIFIERS_CONFIGURED\b$/gi;
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}_])(?:${identifiers.join("|")})(?![\\p{L}\\p{N}_])`,
+    "giu",
+  );
 }
 
 /**
@@ -96,16 +103,11 @@ const PATTERNS: { name: string; re: RegExp; allowPaths?: RegExp }[] = [
     name: "unix-home-path",
     re: /(?<!\/engram)\/(?:home|Users)\/[A-Za-z0-9_.-]{2,}/g,
   },
-  // 3. Reserved agent ids (workspace-agnostic identifiers that should
-  //    never be hardcoded in tests, fixtures, or sample configs).
-  //    "apriori" and "agent-apriori-*" are intentionally excluded: this
-  //    segment is reused as a valid name across many workspaces (VM
-  //    hostnames, project dirs, agent suffixes) and flagging it produces
-  //    false positives in legitimate routing rules.
+  // 3. Deployment-private names and slugs. The public repository stores
+  //    only the mechanism; each installation supplies its private list.
   {
-    name: "reserved-agent-id",
-    // Word boundary on both sides; matches "medved" but not "medvedeff".
-    re: /\b(?:medved|dobriy|agent-medved|agent-dobriy)\b/g,
+    name: "deployment-identifier",
+    re: deploymentIdentifierRegex(),
   },
   // 4. Telegram supergroup chat ids: -100 + 9 to 11 digits.
   {
@@ -127,12 +129,7 @@ const PATTERNS: { name: string; re: RegExp; allowPaths?: RegExp }[] = [
     name: "telegram-bot-token",
     re: /\b\d{8,12}:[A-Za-z0-9_-]{35,}\b/g,
   },
-  // 7. Workspace-specific FQDNs (default: any subdomain of apriori.tech).
-  //    Catches URLs like `https://outline.apriori.tech/...` in commit
-  //    messages, sample configs, or test fixtures. The bare word "apriori"
-  //    in segment names like `apriori-tech/`, `apriori-vm` is intentionally
-  //    NOT matched — we require a full FQDN form (host with a dot).
-  //    Override the host list via env `ENGRAM_LINT_HOSTS=host1.tld,host2.tld`.
+  // 7. Workspace-specific FQDNs supplied by the local deployment.
   {
     name: "workspace-host",
     re: workspaceHostRegex(),
@@ -156,18 +153,13 @@ const ALLOWLIST: RegExp[] = [
 /** Strip this script's allowlist block before scanning a buffer. */
 function stripAllowlistComments(src: string): string {
   // Drop any line that contains the literal token "ALLOWLIST", any of the
-  // pattern names, or any of the workspace-host code tokens. We
-  // intentionally do NOT strip lines just because they contain
-  // `apriori.tech` itself — that's the very thing the workspace-host
-  // pattern is supposed to catch in user input. The linter's own source
-  // (which DOES contain `apriori.tech` as a default value) is
-  // short-circuited by the ALLOWLIST path check in `scanFile` before this
-  // function ever runs, so we don't need to strip it here.
+  // pattern names, or any of the workspace-host code tokens. The linter's
+  // own source is short-circuited by the ALLOWLIST path check in `scanFile`.
   return src
     .split(/\r?\n/)
     .filter(
       (line) =>
-        !/ALLOWLIST|reserved-agent-id|telegram-supergroup|telegram-user-id|telegram-bot-token|windows-user-path|unix-home-path|workspace-host|workspaceHostRegex|DEFAULT_WORKSPACE_HOSTS|ENGRAM_LINT_HOSTS/.test(
+        !/ALLOWLIST|deployment-identifier|deploymentIdentifierRegex|ENGRAM_LINT_IDENTIFIERS|telegram-supergroup|telegram-user-id|telegram-bot-token|windows-user-path|unix-home-path|workspace-host|workspaceHostRegex|DEFAULT_WORKSPACE_HOSTS|ENGRAM_LINT_HOSTS/.test(
           line,
         ),
     )

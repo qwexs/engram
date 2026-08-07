@@ -17,7 +17,7 @@ function root(): string {
 }
 
 function healthyRegistry(base: string) {
-  const paths = Object.fromEntries(["main", "elena", "managers", "company", "project"].map((id) => {
+  const paths = Object.fromEntries(["main", "executive-a", "leadership", "organization", "initiative"].map((id) => {
     const path = join(base, id);
     mkdirSync(path, { recursive: true });
     return [id, path];
@@ -27,17 +27,17 @@ function healthyRegistry(base: string) {
     index: { name: "engram-global" },
     workspaces: [
       { id: "main", path: paths.main, kind: "technical", parents: [], readableCollections: ["main-memory"] },
-      { id: "elena", path: paths.elena, kind: "business", parents: [], readableCollections: ["elena-memory", "managers-memory", "company-memory", "project-memory"] },
-      { id: "managers", path: paths.managers, kind: "business", parents: ["elena"], readableCollections: ["managers-memory", "company-memory", "project-memory"] },
-      { id: "company", path: paths.company, kind: "business", parents: ["managers"], readableCollections: ["company-memory", "project-memory"] },
-      { id: "project", path: paths.project, kind: "business", parents: ["company"], readableCollections: ["project-memory"] },
+      { id: "executive-a", path: paths["executive-a"], kind: "business", parents: [], readableCollections: ["executive-a-memory", "leadership-memory", "organization-memory", "initiative-memory"] },
+      { id: "leadership", path: paths.leadership, kind: "business", parents: ["executive-a"], readableCollections: ["leadership-memory", "organization-memory", "initiative-memory"] },
+      { id: "organization", path: paths.organization, kind: "business", parents: ["leadership"], readableCollections: ["organization-memory", "initiative-memory"] },
+      { id: "initiative", path: paths.initiative, kind: "business", parents: ["organization"], readableCollections: ["initiative-memory"] },
     ],
     collections: [
       { name: "main-memory", path: join(paths.main, "memory"), owner: "main", mask: "**/*.md" },
-      { name: "elena-memory", path: join(paths.elena, "memory"), owner: "elena", mask: "**/*.md" },
-      { name: "managers-memory", path: join(paths.managers, "memory"), owner: "managers", mask: "**/*.md" },
-      { name: "company-memory", path: join(paths.company, "memory"), owner: "company", mask: "**/*.md" },
-      { name: "project-memory", path: join(paths.project, "memory"), owner: "project", mask: "**/*.md" },
+      { name: "executive-a-memory", path: join(paths["executive-a"], "memory"), owner: "executive-a", mask: "**/*.md" },
+      { name: "leadership-memory", path: join(paths.leadership, "memory"), owner: "leadership", mask: "**/*.md" },
+      { name: "organization-memory", path: join(paths.organization, "memory"), owner: "organization", mask: "**/*.md" },
+      { name: "initiative-memory", path: join(paths.initiative, "memory"), owner: "initiative", mask: "**/*.md" },
     ],
   };
 }
@@ -67,14 +67,14 @@ describe("global QMD registry", () => {
 
   test("rejects client collections in the technical main scope", () => {
     const registry = healthyRegistry(root());
-    registry.workspaces[0].readableCollections.push("project-memory");
+    registry.workspaces[0].readableCollections.push("initiative-memory");
     expect(auditQmdGlobalRegistry(registry).findings.map((entry) => entry.code))
       .toContain("TECHNICAL_SCOPE_ESCAPE");
   });
 
   test("rejects horizontal and upward business access", () => {
     const registry = healthyRegistry(root());
-    registry.workspaces[4].readableCollections.push("company-memory");
+    registry.workspaces[4].readableCollections.push("organization-memory");
     expect(auditQmdGlobalRegistry(registry).findings.map((entry) => entry.code))
       .toContain("HORIZONTAL_OR_UPWARD_ACCESS");
   });
@@ -82,15 +82,15 @@ describe("global QMD registry", () => {
   test("rejects duplicate names, duplicate paths, and nested collection roots", () => {
     const registry = healthyRegistry(root());
     registry.collections.push({
-      name: "project-memory",
+      name: "initiative-memory",
       path: registry.collections[4].path,
-      owner: "project",
+      owner: "initiative",
       mask: "**/*.md",
     });
     registry.collections.push({
-      name: "project-topic",
+      name: "initiative-topic",
       path: join(registry.collections[4].path, "topic"),
-      owner: "project",
+      owner: "initiative",
       mask: "**/*.md",
     });
     const codes = auditQmdGlobalRegistry(registry).findings.map((entry) => entry.code);
@@ -110,7 +110,7 @@ describe("global QMD registry", () => {
 
   test("rejects hierarchy cycles", () => {
     const registry = healthyRegistry(root());
-    registry.workspaces[1].parents.push("project");
+    registry.workspaces[1].parents.push("initiative");
     expect(auditQmdGlobalRegistry(registry).findings.map((entry) => entry.code))
       .toContain("WORKSPACE_CYCLE");
   });

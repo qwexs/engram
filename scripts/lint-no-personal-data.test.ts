@@ -1,23 +1,35 @@
 import { test, expect, describe } from "bun:test";
-import { scanFile, scanText, runScan, workspaceHostRegex } from "./lint-no-personal-data.js";
+import {
+  deploymentIdentifierRegex,
+  scanFile,
+  scanText,
+  runScan,
+  workspaceHostRegex,
+} from "./lint-no-personal-data.js";
 
 describe("scanFile", () => {
   test("flags a Windows user path", () => {
-    const src = String.raw`const x = "C:\Users\Alice\medved";`;
+    const src = String.raw`const x = "C:\Users\Alice\private-agent-a";`;
     const issues = scanFile("hooks/foo/handler.ts", src);
     expect(issues.some((i) => i.pattern === "windows-user-path")).toBe(true);
   });
 
   test("flags a Unix home path", () => {
-    const src = `const x = "/home/alice/apriori.tech";`;
+    const src = `const x = "/home/alice/corp.example";`;
     const issues = scanFile("hooks/foo/handler.ts", src);
     expect(issues.some((i) => i.pattern === "unix-home-path")).toBe(true);
   });
 
-  test("flags a reserved agentId (medved)", () => {
-    const src = `expect(get("medved")).toBe("foo");`;
-    const issues = scanFile("hooks/foo/tests/x.test.ts", src);
-    expect(issues.some((i) => i.pattern === "reserved-agent-id")).toBe(true);
+  test("builds a deployment identifier matcher from env", () => {
+    const previous = process.env.ENGRAM_LINT_IDENTIFIERS;
+    try {
+      process.env.ENGRAM_LINT_IDENTIFIERS = "private-agent-a,Приватный Проект";
+      expect(deploymentIdentifierRegex().test("agent:private-agent-a:main")).toBe(true);
+      expect(deploymentIdentifierRegex().test("Проект: Приватный Проект")).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.ENGRAM_LINT_IDENTIFIERS;
+      else process.env.ENGRAM_LINT_IDENTIFIERS = previous;
+    }
   });
 
   test("flags a Telegram supergroup chat id", () => {
@@ -50,44 +62,7 @@ describe("scanFile", () => {
     expect(issues.some((i) => i.pattern === "telegram-bot-token")).toBe(true);
   });
 
-  test("flags a workspace FQDN (outline.apriori.tech)", () => {
-    const src = `Refs: https://outline.apriori.tech/doc/iss-9-...-ZbRqyMpDKu`;
-    const issues = scanFile("hooks/foo/handler.ts", src);
-    expect(issues.some((i) => i.pattern === "workspace-host")).toBe(true);
-  });
-
-  test("flags a workspace FQDN in a sample URL", () => {
-    const src = `const WIKI = "https://outline.apriori.tech/doc/foo";`;
-    const issues = scanFile("config.json", src);
-    expect(issues.some((i) => i.pattern === "workspace-host")).toBe(true);
-  });
-
-  test("flags a bare apriori.tech host (no subdomain)", () => {
-    const src = `const site = "https://apriori.tech/";`;
-    const issues = scanFile("README.md", src);
-    expect(issues.some((i) => i.pattern === "workspace-host")).toBe(true);
-  });
-
-  test("does NOT flag bare segment names like apriori-tech", () => {
-    // Project dir names like apriori-tech/, apriori-vm, apriori-life should
-    // never trigger workspace-host — only full FQDNs with a dot.
-    const src = `const dir = "apriori-tech"; const vm = "apriori-vm";`;
-    const issues = scanFile("hooks/foo/handler.ts", src);
-    expect(issues.some((i) => i.pattern === "workspace-host")).toBe(false);
-  });
-
-  test("does NOT flag the linter's own DEFAULT_WORKSPACE_HOSTS source", () => {
-    // The linter has to contain the pattern it matches; the allowlist
-    // stripper drops lines mentioning workspace-host keywords.
-    const path = "scripts/lint-no-personal-data.ts";
-    const issues = scanFile(
-      path,
-      `const DEFAULT_WORKSPACE_HOSTS = ["apriori.tech"];`,
-    );
-    expect(issues).toEqual([]);
-  });
-
-  test("ENGRAM_LINT_HOSTS env extends the default host list", () => {
+  test("ENGRAM_LINT_HOSTS configures the private host list", () => {
     // Test the regex builder directly (not via scanFile, which captures
     // its regex at module-load time). Setting the env before importing
     // is awkward in a test runner, so we just exercise the builder.
@@ -97,11 +72,7 @@ describe("scanFile", () => {
     const prev = process.env.ENGRAM_LINT_HOSTS;
     try {
       process.env.ENGRAM_LINT_HOSTS = "foo.example.com";
-      // Default (apriori.tech) PLUS env-supplied (foo.example.com) both
-      // match — the env extends, it does not replace.
       expect(workspaceHostRegex().test("https://foo.example.com/x")).toBe(true);
-      expect(workspaceHostRegex().test("https://outline.apriori.tech/x")).toBe(true);
-      // A host that is neither in defaults nor in env should NOT match.
       expect(workspaceHostRegex().test("https://other.org/x")).toBe(false);
     } finally {
       if (prev === undefined) delete process.env.ENGRAM_LINT_HOSTS;
@@ -115,10 +86,10 @@ describe("scanFile", () => {
     // passes the path to .git/COMMIT_EDITMSG, which is not in the
     // allowlist, and we still want issues to be reported with that path.
     const issues = scanText(
-      `Refs: https://outline.apriori.tech/x`,
+      String.raw`const x = "C:\Users\Alice\x";`,
       "COMMIT_EDITMSG",
     );
-    expect(issues.some((i) => i.pattern === "workspace-host")).toBe(true);
+    expect(issues.some((i) => i.pattern === "windows-user-path")).toBe(true);
   });
 
   test("does not flag clean fixtures", () => {
@@ -131,15 +102,15 @@ describe("scanFile", () => {
     // Re-read this very file via fs — runScan/scanFile should short-circuit
     // when the file path matches the allowlist.
     const path = "scripts/lint-no-personal-data.ts";
-    const issues = scanFile(path, "medved dobriy apriori-tech -1001234567890 C:\\\\Users\\\\Alice");
+    const issues = scanFile(path, "private-agent-a -1001234567890 C:\\\\Users\\\\Alice");
     expect(issues).toEqual([]);
   });
 
   test("strips allowlist comments so the linter does not match itself", () => {
     // A user file referencing the pattern by name should NOT trigger a
-    // reserved-agent-id match (the linter's allowlist-comment stripper
+    // deployment-identifier match (the linter's allowlist-comment stripper
     // only fires for lines mentioning the pattern names themselves).
-    const src = `// The pattern reserved-agent-id is defined elsewhere.\nconst a = 1;\n`;
+    const src = `// The pattern deployment-identifier is defined elsewhere.\nconst a = 1;\n`;
     const issues = scanFile("hooks/foo/x.ts", src);
     expect(issues).toEqual([]);
   });
@@ -154,7 +125,7 @@ describe("scanFile", () => {
   });
 
   test("returns multiple issues when multiple patterns match", () => {
-    const src = String.raw`const a = "C:\Users\Alice"; const b = "medved";`;
+    const src = String.raw`const a = "C:\Users\Alice"; const b = "-1001234567890";`;
     const issues = scanFile("hooks/foo/handler.ts", src);
     expect(issues.length).toBeGreaterThanOrEqual(2);
   });

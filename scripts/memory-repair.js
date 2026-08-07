@@ -193,7 +193,7 @@ if (opts.validate) {
 if (opts["qmd-update"]) result.qmdUpdate = { status: "deprecated" };
 result.qmdDirty = await markWorkspaceQmdDirty({
   workspace: WORKSPACE,
-  collections: ["life"],
+  collectionRole: "knowledge-graph",
   reason: "memory-repair:fact",
 });
 

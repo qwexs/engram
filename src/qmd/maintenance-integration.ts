@@ -24,6 +24,7 @@ export type MarkWorkspaceQmdDirtyInput = {
   workspace: string;
   reason: string;
   collections?: string[];
+  collectionRole?: "primary" | "knowledge-graph";
   bm25?: boolean;
   vectors?: boolean;
 };
@@ -112,6 +113,16 @@ function primaryCollection(config: UnknownRecord): string | undefined {
     : undefined;
 }
 
+function knowledgeGraphCollection(config: UnknownRecord): string {
+  const qmd = isRecord(config.qmd) ? config.qmd : {};
+  // Shared-index migration replaces the generic `life` claim with a
+  // workspace-owned canonical collection. Before migration, keep the legacy
+  // name so shadow deployments retain their existing behavior.
+  return typeof qmd.workspaceKgCollection === "string" && qmd.workspaceKgCollection.trim() !== ""
+    ? qmd.workspaceKgCollection.trim()
+    : "life";
+}
+
 function normalizedCollections(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
 }
@@ -135,9 +146,10 @@ export async function markWorkspaceQmdDirty(
     }
 
     const context = resolveQmdContext({ value: workspace, source: "explicit" }, runtime);
-    const collections = normalizedCollections(
-      input.collections ?? (primaryCollection(config) ? [primaryCollection(config)!] : []),
-    );
+    const defaultCollections = input.collectionRole === "knowledge-graph"
+      ? [knowledgeGraphCollection(config)]
+      : (primaryCollection(config) ? [primaryCollection(config)!] : []);
+    const collections = normalizedCollections(input.collections ?? defaultCollections);
     if (collections.length === 0) {
       throw contextError("QMD dirty mark requires explicit collections or qmd.collection.");
     }

@@ -19,7 +19,8 @@ function workspace(mode?: string): string {
     qmd: {
       index: "global",
       collection: "alpha-memory",
-      collections: ["alpha-memory", "alpha-domains"],
+      collections: ["alpha-memory", "alpha-domains", "alpha-life"],
+      workspaceKgCollection: "alpha-life",
       ...(mode === undefined ? {} : { maintenance: { mode } }),
     },
   }));
@@ -100,6 +101,22 @@ describe("QMD maintenance integration", () => {
     expect(second.generation).toBe(2);
     expect(readQmdMaintenanceState(resolveQmdMaintenanceStateRoot(rt), second.indexKey!).dirty.collections)
       .toEqual(["alpha-domains", "alpha-memory"]);
+  });
+
+  test("maps knowledge-graph writes to the canonical shared-index collection", async () => {
+    const root = workspace("coordinated");
+    const state = stateDirectory();
+    const result = await markWorkspaceQmdDirty({
+      workspace: root,
+      collectionRole: "knowledge-graph",
+      reason: "fact-write",
+    }, runtime(state));
+
+    expect(result).toMatchObject({
+      status: "marked",
+      mode: "coordinated",
+      collections: ["alpha-life"],
+    });
   });
 
   test("fails open and reports collections outside workspace ownership", async () => {

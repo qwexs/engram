@@ -102,7 +102,7 @@ if (opts.access) {
     // launch a legacy index-wide update.
     const qmdDirty = await markWorkspaceQmdDirty({
       workspace: WORKSPACE,
-      collections: ["life"],
+      collectionRole: "knowledge-graph",
       reason: "memory-write:access",
     });
 
@@ -400,7 +400,7 @@ if (!opts.access) {
 // run raw QMD maintenance themselves.
 await markWorkspaceQmdDirty({
   workspace: WORKSPACE,
-  collections: ["life"],
+  collectionRole: "knowledge-graph",
   reason: "memory-write:fact",
 });
 

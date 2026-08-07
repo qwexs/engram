@@ -121,7 +121,7 @@ if (!dryRun) {
   mkdirSync(auditDir, { recursive: true });
   appendFileSync(join(auditDir, `applied-${today}.jsonl`), lines.join("\n") + "\n", "utf8");
   if (unresolved.length) appendFileSync(join(auditDir, `unresolved-${today}.jsonl`), unresolved.map((item) => JSON.stringify(item)).join("\n") + "\n", "utf8");
-  await markWorkspaceQmdDirty({ workspace, collections: ["life"], reason: "access-buffer:flush" });
+  await markWorkspaceQmdDirty({ workspace, collectionRole: "knowledge-graph", reason: "access-buffer:flush" });
   rmSync(processingPath, { force: true });
 }
 output(report.summaryErrors ? 1 : 0);

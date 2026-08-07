@@ -603,6 +603,32 @@ describe("watchdog CLI", () => {
     expect(cron.status).toBe(0);
   });
 
+  test("merges global QMD registry scope violations into the read-only report", () => {
+    const registry = join(workspace, "qmd-registry.json");
+    writeFileSync(registry, JSON.stringify({
+      schema: "engram.qmd.global-registry.v1",
+      index: { name: "engram-global" },
+      workspaces: [
+        { id: "main", path: workspace, kind: "technical", parents: [], readableCollections: ["main-memory", "client-memory"] },
+        { id: "client", path: join(workspace, "client"), kind: "business", parents: [], readableCollections: ["client-memory"] },
+      ],
+      collections: [
+        { name: "main-memory", path: join(workspace, "memory"), owner: "main", mask: "**/*.md" },
+        { name: "client-memory", path: join(workspace, "client", "memory"), owner: "client", mask: "**/*.md" },
+      ],
+    }));
+    mkdirSync(join(workspace, "client", "memory"), { recursive: true });
+
+    const r = runCli([
+      "--workspace", workspace,
+      "--qmd-registry", registry,
+      "--json", "--no-core", "--no-qmd", "--no-hooks",
+    ]);
+    expect(r.status).toBe(1);
+    const out = JSON.parse(r.stdout);
+    expect(codes(out)).toContain("WD-QMD-REGISTRY-TECHNICAL_SCOPE_ESCAPE");
+  });
+
   test("repeated --workspace audits only the selected workspaces", () => {
     const root = mkdtempSync(join(tmpdir(), "engram-watchdog-multi-"));
     try {

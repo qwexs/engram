@@ -224,6 +224,11 @@ incremental `embed` без `-f`. Production call sites и topology остают�
 dirty generations и не запускает дополнительный QMD maintenance. Контракт:
 [`references/qmd-global-maintenance.md`](references/qmd-global-maintenance.md).
 
+Перед shared migration декларативный registry проверяет уникальность
+collection names/paths, единственного owner и направленность readable scope.
+Технический `main` не может читать business collections. Read-only preflight:
+[`references/qmd-global-registry.md`](references/qmd-global-registry.md).
+
 Launcher устанавливается в `$BUN_INSTALL/bin` или `~/.bun/bin`. Installer не перезаписывает и не удаляет чужие файлы.
 
 ```bash

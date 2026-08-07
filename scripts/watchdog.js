@@ -8,7 +8,8 @@
 import { parseArgs } from "node:util";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { auditWorkspace, discoverWorkspaces, mergeReports } from "./_lib/workspace-watchdog.js";
+import { auditWorkspace, discoverWorkspaces, finalizeReport, mergeReports } from "./_lib/workspace-watchdog.js";
+import { auditQmdGlobalRegistry, readQmdGlobalRegistry } from "../src/qmd/global-registry.ts";
 
 const rawArgv = process.argv.slice(2);
 const repeatedWorkspaces = [];
@@ -33,6 +34,7 @@ const { values: args } = parseArgs({
     "no-qmd": { type: "boolean", default: false },
     "no-hooks": { type: "boolean", default: false },
     "no-routing": { type: "boolean", default: false },
+    "qmd-registry": { type: "string" },
     "exit-zero-on-warn": { type: "boolean", default: false },
     "help": { type: "boolean", short: "h", default: false },
   },
@@ -58,6 +60,7 @@ Options:
   --no-qmd                 Skip QMD collection checks.
   --no-hooks               Skip runtime hook drift checks.
   --no-routing             Skip Telegram topic routing checks.
+  --qmd-registry <path>    Audit a global QMD registry and merge findings once.
   --exit-zero-on-warn      Exit 0 for warnings-only reports (useful for cron).
   -h, --help               Show this help.
 
@@ -74,7 +77,7 @@ Read-only guarantee:
 }
 
 const unknown = Object.keys(args).filter((k) => ![
-  "workspace", "all", "workspaces-dir", "json", "output", "no-core", "no-qmd", "no-hooks", "no-routing", "exit-zero-on-warn", "help", "_",
+  "workspace", "all", "workspaces-dir", "json", "output", "no-core", "no-qmd", "no-hooks", "no-routing", "qmd-registry", "exit-zero-on-warn", "help", "_",
 ].includes(k));
 if (unknown.length) {
   console.error(`❌ Unknown option(s): ${unknown.map((k) => `--${k}`).join(", ")}`);
@@ -106,6 +109,28 @@ const options = {
   routing: !args["no-routing"],
 };
 const reports = workspaces.map((workspace) => auditWorkspace(workspace, options));
+if (args["qmd-registry"]) {
+  const registryPath = resolve(args["qmd-registry"]);
+  let registryFindings;
+  try {
+    const registryAudit = auditQmdGlobalRegistry(readQmdGlobalRegistry(registryPath));
+    registryFindings = registryAudit.findings.map((entry) => ({
+      level: entry.severity === "warning" ? "warn" : "error",
+      code: `WD-QMD-REGISTRY-${entry.code}`,
+      message: entry.message,
+      path: registryPath,
+      details: entry.details,
+    }));
+  } catch (error) {
+    registryFindings = [{
+      level: "error",
+      code: "WD-QMD-REGISTRY-UNREADABLE",
+      message: `Global QMD registry could not be audited: ${error instanceof Error ? error.message : String(error)}`,
+      path: registryPath,
+    }];
+  }
+  reports[0] = finalizeReport(reports[0].workspace, [...reports[0].findings, ...registryFindings], options);
+}
 const report = reports.length === 1 ? reports[0] : mergeReports(reports);
 
 function renderHuman(report) {

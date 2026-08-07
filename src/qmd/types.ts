@@ -37,8 +37,10 @@ export type QmdContextData = QmdContext & {
 };
 
 export type QmdOperation =
+  | "probe"
   | "capabilities"
   | "status"
+  | "collection-list"
   | "search"
   | "query"
   | "vsearch"
@@ -62,7 +64,8 @@ export type QmdInvocation = {
 type QmdBaseRequest = { timeoutMs?: number };
 
 export type QmdInvocationRequest =
-  | (QmdBaseRequest & { operation: "capabilities" | "status" | "update" })
+  | (QmdBaseRequest & { operation: "capabilities" | "status" | "collection-list" | "update" })
+  | (QmdBaseRequest & { operation: "probe"; probe: "help" | "version" })
   | (QmdBaseRequest & { operation: "embed"; collections?: string[] })
   | (QmdBaseRequest & {
       operation: "collection-add";

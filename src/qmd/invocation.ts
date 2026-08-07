@@ -77,9 +77,14 @@ export function buildQmdInvocation(
 ): QmdInvocation {
   const { operation } = request;
   const argv = [...context.command.prefixArgs];
-  if (context.selector.kind === "named") argv.push("--index", context.selector.name);
-  if (operation === "collection-add") argv.push("collection", "add");
-  else argv.push(operation);
+  if (operation === "probe") {
+    argv.push(request.probe === "help" ? "--help" : "--version");
+  } else {
+    if (context.selector.kind === "named") argv.push("--index", context.selector.name);
+    if (operation === "collection-add") argv.push("collection", "add");
+    else if (operation === "collection-list") argv.push("collection", "list");
+    else argv.push(operation);
+  }
 
   let collections: string[] = [];
   let readLimit: number | undefined;

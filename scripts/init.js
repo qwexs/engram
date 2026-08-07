@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync
 import { join, resolve, dirname } from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 import { loadEngramConfig, resolveQmdCommand } from './config.js';
+import { addQmdCollectionSync, listQmdCollections, probeQmdExecutable } from './_lib/qmd-provision.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -71,7 +72,7 @@ What it does:
   3. Copies template files (MEMORY.md, heartbeat-state.json, etc.)
   4. Sets up QMD collections for search
   5. Auto-detects Telegram sessions from openclaw.json (optional)
-  6. Runs initial QMD index
+  6. Registers QMD collections (freshness is delegated to the coordinator)
   7. Installs OpenClaw hooks
   8. Installs cron job (optional)
   9. Runs backfill-domain-agents for topic-thread domains (optional)
@@ -119,7 +120,7 @@ function recordError(item) { plan.errors.push(item); }
 if (!dryRun && !args['yes'] && !args['force']) {
   console.log(`\nengram init — this will:`);
   console.log(`  • create memory/ and life/ directories in: ${WORKSPACE}`);
-  console.log(`  • set up QMD collections and run initial index`);
+  console.log(`  • register QMD collections (without indexing or embedding)`);
   console.log(`  • install/overwrite engram hooks (with backup)`);
   console.log(`  • disable the built-in session-memory hook`);
   if (args['with-cron']) console.log(`  • install heartbeat cron job`);
@@ -156,8 +157,7 @@ function detectQmdVariant() {
 
 function qmdAvailable() {
   try {
-    execSync(`${QMD} --help`, { stdio: 'pipe' });
-    return true;
+    return probeQmdExecutable({ workspace: WORKSPACE, executable: QMD, probe: 'help' }).ok;
   } catch {
     return false;
   }
@@ -646,22 +646,23 @@ function addSessionQmdCollection(sessionKey) {
     return;
   }
 
-  // Idempotent: skip if collection already exists (qmd rejects re-add with non-zero exit).
   try {
-    execSync(`${QMD} collection show "${collectionName}"`, { stdio: 'pipe' });
-    recordSkip('qmd-collection', collectionName, 'already exists');
-    return;
-  } catch {
-    // Collection does not exist yet — proceed to add.
-  }
-
-  try {
-    execSync(`${QMD} collection add "${sessionPath}" --name ${collectionName} --mask "**/*.md"`, { stdio: 'pipe' });
+    const listed = listQmdCollections({ workspace: WORKSPACE });
+    if (!listed.ok) throw new Error(listed.stderr || listed.spawnError?.message || 'collection list failed');
+    if (listed.stdout.split(/\r?\n/).some((line) => line.trimStart().startsWith(`${collectionName} (qmd://`))) {
+      recordSkip('qmd-collection', collectionName, 'already exists');
+      return;
+    }
+    const added = addQmdCollectionSync({
+      workspace: WORKSPACE,
+      collection: collectionName,
+      path: sessionPath,
+      mask: '**/*.md',
+    });
+    if (!added.ok) throw new Error(added.stderr || added.spawnError?.message || 'collection add failed');
     recordCreate('qmd-collection', collectionName);
   } catch (e) {
-    // Real failure (permission, broken qmd binary, full disk, etc.). Surface it
-    // as an error rather than silently masking it as "may already exist".
-    const stderr = (e.stderr ? e.stderr.toString() : '').trim().split('\n').slice(-3).join(' | ');
+    const stderr = String(e?.message || '').trim().split('\n').slice(-3).join(' | ');
     recordError(`qmd collection add failed for ${collectionName}${stderr ? `: ${stderr}` : ''}`);
   }
 }
@@ -1119,22 +1120,21 @@ if (hasQmd) {
       continue;
     }
     try {
-      execSync(`${QMD} collection add "${join(WORKSPACE, col.path)}" --name ${col.name} --mask "${col.mask}"`, { stdio: 'pipe' });
+      const added = addQmdCollectionSync({
+        workspace: WORKSPACE,
+        collection: col.name,
+        path: join(WORKSPACE, col.path),
+        mask: col.mask,
+      });
+      if (!added.ok) throw new Error(added.stderr || added.spawnError?.message || 'collection add failed');
       recordCreate('qmd-collection', col.name);
     } catch {
       recordSkip('qmd-collection', col.name, 'may already exist');
     }
   }
 
-  console.log('\nRunning QMD index...');
-  if (!dryRun) {
-    try {
-      execSync(`${QMD} update`, { stdio: 'inherit' });
-    } catch {
-      console.warn('  qmd update failed - run manually');
-      recordWarn('qmd update failed');
-    }
-  }
+  console.log('\nQMD collections registered; index freshness is delegated to the coordinator.');
+  recordSkip('qmd-maintenance', 'update/embed', 'delegated to coordinator');
 } else {
   console.log('\nQMD not found. Install:');
   console.log('  Local (GPU):         npm i -g @nicepkg/qmd');

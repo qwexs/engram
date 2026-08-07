@@ -44,6 +44,7 @@ describe("buildQmdInvocation", () => {
   test.each([
     ["capabilities", ["--no-gpu", "--index", "team", "capabilities", "--format", "json"]],
     ["status", ["--no-gpu", "--index", "team", "status"]],
+    ["collection-list", ["--no-gpu", "--index", "team", "collection", "list"]],
     ["update", ["--no-gpu", "--index", "team", "update"]],
   ] as const)("builds index-scoped %s without collection flags", (operation, argv) => {
     const invocation = buildQmdInvocation(context(), { operation });
@@ -51,6 +52,15 @@ describe("buildQmdInvocation", () => {
     expect(invocation.effectiveScope).toBe("index");
     expect(invocation.collections).toEqual([]);
     expect(invocation.argv).not.toContain("-c");
+  });
+
+  test("keeps bootstrap probes index-independent and argv-safe", () => {
+    const help = buildQmdInvocation(context(), { operation: "probe", probe: "help" });
+    const version = buildQmdInvocation(context(), { operation: "probe", probe: "version" });
+    expect(help.argv).toEqual(["--no-gpu", "--help"]);
+    expect(version.argv).toEqual(["--no-gpu", "--version"]);
+    expect(help.effectiveScope).toBe("index");
+    expect(help.collections).toEqual([]);
   });
 
   test("scopes embed to owned collections and requests structured output", () => {

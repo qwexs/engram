@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **refactor(qmd): route bootstrap and watchdog diagnostics through the typed
+  core.** Added narrow probe and collection-list operations plus a policy-bound
+  synchronous diagnostic runner for existing synchronous callers. Initial setup
+  now registers collections without running index maintenance; installer,
+  bootstrap, and watchdog no longer create raw QMD subprocesses.
+
 ## 3.6.1 — 2026-08-07
 
 - **refactor(qmd): centralize runtime maintenance ownership.** Bootstrap and

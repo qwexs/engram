@@ -16,7 +16,6 @@ import {
   auditWorkspace,
   parseQmdCollections,
   parseQmdIndexCollections,
-  qmdCollectionListArgs,
 } from "./_lib/workspace-watchdog.js";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "watchdog.js");
@@ -263,13 +262,6 @@ models:
 
     const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(codes(report)).not.toContain("WD-QMD-009");
-  });
-
-  test("QMD collection listing uses the workspace named index", () => {
-    expect(qmdCollectionListArgs({ qmd: { index: "alpha" } })).toEqual([
-      "--index", "alpha", "collection", "list",
-    ]);
-    expect(qmdCollectionListArgs({ qmd: {} })).toEqual(["collection", "list"]);
   });
 
   test("warns when heartbeat qmd embed can cover only the first configured collection", () => {

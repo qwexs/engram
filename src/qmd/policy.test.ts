@@ -47,6 +47,17 @@ describe("QMD policy", () => {
     });
   });
 
+  test("treats collection-list and bootstrap probes as typed diagnostics", () => {
+    const ctx = context();
+    for (const invocation of [
+      buildQmdInvocation(ctx, { operation: "collection-list" }),
+      buildQmdInvocation(ctx, { operation: "probe", probe: "help" }),
+    ]) {
+      expect(decideQmdPolicy(ctx, invocation, { kind: "provisioning", allowedCollections: [], capabilities: ["diagnostics"] }))
+        .toMatchObject({ allowed: true, code: "ALLOW_INTERNAL_DIAGNOSTIC" });
+    }
+  });
+
   test("fails closed on empty collection scope", () => {
     const ctx = context();
     const valid = buildQmdInvocation(ctx, { operation: "query", query: "term", collections: ["life"] });

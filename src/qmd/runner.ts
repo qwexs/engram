@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { spawnSync } from "node:child_process";
 import { policyError } from "../cli/errors.ts";
 import { redactQmdInvocation, requestsStructuredOutput } from "./invocation.ts";
 import { decideQmdPolicy, summarizeQmdPolicyDecision } from "./policy.ts";
@@ -38,10 +39,29 @@ function terminateProcessTree(proc: Bun.Subprocess): void {
 }
 
 function operationClass(operation: QmdInvocation["operation"]): QmdOperationClass {
-  if (operation === "capabilities" || operation === "status") return "diagnostic";
+  if (operation === "probe" || operation === "capabilities" || operation === "status" || operation === "collection-list") return "diagnostic";
   if (operation === "collection-add") return "provisioning";
   if (operation === "update" || operation === "embed") return "maintenance";
   return "read";
+}
+
+function assertCurrentDecision(
+  context: QmdContext,
+  invocation: QmdInvocation,
+  caller: QmdCallerContext,
+  decision: QmdPolicyDecision,
+): void {
+  const currentDecision = decideQmdPolicy(context, invocation, caller);
+  if (!currentDecision.allowed
+    || !decision.allowed
+    || decision.operation !== invocation.operation
+    || decision.effectiveScope !== invocation.effectiveScope
+    || !sameValues(decision.collections, invocation.collections)
+    || !sameCaller(decision.caller, caller)) {
+    throw policyError("Runner requires a current matching allowed QMD policy decision.", {
+      decision: summarizeQmdPolicyDecision(currentDecision),
+    });
+  }
 }
 
 function isoNow(): string {
@@ -103,17 +123,7 @@ export async function runQmdInvocation(
   const startedAt = isoNow();
   const started = performance.now();
   const { caller, decision } = options;
-  const currentDecision = decideQmdPolicy(context, invocation, caller);
-  if (!currentDecision.allowed
-    || !decision.allowed
-    || decision.operation !== invocation.operation
-    || decision.effectiveScope !== invocation.effectiveScope
-    || !sameValues(decision.collections, invocation.collections)
-    || !sameCaller(decision.caller, caller)) {
-    throw policyError("Runner requires a current matching allowed QMD policy decision.", {
-      decision: summarizeQmdPolicyDecision(currentDecision),
-    });
-  }
+  assertCurrentDecision(context, invocation, caller, decision);
   let stdout = "";
   let stderr = "";
   let exitCode: number | null = null;
@@ -177,6 +187,78 @@ export async function runQmdInvocation(
     operationRecord: record,
   };
 
+  if (requestsStructuredOutput(invocation.operation) && stdout.trim() !== "") {
+    try {
+      result.structuredData = JSON.parse(stdout);
+    } catch (error) {
+      result.parseError = {
+        code: "INVALID_STRUCTURED_OUTPUT",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  return result;
+}
+
+/**
+ * Synchronous runner for legacy synchronous diagnostics only. It preserves the
+ * same typed invocation, policy re-check, argv-only spawn and operation record
+ * as the asynchronous runner; callers do not construct QMD subprocesses.
+ */
+export function runQmdInvocationSync(
+  context: QmdContext,
+  invocation: QmdInvocation,
+  options: QmdRunnerOptions,
+): QmdRunResult {
+  const startedAt = isoNow();
+  const started = performance.now();
+  const { caller, decision } = options;
+  assertCurrentDecision(context, invocation, caller, decision);
+  let stdout = "";
+  let stderr = "";
+  let exitCode: number | null = null;
+  let signal: string | null = null;
+  let timedOut = false;
+  let spawnError: QmdRunResult["spawnError"];
+  try {
+    const proc = spawnSync(invocation.executable, invocation.argv, {
+      cwd: invocation.cwd,
+      env: { ...process.env, ...options.env, PWD: invocation.cwd },
+      encoding: "utf-8",
+      timeout: invocation.timeoutMs,
+      killSignal: "SIGKILL",
+      windowsHide: true,
+    });
+    stdout = proc.stdout || "";
+    stderr = proc.stderr || "";
+    exitCode = proc.status;
+    signal = proc.signal ?? null;
+    timedOut = (proc.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+    if (proc.error && !timedOut) {
+      spawnError = { code: "SPAWN_FAILED", message: proc.error.message };
+    }
+  } catch (error) {
+    spawnError = {
+      code: "SPAWN_FAILED",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const elapsedMs = Math.max(0, Math.round(performance.now() - started));
+  const completedAt = isoNow();
+  const record = operationRecord(
+    context, invocation, startedAt, completedAt, elapsedMs, exitCode, signal, timedOut, caller, decision,
+  );
+  const result: QmdRunResult = {
+    schema: "engram.qmd.run.v1",
+    ok: exitCode === 0 && !timedOut && spawnError === undefined,
+    stdout,
+    stderr,
+    exitCode,
+    signal,
+    timedOut,
+    ...(spawnError ? { spawnError } : {}),
+    operationRecord: record,
+  };
   if (requestsStructuredOutput(invocation.operation) && stdout.trim() !== "") {
     try {
       result.structuredData = JSON.parse(stdout);

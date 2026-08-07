@@ -8,6 +8,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as readline from 'node:readline';
+import { probeQmdExecutable } from './_lib/qmd-provision.js';
 
 const { values: args } = parseArgs({
   options: {
@@ -68,10 +69,19 @@ const QMD_CMD = process.env.ENGRAM_QMD || (process.platform === "win32" ? "qmd.c
 
 function qmdInstalled() {
   try {
-    execSync(`${QMD_CMD} --help`, { stdio: 'pipe' });
-    return true;
+    return probeQmdExecutable({ workspace: process.cwd(), executable: QMD_CMD, probe: 'help' }).ok;
   } catch {
     return false;
+  }
+}
+
+function qmdVersion() {
+  try {
+    const result = probeQmdExecutable({ workspace: process.cwd(), executable: QMD_CMD, probe: 'version' });
+    if (!result.ok) return null;
+    return result.stdout.trim() || null;
+  } catch {
+    return null;
   }
 }
 
@@ -101,10 +111,8 @@ function runCmd(cmd, label) {
 // --- Check if already installed ---
 if (qmdInstalled()) {
   console.log('✅ QMD is already installed.');
-  try {
-    const version = execSync(`${QMD_CMD} --version`, { encoding: 'utf-8' }).trim();
-    console.log(`   Version: ${version}`);
-  } catch {}
+  const version = qmdVersion();
+  if (version) console.log(`   Version: ${version}`);
 
   if (process.env.QMD_LLM_PROVIDER) {
     console.log(`   Provider: ${process.env.QMD_LLM_PROVIDER}`);
@@ -337,12 +345,8 @@ if (variant === 'local') {
 // --- Verify installation ---
 console.log('\nрџ”Ќ Verifying installation...');
 if (qmdInstalled()) {
-  try {
-    const version = execSync(`${QMD_CMD} --version`, { encoding: 'utf-8' }).trim();
-    console.log(`  ✅ QMD available: ${version}`);
-  } catch {
-    console.log('  ✅ QMD available');
-  }
+  const version = qmdVersion();
+  console.log(version ? `  ✅ QMD available: ${version}` : '  ✅ QMD available');
   console.log(`\nNext: bun skills/engram/scripts/init.js`);
 } else {
   console.log('  ⚠️  QMD not found in PATH. You may need to restart your terminal.');

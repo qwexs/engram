@@ -16,7 +16,8 @@ import { join, relative, dirname, resolve, isAbsolute, win32 } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Database } from "bun:sqlite";
-import { loadEngramConfig, resolveQmdCommand } from "../config.js";
+import { loadEngramConfig } from "../config.js";
+import { listQmdCollections, readQmdCapabilities } from "./qmd-provision.js";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_DIR = resolve(MODULE_DIR, "..");
@@ -103,6 +104,23 @@ function getAgentId(workspace) {
   return String(cfg.agent || "agent-main").replace(/^agent-/, "") || "main";
 }
 
+// Non-QMD watchdog checks remain synchronous. QMD diagnostics are routed via
+// the typed core below, never through this generic process helper.
+function runCommand(command, args, cwd, timeout = 30000) {
+  const r = spawnSync(command, args, {
+    cwd,
+    encoding: "utf-8",
+    timeout,
+    env: process.env,
+  });
+  return {
+    status: r.status ?? (r.error ? 127 : 0),
+    stdout: r.stdout || "",
+    stderr: r.stderr || "",
+    error: r.error || null,
+  };
+}
+
 function sessionKeyForTopic(topic) {
   if (!topic?.chatId || topic?.topicId == null) return null;
   const chat = String(topic.chatId).startsWith("-") ? String(topic.chatId).slice(1) : String(topic.chatId);
@@ -130,21 +148,6 @@ function collectEngramQmdRefs(engram) {
     }
   }
   return refs;
-}
-
-function runCommand(command, args, cwd, timeout = 30000) {
-  const r = spawnSync(command, args, {
-    cwd,
-    encoding: "utf-8",
-    timeout,
-    env: process.env,
-  });
-  return {
-    status: r.status ?? (r.error ? 127 : 0),
-    stdout: r.stdout || "",
-    stderr: r.stderr || "",
-    error: r.error || null,
-  };
 }
 
 export function parseQmdCollections(stdout) {
@@ -379,18 +382,6 @@ function runValidate(workspace, findings) {
   }
 }
 
-export function qmdCollectionListArgs(engram) {
-  const args = [];
-  const index = engram?.qmd?.index ? String(engram.qmd.index) : "";
-  if (index) args.push("--index", index);
-  args.push("collection", "list");
-  return args;
-}
-
-export function qmdCapabilitiesArgs() {
-  return ["capabilities", "--format", "json"];
-}
-
 function parseQmdCapabilities(stdout) {
   try {
     const parsed = JSON.parse(String(stdout || "").trim());
@@ -401,18 +392,29 @@ function parseQmdCapabilities(stdout) {
 }
 
 function checkQmd(workspace, registry, engram, findings, options = {}) {
-  const qmd = resolveQmdCommand(workspace);
   const refs = [...collectRegistryQmdRefs(registry), ...collectEngramQmdRefs(engram)];
   const uniqueRefs = [...new Map(refs.map((r) => [r.collection, r])).values()];
 
   const list = options.qmdListStdout != null
     ? { status: 0, stdout: String(options.qmdListStdout), stderr: "", error: null }
-    : runCommand(qmd, qmdCollectionListArgs(engram), workspace, 30000);
+    : (() => {
+      try {
+        const result = listQmdCollections({ workspace, timeoutMs: 30000 });
+        return {
+          status: result.exitCode ?? (result.spawnError ? 127 : 0),
+          stdout: result.stdout,
+          stderr: result.stderr,
+          error: result.spawnError ? new Error(result.spawnError.message) : null,
+        };
+      } catch (error) {
+        return { status: 127, stdout: "", stderr: "", error: error instanceof Error ? error : new Error(String(error)) };
+      }
+      })();
   if (list.error || list.status !== 0) {
     findings.push(makeFinding({
       code: "WD-QMD-000",
       level: "warn",
-      message: list.error ? `QMD command unavailable: ${qmd}` : `QMD collection list failed with code ${list.status}`,
+      message: list.error ? "QMD command unavailable" : `QMD collection list failed with code ${list.status}`,
       details: { error: list.error?.message || list.stderr || list.stdout },
     }));
     return;
@@ -429,7 +431,19 @@ function checkQmd(workspace, registry, engram, findings, options = {}) {
   if (maintenanceCollections.length > 1) {
     const capabilities = options.qmdCapabilitiesStdout != null
       ? { status: 0, stdout: String(options.qmdCapabilitiesStdout), stderr: "", error: null }
-      : runCommand(qmd, qmdCapabilitiesArgs(), workspace, 30000);
+      : (() => {
+        try {
+          const result = readQmdCapabilities({ workspace, timeoutMs: 30000 });
+          return {
+            status: result.exitCode ?? (result.spawnError ? 127 : 0),
+            stdout: result.stdout,
+            stderr: result.stderr,
+            error: result.spawnError ? new Error(result.spawnError.message) : null,
+          };
+        } catch {
+          return { status: 127, stdout: "", stderr: "", error: null };
+        }
+        })();
     if (!capabilities.error && capabilities.status === 0) {
       qmdCapabilities = parseQmdCapabilities(capabilities.stdout);
     }

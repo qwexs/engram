@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { buildQmdInvocation } from "./invocation.ts";
 import { CliError, EXIT_CODES } from "../cli/errors.ts";
 import { authorizeQmdInvocation } from "./policy.ts";
-import { runQmdInvocation } from "./runner.ts";
+import { runQmdInvocation, runQmdInvocationSync } from "./runner.ts";
 import type { QmdCallerContext, QmdContext, QmdInvocation } from "./types.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -209,5 +209,20 @@ describe("runQmdInvocation", () => {
     });
     expect(result.operationRecord.caller).toEqual({ kind: "topic" });
     expect(JSON.stringify(result.operationRecord)).not.toContain("sensitive-session-key");
+  });
+});
+
+describe("runQmdInvocationSync", () => {
+  test("preserves the typed policy and argv boundary for legacy synchronous diagnostics", () => {
+    const { context } = harness();
+    const invocation = buildQmdInvocation(context, { operation: "collection-list" });
+    const result = runQmdInvocationSync(context, invocation, runnerOptions(context, invocation, { FAKE_QMD_MODE: "inspect" }));
+    expect(result).toMatchObject({ ok: true, exitCode: 0 });
+    expect(JSON.parse(result.stdout)).toEqual({
+      args: ["--index", "team", "collection", "list"],
+      cwd: context.workspace,
+      pwd: context.workspace,
+    });
+    expect(result.operationRecord).toMatchObject({ operation: "collection-list", operationClass: "diagnostic" });
   });
 });

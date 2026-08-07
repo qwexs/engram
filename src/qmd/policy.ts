@@ -15,7 +15,7 @@ export const OPERATOR_CALLER: QmdCallerContext = {
   capabilities: ["diagnostics"],
 };
 
-const DIAGNOSTIC_OPERATIONS = new Set(["capabilities", "status"]);
+const DIAGNOSTIC_OPERATIONS = new Set(["probe", "capabilities", "status", "collection-list"]);
 const READ_OPERATIONS = new Set(["search", "query", "vsearch"]);
 const MAINTENANCE_CALLERS = new Set<QmdCallerContext["kind"]>(["heartbeat", "provisioning", "coordinator"]);
 

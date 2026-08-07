@@ -6,21 +6,9 @@ import { join, relative, resolve } from "node:path";
 const ROOT = resolve(import.meta.dir, "..");
 const temporaryDirectories: string[] = [];
 
-// This is intentional, temporary debt while legacy scripts are migrated to the
-// CLI. Keep each entry at the raw execution line: additions are architecture
-// changes and must be reviewed rather than silently becoming more debt.
-const BASELINE_RAW_QMD_CALLS = [
-  "scripts/_lib/workspace-watchdog.js:410:: runCommand(qmd, qmdCollectionListArgs(engram), workspace, 30000);",
-  "scripts/_lib/workspace-watchdog.js:432:: runCommand(qmd, qmdCapabilitiesArgs(), workspace, 30000);",
-  "scripts/init.js:159:execSync(`${QMD} --help`, { stdio: 'pipe' });",
-  "scripts/init.js:651:execSync(`${QMD} collection show \"${collectionName}\"`, { stdio: 'pipe' });",
-  "scripts/init.js:659:execSync(`${QMD} collection add \"${sessionPath}\" --name ${collectionName} --mask \"**/*.md\"`, { stdio: 'pipe' });",
-  "scripts/init.js:1122:execSync(`${QMD} collection add \"${join(WORKSPACE, col.path)}\" --name ${col.name} --mask \"${col.mask}\"`, { stdio: 'pipe' });",
-  "scripts/init.js:1132:execSync(`${QMD} update`, { stdio: 'inherit' });",
-  "scripts/install-qmd.js:71:execSync(`${QMD_CMD} --help`, { stdio: 'pipe' });",
-  "scripts/install-qmd.js:105:const version = execSync(`${QMD_CMD} --version`, { encoding: 'utf-8' }).trim();",
-  "scripts/install-qmd.js:341:const version = execSync(`${QMD_CMD} --version`, { encoding: 'utf-8' }).trim();",
-].sort();
+// Raw QMD subprocesses are forbidden outside the typed core. Keep this list
+// empty; any new script-level invocation is an architecture regression.
+const BASELINE_RAW_QMD_CALLS: string[] = [];
 
 const RAW_QMD_EXECUTION = [
   /(?:\b\w+\.)?execSync\(\s*(?:["'`]qmd(?:\s|["'`])|`[^`]*\$\{QMD(?:_CMD)?\})/,

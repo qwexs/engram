@@ -149,20 +149,26 @@ Rules: brief entries (1-2 lines), facts not feelings, record as you go.
 
 Facts decay over time (Hot → Warm → Cold). The changed entity is rebuilt after a successful `memory-write`; a global sequential daily coordinator reconciles all workspaces, and Monday heartbeat synthesis remains an additional check. Cold facts are excluded from `summary.md` but remain in `items.json` (searchable via QMD).
 
-**Access tracking** — when you read/use a fact from KG, bump its recency:
+**Access tracking** — when you use a fact from KG in a reply, queue a recency event:
 ```bash
-bun scripts/memory-write.js --access --entity "people/alice" --id <fact-id>
+bun scripts/memory-access-buffer.js --entity "people/alice" --id <fact-id>
 ```
-This updates `lastAccessed` and `accessCount`, preventing useful facts from decaying to Cold.
+The command is append-only and fast. The nightly sequential coordinator resolves
+the event, updates `lastAccessed` and `accessCount`, then rebuilds summaries.
+If no ID is available, use the exact fact text instead:
+```bash
+bun scripts/memory-access-buffer.js --entity "people/alice" --fact "Exact fact text"
+```
 
 **When to track access:**
 - You looked up a fact via QMD and used it in your reply
 - A fact was referenced in a decision or recommendation
 - NOT for bulk reads (e.g. rebuild-summaries, heartbeat extraction)
 
-After an actual use, call `memory-write.js --access` once per fact in the same
-turn. This immediately refreshes that entity's summary and makes the renewed
-recency available to QMD; merely loading a summary or search result is not use.
+After an actual use, queue one event per fact in the same turn. Do not invent an
+ID: use the ID returned by KG/QMD, or the exact-text fallback. Merely loading a
+summary or search result is not use. `memory-write.js --access` remains an
+operator repair command, not the normal dialogue path.
 
 **Decay tiers** (full rules: `skills/engram/references/decay-rules.md`):
 - **Hot** (≤7 days) → prominent in summary

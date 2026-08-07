@@ -188,11 +188,36 @@ bun skills/engram/scripts/memory-write.js --entity <path> --fact <text> --catego
   [--entity-create] [--check-contradictions] [--cross-entity] \
   [--semantic-check] [--search-collections "life,collection2"]
 
-# Track access (updates lastAccessed + accessCount for decay)
+# Immediate operator access repair (updates lastAccessed + accessCount for decay)
 bun skills/engram/scripts/memory-write.js --access --entity <path> --id <fact-id>
 ```
 
-Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Semantic dedup sanitizes and caps only the `qmd query` text and fails open after a 30-second query timeout; this limit does not apply to `qmd update` or `qmd embed`. Use `--entity-create` to create new entities on the fly. Use `--access` mode to bump a fact's recency (important for decay tiers).
+Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Semantic dedup sanitizes and caps only the `qmd query` text and fails open after a 30-second query timeout; this limit does not apply to `qmd update` or `qmd embed`. Use `--entity-create` to create new entities on the fly. `--access` is an immediate operator repair mode; agents queue normal conversational use with `memory-access-buffer.js`.
+
+## memory-access-buffer.js — Lightweight conversational access queue
+
+```bash
+bun skills/engram/scripts/memory-access-buffer.js --entity people/alice --id alice-014
+# Exact text fallback when the fact ID was not returned by retrieval
+bun skills/engram/scripts/memory-access-buffer.js --entity people/alice --fact "Prefers concise reports"
+```
+
+Appends one validated access event to `workspace/memory-state/access-buffer.jsonl`.
+It does not read or rewrite KG, summaries, or QMD, so it is safe in a user-facing
+turn. IDs are never invented: use a retrieved fact ID, otherwise an exact fact
+text that resolves uniquely during the nightly flush.
+
+## flush-access-buffer.js — Apply queued access
+
+```bash
+bun skills/engram/scripts/flush-access-buffer.js --workspace /opt/openclaw/workspaces/elena --json
+```
+
+The daily coordinator invokes this first for each workspace. It atomically claims
+the queue, resolves active facts by ID or unique normalized exact text, updates
+access fields, rebuilds only affected summaries, marks QMD dirty, and writes an
+audit trail plus unresolved events under `workspace/ops/access-buffer/`. It does
+not run QMD maintenance.
 
 ## memory-dedup.js — Deduplication index
 
@@ -274,7 +299,7 @@ Deterministically regenerates `summary.md` for all entities in `life/` from thei
 
 **With `--apply-decay`**: applies Memory Decay tiers (Hot/Warm/Cold) based on `lastAccessed`/`createdAt`/`source` date. Summary format: `## Current (Hot)`, `## Background (Warm)`, `## Enduring (Principles)`. Cold facts excluded from summary unless selected by semantic priority. Cold principles capped by `--max-cold-principles` (default 12).
 
-Decay algorithm: see [references/decay-rules.md](decay-rules.md). Rebuilt after fact writes, by the daily coordinator, and by Monday heartbeat synthesis.
+Decay algorithm: see [references/decay-rules.md](decay-rules.md). Rebuilt after fact writes, after a queued-access flush, by the daily coordinator, and by Monday heartbeat synthesis.
 
 ## daily-summary-coordinator.js — Sequential daily summary reconciliation
 
@@ -285,7 +310,7 @@ bun skills/engram/scripts/daily-summary-coordinator.js \
   --json
 ```
 
-Runs `rebuild-summaries.js --apply-decay` sequentially for explicit workspaces.
+Flushes queued access then runs `rebuild-summaries.js --apply-decay` sequentially for explicit workspaces.
 It never calls QMD or an LLM. Use one global scheduled job, not concurrent
 daily jobs per workspace. A lock directory prevents overlapping runs.
 

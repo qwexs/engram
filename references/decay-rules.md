@@ -8,6 +8,11 @@
 | **Warm** | Accessed 8-30 days ago | Yes (lower priority) | Available but secondary |
 | **Cold** | Not accessed in 30+ days | No (omitted) | Still in items.json, searchable via QMD |
 
+Conversation access is queued append-only during a reply. The daily sequential
+summary coordinator flushes that queue before calculating tiers, so an access
+recorded today affects the next nightly projection without adding QMD or summary
+work to the user-facing turn.
+
 ## Modifiers
 
 ### Low-Confidence Acceleration

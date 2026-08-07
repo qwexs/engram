@@ -47,4 +47,24 @@ describe("daily-summary-coordinator", () => {
     expect(readFileSync(join(first, "life", "people", "first", "summary.md"), "utf8")).toContain("first prefers concise summaries");
     expect(readFileSync(join(second, "life", "people", "second", "summary.md"), "utf8")).toContain("second prefers concise summaries");
   });
+
+  test("flushes queued access before rebuilding summaries", () => {
+    root = mkdtempSync(join(tmpdir(), "engram-summary-coordinator-"));
+    const first = workspace("first");
+    mkdirSync(join(first, "workspace", "memory-state"), { recursive: true });
+    writeFileSync(join(first, "workspace", "memory-state", "access-buffer.jsonl"), JSON.stringify({
+      schema: "engram.access-event.v1", entity: "people/first", id: "first-001",
+    }) + "\n");
+    const proc = Bun.spawnSync(["bun", SCRIPT, "--workspace", first, "--json"], {
+      cwd: ENGRAM_DIR,
+      env: { ...process.env, ENGRAM_TZ: "Europe/Moscow" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.exitCode, proc.stderr.toString()).toBe(0);
+    const report = JSON.parse(proc.stdout.toString());
+    expect(report.workspaces[0].accessFlush.applied).toBe(1);
+    const data = JSON.parse(readFileSync(join(first, "life", "people", "first", "items.json"), "utf8"));
+    expect(data.facts[0].accessCount).toBe(2);
+  });
 });

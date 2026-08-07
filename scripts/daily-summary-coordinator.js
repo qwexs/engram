@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Sequential fleet-wide reconciliation of Engram summary.md projections.
-// It intentionally does not run QMD maintenance or invoke an LLM.
+// It first flushes queued access events. It intentionally does not run QMD
+// maintenance or invoke an LLM.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -25,7 +26,8 @@ const opts = parseArgs(process.argv);
 if (opts.help || opts.h) {
   console.log(`daily-summary-coordinator.js
 
-Sequentially rebuilds decay-aware summary.md files for explicit Engram workspaces.
+Sequentially flushes buffered fact access, then rebuilds decay-aware summary.md
+files for explicit Engram workspaces.
 
 Usage:
   bun skills/engram/scripts/daily-summary-coordinator.js \\
@@ -35,7 +37,7 @@ Options:
   --workspace <path>       Engram workspace to process; repeat in desired order.
   --timeout-ms <n>         Per-workspace timeout (default: 120000).
   --lock-dir <path>        Coordinator lock directory (default: <first>/ops/daily-summary.lock).
-  --dry-run                Calculate/report changes without writing summaries.
+  --dry-run                Calculate/report changes without writing access or summaries.
   --json                   Emit one JSON report.
 `);
   process.exit(0);
@@ -92,24 +94,45 @@ try {
       continue;
     }
 
-    const args = ["bun", join(import.meta.dir, "rebuild-summaries.js"), "--apply-decay", "--json"];
-    if (opts["dry-run"]) args.push("--dry-run");
     try {
-      const proc = Bun.spawn(args, {
+      const flushArgs = ["bun", join(import.meta.dir, "flush-access-buffer.js"), "--workspace", workspace, "--json"];
+      if (opts["dry-run"]) flushArgs.push("--dry-run");
+      const flush = Bun.spawn(flushArgs, {
         cwd: workspace,
         env: { ...process.env, ENGRAM_WORKSPACE: workspace },
         stdout: "pipe",
         stderr: "pipe",
       });
-      const timer = setTimeout(() => proc.kill(), timeoutMs);
-      const stdout = await new Response(proc.stdout).text();
-      const stderr = await new Response(proc.stderr).text();
-      clearTimeout(timer);
-      await proc.exited;
-      try { item.stats = JSON.parse(stdout.trim()); } catch { item.stdout = stdout.slice(0, 1000); }
-      if (proc.exitCode !== 0) {
+      const flushTimer = setTimeout(() => flush.kill(), timeoutMs);
+      const flushStdout = await new Response(flush.stdout).text();
+      const flushStderr = await new Response(flush.stderr).text();
+      clearTimeout(flushTimer);
+      await flush.exited;
+      try { item.accessFlush = JSON.parse(flushStdout.trim()); } catch { item.accessFlushStdout = flushStdout.slice(0, 1000); }
+      if (flush.exitCode !== 0) {
         item.status = "error";
-        item.error = stderr.slice(0, 1000) || `exit ${proc.exitCode}`;
+        item.error = `access flush: ${flushStderr.slice(0, 900) || `exit ${flush.exitCode}`}`;
+        report.errors++;
+        continue;
+      }
+
+      const rebuildArgs = ["bun", join(import.meta.dir, "rebuild-summaries.js"), "--apply-decay", "--json"];
+      if (opts["dry-run"]) rebuildArgs.push("--dry-run");
+      const rebuild = Bun.spawn(rebuildArgs, {
+        cwd: workspace,
+        env: { ...process.env, ENGRAM_WORKSPACE: workspace },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const rebuildTimer = setTimeout(() => rebuild.kill(), timeoutMs);
+      const rebuildStdout = await new Response(rebuild.stdout).text();
+      const rebuildStderr = await new Response(rebuild.stderr).text();
+      clearTimeout(rebuildTimer);
+      await rebuild.exited;
+      try { item.stats = JSON.parse(rebuildStdout.trim()); } catch { item.stdout = rebuildStdout.slice(0, 1000); }
+      if (rebuild.exitCode !== 0) {
+        item.status = "error";
+        item.error = rebuildStderr.slice(0, 1000) || `exit ${rebuild.exitCode}`;
         report.errors++;
       }
     } catch (error) {

@@ -7,6 +7,10 @@
   synchronous diagnostic runner for existing synchronous callers. Initial setup
   now registers collections without running index maintenance; installer,
   bootstrap, and watchdog no longer create raw QMD subprocesses.
+- **fix(qmd): make shared-index migration enter coordinated mode.** The
+  migration proposal now switches workspace heartbeats to delegation after the
+  raw-call cutover; the global coordinator remains disabled pending the
+  separate embedding approval.
 
 ## 3.6.1 — 2026-08-07
 

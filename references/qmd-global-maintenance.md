@@ -109,8 +109,10 @@ Writer integration is controlled per workspace:
   behavior exactly;
 - `shadow` records a dirty generation after a successful write, but never
   launches `qmd update` or `qmd embed`;
-- `coordinated` records the same state and is reserved for the later execution
-  cutover. Merely selecting it does not create an extra public QMD command.
+- `coordinated` records the same state while workspace heartbeats delegate to
+  the global coordinator. It is selected only by the shared-index migration
+  after raw workspace maintenance has been removed; it does not create an
+  extra public QMD command.
 
 State lives under
 `$OPENCLAW_STATE_DIR/engram/qmd-maintenance/<index-key-hash>/`, or under
@@ -126,8 +128,8 @@ The first shadow call sites are:
 Duplicate/no-op paths return before marking. Requested collections must be
 owned by the writing workspace. State errors are logged and returned as a
 structured `error`, but are fail-open for the already completed content write.
-Legacy raw maintenance remains active during shadow observation and is removed
-only by the execution-cutover PR.
+Legacy raw maintenance remains active only during shadow observation. The
+execution-cutover removes it before any config is switched to `coordinated`.
 
 ## Runtime ownership adapter
 

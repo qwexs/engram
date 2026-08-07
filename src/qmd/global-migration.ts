@@ -143,7 +143,11 @@ function proposal(
   const maintenance = qmd.maintenance && typeof qmd.maintenance === "object" && !Array.isArray(qmd.maintenance)
     ? qmd.maintenance as JsonObject
     : {};
-  maintenance.mode = "legacy";
+  // Raw workspace maintenance is removed before this migration. Once all
+  // configs share the named index, heartbeats must delegate rather than retain
+  // a per-workspace legacy execution path. The global coordinator remains
+  // separately disabled until its explicit embedding gate is approved.
+  maintenance.mode = "coordinated";
   qmd.maintenance = maintenance;
   const external = workspace.readableCollections.filter((name) =>
     !collections.some((entry) => entry.owner === workspace.id && entry.name === name));

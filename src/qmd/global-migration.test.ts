@@ -79,7 +79,7 @@ describe("global QMD migration", () => {
     expect(first.summary).toEqual({ workspaces: 1, files: 2, changed: 2 });
     expect(readFileSync(first.files[0]!.path, "utf8")).toBe(item.config);
     expect(first.files[0]!.content).toContain('"index": "sample-global"');
-    expect(first.files[0]!.content).toContain('"mode": "legacy"');
+    expect(first.files[0]!.content).toContain('"mode": "coordinated"');
   });
 
   test("apply requires exact confirmation, backs up, and rollback restores", () => {

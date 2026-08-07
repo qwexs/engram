@@ -201,6 +201,32 @@ bun skills/engram/scripts/install-cron.js install \
 bun skills/engram/scripts/watchdog.js --workspace /path/to/workspace --json
 ```
 
+## Engram CLI для QMD
+
+Engram включает read-only CLI поверх общего QMD core. Он разрешает workspace и физический SQLite-индекс, проверяет policy и запускает QMD через argv без shell interpolation.
+
+```bash
+# Запуск из checkout — глобальная установка не нужна
+bun bin/engram --version
+bun bin/engram --workspace /path/to/workspace qmd doctor --strict
+
+# Controlled read: коллекции всегда задаются явно
+bun bin/engram --workspace /path/to/workspace \
+  qmd query "search text" -c workspace-memory -c life
+```
+
+Публичных `engram qmd update/embed` и generic passthrough нет. Maintenance остаётся на legacy call sites до появления coordinator и host governor.
+
+Launcher устанавливается в `$BUN_INSTALL/bin` или `~/.bun/bin`. Installer не перезаписывает и не удаляет чужие файлы.
+
+```bash
+bun scripts/install-cli.js --dry-run
+bun scripts/install-cli.js
+engram --version
+```
+
+Команды, JSON protocol, exit codes и trust model описаны в [`references/qmd-cli.md`](references/qmd-cli.md). Пошаговый production rollout и rollback — в [`references/qmd-cli-rollout.md`](references/qmd-cli-rollout.md).
+
 ## Requirements
 
 - [OpenClaw](https://github.com/openclaw/openclaw) — runtime агента
@@ -226,6 +252,8 @@ bun skills/engram/scripts/watchdog.js --workspace /path/to/workspace --json
 | Архитектура | `references/architecture.md` |
 | Setup | `references/setup.md` |
 | QMD setup | `references/qmd-setup.md` |
+| Engram QMD CLI | `references/qmd-cli.md` |
+| CLI rollout и rollback | `references/qmd-cli-rollout.md` |
 
 ## License
 

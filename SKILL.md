@@ -24,6 +24,39 @@ bun skills/engram/scripts/init.js --force
 bun skills/engram/scripts/watchdog.js --workspace /path/to/workspace --json
 ```
 
+## Engram QMD CLI
+
+CLI запускается на Bun прямо из TypeScript-исходников и использует тот же QMD core, что и будущие внутренние интеграции. Runtime dependencies и build step не нужны.
+
+```bash
+bun bin/engram --help
+bun bin/engram --workspace /path/to/workspace qmd resolve
+bun bin/engram --workspace /path/to/workspace qmd doctor --strict
+bun bin/engram --workspace /path/to/workspace \
+  qmd search "query" -c workspace-memory
+```
+
+Правила первой версии:
+
+- `resolve`, `capabilities`, `status` и `doctor` ничего не изменяют;
+- `search`, `query` и `vsearch` требуют хотя бы одну явную `-c` и проверяют коллекции против workspace allowlist;
+- `--json` пишет в stdout ровно один envelope; verbose details появляются только с `--verbose`;
+- CLI не публикует generic passthrough, `update` или `embed`;
+- operator CLI не считается OS security boundary и не принимает пользовательский `--scope`;
+- agent-facing режим не включён до появления trusted caller context.
+
+Безопасная установка launcher:
+
+```bash
+bun scripts/install-cli.js --dry-run
+bun scripts/install-cli.js
+engram --version
+```
+
+По умолчанию installer использует `$BUN_INSTALL/bin` или `~/.bun/bin`. Он идемпотентен и удаляет только launcher с точным managed body, созданным из этого checkout.
+
+Полный контракт: [references/qmd-cli.md](references/qmd-cli.md). Rollout и rollback: [references/qmd-cli-rollout.md](references/qmd-cli-rollout.md).
+
 ## Architecture Overview
 
 ```

@@ -506,7 +506,7 @@ if (existsSync(heartbeatPath)) {
 
 // 8. Cron Config drift guard (catches HEARTBEAT.md ↔ gateway drift).
 // Generic: reads engram.json -> cron.<expectedJobName|expectedSchedule|requireAllActiveSessions|staleRunMinutes>
-// and asserts the heartbeat job is present, enabled, on the expected schedule,
+// and asserts the heartbeat job is present, enabled when activation is expected, on the expected schedule,
 // has `--all-active-sessions` in payload (if required), and ran recently.
 // If the CLI is unavailable (sandbox / PATH issue), downgrade to warn.
 // Workspaces that don't define engram.json -> cron skip the check cleanly.
@@ -519,7 +519,10 @@ if (!cronCfg || !cronCfg.expectedJobName) {
   const expectedSchedule = cronCfg.expectedSchedule || { kind: 'cron', expr: '*/30 * * * *' };
   const requireAllActive = cronCfg.requireAllActiveSessions !== false; // default true
   const staleMin = Number(cronCfg.staleRunMinutes || 90);
-  const cronProbe = spawnSync('openclaw', ['cron', 'list', '--agent', agentId, '--json'], { encoding: 'utf8', shell: false, timeout: 30000 });
+  // Disabled jobs are intentionally omitted unless --all is supplied. Presence
+  // and enabled state are distinct: a maintenance freeze must not be reported
+  // as a missing job.
+  const cronProbe = spawnSync('openclaw', ['cron', 'list', '--all', '--agent', agentId, '--json'], { encoding: 'utf8', shell: false, timeout: 30000 });
   if (cronProbe.error || cronProbe.status !== 0) {
     warn(`openclaw cron list unavailable (${cronProbe.error?.message || 'exit ' + cronProbe.status}) — skipping cron drift check`);
   } else {
@@ -537,7 +540,7 @@ if (!cronCfg || !cronCfg.expectedJobName) {
           error(`Cron job "${expectedJobName}" not found in gateway. Run \`openclaw cron list\` to inspect; see HEARTBEAT.md for the expected id.`);
         } else {
           if (!job.enabled) {
-            error(`Cron job "${expectedJobName}" is DISABLED`);
+            warn(`Cron job "${expectedJobName}" is present but DISABLED`);
           } else {
             ok(`Cron job present and enabled (id ${job.id}, agent=${job.agentId})`);
           }

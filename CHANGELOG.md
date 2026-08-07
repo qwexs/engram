@@ -5,6 +5,9 @@
 - **fix(qmd): resolve dirty marks through canonical KG ownership.** KG writers,
   repairs and access flushes now use `qmd.workspaceKgCollection` after a
   shared-index cutover instead of retaining the legacy generic `life` name.
+- **fix(cron): distinguish disabled heartbeat jobs from missing jobs.** The
+  validation guard now uses `openclaw cron list --all` and reports an
+  intentionally disabled job as a warning during a maintenance freeze.
 
 - **refactor(qmd): route bootstrap and watchdog diagnostics through the typed
   core.** Added narrow probe and collection-list operations plus a policy-bound

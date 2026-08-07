@@ -17,7 +17,7 @@ export const OPERATOR_CALLER: QmdCallerContext = {
 
 const DIAGNOSTIC_OPERATIONS = new Set(["capabilities", "status"]);
 const READ_OPERATIONS = new Set(["search", "query", "vsearch"]);
-const MAINTENANCE_CALLERS = new Set<QmdCallerContext["kind"]>(["heartbeat", "provisioning"]);
+const MAINTENANCE_CALLERS = new Set<QmdCallerContext["kind"]>(["heartbeat", "provisioning", "coordinator"]);
 
 function snapshotCaller(caller: QmdCallerContext): QmdCallerContext {
   return {
@@ -117,6 +117,23 @@ export function decideQmdPolicy(
     }
     if (invocation.effectiveScope !== "collections") {
       return decision(invocation, caller, false, "DENY_EFFECTIVE_SCOPE", "Embed must be collection-scoped.");
+    }
+    if (caller.kind === "coordinator") {
+      if (invocation.collections.length === 0) {
+        return decision(invocation, caller, false, "DENY_EMPTY_COLLECTION_SCOPE", "Coordinator embed requires explicit collections.");
+      }
+      const allowed = new Set(caller.allowedCollections);
+      const denied = invocation.collections.filter((collection) => !allowed.has(collection));
+      if (denied.length > 0) {
+        return decision(
+          invocation,
+          caller,
+          false,
+          "DENY_COLLECTION_SCOPE",
+          `Coordinator embed collections are outside its trusted allowlist: ${denied.join(", ")}`,
+        );
+      }
+      return decision(invocation, caller, true, "ALLOW_COORDINATED_EMBED", "Coordinator may embed its explicit trusted collection scope.");
     }
     if (!sameSet(invocation.collections, context.policy.ownedCollections)) {
       return decision(invocation, caller, false, "DENY_COLLECTION_SCOPE", "Embed scope must exactly match owned collections.");

@@ -61,7 +61,8 @@ export type QmdInvocation = {
 type QmdBaseRequest = { timeoutMs?: number };
 
 export type QmdInvocationRequest =
-  | (QmdBaseRequest & { operation: "capabilities" | "status" | "update" | "embed" })
+  | (QmdBaseRequest & { operation: "capabilities" | "status" | "update" })
+  | (QmdBaseRequest & { operation: "embed"; collections?: string[] })
   | (QmdBaseRequest & {
       operation: "search" | "query" | "vsearch";
       query: string;
@@ -77,7 +78,8 @@ export type QmdCallerKind =
   | "topic"
   | "subagent"
   | "heartbeat"
-  | "provisioning";
+  | "provisioning"
+  | "coordinator";
 
 export type QmdCallerCapability = "diagnostics" | "read" | "maintenance";
 
@@ -96,6 +98,7 @@ export type QmdPolicyDecisionCode =
   | "ALLOW_INTERNAL_DIAGNOSTIC"
   | "ALLOW_COLLECTION_READ"
   | "ALLOW_OWNED_EMBED"
+  | "ALLOW_COORDINATED_EMBED"
   | "ALLOW_INDEX_UPDATE"
   | "DENY_UNSUPPORTED_OPERATION"
   | "DENY_CALLER_CAPABILITY"

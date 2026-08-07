@@ -126,6 +126,27 @@ describe("QMD policy", () => {
     });
   });
 
+  test("allows coordinator embed only inside its explicit trusted scope", () => {
+    const ctx = context();
+    const invocation = buildQmdInvocation(ctx, {
+      operation: "embed",
+      collections: ["self-memory", "child-memory"],
+    });
+    const coordinator: QmdCallerContext = {
+      kind: "coordinator",
+      allowedCollections: ["self-memory", "child-memory"],
+      capabilities: ["maintenance"],
+    };
+    expect(decideQmdPolicy(ctx, invocation, coordinator)).toMatchObject({
+      allowed: true,
+      code: "ALLOW_COORDINATED_EMBED",
+    });
+    expect(decideQmdPolicy(ctx, { ...invocation, collections: ["self-memory", "foreign"] }, coordinator)).toMatchObject({
+      allowed: false,
+      code: "DENY_COLLECTION_SCOPE",
+    });
+  });
+
   test("allows index-wide update only for explicit maintenance callers", () => {
     const ctx = context();
     const invocation = buildQmdInvocation(ctx, { operation: "update" });

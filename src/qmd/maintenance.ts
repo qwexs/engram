@@ -96,6 +96,7 @@ type MaintenancePaths = {
   stateMutex: string;
   lease: string;
   leaseMetadata: string;
+  leaseRecovery: string;
 };
 
 type LeaseMetadata = {
@@ -151,6 +152,7 @@ export function qmdMaintenancePaths(stateRoot: string, indexKey: string): Mainte
     stateMutex: join(directory, ".state-lock"),
     lease: join(directory, ".maintenance-lease"),
     leaseMetadata: join(directory, ".maintenance-lease", "lease.json"),
+    leaseRecovery: join(directory, ".maintenance-lease-recovery"),
   };
 }
 
@@ -275,23 +277,71 @@ export async function markQmdDirty(stateRoot: string, input: MarkQmdDirtyInput):
 }
 
 function readLeaseMetadata(paths: MaintenancePaths): LeaseMetadata | null {
+  return readLeaseMetadataAt(paths.leaseMetadata);
+}
+
+function readLeaseMetadataAt(path: string): LeaseMetadata | null {
   try {
-    const parsed = JSON.parse(readFileSync(paths.leaseMetadata, "utf8")) as LeaseMetadata;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as LeaseMetadata;
     return parsed.schema === "engram.qmd.maintenance-lease.v1" ? parsed : null;
   } catch {
     return null;
   }
 }
 
-function leaseIsStale(paths: MaintenancePaths): boolean {
+function staleLeaseToken(paths: MaintenancePaths): string | null | undefined {
   const metadata = readLeaseMetadata(paths);
   if (metadata) {
     const expiresAt = Date.parse(metadata.expiresAt);
-    return Number.isFinite(expiresAt)
-      ? expiresAt <= Date.now()
-      : lockIsStale(paths.lease, STATE_MUTEX_STALE_MS);
+    if (Number.isFinite(expiresAt)) return expiresAt <= Date.now() ? metadata.token : null;
   }
-  return lockIsStale(paths.lease, STATE_MUTEX_STALE_MS);
+  return lockIsStale(paths.lease, STATE_MUTEX_STALE_MS) ? undefined : null;
+}
+
+function recoverAndAcquireStaleLease(
+  paths: MaintenancePaths,
+  indexKey: string,
+  ttlMs: number,
+  observedToken: string | undefined,
+): AcquiredLease | null {
+  try {
+    mkdirSync(paths.leaseRecovery);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
+    throw error;
+  }
+  const quarantine = `${paths.lease}.stale-${process.pid}-${randomUUID()}`;
+  try {
+    try {
+      const currentToken = staleLeaseToken(paths);
+      if (currentToken === null || currentToken !== observedToken) return null;
+      renameSync(paths.lease, quarantine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+
+    const capturedMetadata = readLeaseMetadataAt(join(quarantine, "lease.json"));
+    if (observedToken !== undefined && capturedMetadata?.token !== observedToken) {
+      if (!existsSync(paths.lease)) renameSync(quarantine, paths.lease);
+      return null;
+    }
+    if (observedToken === undefined && capturedMetadata) {
+      const capturedExpiry = Date.parse(capturedMetadata.expiresAt);
+      if (Number.isFinite(capturedExpiry) && capturedExpiry > Date.now()) {
+        if (!existsSync(paths.lease)) renameSync(quarantine, paths.lease);
+        return null;
+      }
+    }
+    rmSync(quarantine, { recursive: true, force: true });
+    mkdirSync(paths.lease);
+    const metadata = makeLease(indexKey, ttlMs);
+    writeJsonAtomic(paths.leaseMetadata, metadata);
+    return { metadata, recoveredStale: true };
+  } finally {
+    if (existsSync(quarantine)) rmSync(quarantine, { recursive: true, force: true });
+    rmSync(paths.leaseRecovery, { recursive: true, force: true });
+  }
 }
 
 function makeLease(indexKey: string, ttlMs: number): LeaseMetadata {
@@ -309,22 +359,19 @@ function makeLease(indexKey: string, ttlMs: number): LeaseMetadata {
 
 function acquireMaintenanceLease(paths: MaintenancePaths, indexKey: string, ttlMs: number): AcquiredLease | null {
   mkdirSync(paths.directory, { recursive: true });
-  let recoveredStale = false;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      mkdirSync(paths.lease);
-      const metadata = makeLease(indexKey, ttlMs);
-      writeJsonAtomic(paths.leaseMetadata, metadata);
-      return { metadata, recoveredStale };
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") throw error;
-      if (!leaseIsStale(paths)) return null;
-      rmSync(paths.lease, { recursive: true, force: true });
-      recoveredStale = true;
-    }
+  if (existsSync(paths.leaseRecovery)) return null;
+  try {
+    mkdirSync(paths.lease);
+    const metadata = makeLease(indexKey, ttlMs);
+    writeJsonAtomic(paths.leaseMetadata, metadata);
+    return { metadata, recoveredStale: false };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST") throw error;
+    const observedToken = staleLeaseToken(paths);
+    if (observedToken === null) return null;
+    return recoverAndAcquireStaleLease(paths, indexKey, ttlMs, observedToken);
   }
-  return null;
 }
 
 function renewMaintenanceLease(paths: MaintenancePaths, lease: AcquiredLease, ttlMs: number): void {

@@ -395,6 +395,45 @@ describe("runQmdMaintenance", () => {
     expect(result.recoveredStaleLease).toBe(true);
   });
 
+  test("allows only one executor when two coordinators race to recover a stale lease", async () => {
+    const h = harness();
+    await markQmdDirty(h.stateRoot, {
+      indexKey: h.context.physicalIndex.key,
+      collections: ["project-alpha"],
+      reason: "write",
+    });
+    const paths = qmdMaintenancePaths(h.stateRoot, h.context.physicalIndex.key);
+    mkdirSync(paths.lease, { recursive: true });
+    writeFileSync(paths.leaseMetadata, JSON.stringify({
+      schema: "engram.qmd.maintenance-lease.v1",
+      token: "stale-race",
+      indexKey: h.context.physicalIndex.key,
+      pid: 1,
+      acquiredAt: "2000-01-01T00:00:00.000Z",
+      renewedAt: "2000-01-01T00:00:00.000Z",
+      expiresAt: "2000-01-01T00:00:01.000Z",
+    }));
+    let updateCalls = 0;
+    const execute: QmdMaintenanceExecutor = async (_context, invocation) => {
+      if (invocation.operation === "update") {
+        updateCalls += 1;
+        await Bun.sleep(25);
+      }
+      return invocation.operation === "embed" ? embedSuccess(invocation) : fakeRun(invocation);
+    };
+    const options = {
+      context: h.context,
+      caller: h.caller,
+      collections: h.caller.allowedCollections,
+      stateRoot: h.stateRoot,
+      execute,
+    };
+    const results = await Promise.all([runQmdMaintenance(options), runQmdMaintenance(options)]);
+    expect(updateCalls).toBe(1);
+    expect(results.filter((result) => result.status === "ok")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "deferred")).toHaveLength(1);
+  });
+
   test("rejects unauthorized coordinator collections before spawn", async () => {
     const h = harness();
     let calls = 0;

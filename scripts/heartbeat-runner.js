@@ -18,6 +18,7 @@ import { parseHandoff, applyHandoff, defaultHandoffHandlers } from "./process-ha
 import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary, shouldInlineNoopDailyNote, DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN } from "./domains-runner.js";
 import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerivedStatus, hasAutoDerivedMarker } from "./_lib/auto-derive-status.js";
 import { runtimeSpawnLabel, transitionSpawnRecord } from "./spawn-lifecycle.js";
+import { runWorkspaceQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -256,6 +257,19 @@ function summarizeCommand(result) {
     error: result.error,
     stdoutPreview: stdout ? stdout.slice(0, 500) : "",
     stderrPreview: stderr ? stderr.slice(0, 500) : "",
+  };
+}
+
+function summarizeTypedQmdResult(result) {
+  const invocation = result.operationRecord?.invocation;
+  return {
+    command: invocation ? [invocation.executable, ...invocation.argv].join(" ") : "qmd",
+    status: result.exitCode,
+    signal: result.signal,
+    elapsedMs: result.operationRecord?.elapsedMs ?? 0,
+    error: result.spawnError?.message ?? (result.timedOut ? "timed out" : null),
+    stdoutPreview: result.stdout ? String(result.stdout).trim().slice(0, 500) : "",
+    stderrPreview: result.stderr ? String(result.stderr).trim().slice(0, 500) : "",
   };
 }
 
@@ -1469,34 +1483,46 @@ async function runMaintenance() {
   // Закрывает backburner "QMD индексирует *.md, а не items.json" (см. v3.3 §3.5).
   const deriveFacts = run("node", [scriptPath("derive-facts.js")]);
 
-  const qmdCommand = qmdCommandName();
-  const qmdUpdate = run(qmdCommand, qmdCommandArgs("update"));
-  const qmdEmbed = opts["no-embed"]
-    ? { status: 0, stdout: "skipped", stderr: "", error: null, command: "qmd embed skipped", signal: null, elapsedMs: 0 }
-    : run(qmdCommand, qmdCommandArgs("embed"), { timeoutMs: Math.max(timeoutMs, 600000) });
-  const qmdEmbedResult = opts["no-embed"] ? null : parseLastJsonLine(qmdEmbed.stdout);
-  const qmdEmbedOutcome = describeQmdEmbedOutcome(qmdEmbed, qmdEmbedResult, Boolean(opts["no-embed"]));
+  const qmdMaintenance = await runWorkspaceQmdMaintenance({
+    workspace,
+    skipEmbed: Boolean(opts["no-embed"]),
+    timeoutMs: Math.max(timeoutMs, 600000),
+  });
+  const qmdUpdate = qmdMaintenance.update;
+  const qmdEmbed = qmdMaintenance.embed;
+  const qmdEmbedResult = qmdEmbed?.structuredData ?? null;
+  const qmdEmbedOutcome = qmdMaintenance.status === "delegated"
+    ? { label: "qmd maintenance delegated", warning: null }
+    : describeQmdEmbedOutcome(
+      qmdEmbed ? { status: qmdEmbed.exitCode } : { status: 0 },
+      qmdEmbedResult,
+      Boolean(opts["no-embed"]),
+    );
 
   summary.phases.maintenance = {
     validate: summarizeCommand(validate),
     deriveFacts: summarizeCommand(deriveFacts),
-    qmdUpdate: summarizeCommand(qmdUpdate),
-    qmdEmbed: {
-      ...summarizeCommand(qmdEmbed),
+    adapter: { mode: qmdMaintenance.mode, status: qmdMaintenance.status },
+    qmdUpdate: qmdUpdate ? summarizeTypedQmdResult(qmdUpdate) : null,
+    qmdEmbed: qmdEmbed ? {
+      ...summarizeTypedQmdResult(qmdEmbed),
       ...(qmdEmbedResult?.schema === "qmd.embed.v1" ? { result: qmdEmbedResult } : {}),
-    },
+    } : null,
   };
 
   summary.maintenance = [
     validate.status === 0 ? "validate ok" : "validate error",
     deriveFacts.status === 0 ? "derive-facts ok" : "derive-facts error",
-    qmdUpdate.status === 0 ? "qmd update ok" : "qmd update error",
+    qmdMaintenance.status === "delegated"
+      ? "qmd scheduler owns index"
+      : (qmdUpdate?.ok ? "qmd update ok" : "qmd update error"),
     qmdEmbedOutcome.label,
   ].join("; ");
 
-  for (const result of [validate, deriveFacts, qmdUpdate, qmdEmbed]) {
+  for (const result of [validate, deriveFacts]) {
     if (result.status !== 0) summary.warnings.push(result.stderr || result.stdout || result.error || result.command + " failed");
   }
+  if (qmdMaintenance.error) summary.warnings.push(qmdMaintenance.error.message);
   if (qmdEmbedOutcome.warning) summary.warnings.push(qmdEmbedOutcome.warning);
 }
 
@@ -1562,70 +1588,6 @@ async function maybeAutoSeedFromValidate(validateResult) {
   } else {
     summary.warnings.push(`auto-seed from validate failed: exit ${obsResult.status}`);
   }
-}
-
-function qmdMaintenanceCollections(qmd = {}) {
-  return Array.isArray(qmd.collections)
-    ? qmd.collections.map(String).filter(Boolean)
-    : [];
-}
-
-function qmdCommandArgs(command) {
-  const qmd = config.qmd || {};
-  const args = [];
-  if (qmd.index) args.push("--index", String(qmd.index));
-  args.push(command);
-  let collections = qmdMaintenanceCollections(qmd);
-  // qmd.collections is the workspace-owned maintenance allowlist. External
-  // verticalAccess collections are registered for read/query access only and
-  // must not be re-embedded by every upper-level workspace heartbeat.
-  if (qmd.autoDiscoverCollections) {
-    const discovered = discoverQmdCollections();
-    if (discovered.length) {
-      const merged = new Set(collections);
-      for (const name of discovered) merged.add(name);
-      collections = Array.from(merged);
-    }
-  }
-  for (const collection of collections) {
-    if (collection) args.push("-c", String(collection));
-  }
-  if (command === "embed") args.push("--format", "json");
-  return args;
-}
-
-function discoverQmdCollections() {
-  const qmd = config.qmd || {};
-  if (!qmd.index) return [];
-  const command = String(qmd.command || "qmd");
-  const proc = spawnSync(command, ["--index", String(qmd.index), "collection", "list", "--format", "cli"], {
-    encoding: "utf8",
-    timeout: 30000,
-  });
-  if (proc.status !== 0) {
-    summary.warnings.push("qmd collection list failed; falling back to engram.json qmd.collections");
-    return [];
-  }
-  return parseQmdCollectionList(String(proc.stdout || ""));
-}
-
-/**
- * Parse the `--format cli` output of `qmd collection list` into an array of
- * collection names. Extracted from discoverQmdCollections so it can be
- * unit-tested without mocking child_process.spawnSync.
- */
-function parseQmdCollectionList(stdout) {
-  const names = [];
-  const re = /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*\(qmd:\/\/[^)]+\/\)/gm;
-  let m;
-  while ((m = re.exec(stdout)) !== null) {
-    names.push(m[1]);
-  }
-  return names;
-}
-
-function qmdCommandName() {
-  return String(config.qmd?.command || "qmd");
 }
 
 async function writeReport(targetSession = session, extractionText = summary.extraction) {
@@ -2042,10 +2004,6 @@ if (import.meta.main) {
 // entry point). Production behaviour is unchanged.
 if (!import.meta.main) {
   globalThis.__engramHeartbeatRunnerExports = {
-    parseQmdCollectionList,
-    discoverQmdCollections,
-    qmdCommandArgs,
-    qmdMaintenanceCollections,
     describeQmdEmbedOutcome,
     shouldApplyDomainHandoffs,
     isWorkerRunning,

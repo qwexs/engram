@@ -1,5 +1,4 @@
 import { existsSync, appendFileSync, readFileSync } from "node:fs";
-import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
 import { markWorkspaceQmdDirty } from "../../src/qmd/maintenance-integration.ts";
@@ -74,13 +73,6 @@ const handler = async (event: any) => {
     reason: "session-end:daily-note",
   });
 
-  // Update BM25 index so next session starts with fresh search
-  try {
-    execSync("qmd update", { cwd: workspaceDir, timeout: 15000, stdio: "pipe" });
-    console.log(`[engram-session-end] qmd update done`);
-  } catch {
-    console.log(`[engram-session-end] qmd update skipped (unavailable)`);
-  }
 };
 
 export default handler;

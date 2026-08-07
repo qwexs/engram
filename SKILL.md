@@ -45,11 +45,13 @@ bun bin/engram --workspace /path/to/workspace \
 - operator CLI не считается OS security boundary и не принимает пользовательский `--scope`;
 - agent-facing режим не включён до появления trusted caller context.
 
-Внутренний maintenance coordinator доступен только как core API: он хранит
+Внутренний maintenance coordinator доступен как core API и через закрытый
+operator entrypoint `scripts/qmd-maintenance-coordinator.ts`: он хранит
 dirty generations вне индексируемого workspace, сериализует один physical
 index lease и запускает index-wide `update` перед scoped incremental `embed`.
 Обычный цикл никогда не использует `-f`. Hooks, cron и production topology
-переключаются отдельным rollout после canary; см.
+переключаются отдельным rollout после canary. Workspace heartbeat в
+`coordinated` mode не обслуживает QMD и делегирует единому scheduler; см.
 [`references/qmd-global-maintenance.md`](references/qmd-global-maintenance.md).
 
 Безопасная установка launcher:
@@ -335,7 +337,7 @@ Engram ships 8 hooks that automate session tasks. **Agents do NOT need to repeat
 | `engram-session-start` | `agent:bootstrap` | Session start marker + auto-bind topics |
 | `engram-session-end` | `command:new/reset` | Session end marker |
 | `engram-session-memory` | `command:new/reset` | Archive session transcript |
-| `engram-bootstrap-qmd` | `agent:bootstrap` | Refresh QMD index |
+| `engram-bootstrap-qmd` | `agent:bootstrap` | Declares scheduler ownership; performs no QMD maintenance |
 | `engram-message-log` | `message:received` | Log messages (opt-in) |
 | `engram-topic-domain-load` | `message:received` | Inject topic domain context |
 | `engram-peer-domain-load` | `message:received` | Inject DM/group domain context |

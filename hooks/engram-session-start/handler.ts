@@ -2,6 +2,7 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, rea
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
+import { markWorkspaceQmdDirty } from "../../src/qmd/maintenance-integration.ts";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 
@@ -127,6 +128,11 @@ const handler = async (event: any) => {
   } catch (e) {
     console.error(`[engram-session-start] Handoff move error:`, e);
   }
+
+  await markWorkspaceQmdDirty({
+    workspace: workspaceDir,
+    reason: "session-start:daily-note",
+  });
 };
 
 export default handler;

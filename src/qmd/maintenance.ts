@@ -228,7 +228,7 @@ async function withStateMutex<T>(paths: MaintenancePaths, action: () => T | Prom
           path: paths.stateMutex,
         });
       }
-      await Bun.sleep(5);
+      await new Promise((resolve) => setTimeout(resolve, 5));
     }
   }
   try {

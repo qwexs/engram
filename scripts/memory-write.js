@@ -5,6 +5,7 @@
 import { join } from "path";
 import { isDuplicate, registerHash, extractKeywordsJaccard, jaccardSimilarity } from "./memory-dedup.js";
 import { resolveQmdCommand } from "./config.js";
+import { markWorkspaceQmdDirty } from "../src/qmd/maintenance-integration.ts";
 
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 const QMD = resolveQmdCommand(WORKSPACE);
@@ -459,6 +460,15 @@ if (!opts.access) {
     console.error(`⚠️ derive-facts.js failed: ${e.message?.slice(0, 200) || e}`);
   }
 }
+
+// Shadow/coordinated modes record the successful KG write for the shared
+// maintenance coordinator. Legacy mode is a true no-op; the raw update below
+// remains in place until the production cutover PR.
+await markWorkspaceQmdDirty({
+  workspace: WORKSPACE,
+  collections: ["life"],
+  reason: "memory-write:fact",
+});
 
 // 9. QMD update
 try {

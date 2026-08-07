@@ -2,6 +2,7 @@ import { existsSync, appendFileSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
+import { markWorkspaceQmdDirty } from "../../src/qmd/maintenance-integration.ts";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 
@@ -67,6 +68,11 @@ const handler = async (event: any) => {
   const iso = localISO(TZ);
   appendFileSync(notePath, `\n<!-- session:end:${iso} -->\n`);
   console.log(`[engram-session-end] Wrote session:end to ${notePath}`);
+
+  await markWorkspaceQmdDirty({
+    workspace: workspaceDir,
+    reason: "session-end:daily-note",
+  });
 
   // Update BM25 index so next session starts with fresh search
   try {

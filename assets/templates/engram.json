@@ -10,7 +10,11 @@
       "{COLLECTION_NAME}",
       "life",
       "openclaw-root"
-    ]
+    ],
+    "_maintenance_comment": "legacy keeps current update/embed behavior. shadow additionally records cheap dirty generations but never runs maintenance. coordinated is reserved for the coordinator rollout.",
+    "maintenance": {
+      "mode": "legacy"
+    }
   },
   "models": {
     "_comment": "Model ids for the heartbeat orchestrator and its subagents. The orchestrator is configured independently from subagent defaults.",

@@ -42,6 +42,7 @@ export type GlobalMaintenanceOptions = {
   expectedIndex: string;
   stateRoot?: string;
   timeoutMs?: number;
+  allowPartialDirtyScope?: boolean;
   execute?: QmdMaintenanceExecutor;
 };
 
@@ -166,6 +167,7 @@ export async function runGlobalQmdMaintenance(
     collections,
     stateRoot: options.stateRoot ?? resolveQmdMaintenanceStateRoot(),
     timeoutMs: options.timeoutMs,
+    allowPartialDirtyScope: options.allowPartialDirtyScope,
     execute: options.execute,
   });
 }

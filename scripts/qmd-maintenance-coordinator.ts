@@ -56,7 +56,7 @@ if (options.help || options.h) {
   console.log(`qmd-maintenance-coordinator
 
 Usage:
-  bun scripts/qmd-maintenance-coordinator.ts --manifest <path> --workspace <path> [--collections <a,b,...>] [--initial-backfill] [--state-root <path>] [--timeout-ms <ms>]
+  bun scripts/qmd-maintenance-coordinator.ts --manifest <path> --workspace <path> [--collections <a,b,...>] [--initial-backfill] [--allow-partial-dirty-scope] [--state-root <path>] [--timeout-ms <ms>]
 
 The manifest may be a global registry or a migration/provisioning manifest
 containing a registry. This command is the only coordinated execution entry
@@ -78,6 +78,9 @@ try {
   if (options["initial-backfill"] && typeof options.collections !== "string") {
     throw new Error("--initial-backfill requires an explicit --collections subset");
   }
+  if (options["allow-partial-dirty-scope"] && typeof options.collections !== "string") {
+    throw new Error("--allow-partial-dirty-scope requires an explicit --collections subset");
+  }
   const workspace = required(options, "workspace");
   const collections = selectedCollections(options, registry);
   const stateRoot = typeof options["state-root"] === "string" ? resolve(options["state-root"]) : undefined;
@@ -90,6 +93,7 @@ try {
     expectedIndex: registry.index.name,
     stateRoot,
     timeoutMs,
+    allowPartialDirtyScope: options["allow-partial-dirty-scope"] === true,
   });
   console.log(JSON.stringify({ ...result, ...(backfill ? { backfill } : {}) }));
   process.exit(result.status === "error" || result.status === "partial" ? 1 : 0);

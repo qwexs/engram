@@ -299,6 +299,34 @@ describe("runQmdMaintenance", () => {
     expect(readQmdMaintenanceState(h.stateRoot, h.context.physicalIndex.key).dirty.vectors).toBe(true);
   });
 
+  test("explicit partial scope preserves unselected dirty collections", async () => {
+    const h = harness();
+    await markQmdDirty(h.stateRoot, {
+      indexKey: h.context.physicalIndex.key,
+      collections: ["project-alpha", "project-beta"],
+      reason: "initial-backfill",
+    });
+    const invocations: QmdInvocation[] = [];
+    const result = await runQmdMaintenance({
+      context: h.context,
+      caller: h.caller,
+      collections: ["project-alpha"],
+      stateRoot: h.stateRoot,
+      allowPartialDirtyScope: true,
+      execute: async (_context, invocation) => {
+        invocations.push(invocation);
+        return invocation.operation === "embed" ? embedSuccess(invocation) : fakeRun(invocation);
+      },
+    });
+    const state = readQmdMaintenanceState(h.stateRoot, h.context.physicalIndex.key);
+    expect(result.status).toBe("ok");
+    expect(invocations.map((entry) => entry.operation)).toEqual(["update", "embed"]);
+    expect(invocations[1]!.argv).toContain("project-alpha");
+    expect(invocations[1]!.argv).not.toContain("project-beta");
+    expect(state.dirty).toMatchObject({ bm25: false, vectors: true, collections: ["project-beta"] });
+    expect(state.embedCompletedGeneration).toBe(0);
+  });
+
   test("does not lose a mark that arrives during maintenance", async () => {
     const h = harness();
     await markQmdDirty(h.stateRoot, {

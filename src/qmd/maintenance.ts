@@ -86,6 +86,12 @@ export type RunQmdMaintenanceOptions = {
   stateRoot: string;
   timeoutMs?: number;
   leaseTtlMs?: number;
+  /**
+   * Explicit operator-only escape hatch for a bounded initial backfill. The
+   * selected collections are processed while dirty collections outside that
+   * scope remain pending. Routine maintenance must leave this disabled.
+   */
+  allowPartialDirtyScope?: boolean;
   env?: Record<string, string | undefined>;
   execute?: QmdMaintenanceExecutor;
 };
@@ -449,29 +455,37 @@ async function recordSuccess(
   observedGeneration: number,
   updated: boolean,
   embedded: boolean,
+  completedCollections: string[] | undefined,
 ): Promise<QmdMaintenanceState> {
   const paths = qmdMaintenancePaths(stateRoot, indexKey);
   return withStateMutex(paths, () => {
     const current = readQmdMaintenanceState(stateRoot, indexKey);
     const sameGeneration = current.generation === observedGeneration;
+    const partialScope = completedCollections ? new Set(completedCollections) : null;
+    const remainingCollections = partialScope
+      ? current.dirty.collections.filter((collection) => !partialScope.has(collection))
+      : [];
+    const nextDirty = sameGeneration
+      ? {
+          bm25: updated ? false : current.dirty.bm25,
+          vectors: embedded ? remainingCollections.length > 0 : current.dirty.vectors,
+          collections: embedded ? remainingCollections : current.dirty.collections,
+          reasons: (updated || !current.dirty.bm25)
+              && (embedded ? remainingCollections.length === 0 : !current.dirty.vectors)
+            ? []
+            : current.dirty.reasons,
+        }
+      : current.dirty;
+    const completedAllVectors = embedded && !nextDirty.vectors;
     const next: QmdMaintenanceState = {
       ...current,
       updateCompletedGeneration: updated
         ? Math.max(current.updateCompletedGeneration, observedGeneration)
         : current.updateCompletedGeneration,
-      embedCompletedGeneration: embedded
+      embedCompletedGeneration: completedAllVectors
         ? Math.max(current.embedCompletedGeneration, observedGeneration)
         : current.embedCompletedGeneration,
-      dirty: sameGeneration
-        ? {
-            bm25: updated ? false : current.dirty.bm25,
-            vectors: embedded ? false : current.dirty.vectors,
-            collections: embedded ? [] : current.dirty.collections,
-            reasons: (updated || !current.dirty.bm25) && (embedded || !current.dirty.vectors)
-              ? []
-              : current.dirty.reasons,
-          }
-        : current.dirty,
+      dirty: nextDirty,
       lastUpdateAt: updated ? isoNow() : current.lastUpdateAt,
       lastEmbedAt: embedded ? isoNow() : current.lastEmbedAt,
       lastError: null,
@@ -535,7 +549,7 @@ export async function runQmdMaintenance(options: RunQmdMaintenanceOptions): Prom
     }
     const maintenanceScope = new Set(collections);
     const unownedDirtyCollections = snapshot.dirty.collections.filter((collection) => !maintenanceScope.has(collection));
-    if (unownedDirtyCollections.length > 0) {
+    if (unownedDirtyCollections.length > 0 && !options.allowPartialDirtyScope) {
       const message = `Dirty collections are outside the coordinator maintenance scope: ${unownedDirtyCollections.join(", ")}`;
       const current = await recordFailure(
         stateRoot,
@@ -592,6 +606,7 @@ export async function runQmdMaintenance(options: RunQmdMaintenanceOptions): Prom
       observedGeneration,
       snapshot.dirty.bm25,
       snapshot.dirty.vectors,
+      options.allowPartialDirtyScope ? collections : undefined,
     );
     return makeResult("ok", indexKey, observedGeneration, current.generation, lease.recoveredStale, {
       ...(update ? { update } : {}),

@@ -129,4 +129,27 @@ describe("global maintenance adapter", () => {
     });
     expect(state.dirty).toMatchObject({ bm25: false, vectors: true, collections: ["test-memory"] });
   });
+
+  test("accepts a registry-scoped collection outside the coordinator workspace read scope", async () => {
+    const root = workspace("coordinated");
+    const stateRoot = mkdtempSync(join(tmpdir(), "engram-maintenance-state-"));
+    const state = await markGlobalQmdBackfill({
+      workspace: root,
+      collections: ["other-memory"],
+      trustedCollections: ["other-memory", "test-memory"],
+      expectedIndex: "sample-global",
+      stateRoot,
+    });
+    expect(state.dirty.collections).toEqual(["other-memory"]);
+  });
+
+  test("rejects global collections outside the validated registry scope", async () => {
+    await expect(markGlobalQmdBackfill({
+      workspace: workspace("coordinated"),
+      collections: ["foreign-memory"],
+      trustedCollections: ["test-memory"],
+      expectedIndex: "sample-global",
+      stateRoot: mkdtempSync(join(tmpdir(), "engram-maintenance-state-")),
+    })).rejects.toThrow("trusted coordinator registry scope");
+  });
 });

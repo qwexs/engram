@@ -83,9 +83,12 @@ try {
   }
   const workspace = required(options, "workspace");
   const collections = selectedCollections(options, registry);
+  const trustedCollections = registry.collections.map((entry) => entry.name);
   const stateRoot = typeof options["state-root"] === "string" ? resolve(options["state-root"]) : undefined;
   const backfill = options["initial-backfill"]
-    ? await markGlobalQmdBackfill({ workspace, collections, expectedIndex: registry.index.name, stateRoot })
+    ? await markGlobalQmdBackfill({
+      workspace, collections, expectedIndex: registry.index.name, trustedCollections, stateRoot,
+    })
     : undefined;
   const result = await runGlobalQmdMaintenance({
     workspace,
@@ -94,6 +97,7 @@ try {
     stateRoot,
     timeoutMs,
     allowPartialDirtyScope: options["allow-partial-dirty-scope"] === true,
+    trustedCollections,
   });
   console.log(JSON.stringify({ ...result, ...(backfill ? { backfill } : {}) }));
   process.exit(result.status === "error" || result.status === "partial" ? 1 : 0);

@@ -43,6 +43,8 @@ export type GlobalMaintenanceOptions = {
   stateRoot?: string;
   timeoutMs?: number;
   allowPartialDirtyScope?: boolean;
+  /** Validated global-registry collection names for the trusted coordinator. */
+  trustedCollections?: string[];
   execute?: QmdMaintenanceExecutor;
 };
 
@@ -51,6 +53,8 @@ export type GlobalQmdBackfillMarkOptions = {
   collections: string[];
   expectedIndex: string;
   stateRoot?: string;
+  /** Validated global-registry collection names for the trusted coordinator. */
+  trustedCollections?: string[];
 };
 
 function configFor(workspace: string): JsonObject {
@@ -71,6 +75,21 @@ function failureMessage(result: QmdRunResult): string {
   return result.stderr.trim()
     || result.spawnError?.message
     || (result.timedOut ? "QMD maintenance timed out" : `QMD maintenance exited ${result.exitCode}`);
+}
+
+function trustedCoordinatorCollections(
+  requested: string[],
+  trusted: string[] | undefined,
+  fallback: string[],
+): string[] {
+  const collections = [...new Set(requested.map((value) => value.trim()).filter(Boolean))].sort();
+  if (collections.length === 0) throw contextError("Global QMD maintenance requires explicit collections.");
+  const trustedScope = new Set((trusted ?? fallback).map((value) => value.trim()).filter(Boolean));
+  const unknown = collections.filter((collection) => !trustedScope.has(collection));
+  if (unknown.length > 0) {
+    throw contextError("Global QMD maintenance collections are outside the trusted coordinator registry scope.", { unknown });
+  }
+  return collections;
 }
 
 async function executeAuthorized(
@@ -154,8 +173,11 @@ export async function runGlobalQmdMaintenance(
       selector: context.selector,
     });
   }
-  const collections = [...new Set(options.collections.map((value) => value.trim()).filter(Boolean))].sort();
-  if (collections.length === 0) throw contextError("Global QMD maintenance requires explicit collections.");
+  const collections = trustedCoordinatorCollections(
+    options.collections,
+    options.trustedCollections,
+    context.policy.readableCollections,
+  );
   const caller: QmdCallerContext = {
     kind: "coordinator",
     allowedCollections: collections,
@@ -192,12 +214,11 @@ export async function markGlobalQmdBackfill(
       selector: context.selector,
     });
   }
-  const collections = [...new Set(options.collections.map((value) => value.trim()).filter(Boolean))].sort();
-  if (collections.length === 0) throw contextError("Global QMD backfill requires explicit collections.");
-  const unknown = collections.filter((collection) => !context.policy.readableCollections.includes(collection));
-  if (unknown.length > 0) {
-    throw contextError("Global QMD backfill collections are outside the coordinator workspace scope.", { unknown });
-  }
+  const collections = trustedCoordinatorCollections(
+    options.collections,
+    options.trustedCollections,
+    context.policy.readableCollections,
+  );
   return markQmdDirty(options.stateRoot ?? resolveQmdMaintenanceStateRoot(), {
     indexKey: context.physicalIndex.key,
     collections,

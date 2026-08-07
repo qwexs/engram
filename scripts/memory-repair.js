@@ -15,10 +15,9 @@
 //     --entity projects/engram --id engram-274 --confidence 0.7 --validate --qmd-update
 
 import { join } from "path";
-import { resolveQmdCommand } from "./config.js";
+import { markWorkspaceQmdDirty } from "../src/qmd/maintenance-integration.ts";
 
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
-const QMD = resolveQmdCommand(WORKSPACE);
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -65,7 +64,7 @@ if (opts.help || opts.h) {
     "Optional:",
     "  --dry-run            Show what would change without writing",
     "  --validate           Run validate.js using the workspace-configured agent",
-    "  --qmd-update         Run qmd update after refreshing derived files",
+    "  --qmd-update         Deprecated compatibility flag; marks QMD dirty without running maintenance",
   ].join("\n"));
   process.exit(0);
 }
@@ -189,14 +188,13 @@ if (opts.validate) {
   }
 }
 
-if (opts["qmd-update"]) {
-  try {
-    const proc = Bun.spawn([QMD, "update"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
-    await proc.exited;
-    result.qmdUpdate = { status: proc.exitCode };
-  } catch (e) {
-    result.qmdUpdate = { status: -1, error: e.message };
-  }
-}
+// Repairs change QMD-facing projections. They mark dirty for the coordinator
+// but never execute an index-wide update from an operator write path.
+if (opts["qmd-update"]) result.qmdUpdate = { status: "deprecated" };
+result.qmdDirty = await markWorkspaceQmdDirty({
+  workspace: WORKSPACE,
+  collections: ["life"],
+  reason: "memory-repair:fact",
+});
 
 console.log(JSON.stringify(result));

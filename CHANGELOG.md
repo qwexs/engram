@@ -115,6 +115,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **qmd:** KG write, access tracking, schema repair, and cross-entity
+  contradiction paths no longer launch raw QMD subprocesses. Successful writes
+  only mark an owned collection dirty for the coordinator. The former
+  cross-collection semantic/contradiction checks report an explicit deferred
+  status until they can run through a controlled read path with trusted caller
+  context; `--qmd-update` on `memory-repair.js` is retained as a deprecated
+  compatibility flag and does not run maintenance.
+
 ### Added
 - `engram.json` template now seeds `qmd.collections` as a heartbeat
   maintenance allowlist (`primary`, `life`, `openclaw-root`). Workspaces can

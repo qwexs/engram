@@ -4,11 +4,9 @@
 
 import { join } from "path";
 import { isDuplicate, registerHash, extractKeywordsJaccard, jaccardSimilarity } from "./memory-dedup.js";
-import { resolveQmdCommand } from "./config.js";
 import { markWorkspaceQmdDirty } from "../src/qmd/maintenance-integration.ts";
 
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
-const QMD = resolveQmdCommand(WORKSPACE);
 
 // Extraction artifacts from heartbeat daily-note text that must never become KG facts.
 const BOILERPLATE_DENYLIST = [
@@ -99,16 +97,14 @@ if (opts.access) {
       console.error(`⚠️ summary rebuild after access failed: ${summaryError.message?.slice(0, 200) || summaryError}`);
     }
 
-    // Mark the summary change for coordinated maintenance. Legacy workspaces
-    // also refresh their local QMD index so immediate recall sees the tier move.
-    await markWorkspaceQmdDirty({ workspace: WORKSPACE, collections: ["life"], reason: "memory-write:access" });
-    let qmdUpdated = false;
-    try {
-      const qmdPrefix = QMD.split(/\s+/).filter(Boolean);
-      const proc = Bun.spawn([...qmdPrefix, "update"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
-      await proc.exited;
-      qmdUpdated = proc.exitCode === 0;
-    } catch {}
+    // A write only marks the index dirty. QMD maintenance belongs exclusively
+    // to the coordinator after the workspace cutover; this path must not
+    // launch a legacy index-wide update.
+    const qmdDirty = await markWorkspaceQmdDirty({
+      workspace: WORKSPACE,
+      collections: ["life"],
+      reason: "memory-write:access",
+    });
 
     console.log(JSON.stringify({
       status: "accessed",
@@ -116,7 +112,7 @@ if (opts.access) {
       accessCount: fact.accessCount,
       lastAccessed: today,
       summaryUpdated,
-      qmdUpdated,
+      qmdDirty,
     }));
   } catch (e) {
     console.error(`❌ ${e.message}`);
@@ -158,32 +154,6 @@ const entityDir = join(WORKSPACE, "life", entity);
 const itemsPath = join(entityDir, "items.json");
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
 const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
-const SEMANTIC_QUERY_TIMEOUT_MS = 30_000;
-const SEMANTIC_QUERY_MAX_CHARS = 300;
-
-function buildSemanticQuery(text) {
-  return String(text ?? "")
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/\x1B\[[0-?]*[ -\/]*[@-~]/g, " ")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, SEMANTIC_QUERY_MAX_CHARS)
-    .trim();
-}
-
-async function killSemanticQuery(proc) {
-  try { proc.kill(); } catch {}
-  if (process.platform === "win32" && proc.pid) {
-    try {
-      Bun.spawnSync(["taskkill", "/PID", String(proc.pid), "/T", "/F"], {
-        stdout: "ignore",
-        stderr: "ignore",
-      });
-    } catch {}
-  }
-}
-
 // 1. Дедупликация (read-only check, регистрация после записи)
 const dedupResult = await isDuplicate(opts.fact);
 if (dedupResult.duplicate) {
@@ -236,111 +206,17 @@ for (const pattern of BOILERPLATE_DENYLIST) {
   }
 }
 
-// 1.5. Семантическая проверка по множественным коллекциям (опционально)
+// 1.5. Semantic cross-collection dedup is intentionally deferred. Running a
+// QMD query from the write path makes writer latency and index topology depend
+// on a legacy subprocess. The coordinator/observe queue owns it after cutover.
 let semanticWarnings = [];
 let semanticCheckWarnings = [];
 if (opts["semantic-check"]) {
-  const searchCollections = opts["search-collections"]
-    ? opts["search-collections"].split(",").map(c => c.trim()).filter(Boolean)
-    : ["life"];
-
-  // Извлечение ключевых слов (аналогично memory-contradict.js)
-  function extractKeywords(text) {
-    return text
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, "")
-      .split(/\s+/)
-      .filter(w => w.length > 3);
-  }
-
-  function jaccardSimilarity(words1, words2) {
-    const set1 = new Set(words1);
-    const set2 = new Set(words2);
-    const intersection = [...set1].filter(w => set2.has(w));
-    const union = new Set([...set1, ...set2]);
-    return union.size > 0 ? intersection.length / union.size : 0;
-  }
-
-  try {
-    // qmd query --json (BM25 + vectors + rerank) для лучшего качества dedup
-    // QMD может быть "qmd.cmd" или "qmd.cmd --index <name>" — split by whitespace
-    const qmdPrefix = QMD.split(/\s+/).filter(Boolean);
-    const semanticQuery = buildSemanticQuery(opts.fact);
-    const qmdArgs = [...qmdPrefix, "query", semanticQuery, "--json", "-n", "10"];
-    for (const col of searchCollections) {
-      qmdArgs.push("-c", col);
-    }
-    const proc = Bun.spawn(qmdArgs, { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
-    const stdoutPromise = new Response(proc.stdout).text().catch(() => "");
-    const stderrPromise = new Response(proc.stderr).text().catch(() => "");
-    const completion = Promise.all([stdoutPromise, stderrPromise, proc.exited])
-      .then(([output, stderr, exitCode]) => ({ type: "completed", output, stderr, exitCode }));
-    const timeoutMs = Number(process.env.ENGRAM_QMD_QUERY_TIMEOUT_MS) || SEMANTIC_QUERY_TIMEOUT_MS;
-    let timer;
-    const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => resolve({ type: "timeout" }), timeoutMs);
-    });
-    const outcome = await Promise.race([completion, timeout]);
-    clearTimeout(timer);
-
-    if (outcome.type === "timeout") {
-      await killSemanticQuery(proc);
-      semanticCheckWarnings.push({
-        type: "timeout",
-        message: `qmd query exceeded ${timeoutMs}ms; semantic dedup skipped`,
-      });
-      throw new Error("__semantic_timeout_handled__");
-    }
-
-    let output = outcome.output;
-    if (outcome.exitCode !== 0) {
-      const detail = outcome.stderr.trim().slice(0, 200);
-      semanticCheckWarnings.push({
-        type: "error",
-        message: `qmd query exited with code ${outcome.exitCode}; semantic dedup skipped${detail ? `: ${detail}` : ""}`,
-      });
-      output = "[]";
-    }
-
-    // Парсинг JSON вывода QMD
-    // Формат: [{ file: "qmd://...", score: 0.85, snippet: "...", body: "..." }]
-    const newKeywords = extractKeywords(opts.fact);
-    let results = [];
-    try {
-      results = JSON.parse(output);
-    } catch {
-      // fallback: пустой результат при невалидном JSON
-    }
-
-    for (const r of results) {
-      const textPart = (r.snippet || r.body || "").replace(/```[\s\S]*?```/g, "").trim();
-      if (!textPart || textPart.length < 5) continue;
-
-      const lineKeywords = extractKeywords(textPart);
-      const sim = jaccardSimilarity(newKeywords, lineKeywords);
-      if (sim >= 0.5) {
-        // Block semantic duplicates (high similarity)
-        console.log(JSON.stringify({
-          status: "skipped",
-          reason: "Semantic duplicate (Jaccard " + sim.toFixed(2) + ")",
-          similarText: textPart.slice(0, 200),
-          source: r.file || "unknown",
-        }));
-        process.exit(0);
-      } else if (sim >= 0.3) {
-        semanticWarnings.push({
-          similarText: textPart.slice(0, 200),
-          similarity: parseFloat(sim.toFixed(2)),
-          source: r.file || "unknown",
-        });
-      }
-    }
-  } catch (e) {
-    if (e.message !== "__semantic_timeout_handled__") {
-      semanticCheckWarnings.push({ type: "error", message: e.message });
-      console.error(`⚠️ Semantic check ошибка: ${e.message}`);
-    }
-  }
+  semanticCheckWarnings.push({
+    type: "deferred",
+    message: "Cross-collection semantic dedup is deferred until the QMD coordinator cutover.",
+    ...(opts["search-collections"] ? { requestedCollections: opts["search-collections"] } : {}),
+  });
 }
 
 // 2. Проверить/создать entity
@@ -484,7 +360,8 @@ try {
   await proc.exited;
 } catch {}
 
-// 8. Regenerate derived facts-active.md (BEFORE qmd update, so qmd picks it up)
+// 8. Regenerate derived facts-active.md before the coordinator observes the
+// dirty generation, so the next maintenance pass indexes the derived view.
 //    Только для режима записи нового факта — в --access режиме accessCount/lastAccessed
 //    не попадают в derived, поэтому пересборка не нужна.
 if (!opts.access) {
@@ -519,21 +396,13 @@ if (!opts.access) {
 }
 
 // Shadow/coordinated modes record the successful KG write for the shared
-// maintenance coordinator. Legacy mode is a true no-op; the raw update below
-// remains in place until the production cutover PR.
+// maintenance coordinator. Legacy mode remains a true no-op: writers never
+// run raw QMD maintenance themselves.
 await markWorkspaceQmdDirty({
   workspace: WORKSPACE,
   collections: ["life"],
   reason: "memory-write:fact",
 });
-
-// 9. QMD update
-try {
-  // QMD может быть "qmd.cmd" или "qmd.cmd --index <name>" — split by whitespace
-  const qmdPrefix = QMD.split(/\s+/).filter(Boolean);
-  const proc = Bun.spawn([...qmdPrefix, "update"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
-  await proc.exited;
-} catch {}
 
 // 9. Вывод результата
 const result = { status: "created", fact: newFact };

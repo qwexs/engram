@@ -4,10 +4,8 @@
 // Cross-entity: bun scripts/memory-contradict.js --fact "Prefers JS" --entity "people/alice" --cross-entity
 
 import { join } from "path";
-import { resolveQmdCommand } from "./config.js";
 
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
-const QMD = resolveQmdCommand(WORKSPACE);
 
 // Парсинг аргументов
 function parseArgs(argv) {
@@ -38,10 +36,6 @@ if (!opts.entity) {
 const factText = opts.fact;
 const entity = opts.entity.replace(/\\/g, "/"); // нормализация для Windows
 const crossEntity = !!opts["cross-entity"];
-// Множественные коллекции для cross-entity поиска
-const collections = opts.collections
-  ? opts.collections.split(",").map(c => c.trim()).filter(Boolean)
-  : ["life"];
 
 // Извлечь ключевые слова из текста
 function extractKeywords(text) {
@@ -97,49 +91,6 @@ function findConflicts(newKeywords, facts) {
   return conflicts.sort((a, b) => b.similarity - a.similarity);
 }
 
-// Cross-entity: QMD discovery → read items.json → Jaccard
-async function discoverEntitiesViaQmd(queryText) {
-  try {
-    // qmd query (BM25 + vectors + rerank) для лучшего качества
-    // Формируем аргументы с множественными коллекциями
-    const qmdArgs = [QMD, "query", queryText, "--json"];
-    for (const col of collections) {
-      qmdArgs.push("-c", col);
-    }
-    const proc = Bun.spawn(qmdArgs, {
-      cwd: WORKSPACE,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const output = await new Response(proc.stdout).text();
-    await proc.exited;
-
-    // Извлечь entity paths из JSON вывода QMD
-    // Формат: [{ file: "qmd://life/people/alice/summary.md", ... }]
-    const entityPaths = new Set();
-    let results = [];
-    try {
-      results = JSON.parse(output);
-    } catch {
-      // fallback: пустой результат
-    }
-
-    for (const r of results) {
-      if (!r.file) continue;
-      // qmd://life/people/alice/summary.md → people/alice
-      const match = r.file.match(/qmd:\/\/life\/((?:projects|areas|resources)\/[\w\-\/]+?)\/summary\.md/);
-      if (match) {
-        entityPaths.add(match[1]);
-      }
-    }
-
-    return [...entityPaths];
-  } catch (e) {
-    console.error(`❌ Ошибка QMD: ${e.message}`);
-    return [];
-  }
-}
-
 // === Main ===
 
 const newKeywords = extractKeywords(factText);
@@ -152,7 +103,11 @@ const localConflicts = findConflicts(newKeywords, localFacts);
 let crossConflicts = [];
 let discoveredPaths = [];
 if (crossEntity) {
-  discoveredPaths = await discoverEntitiesViaQmd(factText);
+  // Cross-entity discovery is intentionally deferred until it receives a
+  // trusted caller context and executes through the QMD core. This command
+  // remains useful for its deterministic in-entity check without making a
+  // raw QMD subprocess part of a write path.
+  discoveredPaths = [];
 
   // Загрузить факты из найденных entities (кроме текущей)
   const crossFacts = [];
@@ -173,6 +128,8 @@ const result = {
 if (crossEntity) {
   result.crossEntityConflicts = crossConflicts;
   result.entitiesSearched = discoveredPaths.length;
+  result.crossEntityStatus = "deferred";
+  result.crossEntityReason = "QMD discovery runs only through the coordinator/controlled-read path after cutover.";
 }
 
 console.log(JSON.stringify(result, null, 2));

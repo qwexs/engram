@@ -615,133 +615,32 @@ describe("memory-write — related entities", () => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// Semantic check (--semantic-check, requires qmd running)
+// Semantic check (deferred until coordinator cutover)
 // ─────────────────────────────────────────────────────────────
 
-// Check if QMD index exists (required for semantic-check tests)
-const qmdIndexExists = existsSync(join(ENGRAM_DIR, ".qmd", "index.db")) ||
-  existsSync(join(ENGRAM_DIR, "workspace", ".qmd", "index.db"));
-
-describe("memory-write — semantic check (qmd integration)", () => {
-  test("sanitizes/caps qmd query and keeps the exact fact in KG", async () => {
+describe("memory-write — semantic check", () => {
+  test("never invokes QMD from the write path", async () => {
     createEntity();
     const qmdLog = join(TEST_WORKSPACE, "fake-qmd.log");
     const fakeQmd = `bun ${join(import.meta.dir, "fixtures", "fake-qmd.js")}`;
-    const longFact = `Durable migration completed successfully ${"diagnostic-noise ".repeat(40)}`;
-    const { result } = await runJson([
+    const { result, exitCode } = await runJson([
       "--entity", TEST_ENTITY,
-      "--fact", longFact,
+      "--fact", "Durable migration completed without a write-path QMD subprocess",
       "--category", "milestone",
       "--semantic-check",
+      "--search-collections", "life,another-collection",
     ], {
       ENGRAM_QMD: fakeQmd,
       FAKE_QMD_LOG: qmdLog,
     });
 
-    expect(result.status).toBe("created");
-    expect(result.fact.fact).toBe(longFact);
-    const calls = readFileSync(qmdLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    const queryCall = calls.find((call) => call[0] === "query");
-    expect(queryCall).toBeDefined();
-    expect(queryCall[1].length).toBeLessThanOrEqual(300);
-    expect(queryCall).toContain("-n");
-    expect(queryCall).toContain("10");
-  });
-
-  test("qmd query timeout is fail-open and does not affect qmd update/embed limits", async () => {
-    createEntity();
-    const fakeQmd = `bun ${join(import.meta.dir, "fixtures", "fake-qmd.js")}`;
-    const { result, exitCode } = await runJson([
-      "--entity", TEST_ENTITY,
-      "--fact", "Engram release migration completed with a bounded semantic check",
-      "--category", "milestone",
-      "--semantic-check",
-    ], {
-      ENGRAM_QMD: fakeQmd,
-      ENGRAM_QMD_QUERY_TIMEOUT_MS: "100",
-      FAKE_QMD_QUERY_DELAY_MS: "2000",
-    });
-
     expect(exitCode).toBe(0);
     expect(result.status).toBe("created");
-    expect(result.warnings?.semanticCheck?.[0]?.type).toBe("timeout");
-  });
-
-  test("writes unique fact without semantic warnings", async () => {
-    if (!qmdIndexExists) return; // skip: QMD index not available in this env
-    createEntity();
-    const { result } = await runJson([
-      "--entity", TEST_ENTITY,
-      "--fact", "Completely unique xyzzy blorgfish fact " + Date.now(),
-      "--category", "context",
-      "--semantic-check",
-    ]);
-
-    expect(result.status).toBe("created");
-    // No semantic warnings for a nonsense fact
-    expect(result.warnings?.semanticSimilar).toBeUndefined();
-  });
-
-  test("semantic check runs without errors on matching content", async () => {
-    if (!qmdIndexExists) return; // skip: QMD index not available in this env
-    createEntity();
-    // Use a fact that overlaps with KG content (Telemax project uses Bun + TypeScript + Hono)
-    // Even if Jaccard doesn't hit threshold, the check should run cleanly
-    const { result, stderr } = await runJson([
-      "--entity", TEST_ENTITY,
-      "--fact", "Telemax bot project uses Bun TypeScript Hono RabbitMQ PostgreSQL Kysely",
-      "--category", "context",
-      "--semantic-check",
-    ]);
-
-    // Should succeed (created or skipped as semantic dup) — no crash
-    expect(["created", "skipped"]).toContain(result.status);
-    // No error output from semantic check
-    expect(stderr).not.toContain("Semantic check ошибка");
-  });
-
-  test("respects custom --search-collections", async () => {
-    createEntity();
-    // Search in a non-existent collection → no matches → should create cleanly
-    const { result } = await runJson([
-      "--entity", TEST_ENTITY,
-      "--fact", "Custom collection search test " + Date.now(),
-      "--category", "context",
-      "--semantic-check",
-      "--search-collections", "nonexistent_collection_xyz",
-    ]);
-
-    expect(result.status).toBe("created");
-  });
-
-  test("semantic duplicate blocks write (Jaccard ≥ 0.5)", async () => {
-    createEntity();
-    // First: write a fact via normal path (no semantic check)
-    const uniqueFact = "Engram memory extraction system uses BM25 and vector search for deduplication";
-    await runJson([
-      "--entity", TEST_ENTITY,
-      "--fact", uniqueFact,
-      "--category", "context",
-    ]);
-
-    // Run qmd update so the new fact is indexed
-    const qmdProc = Bun.spawn(["qmd", "update"], { cwd: ENGRAM_DIR, stdout: "pipe", stderr: "pipe" });
-    await qmdProc.exited;
-
-    // Now try writing a very similar fact WITH semantic check
-    const { result } = await runJson([
-      "--entity", TEST_ENTITY,
-      "--fact", "Engram memory extraction uses BM25 vector search deduplication system",
-      "--category", "context",
-      "--semantic-check",
-      "--search-collections", "life",
-    ]);
-
-    // High Jaccard overlap → should be blocked by in-entity Jaccard or QMD semantic check
-    if (result.status === "skipped") {
-      expect(result.reason).toMatch(/Jaccard|Semantic duplicate/);
-    }
-    // If not blocked (qmd didn't index fast enough), at least it shouldn't crash
-    expect(["created", "skipped"]).toContain(result.status);
+    expect(result.warnings?.semanticCheck).toEqual([{
+      type: "deferred",
+      message: "Cross-collection semantic dedup is deferred until the QMD coordinator cutover.",
+      requestedCollections: "life,another-collection",
+    }]);
+    expect(existsSync(qmdLog)).toBe(false);
   });
 });

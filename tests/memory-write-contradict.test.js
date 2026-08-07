@@ -512,6 +512,24 @@ describe("memory-contradict — CLI integration", () => {
     expect(result.conflicts).toEqual([]);
   });
 
+  test("defers cross-entity discovery instead of invoking QMD", async () => {
+    const proc = Bun.spawn([
+      "bun", join(SCRIPTS_DIR, "memory-contradict.js"),
+      "--fact", "Dislikes TypeScript and prefers JavaScript for backend projects",
+      "--entity", TEST_ENTITY,
+      "--cross-entity",
+      "--collections", "life,another-collection",
+    ], { cwd: CWD, stdout: "pipe", stderr: "pipe", env: TEST_ENV });
+
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    const result = JSON.parse(out);
+
+    expect(result.crossEntityConflicts).toEqual([]);
+    expect(result.entitiesSearched).toBe(0);
+    expect(result.crossEntityStatus).toBe("deferred");
+  });
+
   test("exits with error when --fact is missing", async () => {
     const proc = Bun.spawn([
       "bun", join(SCRIPTS_DIR, "memory-contradict.js"),

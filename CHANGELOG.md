@@ -11,6 +11,12 @@
 
 ## Unreleased
 
+- **feat(qmd): add privacy-safe global-index migration and provisioning.**
+  Deployment topology stays in ignored local manifests. The migration planner
+  is dry-run-first with hash-guarded config backup/rollback; named-index
+  provisioning is idempotent, argv-safe, rejects collection drift, and never
+  invokes `qmd update` or `qmd embed` automatically.
+
 - **feat(qmd): add the disabled-by-default global maintenance coordinator
   core.** Trusted coordinator calls use explicit collection scope, while
   `update` remains index-wide. Atomic dirty generations, cross-process leases,

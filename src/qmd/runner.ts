@@ -39,6 +39,7 @@ function terminateProcessTree(proc: Bun.Subprocess): void {
 
 function operationClass(operation: QmdInvocation["operation"]): QmdOperationClass {
   if (operation === "capabilities" || operation === "status") return "diagnostic";
+  if (operation === "collection-add") return "provisioning";
   if (operation === "update" || operation === "embed") return "maintenance";
   return "read";
 }

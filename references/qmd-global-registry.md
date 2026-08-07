@@ -107,3 +107,43 @@ bun scripts/qmd-global-migrate.ts \
 This planner changes JSON configuration only. It never provisions collections
 and never invokes QMD maintenance; `qmd update` and `qmd embed` remain explicit
 cutover steps after config review.
+
+## Named-index provisioning
+
+Provisioning has its own dry-run and safety boundary. It reads the private
+migration manifest, compares the exact name/path/mask registry with the target
+SQLite, and reports `add` versus `present`. Unknown collections or path/mask
+drift are blockers.
+
+```bash
+bun scripts/qmd-global-provision.ts --manifest /private/path/migration.json
+```
+
+Apply requires an exact index confirmation and a new external backup
+directory. Existing targets are snapshotted with SQLite before the first
+collection change; a newly created target is recorded as such for rollback.
+
+```bash
+bun scripts/qmd-global-provision.ts \
+  --manifest /private/path/migration.json \
+  --apply \
+  --backup-dir /private/backups/provision-001 \
+  --confirm-index sample-global
+```
+
+Rollback refuses a changed target and requires the same explicit index name:
+
+```bash
+bun scripts/qmd-global-provision.ts \
+  --rollback /private/backups/provision-001/manifest.json \
+  --confirm-index sample-global
+```
+
+If the provisioning process was terminated after writing its `prepared`
+manifest but before completion, recovery also requires
+`--recover-incomplete`. A leftover lock is never removed automatically;
+verify that its recorded PID is dead before removing that exact lock file.
+
+Provisioning only registers collection metadata. It never runs `qmd update`,
+`qmd embed`, config migration, or workspace cutover. Those remain separately
+observable operator gates.

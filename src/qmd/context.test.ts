@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CliError, EXIT_CODES } from "../cli/errors.ts";
-import { resolveQmdContext, type QmdContextRuntime } from "./context.ts";
+import { resolveNamedQmdIndexPath, resolveQmdContext, type QmdContextRuntime } from "./context.ts";
 
 const roots: string[] = [];
 const runtime = (env: Record<string, string | undefined> = {}): QmdContextRuntime => ({
@@ -28,6 +28,12 @@ afterEach(() => {
 });
 
 describe("resolveQmdContext", () => {
+  test("resolves a named index path without requiring a migrated workspace config", () => {
+    expect(resolveNamedQmdIndexPath("sample-global", runtime({ XDG_CACHE_HOME: "/srv/cache" })))
+      .toBe("/srv/cache/qmd/sample-global.sqlite");
+    expect(() => resolveNamedQmdIndexPath("bad/name", runtime())).toThrow("non-path");
+  });
+
   test("resolves a canonical local index and merges readable policy", () => {
     const root = workspace({
       qmd: {

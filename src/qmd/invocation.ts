@@ -1,4 +1,5 @@
 import { contextError } from "../cli/errors.ts";
+import { isAbsolute } from "node:path";
 import type {
   QmdContext,
   QmdEffectiveScope,
@@ -77,7 +78,8 @@ export function buildQmdInvocation(
   const { operation } = request;
   const argv = [...context.command.prefixArgs];
   if (context.selector.kind === "named") argv.push("--index", context.selector.name);
-  argv.push(operation);
+  if (operation === "collection-add") argv.push("collection", "add");
+  else argv.push(operation);
 
   let collections: string[] = [];
   let readLimit: number | undefined;
@@ -90,10 +92,22 @@ export function buildQmdInvocation(
     readLimit = normalizedReadLimit(request.limit);
   } else if (operation === "embed") {
     collections = normalizedCollections(request.collections ?? context.policy.ownedCollections, operation);
+  } else if (operation === "collection-add") {
+    if (typeof request.collection !== "string" || request.collection.trim() === "" || /[\\/]/.test(request.collection)) {
+      throw contextError("QMD collection-add requires a non-path collection name.");
+    }
+    if (typeof request.path !== "string" || !isAbsolute(request.path)) {
+      throw contextError("QMD collection-add path must be absolute.");
+    }
+    if (typeof request.mask !== "string" || request.mask.trim() === "") {
+      throw contextError("QMD collection-add mask must be non-empty.");
+    }
+    collections = [request.collection.trim()];
+    argv.push(request.path, "--name", collections[0]!, "--mask", request.mask.trim());
   }
 
   if (requestsStructuredOutput(operation)) argv.push("--format", "json");
-  if (collections.length > 0) argv.push(...collectionArgs(collections));
+  if (collections.length > 0 && operation !== "collection-add") argv.push(...collectionArgs(collections));
   if (readLimit !== undefined) argv.push("-n", String(readLimit));
 
   return {
@@ -101,7 +115,7 @@ export function buildQmdInvocation(
     argv,
     cwd: context.workspace,
     operation,
-    effectiveScope: effectiveScope(operation),
+    effectiveScope: operation === "collection-add" ? "collections" : effectiveScope(operation),
     indexKey: context.physicalIndex.key,
     collections,
     timeoutMs: normalizedTimeout(request.timeoutMs),

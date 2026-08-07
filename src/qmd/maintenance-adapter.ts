@@ -9,6 +9,7 @@ import {
   type QmdMaintenanceMode,
 } from "./maintenance-integration.ts";
 import {
+  markQmdDirty,
   runQmdMaintenance,
   type QmdMaintenanceExecutor,
   type QmdMaintenanceRunResult,
@@ -42,6 +43,13 @@ export type GlobalMaintenanceOptions = {
   stateRoot?: string;
   timeoutMs?: number;
   execute?: QmdMaintenanceExecutor;
+};
+
+export type GlobalQmdBackfillMarkOptions = {
+  workspace: string;
+  collections: string[];
+  expectedIndex: string;
+  stateRoot?: string;
 };
 
 function configFor(workspace: string): JsonObject {
@@ -159,5 +167,40 @@ export async function runGlobalQmdMaintenance(
     stateRoot: options.stateRoot ?? resolveQmdMaintenanceStateRoot(),
     timeoutMs: options.timeoutMs,
     execute: options.execute,
+  });
+}
+
+/**
+ * Marks an explicit initial-backfill batch vector-dirty without refreshing the
+ * whole index again. The following coordinator pass embeds only this trusted
+ * subset; callers must select collections from the canonical registry.
+ */
+export async function markGlobalQmdBackfill(
+  options: GlobalQmdBackfillMarkOptions,
+) {
+  const workspace = resolve(options.workspace);
+  const mode = resolveWorkspaceQmdMaintenanceMode(workspace);
+  if (mode !== "coordinated") {
+    throw contextError("Global QMD backfill requires qmd.maintenance.mode=coordinated.", { mode });
+  }
+  const context = resolveQmdContext({ value: workspace, source: "explicit" });
+  if (context.selector.kind !== "named" || context.selector.name !== options.expectedIndex) {
+    throw contextError("Coordinator workspace does not resolve the expected named QMD index.", {
+      expectedIndex: options.expectedIndex,
+      selector: context.selector,
+    });
+  }
+  const collections = [...new Set(options.collections.map((value) => value.trim()).filter(Boolean))].sort();
+  if (collections.length === 0) throw contextError("Global QMD backfill requires explicit collections.");
+  const unknown = collections.filter((collection) => !context.policy.readableCollections.includes(collection));
+  if (unknown.length > 0) {
+    throw contextError("Global QMD backfill collections are outside the coordinator workspace scope.", { unknown });
+  }
+  return markQmdDirty(options.stateRoot ?? resolveQmdMaintenanceStateRoot(), {
+    indexKey: context.physicalIndex.key,
+    collections,
+    reason: "operator:initial-backfill",
+    bm25: false,
+    vectors: true,
   });
 }

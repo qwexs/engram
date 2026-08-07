@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  markGlobalQmdBackfill,
   runGlobalQmdMaintenance,
   runWorkspaceQmdMaintenance,
 } from "./maintenance-adapter.ts";
@@ -115,5 +116,17 @@ describe("global maintenance adapter", () => {
     });
     expect(result.status).toBe("clean");
     expect(calls).toBe(0);
+  });
+
+  test("marks an explicit initial-backfill batch vector-dirty without executing QMD", async () => {
+    const root = workspace("coordinated");
+    const stateRoot = mkdtempSync(join(tmpdir(), "engram-maintenance-state-"));
+    const state = await markGlobalQmdBackfill({
+      workspace: root,
+      collections: ["test-memory"],
+      expectedIndex: "sample-global",
+      stateRoot,
+    });
+    expect(state.dirty).toMatchObject({ bm25: false, vectors: true, collections: ["test-memory"] });
   });
 });

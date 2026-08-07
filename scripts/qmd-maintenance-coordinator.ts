@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { auditQmdGlobalRegistry, type QmdGlobalRegistry } from "../src/qmd/global-registry.ts";
-import { runGlobalQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
+import { markGlobalQmdBackfill, runGlobalQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
 
 type Options = Record<string, string | boolean>;
 
@@ -39,16 +39,32 @@ function readRegistry(path: string): QmdGlobalRegistry {
   return registry;
 }
 
+function selectedCollections(options: Options, registry: QmdGlobalRegistry): string[] {
+  const requested = typeof options.collections === "string"
+    ? options.collections.split(",").map((value) => value.trim()).filter(Boolean)
+    : registry.collections.map((entry) => entry.name);
+  const collections = [...new Set(requested)].sort();
+  if (collections.length === 0) throw new Error("--collections must contain at least one collection");
+  const allowed = new Set(registry.collections.map((entry) => entry.name));
+  const unknown = collections.filter((collection) => !allowed.has(collection));
+  if (unknown.length > 0) throw new Error(`--collections contains names outside the registry: ${unknown.join(", ")}`);
+  return collections;
+}
+
 const options = parseArgs(process.argv);
 if (options.help || options.h) {
   console.log(`qmd-maintenance-coordinator
 
 Usage:
-  bun scripts/qmd-maintenance-coordinator.ts --manifest <path> --workspace <path> [--state-root <path>] [--timeout-ms <ms>]
+  bun scripts/qmd-maintenance-coordinator.ts --manifest <path> --workspace <path> [--collections <a,b,...>] [--initial-backfill] [--state-root <path>] [--timeout-ms <ms>]
 
 The manifest may be a global registry or a migration/provisioning manifest
 containing a registry. This command is the only coordinated execution entry
-point; workspace heartbeats delegate when maintenance.mode=coordinated.`);
+point; workspace heartbeats delegate when maintenance.mode=coordinated.
+
+Without --collections, routine maintenance uses the full registry. An
+--initial-backfill requires an explicit --collections subset and marks only
+that subset vector-dirty before the pass; it never implies a full-index run.`);
   process.exit(0);
 }
 
@@ -59,14 +75,23 @@ try {
   if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)) {
     throw new Error("--timeout-ms must be a positive integer");
   }
+  if (options["initial-backfill"] && typeof options.collections !== "string") {
+    throw new Error("--initial-backfill requires an explicit --collections subset");
+  }
+  const workspace = required(options, "workspace");
+  const collections = selectedCollections(options, registry);
+  const stateRoot = typeof options["state-root"] === "string" ? resolve(options["state-root"]) : undefined;
+  const backfill = options["initial-backfill"]
+    ? await markGlobalQmdBackfill({ workspace, collections, expectedIndex: registry.index.name, stateRoot })
+    : undefined;
   const result = await runGlobalQmdMaintenance({
-    workspace: required(options, "workspace"),
-    collections: registry.collections.map((entry) => entry.name),
+    workspace,
+    collections,
     expectedIndex: registry.index.name,
-    stateRoot: typeof options["state-root"] === "string" ? resolve(options["state-root"]) : undefined,
+    stateRoot,
     timeoutMs,
   });
-  console.log(JSON.stringify(result));
+  console.log(JSON.stringify({ ...result, ...(backfill ? { backfill } : {}) }));
   process.exit(result.status === "error" || result.status === "partial" ? 1 : 0);
 } catch (error) {
   console.error(JSON.stringify({

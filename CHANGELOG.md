@@ -8,6 +8,9 @@
 - **fix(cron): distinguish disabled heartbeat jobs from missing jobs.** The
   validation guard now uses `openclaw cron list --all` and reports an
   intentionally disabled job as a warning during a maintenance freeze.
+- **feat(qmd): add explicit initial-backfill batches.** The coordinator accepts
+  a registry-validated collection subset; `--initial-backfill` is rejected
+  without that explicit scope and marks only the selected vectors dirty.
 
 - **refactor(qmd): route bootstrap and watchdog diagnostics through the typed
   core.** Added narrow probe and collection-list operations plus a policy-bound

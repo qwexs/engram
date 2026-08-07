@@ -1,7 +1,7 @@
 # Global QMD maintenance coordinator
 
-> Status: coordinator core merged; shadow writer integration implemented.
-> Scope: production execution and index migration remain disabled.
+> Status: coordinator core, shadow writers and runtime adapter implemented.
+> Scope: production config cutover and initial vector backfill remain gated.
 
 ## Decision
 
@@ -128,3 +128,21 @@ owned by the writing workspace. State errors are logged and returned as a
 structured `error`, but are fail-open for the already completed content write.
 Legacy raw maintenance remains active during shadow observation and is removed
 only by the execution-cutover PR.
+
+## Runtime ownership adapter
+
+Lifecycle hooks never execute QMD maintenance:
+
+- bootstrap records no write and defers freshness to the scheduler;
+- session-end appends the marker and records the dirty generation only;
+- workspace heartbeat calls the typed adapter rather than a shell command.
+
+The adapter preserves legacy/shadow behavior through policy-authorized typed
+`update` and `embed` invocations. In `coordinated` mode a workspace heartbeat
+returns `delegated` without starting QMD. The single global scheduler invokes
+`scripts/qmd-maintenance-coordinator.ts`, validates its private registry and
+named-index identity, and then acquires the physical-index lease.
+
+The coordinator job may be declared disabled before cutover. It must not be
+enabled until every workspace is in coordinated mode and the initial vector
+backfill has passed its separate operator gate.

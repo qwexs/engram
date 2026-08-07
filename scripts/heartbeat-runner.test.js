@@ -32,31 +32,9 @@ import {
 // imported as a non-entry-point module. This avoids re-running main()'s
 // side effects (cron state mutations, qmd discovery, etc.).
 import "../scripts/heartbeat-runner.js";
-const { shouldApplyDomainHandoffs, isWorkerRunning, staleWorker, buildOllTask, planSessionReconciliation, qmdCommandArgs, qmdMaintenanceCollections, describeQmdEmbedOutcome } = globalThis.__engramHeartbeatRunnerExports;
+const { shouldApplyDomainHandoffs, isWorkerRunning, staleWorker, buildOllTask, planSessionReconciliation, describeQmdEmbedOutcome } = globalThis.__engramHeartbeatRunnerExports;
 
-describe("QMD embed orchestration", () => {
-  test("requests the structured embed result", () => {
-    const args = qmdCommandArgs("embed");
-    expect(args.slice(-2)).toEqual(["--format", "json"]);
-  });
-
-  test("does not add embed-only output flags to update", () => {
-    expect(qmdCommandArgs("update")).not.toContain("--format");
-  });
-
-  test("uses only self-owned qmd.collections as the maintenance allowlist", () => {
-    expect(qmdMaintenanceCollections({
-      collections: ["owner-memory", "life"],
-      verticalAccess: {
-        enabled: true,
-        collections: {
-          "child-memory": { path: "/srv/child/memory" },
-          "child-domains": { path: "/srv/child/domains" },
-        },
-      },
-    })).toEqual(["owner-memory", "life"]);
-  });
-
+describe("QMD maintenance reporting", () => {
   test("surfaces a partial structured result as a maintenance warning", () => {
     const outcome = describeQmdEmbedOutcome({ status: 0 }, {
       schema: "qmd.embed.v1",

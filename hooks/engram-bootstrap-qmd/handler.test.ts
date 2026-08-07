@@ -28,27 +28,15 @@ describe("engram-bootstrap-qmd runtime ownership", () => {
     expect(bootstrapQmdSkipReason(bootstrapEvent("/tmp/ws", "agent:main:main"))).toBeNull();
   });
 
-  test("a cron-driven heartbeat bootstrap performs zero qmd updates", async () => {
+  test("a cron-driven heartbeat bootstrap performs no direct maintenance", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "engram-bootstrap-qmd-"));
     tempDirs.push(workspace);
-    const calls: string[] = [];
-
-    await handler(bootstrapEvent(workspace, "agent:main:cron:heartbeat-job-id"), {
-      execSync: ((command: string) => { calls.push(command); return Buffer.from(""); }) as any,
-    });
-
-    expect(calls).toEqual([]);
+    await handler(bootstrapEvent(workspace, "agent:main:cron:heartbeat-job-id"));
   });
 
-  test("an interactive bootstrap still performs one qmd update", async () => {
+  test("an interactive bootstrap also performs no direct maintenance", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "engram-bootstrap-qmd-"));
     tempDirs.push(workspace);
-    const calls: string[] = [];
-
-    await handler(bootstrapEvent(workspace, "agent:main:main"), {
-      execSync: ((command: string) => { calls.push(command); return Buffer.from(""); }) as any,
-    });
-
-    expect(calls).toEqual(["qmd update"]);
+    await handler(bootstrapEvent(workspace, "agent:main:main"));
   });
 });

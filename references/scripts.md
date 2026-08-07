@@ -307,7 +307,14 @@ bun skills/engram/scripts/heartbeat-runner.js \
   --label-prefix hb
 ```
 
-Runs the mechanical heartbeat path without relying on an LLM to interpret `HEARTBEAT.md`: lock handling, daily note creation, extraction watermark, weekly summary rebuild, heartbeat report, validation, `qmd update`, and `qmd embed`. Recommended production cron target.
+Runs the mechanical heartbeat path without relying on an LLM to interpret `HEARTBEAT.md`: lock handling, daily note creation, extraction watermark, weekly summary rebuild, heartbeat report, validation, and QMD maintenance through the typed runtime adapter. Legacy/shadow workspaces retain scoped maintenance; coordinated workspaces delegate QMD to the single global scheduler.
+
+## qmd-maintenance-coordinator.ts — Global maintenance entrypoint
+
+Validates a private global registry/migration manifest, confirms that the
+coordinator workspace resolves the expected named index, and runs one
+generation-coalesced `update -> embed` pass under the physical-index lease.
+It is the only scheduled execution entrypoint for coordinated mode.
 
 Use `--all-active-sessions` for workspace-level heartbeat. Use `engram.json` `qmd.index`, `qmd.collections`, and optional `qmd.command` when a workspace has a named QMD index or needs a Windows-safe command path.
 

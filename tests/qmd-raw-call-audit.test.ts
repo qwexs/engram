@@ -10,8 +10,6 @@ const temporaryDirectories: string[] = [];
 // CLI. Keep each entry at the raw execution line: additions are architecture
 // changes and must be reviewed rather than silently becoming more debt.
 const BASELINE_RAW_QMD_CALLS = [
-  "hooks/engram-bootstrap-qmd/handler.ts:71:deps.execSync(\"qmd update\", {",
-  "hooks/engram-session-end/handler.ts:79:execSync(\"qmd update\", { cwd: workspaceDir, timeout: 15000, stdio: \"pipe\" });",
   "scripts/_lib/workspace-watchdog.js:410:: runCommand(qmd, qmdCollectionListArgs(engram), workspace, 30000);",
   "scripts/_lib/workspace-watchdog.js:432:: runCommand(qmd, qmdCapabilitiesArgs(), workspace, 30000);",
   "scripts/add-domain.js:590:execSync(`${QMD} --help`, { stdio: 'pipe' });",
@@ -21,7 +19,6 @@ const BASELINE_RAW_QMD_CALLS = [
   "scripts/add-domain.js:634:execSync(`${QMD} update`, { stdio: 'pipe' });",
   "scripts/add-session.js:96:execSync(`${QMD} collection add \"${sessionPath}\" --name ${collectionName} --mask \"**/*.md\"`, { stdio: 'pipe' });",
   "scripts/add-session.js:98:execSync(`${QMD} update`, { stdio: 'pipe' });",
-  "scripts/heartbeat-runner.js:1601:const proc = spawnSync(command, [\"--index\", String(qmd.index), \"collection\", \"list\", \"--format\", \"cli\"], {",
   "scripts/init.js:159:execSync(`${QMD} --help`, { stdio: 'pipe' });",
   "scripts/init.js:651:execSync(`${QMD} collection show \"${collectionName}\"`, { stdio: 'pipe' });",
   "scripts/init.js:659:execSync(`${QMD} collection add \"${sessionPath}\" --name ${collectionName} --mask \"**/*.md\"`, { stdio: 'pipe' });",

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **refactor(qmd): centralize runtime maintenance ownership.** Bootstrap and
+  session-end hooks no longer execute QMD. Workspace heartbeat uses the typed
+  policy adapter in legacy/shadow mode and delegates without spawning QMD in
+  coordinated mode. Added a manifest-validated global coordinator entrypoint
+  for the single physical-index scheduler; routine maintenance still never
+  uses `-f`.
+
 ## 2026-07-25
 
 - feat(heartbeat): weekly rethink cadence (7-day gate + weekly-synthesis proximity check)

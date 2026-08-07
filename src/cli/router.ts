@@ -13,7 +13,7 @@ import {
 import { executeQmdRead, type QmdReadData, type QmdReadOperation } from "../qmd/read.ts";
 import type { QmdContextData } from "../qmd/types.ts";
 
-export const VERSION = "3.5.0";
+export const VERSION = "3.6.0";
 
 const GLOBAL_OPTIONS_HELP = `Global options:
   --workspace <path>    Workspace root (default: current directory)

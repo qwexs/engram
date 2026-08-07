@@ -89,7 +89,7 @@ describe("install-cli", () => {
     const content = readFileSync(launcher, "utf8");
     expect(content).toContain("managed by scripts/install-cli.js");
     expect(content).toContain(join(root, "bin", "engram"));
-    expect(stdout(first)).toContain("Post-check: engram --version → 3.5.0");
+    expect(stdout(first)).toContain("Post-check: engram --version → 3.6.0");
 
     const second = run(binDir);
     expect(second.exitCode).toBe(0);

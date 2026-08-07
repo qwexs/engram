@@ -110,7 +110,7 @@ export function decideQmdPolicy(
 
   if (invocation.operation === "embed") {
     if (!MAINTENANCE_CALLERS.has(caller.kind)) {
-      return decision(invocation, caller, false, "DENY_MAINTENANCE_CALLER", "Embed is limited to heartbeat and provisioning callers.");
+      return decision(invocation, caller, false, "DENY_MAINTENANCE_CALLER", "Embed is limited to trusted maintenance callers.");
     }
     if (!hasCapability(caller, "maintenance")) {
       return decision(invocation, caller, false, "DENY_CALLER_CAPABILITY", "Explicit maintenance capability is required.");

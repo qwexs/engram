@@ -9,7 +9,7 @@
 - feat(rethink): proposals summary sent to main session via sessions_send (business language)
 - feat(cron): add sessions_send to HEARTBEAT_TOOLS_ALLOW for rethink subagent
 
-## Unreleased
+## 3.6.0 — 2026-08-07
 
 - **feat(qmd): add privacy-safe global-index migration and provisioning.**
   Deployment topology stays in ignored local manifests. The migration planner
@@ -77,8 +77,6 @@
   meta-domain references, and active documents without vectors
   (`WD-QMD-015`…`WD-QMD-020`). Flat deployments remain unchanged when the
   section is absent or disabled.
-
-## Unreleased
 
 - Follow-up hardening for schema repair: `memory-write.js` now rejects invalid
   abstraction levels at the write boundary; `memory-repair.js` refreshes the

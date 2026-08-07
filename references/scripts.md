@@ -274,7 +274,20 @@ Deterministically regenerates `summary.md` for all entities in `life/` from thei
 
 **With `--apply-decay`**: applies Memory Decay tiers (Hot/Warm/Cold) based on `lastAccessed`/`createdAt`/`source` date. Summary format: `## Current (Hot)`, `## Background (Warm)`, `## Enduring (Principles)`. Cold facts excluded from summary unless selected by semantic priority. Cold principles capped by `--max-cold-principles` (default 12).
 
-Decay algorithm: see [references/decay-rules.md](decay-rules.md). Used by `HB-SYNTHESIS.md` subagent during Monday heartbeat.
+Decay algorithm: see [references/decay-rules.md](decay-rules.md). Rebuilt after fact writes, by the daily coordinator, and by Monday heartbeat synthesis.
+
+## daily-summary-coordinator.js — Sequential daily summary reconciliation
+
+```bash
+bun skills/engram/scripts/daily-summary-coordinator.js \
+  --workspace /opt/openclaw/workspace \
+  --workspace /opt/openclaw/workspaces/elena \
+  --json
+```
+
+Runs `rebuild-summaries.js --apply-decay` sequentially for explicit workspaces.
+It never calls QMD or an LLM. Use one global scheduled job, not concurrent
+daily jobs per workspace. A lock directory prevents overlapping runs.
 
 ## rotate-notes.js — Three-Layer Rotation
 

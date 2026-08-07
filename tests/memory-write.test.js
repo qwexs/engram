@@ -538,17 +538,42 @@ describe("memory-write — in-entity Jaccard deduplication", () => {
 
 describe("memory-write — access tracking", () => {
   test("increments accessCount and updates lastAccessed", async () => {
-    createEntity();
+    const accessEntity = "people/access-example";
+    const accessDir = join(LIFE_DIR, accessEntity);
+    mkdirSync(accessDir, { recursive: true });
+    writeFileSync(join(accessDir, "items.json"), JSON.stringify({
+      entityId: accessEntity,
+      entityType: "person",
+      facts: [{
+        id: "access-example-001",
+        fact: "Access tracking target is immediately restored to the summary",
+        category: "preference",
+        confidence: 1,
+        abstractionLevel: "pattern",
+        tags: [],
+        timestamp: "2026-01-01",
+        source: "2026-01-01",
+        status: "active",
+        supersededBy: null,
+        relatedEntities: [],
+        lastAccessed: "2026-01-01",
+        accessCount: 1,
+      }],
+    }, null, 2));
+    writeFileSync(join(accessDir, "summary.md"), "# Access example\n\n_Stale._\n");
+
     const { result: wr } = await runJson([
-      "--entity", TEST_ENTITY,
-      "--fact", "Access tracking target " + Date.now(),
+      "--entity", accessEntity,
+      "--fact", "Unrelated fact to initialise the write pipeline " + Date.now(),
       "--category", "context",
     ]);
-    const factId = wr.fact.id;
+    expect(wr.status).toBe("created");
 
-    const { result } = await runJson(["--access", "--entity", TEST_ENTITY, "--id", factId]);
+    const { result } = await runJson(["--access", "--entity", accessEntity, "--id", "access-example-001"]);
     expect(result.status).toBe("accessed");
     expect(result.accessCount).toBe(2);
+    expect(result.summaryUpdated).toBe(true);
+    expect(readFileSync(join(accessDir, "summary.md"), "utf-8")).toContain("Access tracking target");
   });
 
   test("errors when --access without --entity", async () => {

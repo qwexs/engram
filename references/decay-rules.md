@@ -21,9 +21,13 @@ Facts with `accessCount >= 10` bump from Cold to Warm, regardless of recency.
 - `pattern` (L2) — include if Warm or Hot
 - `episode` (L1) — standard decay rules (Hot + Warm only)
 
-## Weekly Synthesis Algorithm
+## Summary Refresh Algorithm
 
-Executed during Monday heartbeat:
+Summary is a materialized view of active facts. It is refreshed after each
+successful `memory-write.js`, by one global sequential daily coordinator, and
+during Monday heartbeat synthesis as a reconciliation/reporting path.
+
+Every refresh uses the same algorithm:
 
 1. For each entity in `life/`:
    - Load all facts with `status: "active"` from `items.json`

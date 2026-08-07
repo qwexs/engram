@@ -79,7 +79,45 @@ if (opts.access) {
     fact.accessCount = (fact.accessCount || 0) + 1;
     fact.lastAccessed = today;
     await Bun.write(itemsPath, JSON.stringify(data, null, 2));
-    console.log(JSON.stringify({ status: "accessed", id: opts.id, accessCount: fact.accessCount, lastAccessed: today }));
+
+    // An accessed Cold/Warm fact must become visible to the next prompt right
+    // away, not only after the nightly fleet reconciliation.
+    let summaryUpdated = false;
+    try {
+      const proc = Bun.spawn(
+        ["bun", join(import.meta.dir, "rebuild-summaries.js"), "--entity", entity, "--apply-decay", "--json"],
+        { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" },
+      );
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      await proc.exited;
+      if (proc.exitCode !== 0) throw new Error(stderr || `summary rebuild exited ${proc.exitCode}`);
+      summaryUpdated = Boolean(JSON.parse(stdout).updated);
+    } catch (summaryError) {
+      console.error(`⚠️ summary rebuild after access failed: ${summaryError.message?.slice(0, 200) || summaryError}`);
+    }
+
+    // Mark the summary change for coordinated maintenance. Legacy workspaces
+    // also refresh their local QMD index so immediate recall sees the tier move.
+    await markWorkspaceQmdDirty({ workspace: WORKSPACE, collections: ["life"], reason: "memory-write:access" });
+    let qmdUpdated = false;
+    try {
+      const qmdPrefix = QMD.split(/\s+/).filter(Boolean);
+      const proc = Bun.spawn([...qmdPrefix, "update"], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" });
+      await proc.exited;
+      qmdUpdated = proc.exitCode === 0;
+    } catch {}
+
+    console.log(JSON.stringify({
+      status: "accessed",
+      id: opts.id,
+      accessCount: fact.accessCount,
+      lastAccessed: today,
+      summaryUpdated,
+      qmdUpdated,
+    }));
   } catch (e) {
     console.error(`❌ ${e.message}`);
     process.exit(1);
@@ -458,6 +496,25 @@ if (!opts.access) {
     await proc.exited;
   } catch (e) {
     console.error(`⚠️ derive-facts.js failed: ${e.message?.slice(0, 200) || e}`);
+  }
+}
+
+// Keep the prompt-facing materialized summary fresh for the entity that just
+// changed. Weekly synthesis remains the fleet-wide reconciliation, but waiting
+// for it leaves new preferences and decisions absent from bootstrap context.
+if (!opts.access) {
+  try {
+    const proc = Bun.spawn(
+      ["bun", join(import.meta.dir, "rebuild-summaries.js"), "--entity", entity, "--apply-decay", "--json"],
+      { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" },
+    );
+    await proc.exited;
+    if (proc.exitCode !== 0) {
+      const err = await new Response(proc.stderr).text();
+      console.error(`⚠️ summary rebuild failed: ${err.slice(0, 200)}`);
+    }
+  } catch (e) {
+    console.error(`⚠️ summary rebuild failed: ${e.message?.slice(0, 200) || e}`);
   }
 }
 

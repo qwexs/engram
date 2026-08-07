@@ -45,6 +45,13 @@ bun bin/engram --workspace /path/to/workspace \
 - operator CLI не считается OS security boundary и не принимает пользовательский `--scope`;
 - agent-facing режим не включён до появления trusted caller context.
 
+Внутренний maintenance coordinator доступен только как core API: он хранит
+dirty generations вне индексируемого workspace, сериализует один physical
+index lease и запускает index-wide `update` перед scoped incremental `embed`.
+Обычный цикл никогда не использует `-f`. Hooks, cron и production topology
+переключаются отдельным rollout после canary; см.
+[`references/qmd-global-maintenance.md`](references/qmd-global-maintenance.md).
+
 Безопасная установка launcher:
 
 ```bash

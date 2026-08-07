@@ -215,7 +215,11 @@ bun bin/engram --workspace /path/to/workspace \
   qmd query "search text" -c workspace-memory -c life
 ```
 
-Публичных `engram qmd update/embed` и generic passthrough нет. Maintenance остаётся на legacy call sites до появления coordinator и host governor.
+Публичных `engram qmd update/embed` и generic passthrough нет. Внутренний
+coordinator core хранит dirty generations по physical index, объединяет записи
+и выполняет защищённую последовательность index-wide `update` → scoped
+incremental `embed` без `-f`. Production call sites и topology остаются legacy
+до отдельного rollout. Контракт: [`references/qmd-global-maintenance.md`](references/qmd-global-maintenance.md).
 
 Launcher устанавливается в `$BUN_INSTALL/bin` или `~/.bun/bin`. Installer не перезаписывает и не удаляет чужие файлы.
 

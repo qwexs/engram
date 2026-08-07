@@ -93,7 +93,21 @@ if (commandArgs[0] === "collection" && ["add", "remove"].includes(commandArgs[1]
   process.exit(0);
 }
 
-if (["update", "embed"].includes(commandArgs[0])) {
+if (commandArgs[0] === "update") {
+  process.exit(0);
+}
+
+if (commandArgs[0] === "embed") {
+  console.log(JSON.stringify({
+    schema: "qmd.embed.v1",
+    status: "ok",
+    pendingBefore: 1,
+    pendingAfter: 0,
+    documentsEmbedded: 1,
+    chunksEmbedded: 1,
+    errors: 0,
+    skippedReason: null,
+  }));
   process.exit(0);
 }
 

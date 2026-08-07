@@ -63,6 +63,19 @@ describe("buildQmdInvocation", () => {
     expect(invocation.timeoutMs).toBe(45_000);
   });
 
+  test("allows a trusted internal coordinator to request an explicit embed scope", () => {
+    const invocation = buildQmdInvocation(context(), {
+      operation: "embed",
+      collections: ["self-memory", "child"],
+    });
+    expect(invocation.argv).toEqual([
+      "--no-gpu", "--index", "team", "embed", "--format", "json",
+      "-c", "self-memory", "-c", "child",
+    ]);
+    expect(invocation.collections).toEqual(["self-memory", "child"]);
+    expect(invocation.argv).not.toContain("-f");
+  });
+
   test.each(["search", "query", "vsearch"] as const)("uses explicit collections for %s", (operation) => {
     const request: QmdInvocationRequest = { operation, query: "term", collections: ["life"] };
     const invocation = buildQmdInvocation(context({ selector: { kind: "local" } }), request);

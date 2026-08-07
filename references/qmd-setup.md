@@ -112,27 +112,35 @@ Use `engram.json` `qmd.collections` as the heartbeat maintenance allowlist:
 }
 ```
 
-Rule of thumb: add only self-owned collections here. Child workspaces should
-maintain their own embeddings. Watchdog reports missing or over-broad
-maintenance allowlists as `WD-QMD-008` / `WD-QMD-009`.
+For the legacy isolated topology, add only self-owned collections here.
+Embeddings are physical-index local: a vector created in a child SQLite is not
+available to an upper SQLite. Therefore isolated vertical hybrid search either
+duplicates vectors in the upper index or requires federation; child
+maintenance alone can provide only child-index search, not parent-index vector
+coverage. Watchdog reports missing or over-broad legacy maintenance allowlists
+as `WD-QMD-008` / `WD-QMD-009`.
 
-## Index isolation and embed concurrency
+## Physical index and embed concurrency
 
 An index is a physical SQLite file, not a persistent QMD process. With normal
 CLI usage, each `qmd embed` invocation starts its own process, loads the model,
 and releases it when the command exits.
 
-Keep private workspaces on separate indexes. A workspace-local
-`.qmd/index.sqlite` is selected from that workspace's working directory; an
-explicit `engram.json -> qmd.index` selects a named index instead. The QMD
-embed lock protects one physical index only. It prevents duplicate embed work
-inside that index, but it does not serialize embeds against other index files.
+The Takeron target is one global physical index with unique collections.
+Workspace/session collection scope controls access; the shared SQLite stores
+each document and vector once. Main uses the same index but its readable scope
+contains only technical collections.
 
-Consequently, simultaneous heartbeat runs for separate workspaces may load
-multiple model instances and add their RAM/VRAM usage. Stagger heartbeat jobs
-operationally. If measurements show memory pressure, add a host-level embed
-concurrency limiter (for example, a semaphore allowing one or two processes)
-without combining private indexes or their collections.
+The QMD embed lock protects that physical index. The Engram coordinator adds a
+longer maintenance lease and dirty generations so all workspace writes become
+one index-wide `update` followed by one explicit multi-collection incremental
+`embed`. Routine maintenance never uses `-f`.
+
+Until the topology rollout, workspace-local `.qmd/index.sqlite` files remain
+active. Separate indexes have separate QMD locks and could still load several
+models concurrently, so legacy heartbeat jobs stay disabled or staggered and
+manual backfill remains sequential. The coordinator/core PR does not migrate
+or delete those indexes.
 
 ## Commands
 
@@ -150,7 +158,7 @@ bun bin/engram --workspace /path/to/workspace \
   qmd query "search text" -c <collection> -c <collection>
 ```
 
-Новая команда без `-c` или с коллекцией вне readable allowlist завершится до `Bun.spawn`. CLI v1 не экспортирует `update` и `embed`: существующие maintenance call sites остаются legacy до coordinator и host governor.
+Новая команда без `-c` или с коллекцией вне readable allowlist завершится до `Bun.spawn`. CLI не экспортирует raw `update` и `embed`: maintenance coordinator использует общий core, а существующие production call sites остаются legacy до отдельного rollout.
 
 Ниже приведены прямые команды QMD для настройки коллекций, maintenance и диагностики legacy-интеграций. Не добавляйте новые raw QMD-вызовы в runtime-код: architecture audit фиксирует текущий migration debt.
 

@@ -11,6 +11,13 @@
 
 ## Unreleased
 
+- **feat(qmd): add the disabled-by-default global maintenance coordinator
+  core.** Trusted coordinator calls use explicit collection scope, while
+  `update` remains index-wide. Atomic dirty generations, cross-process leases,
+  stale recovery and failure-safe `update` → incremental `embed` coalesce
+  writes without routine `-f`. Production call sites, scheduler and index
+  topology are intentionally unchanged.
+
 - **feat(cli): add the Bun-based Engram QMD CLI.** Added canonical workspace /
   physical-index resolution, argv-safe QMD execution, typed operation policy,
   read-only diagnostics, and controlled `search` / `query` / `vsearch` with

@@ -89,7 +89,7 @@ export function buildQmdInvocation(
     argv.push(request.query);
     readLimit = normalizedReadLimit(request.limit);
   } else if (operation === "embed") {
-    collections = normalizedCollections(context.policy.ownedCollections, operation);
+    collections = normalizedCollections(request.collections ?? context.policy.ownedCollections, operation);
   }
 
   if (requestsStructuredOutput(operation)) argv.push("--format", "json");

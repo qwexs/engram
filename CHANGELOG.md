@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.6.1 — 2026-08-07
 
 - **refactor(qmd): centralize runtime maintenance ownership.** Bootstrap and
   session-end hooks no longer execute QMD. Workspace heartbeat uses the typed

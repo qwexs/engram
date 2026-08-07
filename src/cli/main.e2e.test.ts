@@ -34,7 +34,7 @@ describe("engram executable", () => {
 
     const version = await invoke(["--version"]);
     expect(version).toEqual(expect.objectContaining({ exitCode: 0, stderr: "" }));
-    expect(version.stdout).toBe("3.6.0\n");
+    expect(version.stdout).toBe("3.6.1\n");
   });
 
   test("wraps JSON success output in the standard envelope", async () => {
@@ -48,7 +48,7 @@ describe("engram executable", () => {
         elapsedMs: expect.any(Number),
         workspace: root,
       },
-      data: { kind: "version", version: "3.6.0" },
+      data: { kind: "version", version: "3.6.1" },
     });
   });
 

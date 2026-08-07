@@ -1,6 +1,6 @@
 {
   "name": "@qwexs/engram",
-  "version": "3.6.0",
+  "version": "3.6.1",
   "private": true,
   "description": "Engram command-line interface",
   "type": "module",

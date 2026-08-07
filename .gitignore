@@ -10,6 +10,7 @@ node_modules/
 # full filesystem paths and per-machine data. Workspace/memory-state/
 # is still tracked (only the fact-hashes.json file inside it).
 workspace/ops/
+.engram-private/
 
 # Local backups and runtime artifacts — never source.
 *.bak-*

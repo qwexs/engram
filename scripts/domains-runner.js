@@ -204,7 +204,7 @@ function sectionBody(noteContent, sectionName) {
 // Returns true when the bound daily note is unambiguously empty of domain-
 // relevant signal. High-signal sections are Events, Decisions, and Learnings
 // (same surface agents write via daily-note-append.js). Decisions-only days
-// (e.g. Chromolab plan approval with empty Events) must spawn domains-write.
+  // (e.g. Example Clinic plan approval with empty Events) must spawn domains-write.
 //
 // Gates:
 //   1. file missing (ENOENT → safe to noop)

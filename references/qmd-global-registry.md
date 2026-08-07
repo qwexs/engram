@@ -44,7 +44,7 @@ physical QMD index. It does not provision collections or run maintenance.
 - siblings and descendants cannot read sideways or upward;
 - all readable collections must exist in the registry.
 
-The Takeron business DAG can express multiple parents: `managers` may be a
+The synthetic business DAG can express multiple parents: `leadership` may be a
 child of both personal executive workspaces, `company` a child of `managers`,
 and projects children of `company`. `main` stays outside that DAG.
 
@@ -71,5 +71,39 @@ bun scripts/watchdog.js --workspace /path/to/main \
   --qmd-registry /path/to/registry.json --json
 ```
 
-Migration, collection provisioning, `qmd update`, incremental `qmd embed`,
-backups, and production config changes belong to the next rollout PR.
+## Migration planner
+
+Deployment manifests contain absolute paths, workspace identifiers and exact
+config hashes. Keep them outside the repository (or under the ignored
+`.engram-private/` directory). The public repository contains only synthetic
+fixtures and the generic migration engine.
+
+Dry-run is the default and performs no writes or QMD calls:
+
+```bash
+bun scripts/qmd-global-migrate.ts --manifest /private/path/migration.json
+```
+
+Apply requires three independent signals: `--apply`, a new backup directory
+outside every indexed workspace, and the exact target index name:
+
+```bash
+bun scripts/qmd-global-migrate.ts \
+  --manifest /private/path/migration.json \
+  --apply \
+  --backup-dir /private/backups/cutover-001 \
+  --confirm-index sample-global
+```
+
+The backup manifest records each restore target plus before/after SHA-256.
+Rollback restores only those targets and refuses to overwrite a file changed
+after migration:
+
+```bash
+bun scripts/qmd-global-migrate.ts \
+  --rollback /private/backups/cutover-001/manifest.json
+```
+
+This planner changes JSON configuration only. It never provisions collections
+and never invokes QMD maintenance; `qmd update` and `qmd embed` remain explicit
+cutover steps after config review.

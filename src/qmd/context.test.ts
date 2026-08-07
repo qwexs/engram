@@ -8,7 +8,7 @@ import { resolveQmdContext, type QmdContextRuntime } from "./context.ts";
 const roots: string[] = [];
 const runtime = (env: Record<string, string | undefined> = {}): QmdContextRuntime => ({
   env,
-  homedir: () => "/home/tester",
+  homedir: () => "/srv/test-home",
   platform: "linux",
 });
 

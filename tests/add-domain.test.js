@@ -206,7 +206,7 @@ describe("add-domain.js — meta-domain type", () => {
       "--type", "meta-domain",
       "--peer", "100000001",
       "--qmd-collections", "alice-memory,managers-memory",
-      "--description", "Elena CEO meta-domain",
+      "--description", "Executive A meta-domain",
     ]);
     expect(exitCode).toBe(0);
     if (stderr) console.error("stderr:", stderr);

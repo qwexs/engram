@@ -40,7 +40,7 @@ import handler from "../handler.ts";
 
 const CHAT = "100000000001";   // fixture: anonymized Telegram supergroup id (unsigned)
 const TOPIC = "60";            // fixture: topic id
-const AGENT_ID = "apriori-tech";
+const AGENT_ID = "sample-agent";
 
 /** Build "today" in UTC, deterministically, without mutating process.env. */
 function todayUtc(): string {

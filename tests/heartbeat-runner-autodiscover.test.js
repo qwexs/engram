@@ -23,14 +23,14 @@ describe("parseQmdCollectionList", () => {
   test("extracts collection names from cli format output", () => {
     const stdout = [
       "Collection",
-      "  apriori-life (qmd://apriori-life/)",
-      "  apriori-workspace (qmd://apriori-workspace/)",
-      "  openclaw-memory-agent-apriori-tech-main (qmd://openclaw-memory-agent-apriori-tech-main/)",
+      "  sample-life (qmd://sample-life/)",
+      "  sample-workspace (qmd://sample-workspace/)",
+      "  openclaw-memory-agent-sample-main (qmd://openclaw-memory-agent-sample-main/)",
     ].join("\n");
     expect(exports.parseQmdCollectionList(stdout)).toEqual([
-      "apriori-life",
-      "apriori-workspace",
-      "openclaw-memory-agent-apriori-tech-main",
+      "sample-life",
+      "sample-workspace",
+      "openclaw-memory-agent-sample-main",
     ]);
   });
 
@@ -46,12 +46,12 @@ describe("parseQmdCollectionList", () => {
   test("ignores lines without the qmd:// annotation", () => {
     const stdout = [
       "Some header line",
-      "  apriori-life (qmd://apriori-life/)",
+      "  sample-life (qmd://sample-life/)",
       "  trailing comment without parens",
       "  another (qmd://another/)",
     ].join("\n");
     expect(exports.parseQmdCollectionList(stdout)).toEqual([
-      "apriori-life",
+      "sample-life",
       "another",
     ]);
   });

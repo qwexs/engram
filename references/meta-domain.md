@@ -34,7 +34,7 @@ bun skills/engram/scripts/add-domain.js --domain alice-general \
   --type meta-domain \
   --peer 100000001 \
   --qmd-collections "alice-memory,managers-memory,managers-domains,projectA-memory,projectA-domains" \
-  --description "General: meta-domain for Elena (CEO)"
+  --description "General: meta-domain for Executive A"
 ```
 
 ## Registry schema
@@ -49,7 +49,7 @@ bun skills/engram/scripts/add-domain.js --domain alice-general \
       "cadenceAdaptive": true,
       "cadenceAdaptiveWindowDays": 7,
       "peer": { "chatId": "100000001" },
-      "description": "General: meta-domain for Elena (CEO)",
+      "description": "General: meta-domain for Executive A",
       "created": "2026-07-14",
       "metaDomain": true,
       "qmdCollections": [
@@ -95,7 +95,7 @@ This means: **when you add a new project domain, all meta-domains automatically 
 ### Limitations
 
 - Propagation is **within the same registry.json** only (same workspace).
-- Cross-workspace propagation (e.g., adding a Bakhtiyarov domain and updating Elena's registry)
+- Cross-workspace propagation (e.g., adding an initiative domain and updating an executive registry)
   is **not automatic** — it requires manual update or a separate script.
 - When a domain is removed, its collections are **not automatically removed** from meta-domain
   `qmdCollections`. Run `engram/scripts/sync-meta-collections.js` (planned) or clean up manually.
@@ -114,8 +114,8 @@ In a multi-workspace deployment (e.g., AcmeCorp: alice, bob, managers, projectA)
 2. **QMD collections are global** — any workspace can reference any collection name.
 3. **Propagation works within a workspace** — when adding a domain to `managers/`, it propagates
    to meta-domains in the same `managers/registry.json`.
-4. **Cross-workspace sync is manual** — adding a Bakhtiyarov domain does not automatically update
-   Elena's or Anastasia's `qmdCollections`. This is by design: cross-workspace dependencies should
+4. **Cross-workspace sync is manual** — adding an initiative domain does not automatically update
+   executive workspaces' `qmdCollections`. This is by design: cross-workspace dependencies should
    be explicit.
 
 ### Recommended workflow for new projects

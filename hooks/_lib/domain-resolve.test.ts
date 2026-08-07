@@ -35,8 +35,8 @@ const CHAT_GROUP_NEG = `-${CHAT_GROUP}`;  // fixture: signed form (event shape)
 const TOPIC = "60";                       // fixture: topic id
 const USER_PEER = "100000001";            // fixture: anonymized user id (DM)
 
-const SESSION_KEY_TELE = `agent:apriori-tech:telegram:group:${CHAT_GROUP_NEG}:topic:${TOPIC}`;
-const SESSION_KEY_PEER = `agent:apriori-tech:telegram:direct:${USER_PEER}`;
+const SESSION_KEY_TELE = `agent:sample-agent:telegram:group:${CHAT_GROUP_NEG}:topic:${TOPIC}`;
+const SESSION_KEY_PEER = `agent:sample-agent:telegram:direct:${USER_PEER}`;
 
 function setupWorkspace(registryDomains: any = {}): { testDir: string; } {
   const testDir = mkdtempSync(join(ws, "case-"));
@@ -61,7 +61,7 @@ function makeEvent(opts: {
 }): any {
   const ctx: any = {
     workspaceDir: opts.testDir,
-    agentId: "apriori-tech",
+    agentId: "sample-agent",
   };
   if (opts.chatId !== undefined && opts.chatId !== null) ctx.chatId = opts.chatId;
   if (opts.topicId !== undefined && opts.topicId !== null) ctx.topicId = opts.topicId;
@@ -122,7 +122,7 @@ describe("workspace resolution", () => {
     const r = resolveDomainFromEvent(ev);
     expect(r).not.toBeNull();
     expect(r!.workspaceDir).toBe(testDir);
-    expect(r!.agentId).toBe("apriori-tech");
+    expect(r!.agentId).toBe("sample-agent");
   });
 
   test("missing chatId → null", () => {
@@ -203,7 +203,7 @@ describe("chatId/topicId extraction (3 fallback layers)", () => {
 
   test("Layer 3 fallback: metadata.originatingTo resolves chatId only", () => {
     const { testDir } = setupWorkspace({
-      "elena": { type: "project", peer: { chatId: USER_PEER } },
+      "executive-a": { type: "project", peer: { chatId: USER_PEER } },
     });
     // No threadId here — peer-direct resolution must work via metadata alone.
     const r = resolveDomainFromEvent(
@@ -238,7 +238,7 @@ describe("sessionKind determination", () => {
 
   test("positive chatId (user id), no topic → peer-direct", () => {
     const { testDir } = setupWorkspace({
-      "elena": { type: "project", peer: { chatId: USER_PEER } },
+      "executive-a": { type: "project", peer: { chatId: USER_PEER } },
     });
     const r = resolveDomainFromEvent(
       makeEvent({
@@ -267,7 +267,7 @@ describe("sessionKind determination", () => {
 
   test("kinds filter: ['topic-thread'] rejects peer-direct events", () => {
     const { testDir } = setupWorkspace({
-      "elena": { type: "project", peer: { chatId: USER_PEER } },
+      "executive-a": { type: "project", peer: { chatId: USER_PEER } },
     });
     const r = resolveDomainFromEvent(
       makeEvent({
@@ -312,7 +312,7 @@ describe("sessionSegment conventions", () => {
 
   test("peer-direct → telegram-direct--{chatId} (positive)", () => {
     const { testDir } = setupWorkspace({
-      "elena": { type: "project", peer: { chatId: USER_PEER } },
+      "executive-a": { type: "project", peer: { chatId: USER_PEER } },
     });
     const r = resolveDomainFromEvent(
       makeEvent({ testDir, sessionKey: SESSION_KEY_PEER, chatId: USER_PEER, topicId: null }),
@@ -383,13 +383,13 @@ describe("registry lookup", () => {
 
   test("peer binding match", () => {
     const { testDir } = setupWorkspace({
-      "elena": { type: "project", peer: { chatId: USER_PEER } },
+      "executive-a": { type: "project", peer: { chatId: USER_PEER } },
     });
     const r = resolveDomainFromEvent(
       makeEvent({ testDir, sessionKey: SESSION_KEY_PEER, chatId: USER_PEER, topicId: null }),
     );
     expect(r).not.toBeNull();
-    expect(r!.domainName).toBe("elena");
+    expect(r!.domainName).toBe("executive-a");
     expect(r!.sessionKind).toBe("peer-direct");
   });
 
@@ -427,7 +427,7 @@ describe("registry lookup", () => {
 
   test("topic binding requested, but registry entry has only peer binding → null", () => {
     const { testDir } = setupWorkspace({
-      "elena": { type: "project", peer: { chatId: USER_PEER } },
+      "executive-a": { type: "project", peer: { chatId: USER_PEER } },
     });
     // topic-thread resolver should NOT match a peer-only entry, even if chatId
     // happens to align.

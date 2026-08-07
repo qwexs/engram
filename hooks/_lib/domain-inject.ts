@@ -51,7 +51,7 @@ export type AgentsBody = {
 export type ResolveAgentsCfg = {
   qmdIndex: string;             // cfg.qmd?.index ("default")
   kgCollection: string;         // cfg.qmd?.workspaceKgCollection ("life" / "kg")
-  agentId: string;              // workspace agent id (e.g. "apriori-tech")
+  agentId: string;              // workspace agent id (e.g. "sample-agent")
   domainName: string;           // domain slug
   sessionSegment: string;       // e.g. "telegram-group--100xxx-topic-60"
   kgEntity?: string | null;     // optional KG entity pointer from registry.json

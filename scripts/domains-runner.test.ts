@@ -610,7 +610,7 @@ describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
   });
 
   test("decisions-only daily note (empty Events) → spawn", () => {
-    // Production: Chromolab plan approvals often land in ## Decisions only.
+    // Synthetic fixture: plan approvals may land in ## Decisions only.
     const text = [
       "# 2026-07-01",
       "",
@@ -618,7 +618,7 @@ describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
       "",
       "## Decisions",
       "",
-      "- Елена утвердила структуру плана Chromolab на месяцы 1-2 и бюджеты.",
+      "- Руководитель утвердил структуру плана Example Clinic на месяцы 1-2 и бюджеты.",
       "",
       "## Learnings",
       "",
@@ -637,7 +637,7 @@ describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
       "",
       "## Learnings",
       "",
-      "- Outline doc «Референсы для Такерон» is the source of truth for brand refs.",
+      "- Outline doc «Референсы для Example Agency» is the source of truth for brand refs.",
       "",
     ].join("\n");
     const p = writeDailyNote(text);
@@ -659,7 +659,7 @@ describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
   });
 
   test("decisions section bypasses events-only keyword gate for new topics", () => {
-    // Old domain keywords (postgres) must not suppress a Chromolab decision day.
+    // Old domain keywords (postgres) must not suppress an unrelated decision day.
     writeDecisions("# Решения: test-domain\n\n## Принятые решения\n\n### 2026-06-30 — База данных\n\n**Решение**: мигрировать на postgres.\n");
     const text = [
       "# 2026-07-01",
@@ -668,7 +668,7 @@ describe("A6. shouldInlineNoopDailyNote — pre-spawn peek", () => {
       "",
       "## Decisions",
       "",
-      "- Утвердили финальное КП Chromolab на 6 месяцев.",
+      "- Утвердили финальное КП Example Clinic на 6 месяцев.",
       "",
     ].join("\n");
     const p = writeDailyNote(text);

@@ -28,7 +28,14 @@ if (!registryPath && workspaces.length === 0) {
 }
 
 try {
-  const registry = registryPath ? auditQmdGlobalRegistry(readQmdGlobalRegistry(registryPath)) : undefined;
+  const input = registryPath ? readQmdGlobalRegistry(registryPath) : undefined;
+  const candidate = input
+    && typeof input === "object"
+    && !Array.isArray(input)
+    && (input as Record<string, unknown>).schema === "engram.qmd.global-migration.v1"
+    ? (input as Record<string, unknown>).registry
+    : input;
+  const registry = candidate ? auditQmdGlobalRegistry(candidate) : undefined;
   const legacyFindings = auditLegacyCollectionClaims(workspaces.map(readLegacyWorkspaceClaim));
   const errors = (registry?.summary.errors ?? 0) + legacyFindings.length;
   const output = {

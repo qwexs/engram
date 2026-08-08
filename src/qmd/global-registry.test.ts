@@ -65,6 +65,12 @@ describe("global QMD registry", () => {
     expect(result.summary).toEqual({ workspaces: 5, collections: 5, errors: 0, warnings: 0 });
   });
 
+  test("accepts a collection rooted at its owning workspace", () => {
+    const registry = healthyRegistry(root());
+    registry.collections[0].path = registry.workspaces[0].path;
+    expect(auditQmdGlobalRegistry(registry).ok).toBe(true);
+  });
+
   test("rejects client collections in the technical main scope", () => {
     const registry = healthyRegistry(root());
     registry.workspaces[0].readableCollections.push("initiative-memory");

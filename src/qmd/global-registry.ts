@@ -96,6 +96,10 @@ function isDescendantPath(parent: string, child: string): boolean {
   return path !== "" && !path.startsWith("..") && !isAbsolute(path);
 }
 
+function isWithinPath(parent: string, child: string): boolean {
+  return parent === child || isDescendantPath(parent, child);
+}
+
 function finding(
   code: QmdRegistryFindingCode,
   message: string,
@@ -260,7 +264,7 @@ export function auditQmdGlobalRegistry(input: unknown): QmdRegistryAuditResult {
       }));
     } else {
       const owner = workspaceMap.get(collection.owner)!;
-      if (!isDescendantPath(owner.path, collection.path)) {
+      if (!isWithinPath(owner.path, collection.path)) {
         findings.push(finding("COLLECTION_OUTSIDE_OWNER", "Collection path must be inside its owner workspace.", {
           collection: collection.name,
           path: collection.path,

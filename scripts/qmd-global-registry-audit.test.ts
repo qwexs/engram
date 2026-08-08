@@ -59,6 +59,28 @@ describe("qmd-global-registry-audit CLI", () => {
     expect(result.stderr).toBe("");
   });
 
+  test("reads the registry embedded in a migration manifest", async () => {
+    const root = temp();
+    const workspace = join(root, "main");
+    mkdirSync(join(workspace, "memory"), { recursive: true });
+    const manifest = join(root, "migration.json");
+    writeFileSync(manifest, JSON.stringify({
+      schema: "engram.qmd.global-migration.v1",
+      registry: {
+        schema: "engram.qmd.global-registry.v1",
+        index: { name: "engram-global" },
+        workspaces: [{
+          id: "main", path: workspace, kind: "technical", parents: [], readableCollections: ["main-memory"],
+        }],
+        collections: [{ name: "main-memory", path: join(workspace, "memory"), owner: "main", mask: "**/*.md" }],
+      },
+    }));
+
+    const result = await run(["--registry", manifest, "--json"]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, registry: { ok: true } });
+  });
+
   test("returns exit 2 with exact legacy collision names", async () => {
     const root = temp();
     const workspacePaths = ["one", "two"].map((name) => {

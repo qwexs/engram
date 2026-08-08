@@ -61,11 +61,16 @@ export type ResolveOpts = {
 const ALL_KINDS: SessionKind[] = ["topic-thread", "peer-direct", "group-direct"];
 
 /** Parse sessionKey to extract chatId and topicId.
- * Session key format: agent:<agentId>:telegram-group-<chatId>-topic-<topicId>
- * or agent:<agentId>:telegram-direct-<chatId> */
+ * Supported topic formats:
+ * - agent:<agentId>:telegram:group:<chatId>:topic:<topicId> (current)
+ * - agent:<agentId>:telegram-group-<chatId>-topic-<topicId> (legacy)
+ */
 function parseSessionKeyForChatTopic(sessionKey: string): { chatId: string; topicId: string | null } | null {
-  // Strip agent: prefix: agent:main:telegram-group--<chatId>-topic-<topicId>
+  // Strip agent: prefix.
   const seg = sessionKey.replace(/^agent:[^:]+:/, "");
+  // Current topic-thread: telegram:group:<chatId>:topic:<topicId>
+  const currentTopicM = seg.match(/^telegram:group:(-?\d+):topic:(\d+)$/);
+  if (currentTopicM) return { chatId: currentTopicM[1], topicId: currentTopicM[2] };
   // topic-thread: telegram-group--<chatId>-topic-<topicId>
   const topicM = seg.match(/^telegram-group--(-?\d+)-topic-(\d+)$/);
   if (topicM) return { chatId: topicM[1], topicId: topicM[2] };

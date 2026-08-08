@@ -288,7 +288,16 @@ function buildSummaryWithDecay(entityName, entityRelPath, facts) {
   }
 
   if (activeFacts.length === 0) {
-    return { content: null, decayStats: { hot: 0, warm: 0, coldIncluded: 0, coldExcluded: 0, omittedOperational: 0, omittedTestArtifacts: 0, includedByPriority: 0, limitedPrinciples: 0 } };
+    const decayStats = { hot: 0, warm: 0, coldIncluded: 0, coldExcluded: 0, omittedOperational: 0, omittedTestArtifacts: 0, includedByPriority: 0, limitedPrinciples: 0 };
+    const displayName = entityName
+      .split("/")
+      .pop()
+      .replace(/-/g, " ")
+      .replace(/\b\w/g, c => c.toUpperCase());
+    return {
+      content: `# ${displayName}\n\n_No active facts are currently available for this summary projection._\n\n---\n*0 active facts, 0 included in summary (0 hot, 0 warm, 0 cold excluded). Updated ${today}.*\n`,
+      decayStats,
+    };
   }
 
   // Классифицировать каждый факт
@@ -339,10 +348,25 @@ function buildSummaryWithDecay(entityName, entityRelPath, facts) {
     limitedPrinciples,
   };
 
-  // Если нечего включать — пропустить
+  // Empty projection is meaningful. Write a stub rather than leaving a stale
+  // summary behind: otherwise Cold/filtered facts remain visible indefinitely.
   const totalIncluded = hotFacts.length + warmFacts.length + coldPrinciples.length;
   if (totalIncluded === 0) {
-    return { content: null, decayStats };
+    const displayName = entityName
+      .split("/")
+      .pop()
+      .replace(/-/g, " ")
+      .replace(/\b\w/g, c => c.toUpperCase());
+    let footer = `*${activeFacts.length} active facts, 0 included in summary`;
+    footer += ` (${decayStats.hot} hot, ${decayStats.warm} warm, ${decayStats.coldExcluded} cold excluded).`;
+    if (decayStats.omittedOperational || decayStats.omittedTestArtifacts) {
+      footer += ` Omitted: ${decayStats.omittedOperational} operational, ${decayStats.omittedTestArtifacts} test artifacts.`;
+    }
+    footer += ` Updated ${today}.*`;
+    return {
+      content: `# ${displayName}\n\n_No facts are currently included in this summary projection. Active facts remain in items.json and are searchable via QMD._\n\n---\n${footer}\n`,
+      decayStats,
+    };
   }
 
   const sortedHot = sortBySummaryPriority(hotFacts);

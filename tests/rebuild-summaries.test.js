@@ -123,6 +123,33 @@ describe("rebuild-summaries semantic priority", () => {
     expect(stats.omittedTestArtifacts).toBe(1);
   });
 
+  test("replaces a stale summary when decay excludes every active fact", () => {
+    const entityDir = join(root, "life", "clients", "ivanych");
+    writeJson(join(entityDir, "items.json"), {
+      entityId: "clients/ivanych",
+      entityType: "area",
+      facts: [fact({
+        id: "ivanych-001",
+        fact: "Cold client context that must not remain in the summary",
+        abstractionLevel: "pattern",
+        timestamp: "2020-01-01",
+        source: "2020-01-01",
+        lastAccessed: "2020-01-01",
+      })],
+    });
+    writeFileSync(join(entityDir, "summary.md"), "# Ivanych\n\n## Background (Warm)\n\n- Stale fact\n");
+
+    const stats = runRebuild();
+    const summary = readFileSync(join(entityDir, "summary.md"), "utf8");
+
+    expect(summary).toContain("No facts are currently included in this summary projection");
+    expect(summary).toContain("1 active facts, 0 included in summary");
+    expect(summary).toContain("1 cold excluded");
+    expect(summary).not.toContain("Stale fact");
+    expect(stats.updated).toBe(1);
+    expect(stats.coldExcluded).toBe(1);
+  });
+
   test("limits cold principles in summary while keeping the highest priority facts", () => {
     const facts = [];
     for (let i = 1; i <= 15; i++) {

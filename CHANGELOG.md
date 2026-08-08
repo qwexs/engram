@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix(decay): replace stale empty projections with an explicit summary stub.**
+  When all active facts become Cold or are filtered from the summary, the
+  rebuild now replaces the prior Hot/Warm content instead of skipping the
+  entity and leaving stale memory visible. Active facts remain in `items.json`
+  and QMD.
+
 - **fix(qmd): resolve dirty marks through canonical KG ownership.** KG writers,
   repairs and access flushes now use `qmd.workspaceKgCollection` after a
   shared-index cutover instead of retaining the legacy generic `life` name.

@@ -43,6 +43,11 @@ Every refresh uses the same algorithm:
 4. Omit Cold episodes (they remain in items.json, searchable via QMD)
 5. Update `heartbeat-state.json` → `lastWeeklySynthesis`
 
+If no fact remains eligible for the projection, the refresh writes an explicit
+empty-summary stub. It never leaves an older `summary.md` in place: stale
+Hot/Warm content would otherwise bypass decay. The underlying active facts
+remain in `items.json` and QMD.
+
 ## Tier Calculation
 
 ```

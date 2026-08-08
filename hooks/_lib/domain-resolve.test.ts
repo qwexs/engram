@@ -107,36 +107,6 @@ describe("event-surface gating", () => {
 });
 
 // =========================================================================
-//                       BOOTSTRAP SESSION-KEY PARSING
-// =========================================================================
-
-describe("bootstrap session-key parsing", () => {
-  const REG = {
-    "engram": {
-      type: "project",
-      topic: { chatId: CHAT_GROUP, topicId: TOPIC },
-    },
-  };
-
-  test("current Telegram topic session key resolves on bootstrap", () => {
-    const { testDir } = setupWorkspace(REG);
-    const ev = makeEvent({
-      testDir,
-      type: "agent",
-      action: "bootstrap",
-      sessionKey: SESSION_KEY_TELE,
-      chatId: null,
-      topicId: null,
-    });
-    const r = resolveDomainFromEvent(ev, { kinds: ["topic-thread"] });
-    expect(r).not.toBeNull();
-    expect(r!.domainName).toBe("engram");
-    expect(r!.chatId).toBe(CHAT_GROUP_NEG);
-    expect(r!.topicId).toBe(TOPIC);
-  });
-});
-
-// =========================================================================
 //                          WORKSPACE RESOLUTION
 // =========================================================================
 

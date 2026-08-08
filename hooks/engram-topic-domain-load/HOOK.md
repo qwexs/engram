@@ -27,8 +27,7 @@ AGENTS payload into the bootstrap event's `messages` array.
 ## When it fires
 
 On `agent:bootstrap`, if:
-- The session key matches `agent:<id>:telegram:group:<chatId>:topic:<topicId>`
-  (or the legacy `telegram-group-<chatId>-topic-<topicId>` form),
+- The session key matches `agent:<id>:telegram-group-<chatId>-topic-<topicId>`,
 - AND a matching `topic: {chatId, topicId}` entry exists in
   `memory/domains/registry.json` (sign-symmetric on chatId),
 - AND `event.messages` is an array (present on bootstrap events).

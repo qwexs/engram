@@ -2,6 +2,7 @@
 // Запись записей в секции daily note во время сессии
 // Использование: bun skills/engram/scripts/daily-note-append.js
 //   --session main --agent-id main --section events --text "текст записи"
+//   --retrieval-id heartbeat-lock --retrieval-title "Heartbeat stale-lock repair"
 
 import { join, dirname } from "path";
 import { existsSync, mkdirSync } from "fs";
@@ -66,6 +67,18 @@ const agentId = opts["agent-id"] || config.agent.replace(/^agent-/, "") || "main
 const session = opts.session;
 const sectionTitle = SECTION_MAP[sectionKey];
 const text = opts.text.trim();
+const retrievalId = typeof opts["retrieval-id"] === "string" ? opts["retrieval-id"].trim() : "";
+const retrievalTitle = typeof opts["retrieval-title"] === "string" ? opts["retrieval-title"].trim() : "";
+
+if (Boolean(retrievalId) !== Boolean(retrievalTitle)) {
+  console.error("❌ Для retrieval-card нужны оба параметра: --retrieval-id и --retrieval-title");
+  process.exit(1);
+}
+
+if (retrievalId && !/^[a-z0-9][a-z0-9-]{0,79}$/.test(retrievalId)) {
+  console.error("❌ --retrieval-id: строчные латинские буквы, цифры и дефисы; максимум 80 символов");
+  process.exit(1);
+}
 
 // --- Определение пути к daily note ---
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
@@ -73,6 +86,13 @@ const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
 
 const noteDir = join(workspace, "memory", `agent-${agentId}`, session);
 const notePath = join(noteDir, `${today}.md`);
+const retrievalDir = join(noteDir, "retrieval");
+const retrievalPath = retrievalId ? join(retrievalDir, `${today}-${retrievalId}.md`) : null;
+
+if (retrievalPath && existsSync(retrievalPath)) {
+  console.error(`❌ Retrieval-card уже существует: ${retrievalPath}`);
+  process.exit(1);
+}
 
 // --- Шаблон для нового файла ---
 function buildTemplate(date) {
@@ -156,6 +176,22 @@ lines.splice(lastContentLine + 1, 0, entry);
 const newContent = lines.join("\n");
 await Bun.write(notePath, newContent);
 
+if (retrievalPath) {
+  mkdirSync(retrievalDir, { recursive: true });
+  const sourcePath = `memory/agent-${agentId}/${session}/${today}.md`;
+  const retrievalCard = `# ${retrievalTitle}
+
+- **Type:** retrieval event card
+- **Date:** ${today}
+- **Source:** \`${sourcePath}\` — ${sectionTitle}
+
+## Summary
+
+${text}
+`;
+  await Bun.write(retrievalPath, retrievalCard);
+}
+
 await markWorkspaceQmdDirty({
   workspace,
   reason: `daily-note-append:${sectionKey}`,
@@ -167,4 +203,5 @@ console.log(JSON.stringify({
   sectionTitle,
   file: notePath,
   entry,
+  retrievalCard: retrievalPath,
 }));

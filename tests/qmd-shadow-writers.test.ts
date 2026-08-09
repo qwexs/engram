@@ -103,6 +103,26 @@ describe("shadow dirty marks from real writers", () => {
     });
   });
 
+  test("daily-note append writes an explicit retrieval card without a new collection", async () => {
+    const { workspace, stateDir } = makeWorkspace();
+    const result = await spawnScript("daily-note-append.js", [
+      "--session", "main",
+      "--section", "events",
+      "--text", "Runner stayed in bounded foreground and cleared the stale lock.",
+      "--retrieval-id", "heartbeat-stale-lock",
+      "--retrieval-title", "Heartbeat stale-lock repair",
+    ], workspace, stateDir);
+
+    expect(result.exitCode).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.retrievalCard).toMatch(/retrieval\/\d{4}-\d{2}-\d{2}-heartbeat-stale-lock\.md$/);
+    expect(readFileSync(output.retrievalCard, "utf8")).toContain("# Heartbeat stale-lock repair");
+    expect(readState(workspace, stateDir)).toMatchObject({
+      generation: 1,
+      dirty: { collections: ["alpha-memory"] },
+    });
+  });
+
   test("duplicate session-start debounce does not create a second generation", async () => {
     const { workspace, stateDir } = makeWorkspace();
     const previousStateDir = process.env.OPENCLAW_STATE_DIR;

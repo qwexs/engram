@@ -10,7 +10,10 @@ function fixture() {
   const workspace = join(root, "workspace");
   const manifest = join(root, "manifest.json");
   Bun.write(join(workspace, "engram.json"), JSON.stringify({ agent: "main" }));
-  writeFileSync(manifest, JSON.stringify({ schema: "test" }));
+  writeFileSync(manifest, JSON.stringify({
+    schema: "engram.qmd.global-migration.v1",
+    registry: { schema: "engram.qmd.global-registry.v1", index: { name: "test" }, workspaces: [], collections: [] },
+  }));
   return { workspace, manifest };
 }
 
@@ -37,5 +40,15 @@ describe("install-qmd-maintenance-cron", () => {
     expect(spec.payload.env).toEqual({ ENGRAM_CRON_MANAGED: "1" });
     expect(spec.schedule).toEqual({ kind: "cron", expr: "33 * * * *", tz: "UTC", staggerMs: 0 });
     expect(spec.payload.kind).not.toBe("agentTurn");
+  });
+
+  test("rejects a scheduler declaration that is not a maintenance registry", async () => {
+    const { workspace, manifest } = fixture();
+    writeFileSync(manifest, JSON.stringify({ schema: "engram.qmd.global-maintenance-scheduler.v1" }));
+    const result = Bun.spawnSync([
+      "bun", script, "--dry-run", "--workspace", workspace, "--manifest", manifest,
+    ], { stdout: "pipe", stderr: "pipe" });
+    expect(result.exitCode).toBe(2);
+    expect(new TextDecoder().decode(result.stderr)).toContain("global-registry");
   });
 });

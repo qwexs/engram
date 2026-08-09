@@ -8,7 +8,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -72,6 +72,20 @@ const timeoutMs = Number(args["timeout-ms"]);
 if (!existsSync(manifest)) fail(`Manifest does not exist: ${manifest}`);
 if (!existsSync(resolve(workspace, "engram.json"))) fail(`Workspace does not contain engram.json: ${workspace}`);
 if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) fail("--timeout-ms must be a positive integer");
+try {
+  const document = JSON.parse(readFileSync(manifest, "utf8"));
+  const registry = document?.schema === "engram.qmd.global-registry.v1"
+    ? document
+    : document?.schema === "engram.qmd.global-migration.v1"
+      ? document.registry
+      : null;
+  if (registry?.schema !== "engram.qmd.global-registry.v1") {
+    fail("--manifest must be an engram.qmd.global-registry.v1 document or an engram.qmd.global-migration.v1 wrapper");
+  }
+} catch (error) {
+  if (error?.message?.startsWith("--manifest must")) throw error;
+  fail(`Cannot parse --manifest JSON: ${error.message}`);
+}
 
 function buildSpec() {
   return {

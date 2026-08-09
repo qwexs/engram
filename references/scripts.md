@@ -380,7 +380,9 @@ bun skills/engram/scripts/install-qmd-maintenance-cron.js \
 ```
 
 Installs the global coordinator as an OpenClaw `command` payload rather than
-an `agentTurn`. Use `--dry-run` to review the exact argv before rollout.
+an `agentTurn`. The manifest must be a global registry or a migration wrapper
+containing one (not the scheduler declaration); use `--dry-run` to review the
+exact argv before rollout.
 The manifest stays deployment-private; the installer does not enable a
 coordinator before its existing coordinated-mode and vector-backfill gates.
 

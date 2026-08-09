@@ -34,6 +34,7 @@ describe("install-qmd-maintenance-cron", () => {
       "--workspace", workspace,
       "--timeout-ms", "600000",
     ]);
+    expect(spec.payload.env).toEqual({ ENGRAM_CRON_MANAGED: "1" });
     expect(spec.schedule).toEqual({ kind: "cron", expr: "33 * * * *", tz: "UTC", staggerMs: 0 });
     expect(spec.payload.kind).not.toBe("agentTurn");
   });

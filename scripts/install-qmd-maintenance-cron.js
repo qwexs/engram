@@ -89,6 +89,11 @@ function buildSpec() {
         "--timeout-ms", String(timeoutMs),
       ],
       cwd: workspace,
+      // OpenClaw 2026.7.2-beta.7 serializes an omitted repeatable
+      // --command-env as [], which the gateway rightly rejects because a
+      // command env must be an object. A harmless marker keeps the CLI and
+      // gateway contract unambiguous across that version.
+      env: { ENGRAM_CRON_MANAGED: "1" },
       timeoutSeconds: Math.ceil(timeoutMs / 1000) + 60,
     },
     delivery: { mode: "none" },
@@ -136,6 +141,7 @@ function install() {
       "--description", spec.description,
       "--command-argv", commandArgv(spec),
       "--command-cwd", spec.payload.cwd,
+      "--command-env", "ENGRAM_CRON_MANAGED=1",
       "--timeout-seconds", String(spec.payload.timeoutSeconds),
       "--cron", spec.schedule.expr,
       "--tz", spec.schedule.tz,
@@ -152,6 +158,7 @@ function install() {
     "--description", spec.description,
     "--command-argv", commandArgv(spec),
     "--command-cwd", spec.payload.cwd,
+    "--command-env", "ENGRAM_CRON_MANAGED=1",
     "--timeout-seconds", String(spec.payload.timeoutSeconds),
     "--cron", spec.schedule.expr,
     "--tz", spec.schedule.tz,

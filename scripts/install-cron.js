@@ -5,7 +5,7 @@
  * Provisions the OpenClaw cron job that drives the engram heartbeat
  * (Phase 5.5: heartbeat-runner.js → spawn-claim.js → sessions_spawn).
  *
- * The cron payload is a 4-step agent turn:
+ * The cron payload is a 6-step agent turn:
  *   0. exec: spawn-claim.js (drain STALE queue left by prior fail-fast ticks)
  *   1. exec: bun skills/engram/scripts/heartbeat-runner.js ...
  *   2. exec: bun skills/engram/scripts/spawn-claim.js ... (this tick)
@@ -70,7 +70,7 @@
  *   --session <key>       Session key for runner (default: main)
  *   --label-prefix <p>    Label prefix for spawned subagents (default: hb)
  *   --cron-name <name>    Job name (default: "Heartbeat (Engram runner) — <agent-id>")
- *   --schedule <expr>     Schedule: "30m" (default), "5m", "1h", or cron expr
+ *   --schedule <expr>     Override cadence from engram.json ("5m", "1h", or cron expr)
  *   --repair-routing      Explicitly repair agentId/sessionKey/workspace drift
  *   --dry-run             Print cron job spec JSON, no openclaw calls
  *   -h, --help            Show this help
@@ -168,7 +168,7 @@ Options:
   --session <key>       Session key (default: main)
   --label-prefix <p>    Label prefix for spawned subagents (default: hb)
   --cron-name <name>    Job name (default: "Heartbeat (Engram runner) — <agent-id>")
-  --schedule <expr>     Schedule: "30m" (default), "5m", "1h", or cron expr
+  --schedule <expr>     Override cadence from engram.json ("5m", "1h", or cron expr)
   --repair-routing      Explicitly repair agentId/sessionKey/workspace drift
   --dry-run             Print cron job spec JSON, no openclaw calls
   -h, --help            Show this help
@@ -215,7 +215,16 @@ const labelPrefix = args["label-prefix"] || "hb";
 // job. Include the logical Engram agent id so fresh installs are isolated.
 const cronName = args["cron-name"] || `Heartbeat (Engram runner) — ${agentId}`;
 const cronDescription = `Engram heartbeat for agent ${agentId}. Managed by install-cron.js.`;
-const schedule = args.schedule || "30m";
+// Workspace declarations are the source of truth for production heartbeats.
+// This keeps the gateway's timezone and no-stagger policy in sync with the
+// checked-in schedule, rather than silently defaulting cron expressions to
+// Europe/Moscow. Duration overrides remain supported for ad-hoc installs.
+const declaredSchedule = config?.cron?.expectedSchedule;
+const schedule =
+  args.schedule ||
+  (declaredSchedule?.kind === "cron" ? declaredSchedule.expr : undefined) ||
+  config?.cron?.schedule ||
+  "30m";
 const dryRun = !!args["dry-run"];
 const repairRouting = !!args["repair-routing"];
 const SKILL_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -453,8 +462,18 @@ function buildSchedule(s) {
         : 86_400_000;
     return { kind: "every", everyMs: n * mult };
   }
-  // Otherwise: treat as cron expression (5-field), default tz Europe/Moscow.
-  return { kind: "cron", expr: s, tz: "Europe/Moscow" };
+  // A declared workspace schedule owns its timezone and stagger policy. Keep
+  // Europe/Moscow only as the legacy fallback for workspaces without one.
+  return {
+    kind: "cron",
+    expr: s,
+    tz: declaredSchedule?.kind === "cron" && declaredSchedule.tz
+      ? declaredSchedule.tz
+      : "Europe/Moscow",
+    staggerMs: declaredSchedule?.kind === "cron" && Number.isFinite(declaredSchedule.staggerMs)
+      ? declaredSchedule.staggerMs
+      : undefined,
+  };
 }
 
 // --- Cron payload prose template ---
@@ -485,7 +504,7 @@ For each line in \`claim0.stdout\` that parses as JSON with action="spawn": Call
 Ignore the final {action:"summary",...} line. If claim0 is empty / 0 claimed, continue immediately.
 
 Step 1 — Run the heartbeat runner:
-Call tools.exec with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2", workdir="<WORKSPACE>", timeout_ms=420000. Capture the output as \`runner\`.
+Call tools.exec with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2", workdir="<WORKSPACE>", timeout=420, yieldMs=120000. Capture the output as \`runner\`.
 
 Note: --recover-stale-oll-locks clears stale worker locks that exceeded TTL (2h default), preventing permanent lockout when a subagent fails without producing a handoff.
 
@@ -513,7 +532,8 @@ Look at \`runner.summary.status\` and \`runner.summary.warnings\` (the JSON has 
 If either claim drained work, append one final line: \`[phase-5.5] staleSpawned=S thisTickClaimed=M thisTickSpawned=K\` (numbers from claim0/claim summaries + your spawn counts).
 
 FAIL-FAST / NO WAIT-LOOP (mandatory):
-- NEVER sleep, wait, poll, retry-wait, or call process/poll on background exec sessions.
+- Step 1 MUST use the specified \`yieldMs=120000\`: this is the single bounded foreground window for the runner to release its lock. Do not shorten it or background the command deliberately.
+- NEVER sleep, poll, retry-wait, or call process/poll on background exec sessions.
 - Step 0 MUST always run first, even if you expect the runner lock to be held.
 - If Step 1 returns \"Command still running\", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Still attempt Step 2 (drain whatever is already queued), then finish Step 5.
 - If Step 0 or Step 2 returns still-running/empty: skip only that drain's sessions_spawn loop; do not block the other steps.
@@ -575,6 +595,10 @@ const NEW_PAYLOAD_MARKER_6 = "expectsCompletionMessage=false";
 const NEW_PAYLOAD_MARKER_7 = "FAIL-FAST / NO WAIT-LOOP";
 // 2026-07-30+: tools.exec (allow-list), not tools.shell_command.
 const NEW_PAYLOAD_MARKER_8 = "tools.exec";
+// 2026-08-09+: keep the runner foreground for up to two minutes.
+// The previous 10-second default backgrounded normal 37–99 second runs and could
+// orphan heartbeat-state.json's lock when the cron turn ended.
+const NEW_PAYLOAD_MARKER_9 = "yieldMs=120000";
 
 function buildPayloadMessage({ workspace, agentId, session, labelPrefix }) {
   return PROSE_TEMPLATE
@@ -596,6 +620,7 @@ function isOnNewFormat(payload) {
     payload.message.includes(NEW_PAYLOAD_MARKER_6) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_7) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_8) &&
+    payload.message.includes(NEW_PAYLOAD_MARKER_9) &&
     !payload.message.includes("Call tools.shell_command") &&
     // toolsAllow must be present and match HEARTBEAT_TOOLS_ALLOW.
     // If absent (older install) or divergent, we re-apply via edit.
@@ -689,7 +714,7 @@ function buildCronSpec() {
 // always have parseable JSON regardless of warning presence.
 function listCronJobs() {
   const { exe, prefixArgs } = resolveInvocation();
-  const proc = spawnSync(exe, [...prefixArgs, "cron", "list", "--json"], {
+  const proc = spawnSync(exe, [...prefixArgs, "cron", "list", "--all", "--json"], {
     encoding: "utf-8",
   });
   if (proc.error) {
@@ -839,6 +864,7 @@ function actionInstall() {
     addArgv.push("--every", `${minutes}m`);
   } else {
     addArgv.push("--cron", spec.schedule.expr, "--tz", spec.schedule.tz);
+    if (spec.schedule.staggerMs === 0) addArgv.push("--exact");
   }
   const out = runOpenclaw(addArgv);
   const firstBrace = out.indexOf("{");

@@ -239,14 +239,14 @@ validate.js drift guard can detect and upgrade old installations.
 
 ### 2026-06-23+ — concise form (current)
 
-Step 4 is a short decision tree keyed on `runner.summary.status` and
+Step 5 is a short decision tree keyed on `runner.summary.status` and
 `runner.summary.warnings`, with a hard cap of `≤512 tokens` on the final
 reply. The agent never echoes the full runner output — that JSON is
 already written to the daily note via `heartbeat-report.js`, so re-emitting
-it into the assistant message is pure waste. The full Step 4 lives in
+it into the assistant message is pure waste. The full Step 5 lives in
 `scripts/install-cron.js` `PROSE_TEMPLATE`; the marker that
 `isOnNewFormat()` checks for is the substring
-`Step 4 — Final reply (CONCISE, NO ECHO)`.
+`Step 5 — Final reply (CONCISE, NO ECHO)`.
 
 Behavior matrix:
 

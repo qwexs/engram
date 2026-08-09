@@ -598,7 +598,7 @@ if (!cronCfg || !cronCfg.expectedJobName) {
           const promptMsg = job.payload?.message || '';
           if (promptMsg.includes('Reply with: the runner output (as text)')) {
             error(`Cron payload uses the pre-2026-06-23 echo prompt (~11k output tokens/tick wasted, frequent max_tokens=8192 clipping). Run \`bun skills/engram/scripts/install-cron.js install\` in this workspace to upgrade to the concise form.`);
-          } else if (promptMsg.includes('Step 4 — Final reply (CONCISE, NO ECHO)')) {
+          } else if (['Step 4 — Final reply (CONCISE, NO ECHO)', 'Step 5 — Final reply (CONCISE, NO ECHO)'].some((marker) => promptMsg.includes(marker))) {
             ok('Heartbeat prompt is on the 2026-06-23+ concise format (no echo, ≤512-token reply cap)');
           } else if (promptMsg) {
             warn('Heartbeat prompt format is unrecognized — manual review recommended');

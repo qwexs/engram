@@ -139,6 +139,21 @@ bun skills/engram/scripts/daily-note-append.js \
   --session main --section events --text "Fixed 44 semantic duplicates in KG"
 ```
 
+For an explicitly high-signal event (a decision, material fix, or delivered
+artifact), optionally add a concise retrieval card alongside the canonical
+daily-note entry:
+
+```bash
+bun skills/engram/scripts/daily-note-append.js \
+  --session main --section events --text "Fixed stale heartbeat lock" \
+  --retrieval-id heartbeat-lock-repair \
+  --retrieval-title "Heartbeat lock repair"
+```
+
+The card is an opt-in QMD retrieval aid, not a second source of truth: it
+links to the daily note and is indexed by the same memory collection. Do not
+generate cards automatically, backfill ordinary notes, or add a cron for them.
+
 ### Knowledge Graph
 
 - **Tiered retrieval**: `summary.md` first (quick context), `items.json` on demand (full facts)

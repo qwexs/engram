@@ -287,6 +287,13 @@ bun skills/engram/scripts/daily-note-append.js \
 
 Atomically appends a bullet entry to a named section of today's daily note. Creates the note from template if it doesn't exist. Sections: `events`, `decisions`, `learnings`, `threads`, `next`. Never overwrites existing content, never touches watermarks or Heartbeat Report.
 
+For an explicitly high-signal event, pass both optional flags
+`--retrieval-id <stable-kebab-id>` and `--retrieval-title <short title>` to
+also create a concise card under the active session's `retrieval/` directory.
+The daily note remains canonical; the card is only an opt-in retrieval aid for
+the same QMD memory collection. The flags must be used together. Never create
+cards automatically, for routine conversation, or through a scheduled job.
+
 ## rebuild-summaries.js — Rebuild summary.md from items.json
 
 ```bash

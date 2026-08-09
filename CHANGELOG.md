@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **feat(cron): add deterministic maintenance primitives.** Global QMD
+  maintenance can now be provisioned as an OpenClaw command job rather than
+  an agent turn. `heartbeat-dispatch-check.js` provides a read-only trigger
+  contract so a future split heartbeat scheduler invokes a model only when
+  queued subagent work exists.
+
+- **feat(cron): add opt-in no-model heartbeat installer.** A constrained
+  OpenClaw script payload now executes the fixed runner/claim/spawn sequence;
+  it supports disabled-canary rollout and leaves the legacy agent-turn
+  installer untouched until an operator switches it deliberately.
+
 - **fix(decay): replace stale empty projections with an explicit summary stub.**
   When all active facts become Cold or are filtered from the summary, the
   rebuild now replaces the prior Hot/Warm content instead of skipping the

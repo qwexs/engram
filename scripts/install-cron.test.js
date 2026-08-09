@@ -254,6 +254,7 @@ Call tools.exec with command="bun ./skills/engram/scripts/spawn-claim.js --works
 
 Step 1 — Run the heartbeat runner:
 Call tools.exec with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace ${workspace} --agent-id ${agentId} --session main --label-prefix hb --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2"
+The runner foreground window uses yieldMs=120000.
 
 Step 2 — Drain THIS tick's subagent-spawn queue (Phase 5.5):
 Call tools.exec with command="bun ./skills/engram/scripts/spawn-claim.js --workspace ${workspace} --agent-id ${agentId}"

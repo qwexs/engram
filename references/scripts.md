@@ -354,12 +354,49 @@ bun skills/engram/scripts/heartbeat-runner.js \
 
 Runs the mechanical heartbeat path without relying on an LLM to interpret `HEARTBEAT.md`: lock handling, daily note creation, extraction watermark, weekly summary rebuild, heartbeat report, validation, and QMD maintenance through the typed runtime adapter. Legacy/shadow workspaces retain scoped maintenance; coordinated workspaces delegate QMD to the single global scheduler.
 
+## heartbeat-dispatch-check.js — Conditional subagent-dispatch admission
+
+```bash
+bun skills/engram/scripts/heartbeat-dispatch-check.js --workspace /path/to/workspace
+```
+
+Read-only check for an OpenClaw cron trigger. It returns a trigger envelope
+with `fire: true` only when `heartbeat-runner.js` left valid queued subagent
+requests. A thin agent dispatcher can then claim and call `sessions_spawn`;
+quiet ticks do not need a model turn.
+
 ## qmd-maintenance-coordinator.ts — Global maintenance entrypoint
 
 Validates a private global registry/migration manifest, confirms that the
 coordinator workspace resolves the expected named index, and runs one
 generation-coalesced `update -> embed` pass under the physical-index lease.
 It is the only scheduled execution entrypoint for coordinated mode.
+
+## install-qmd-maintenance-cron.js — Deterministic coordinator cron
+
+```bash
+bun skills/engram/scripts/install-qmd-maintenance-cron.js \
+  --manifest /private/migration.json --workspace /path/to/coordinator-workspace
+```
+
+Installs the global coordinator as an OpenClaw `command` payload rather than
+an `agentTurn`. Use `--dry-run` to review the exact argv before rollout.
+The manifest stays deployment-private; the installer does not enable a
+coordinator before its existing coordinated-mode and vector-backfill gates.
+
+## install-deterministic-heartbeat-cron.js — No-model heartbeat cron
+
+```bash
+bun skills/engram/scripts/install-deterministic-heartbeat-cron.js \
+  --workspace /path/to/agent-workspace --disabled
+```
+
+Creates an opt-in OpenClaw `script` payload. It runs the existing heartbeat
+runner, claims durable spawn records before and after the run, and invokes
+`sessions_spawn` directly — no LLM turn is created. Begin with `--disabled`;
+before enabling, verify the gateway setting `cron.triggers.enabled=true`.
+The legacy `install-cron.js` remains unchanged for compatibility during the
+rollout.
 
 Use `--all-active-sessions` for workspace-level heartbeat. Use `engram.json` `qmd.index`, `qmd.collections`, and optional `qmd.command` when a workspace has a named QMD index or needs a Windows-safe command path.
 

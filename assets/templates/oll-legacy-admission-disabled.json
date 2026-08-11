@@ -1,0 +1,7 @@
+{
+  "schema": "oll.legacy-admission-disabled.v1",
+  "workspaceId": "{{AGENT_ID}}",
+  "migrationId": "fresh-init",
+  "disabledAt": "{{NOW}}",
+  "reason": "fresh install uses the nightly-only OLL owner"
+}

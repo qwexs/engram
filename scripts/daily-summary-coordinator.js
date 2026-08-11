@@ -5,6 +5,7 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { reconcileWorkspaceMemory } from "../src/oll/reconciliation.ts";
 
 function parseArgs(argv) {
   const opts = { workspaces: [] };
@@ -35,12 +36,48 @@ Usage:
 
 Options:
   --workspace <path>       Engram workspace to process; repeat in desired order.
+  --workspaces-uri <value> Percent-encoded JSON array of workspace paths (transport-safe).
+  --scheduler-declaration <path>
+                           Read ordered workspaces from a scheduler declaration.
   --timeout-ms <n>         Per-workspace timeout (default: 120000).
   --lock-dir <path>        Coordinator lock directory (default: <first>/ops/daily-summary.lock).
   --dry-run                Calculate/report changes without writing access or summaries.
   --json                   Emit one JSON report.
 `);
   process.exit(0);
+}
+
+if (opts["workspaces-uri"]) {
+  try {
+    const decoded = JSON.parse(decodeURIComponent(String(opts["workspaces-uri"])));
+    if (!Array.isArray(decoded) || decoded.some((entry) => typeof entry !== "string" || !entry)) {
+      throw new Error("workspace list must be a non-empty string array");
+    }
+    opts.workspaces.push(...decoded);
+  } catch (error) {
+    console.error(`❌ --workspaces-uri is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(2);
+  }
+}
+
+if (opts["scheduler-declaration"]) {
+  try {
+    const declaration = JSON.parse(readFileSync(resolve(String(opts["scheduler-declaration"])), "utf8"));
+    const argv = declaration?.payload?.argv;
+    if (declaration?.schema !== "engram.daily-summary-scheduler.v1" || !Array.isArray(argv)) {
+      throw new Error("unsupported scheduler declaration");
+    }
+    for (let index = 0; index < argv.length; index += 1) {
+      if (argv[index] !== "--workspace") continue;
+      const workspace = argv[index + 1];
+      if (typeof workspace !== "string" || !workspace) throw new Error("invalid scheduler workspace argument");
+      opts.workspaces.push(workspace);
+      index += 1;
+    }
+  } catch (error) {
+    console.error(`❌ --scheduler-declaration is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(2);
+  }
 }
 
 const workspaces = [...new Set(opts.workspaces.map((p) => resolve(p)))];
@@ -95,46 +132,14 @@ try {
     }
 
     try {
-      const flushArgs = ["bun", join(import.meta.dir, "flush-access-buffer.js"), "--workspace", workspace, "--json"];
-      if (opts["dry-run"]) flushArgs.push("--dry-run");
-      const flush = Bun.spawn(flushArgs, {
-        cwd: workspace,
-        env: { ...process.env, ENGRAM_WORKSPACE: workspace },
-        stdout: "pipe",
-        stderr: "pipe",
+      const reconciled = await reconcileWorkspaceMemory({
+        workspace,
+        scriptsDir: import.meta.dir,
+        timeoutMs,
+        dryRun: Boolean(opts["dry-run"]),
       });
-      const flushTimer = setTimeout(() => flush.kill(), timeoutMs);
-      const flushStdout = await new Response(flush.stdout).text();
-      const flushStderr = await new Response(flush.stderr).text();
-      clearTimeout(flushTimer);
-      await flush.exited;
-      try { item.accessFlush = JSON.parse(flushStdout.trim()); } catch { item.accessFlushStdout = flushStdout.slice(0, 1000); }
-      if (flush.exitCode !== 0) {
-        item.status = "error";
-        item.error = `access flush: ${flushStderr.slice(0, 900) || `exit ${flush.exitCode}`}`;
-        report.errors++;
-        continue;
-      }
-
-      const rebuildArgs = ["bun", join(import.meta.dir, "rebuild-summaries.js"), "--apply-decay", "--json"];
-      if (opts["dry-run"]) rebuildArgs.push("--dry-run");
-      const rebuild = Bun.spawn(rebuildArgs, {
-        cwd: workspace,
-        env: { ...process.env, ENGRAM_WORKSPACE: workspace },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const rebuildTimer = setTimeout(() => rebuild.kill(), timeoutMs);
-      const rebuildStdout = await new Response(rebuild.stdout).text();
-      const rebuildStderr = await new Response(rebuild.stderr).text();
-      clearTimeout(rebuildTimer);
-      await rebuild.exited;
-      try { item.stats = JSON.parse(rebuildStdout.trim()); } catch { item.stdout = rebuildStdout.slice(0, 1000); }
-      if (rebuild.exitCode !== 0) {
-        item.status = "error";
-        item.error = rebuildStderr.slice(0, 1000) || `exit ${rebuild.exitCode}`;
-        report.errors++;
-      }
+      Object.assign(item, reconciled);
+      if (reconciled.status === "error") report.errors++;
     } catch (error) {
       item.status = "error";
       item.error = error instanceof Error ? error.message : String(error);

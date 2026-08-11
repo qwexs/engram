@@ -107,6 +107,7 @@ const options = {
   qmd: !args["no-qmd"],
   hooks: !args["no-hooks"],
   routing: !args["no-routing"],
+  cronPayload: !(args["no-core"] && args["no-qmd"] && args["no-hooks"]),
 };
 const reports = workspaces.map((workspace) => auditWorkspace(workspace, options));
 if (args["qmd-registry"]) {

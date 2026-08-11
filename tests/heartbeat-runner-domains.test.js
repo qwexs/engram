@@ -90,7 +90,7 @@ describe("heartbeat-runner hb-domains-write trigger", () => {
     const result = runRunner();
     expect(result.summary.domains).toContain("1 due");
     expect(result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write")).toHaveLength(0);
-    expect(spawnFiles().filter((f) => f.startsWith("hb-domains-write"))).toHaveLength(0);
+    expect(spawnFiles()).toHaveLength(0);
   });
 
   test("with --spawn-hb-domains-write, queues one spawn per due topic-thread domain", () => {
@@ -103,8 +103,8 @@ describe("heartbeat-runner hb-domains-write trigger", () => {
     const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
     expect(queued).toHaveLength(2);
     const queuedNames = queued.map((s) => s.runId).sort();
-    expect(queuedNames[0]).toMatch(/^hb-domains-write-/);
-    expect(spawnFiles().filter((f) => f.startsWith("hb-domains-write"))).toHaveLength(2);
+    expect(queuedNames[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(spawnFiles()).toHaveLength(2);
     expect(result.summary.oll).toContain("domains-write queued 2");
   });
 
@@ -167,7 +167,8 @@ describe("heartbeat-runner hb-domains-write trigger", () => {
     expect(ids.size).toBe(10); // All runIds unique
     // Sanity: runId format includes UUID-ish 8-char hex suffix
     for (const q of queued) {
-      expect(q.runId).toMatch(/^hb-domains-write-\d{4}-\d{2}-\d{2}-[0-9a-f]{8}$/);
+      expect(q.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(q.phase).toBe("hb-domains-write");
     }
   });
 
@@ -222,7 +223,7 @@ describe("heartbeat-runner hb-domains-write batch size", () => {
     const result = runRunner(["--spawn-hb-domains-write", "--hb-domains-write-batch-size", "1"]);
     const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
     expect(queued).toHaveLength(1);
-    expect(spawnFiles().filter((f) => f.startsWith("hb-domains-write"))).toHaveLength(1);
+    expect(spawnFiles()).toHaveLength(1);
   });
 
   test("batch size=3 queues all 3 spawns", () => {
@@ -234,7 +235,7 @@ describe("heartbeat-runner hb-domains-write batch size", () => {
     const result = runRunner(["--spawn-hb-domains-write", "--hb-domains-write-batch-size", "3"]);
     const queued = result.summary.phases.oll.spawns.filter((s) => s.phase === "hb-domains-write");
     expect(queued).toHaveLength(3);
-    expect(spawnFiles().filter((f) => f.startsWith("hb-domains-write"))).toHaveLength(3);
+    expect(spawnFiles()).toHaveLength(3);
   });
 
   test("default (no flag) means batch size=1", () => {

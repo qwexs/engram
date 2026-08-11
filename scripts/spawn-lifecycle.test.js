@@ -14,9 +14,16 @@ function fixture(record) {
 }
 
 describe("spawn lifecycle", () => {
-  test("runtime labels are unique while phase label stays stable", () => {
-    expect(runtimeSpawnLabel("hb-rethink", "hb-rethink-2026-07-16-aaaaaaaa")).toBe("hb-rethink-aaaaaaaa");
-    expect(runtimeSpawnLabel("hb-rethink", "hb-rethink-2026-07-16-bbbbbbbb")).toBe("hb-rethink-bbbbbbbb");
+  test("runtime labels retain the complete UUID while logical label stays stable", () => {
+    const first = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const second = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    expect(runtimeSpawnLabel("managers-hb-rethink", first)).toBe(`managers-hb-rethink-${first}`);
+    expect(runtimeSpawnLabel("managers-hb-rethink", second)).toBe(`managers-hb-rethink-${second}`);
+  });
+
+  test("legacy run ids receive a fresh full runtime UUID", () => {
+    const label = runtimeSpawnLabel("main-hb-rethink", "hb-rethink-2026-07-16-aaaaaaaa");
+    expect(label).toMatch(/^main-hb-rethink-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
   test("spawned record transitions to done atomically and idempotently", async () => {

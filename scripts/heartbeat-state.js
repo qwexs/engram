@@ -30,21 +30,8 @@ const DEFAULT_STATE = {
   extractionModel: null, // populated from engram.json -> models.default at runtime
   lastExtraction: {},
   lastDomainScan: null,
-  lastWeeklySynthesis: null,
   pendingObservations: 0,
   pendingTensions: 0,
-  rethinkInProgress: false,
-  rethinkStartedAt: null,
-  lastRethink: null,
-  lastRethinkScore: null,
-  rethinkCount: 0,
-  autoresearchInProgress: false,
-  autoresearchStartedAt: null,
-  currentExperiment: null,
-  lastAutoresearch: null,
-  pendingRethink2: null,
-  // 2026-07-05: throttle для auto-seed observation из validate maintenance
-  lastAutoSeedAt: null,
   subagentRuns: {},
 };
 

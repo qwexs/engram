@@ -22,7 +22,8 @@
  *                        Default: <workspace>/workspace/ops/heartbeat-spawns
  *
  * Output (one JSON object per line, written to stdout):
- *   {"action":"spawn","runId":...,"phase":...,"label":...,"model":...,
+ *   {"action":"spawn","runId":...,"phase":...,"label":...,
+ *    "runtimeLabel":...,"model":...,
  *    "task":...,"requestPath":...,"requestFile":...}
  *   ...
  *   {"action":"summary","scanned":N,"queued":M,"errors":E}
@@ -36,14 +37,15 @@
  *     (covers "spawned" / "done" / "failed" lifecycle states).
  *   - Malformed JSON or missing required fields emit a WARN to stderr
  *     and increment the `errors` counter; the file is not retried.
- *   - Filename sort is lexicographic; runId is timestamp-based, so
- *     natural creation order is preserved within a single day.
+ *   - Filename sort is lexicographic and deterministic. New run IDs are full
+ *     UUIDs; semantic ordering comes from durable coordinator state, not names.
  *   - Non-`.json` files in the directory (e.g. *.task.md, *.txt) are
  *     ignored entirely and do not count toward `scanned`.
  */
 
 import { join } from "node:path";
 import { readdirSync, readFileSync } from "node:fs";
+import { isLegacyOllAdmissionEnabled, isLegacyOllPhase } from "./config.js";
 
 const REQUIRED_FIELDS = ["runId", "phase", "label", "model", "task"];
 
@@ -123,6 +125,14 @@ for (const name of files) {
     continue;
   }
 
+  if (isLegacyOllPhase(payload.phase) && !isLegacyOllAdmissionEnabled(workspace)) {
+    console.error(
+      `[spawn-pump] WARN (agent=${agentId}): ${name} blocked by nightly cutover (${payload.phase})`,
+    );
+    errors++;
+    continue;
+  }
+
   const missing = REQUIRED_FIELDS.filter(
     (field) => payload[field] === undefined || payload[field] === null,
   );
@@ -137,9 +147,11 @@ for (const name of files) {
   console.log(
     JSON.stringify({
       action: "spawn",
+      ...(payload.workspaceId ? { workspaceId: payload.workspaceId } : {}),
       runId: payload.runId,
       phase: payload.phase,
       label: payload.label,
+      ...(payload.runtimeLabel ? { runtimeLabel: payload.runtimeLabel } : {}),
       model: payload.model,
       task: payload.task,
       requestPath: absPath,

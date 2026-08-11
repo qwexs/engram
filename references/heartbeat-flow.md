@@ -2,6 +2,12 @@
 
 > v3.5. 10-фазный оркестратор. LLM-фазы (1, 2, 3, 3.5) spawn'ят subagent'ов; механические фазы выполняются inline в `heartbeat-runner.js`.
 
+PR 2 introduces a dual-read migration boundary. Legacy workspaces may still
+execute the compatibility OLL phases. A workspace with
+`oll.scheduleOwner=nightly` (or the durable cutover marker) keeps unrelated
+heartbeat work but rejects all heartbeat-owned rethink/rethink2/autoresearch
+dispatch and application. Nightly execution is not enabled by this boundary.
+
 ## Phase Table
 
 | Phase | Kind | Назначение | Где |
@@ -10,12 +16,12 @@
 | 0.5 | inline | Rotation Check: daily notes >1000 lines → rotate | `rotate-notes.js` |
 | 1 | subagent | Extraction: hb-extract (daily note → KG) | `extract-runner.js` |
 | 1.5 | inline | Stub Summary: summarize rotated archive into stub | `heartbeat-runner.js` |
-| 2 | subagent | Synthesis: hb-synthesis (weekly summary, Mon only) | spawn `hb-synthesis` |
+| 2 | legacy-only subagent | Synthesis: hb-synthesis (weekly summary, Mon only) | spawn `hb-synthesis` |
 | 3 | subagent | Domains Status: hb-domains (check status of all domains) | spawn `hb-domains` |
 | 3.5 | subagent | Domains Write: hb-domains-write (apply pending changelog writes) | spawn `hb-domains-write` |
 | 4 | inline | Maintenance: `validate-kg.js --fix` → `qmd update` → `qmd embed` | `heartbeat-runner.js` |
-| 5 | inline | OLL Check: weighted scoring + rethink/autoresearch triggers | `heartbeat-runner.js` |
-| 5.5 | inline | OLL Spawn Queue: `spawn-pump.js` + `spawn-claim.js` (queued subagents) | `spawn-pump.js`, `spawn-claim.js` |
+| 5 | legacy-only inline | OLL Check: weighted scoring + rethink/autoresearch triggers | `heartbeat-runner.js` |
+| 5.5 | legacy-only inline | OLL Spawn Queue: `spawn-pump.js` + `spawn-claim.js` (queued subagents) | `spawn-pump.js`, `spawn-claim.js` |
 | 6 | inline | Report + Unlock: `heartbeat-report.js` → release lock → HEARTBEAT_OK | `heartbeat-report.js` |
 
 ## Heartbeat Flow (every 30 minutes)
@@ -25,12 +31,12 @@
 0.5. Three-Layer Rotation check (daily note >1000 lines) — rotate-notes.js
 1. Knowledge Graph Extraction (if notes changed) — hb-extract subagent
 1.5. Stub Summary (rotated archives) — inline
-2. Monday? → Weekly Synthesis — hb-synthesis (Mon only)
+2. Legacy-only: Monday? → Weekly Synthesis — hb-synthesis (Mon only)
 3. Domain Status check — hb-domains (if domains exist)
 3.5. Domain Apply Phase — hb-domains-write (every tick)
 4. Memory Maintenance (every few days) — validate-kg.js → qmd update → qmd embed
-5. OLL Check (weighted scoring, rethink triggers)
-5.5. OLL Spawn Queue — spawn-pump + spawn-claim (queued subagents)
+5. Legacy-only OLL Check (weighted scoring, rethink triggers)
+5.5. Legacy-only OLL Spawn Queue — spawn-pump + spawn-claim (queued subagents)
 6. Heartbeat Report + unlock — heartbeat-report.js → HEARTBEAT_OK
 ```
 
@@ -66,16 +72,25 @@ For the complete heartbeat flow, see [references/HEARTBEAT.md](HEARTBEAT.md).
 
 ## Heartbeat cron provisioning
 
-The cron job that drives the heartbeat LLM agent is provisioned (and upgraded) by `scripts/install-cron.js`. The current payload runs the runner, claims queued work, spawns each child with a unique `runtimeLabel` and `expectsCompletionMessage=false`, then emits a concise final reply. Children persist to an injected absolute `handoffPath` and return `ANNOUNCE_SKIP` as fallback; the canonical form lives in `PROSE_TEMPLATE`.
+New workspaces use `scripts/install-deterministic-heartbeat-cron.js`. The old
+`scripts/install-cron.js` remains only for pre-cutover compatibility and must
+not be used as the clean-install path. The compatibility payload runs the
+runner, claims permitted queued work, spawns each child with a unique
+`runtimeLabel` and `expectsCompletionMessage=false`, then emits a concise final
+reply. Children persist to an injected absolute `handoffPath` and return
+`ANNOUNCE_SKIP` as fallback; that historical form lives in `PROSE_TEMPLATE`.
 
-Since 2026-07-05 the canonical payload includes `--spawn-rethink --spawn-rethink2` so fresh installs bootstrap the OLL loop without manual seeding. `install-cron.js` detects old payloads via `NEW_PAYLOAD_MARKER_5` and patches them on `install`.
+Current deterministic and compatibility installers omit
+`--spawn-rethink`, `--spawn-rethink2`, and `--spawn-autoresearch`. Existing
+legacy workspaces retain parser/application compatibility only until the
+reviewed cutover command writes its durable marker and migration journal.
 
 Since 2026-07-16 `NEW_PAYLOAD_MARKER_6` requires the durable-handoff/`ANNOUNCE_SKIP` form. Successful apply moves the matching spawn record from `status: spawned` to `status: done`. `delivery.mode=none` remains unchanged.
 
 For a new workspace:
 
 ```bash
-bun skills/engram/scripts/install-cron.js install \
+bun skills/engram/scripts/install-deterministic-heartbeat-cron.js \
   --workspace <path> --agent-id <id> --schedule '*/30 * * * *'
 ```
 
@@ -96,21 +111,22 @@ For full details, see [references/HEARTBEAT.md](HEARTBEAT.md) and [references/su
 
 ## Subagent Model Resolution
 
-The heartbeat spawns **7 subagents** (hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch). The model for each is **not hardcoded** in the protocol — it is resolved at spawn time by `scripts/config.js → resolveSubagentModel(workspace, label)`. Resolution order (f73cda3, 2026-07-11):
+The heartbeat phases are model-agnostic. Model selection uses the canonical semantic phase via `scripts/config.js → resolveSubagentModel(workspace, phase)`, never a workspace-prefixed logical or runtime label. Resolution order:
 
-1. `process.env.ENGRAM_MODEL_<LABEL_UPPER>` (e.g. `ENGRAM_MODEL_HB_EXTRACT`) — explicit env override
-2. `engram.json → models.heartbeat.subagents[label]` (e.g. `"hb-extract": "<model-id>"`) — per-label override
-3. `engram.json → models.default` — workspace-wide default for all subagents
-4. `engram.json → models.subagents_default` — legacy alias for `models.default`
-5. `OSS_FALLBACK_MODEL = "sonnet-4-6"` — only when engram.json has no model config (fresh OSS install)
+1. `process.env.ENGRAM_MODEL_<PHASE_UPPER>` — explicit env override
+2. `engram.json → models.heartbeat.subagents[phase]` — exact workspace phase mapping
+3. selected deployment overlay → exact phase mapping
+4. `engram.json → models.default` — grinding phases only
+5. `engram.json → models.subagents_default` — legacy grinding-phase alias
+6. `OSS_FALLBACK_MODEL = "sonnet-4-6"` — grinding phases only
 
-**Known labels** (`HB_SUBAGENT_LABELS` in `config.js`): hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch.
+**Known phases** (`HB_SUBAGENT_PHASES` in `config.js`): hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch.
 
-**Full-reasoning labels** (`FULL_REASONING_LABELS` in `config.js`): hb-synthesis, hb-rethink, hb-rethink2 — these need a capable model. Others (hb-extract, hb-domains, hb-domains-write, hb-autoresearch) are grinding/regex and can use cheaper models.
+**Full-reasoning phases** require an exact valid mapping and fail before dispatch rather than falling back to a cheap default.
 
 **Helpers** exported from `scripts/config.js`:
-- `getHbSubagentLabels()` → array of all 7 labels
-- `isFullReasoningLabel(label)` → boolean
+- `getHbSubagentPhases()` → array of all 7 phases
+- `isFullReasoningPhase(phase)` → boolean
 
 Example `engram.json` override:
 ```json

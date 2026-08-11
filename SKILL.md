@@ -268,7 +268,9 @@ bun skills/engram/scripts/daily-note-append.js \
 
 ## Heartbeat
 
-10-фазный оркестратор, запускается cron'ом каждые 30 минут. LLM-фазы spawn'ят subagent'ов; механические — inline.
+Для legacy workspace heartbeat остаётся 10-фазным оркестратором. После PR 2
+cutover чистая установка оставляет в heartbeat только не-OLL обслуживание;
+weekly synthesis и OLL ownership переходят единому nightly coordinator.
 
 | Phase | Kind | Назначение |
 |-------|------|-----------|
@@ -276,12 +278,12 @@ bun skills/engram/scripts/daily-note-append.js \
 | 0.5 | inline | Rotation: daily notes >1000 lines |
 | 1 | subagent | Extraction: hb-extract (KG only for main/meta; topics → domain-first skip) |
 | 1.5 | inline | Stub Summary |
-| 2 | subagent | Synthesis: hb-synthesis (Mon only) |
+| 2 | legacy-only subagent | Synthesis: hb-synthesis (Mon only) |
 | 3 | subagent | Domains Status: hb-domains |
 | 3.5 | subagent | Domains Write: hb-domains-write (primary durable path for topics) |
 | 4 | inline | Maintenance: validate, qmd update/embed |
-| 5 | inline | OLL Check: rethink triggers |
-| 5.5 | inline | OLL Spawn Queue |
+| 5 | legacy-only inline | OLL Check: rethink triggers |
+| 5.5 | legacy-only inline | OLL Spawn Queue |
 | 6 | inline | Report + Unlock |
 
 For full heartbeat flow, cron provisioning, and subagent model resolution: [references/heartbeat-flow.md](references/heartbeat-flow.md) · [references/HEARTBEAT.md](references/HEARTBEAT.md)
@@ -302,9 +304,20 @@ bun skills/engram/scripts/memory-observe.js --observation "KG extraction missed 
 bun skills/engram/scripts/memory-tension.js --tension "..." --fact1 <id> --fact2 <id>
 ```
 
-**hb-rethink** reviews observations + tensions during heartbeat Phase 5, generates proposals. `process-handoff.js` auto-executes low-risk actions and surfaces ALERTs.
+Legacy **hb-rethink** behavior remains available only before PR 2 cutover.
+Cut-over workspaces use the PR 3–6 managed adaptation path: authorized
+corrections/preferences/workflow/quality signals, trusted actor/scope grants,
+CAS rule/review projections, strict proposal-only `oll.rethink-handoff.v2`,
+the deterministic operation-journal applicator, a resumable strict-FIFO
+nightly coordinator with fenced lease, immutable registry/context snapshots,
+bounded filesystem watcher, and batch timeout, plus scoped active-rule
+resolution for generic bootstrap sessions. The trusted runtime adapter is a
+deployment boundary. The live `target` observe-only canary and scheduler/
+workspace rollback drills passed; the live scheduler was then restored to the
+deterministic reconciliation command and `target` to `nightly.enabled=false`.
+Production rule injection remains disabled until a separate active-mode gate.
 
-For full OLL details (triggers, schemas, spawn queue): [references/oll.md](references/oll.md)
+For current OLL runtime details (legacy compatibility plus PR 2–7 managed path/tooling): [references/oll.md](references/oll.md). PR 2 disables heartbeat-owned rethink admission/application and moves scheduling state into `oll-nightly-state.v1`; PR 3 adds trusted capture/authorization/review; PR 4 validates and applies typed handoffs idempotently; PR 5 provides durable discovery, orchestration, recovery, and strict FIFO; PR 6 resolves scoped active rules and injects them only at matching bootstrap when adaptation is explicitly active; PR 7 provides guarded rollout/rollback tooling plus synthetic and live observe-only evidence. Active-mode production rollout remains pending: [references/oll-nightly-adaptation.md](references/oll-nightly-adaptation.md).
 
 ## Subagent Memory
 
@@ -344,7 +357,7 @@ For full subagent memory, spawn workflow, templates: [references/subagent-memory
 
 ## OpenClaw Hooks
 
-Engram ships 8 hooks that automate session tasks. **Agents do NOT need to repeat these manually.**
+Engram ships 9 hooks that automate session tasks. **Agents do NOT need to repeat these manually.**
 
 | Hook | Event | What it does |
 |------|-------|--------------|
@@ -354,8 +367,9 @@ Engram ships 8 hooks that automate session tasks. **Agents do NOT need to repeat
 | `engram-session-memory` | `command:new/reset` | Archive session transcript |
 | `engram-bootstrap-qmd` | `agent:bootstrap` | Declares scheduler ownership; performs no QMD maintenance |
 | `engram-message-log` | `message:received` | Log messages (opt-in) |
-| `engram-topic-domain-load` | `message:received` | Inject topic domain context |
-| `engram-peer-domain-load` | `message:received` | Inject DM/group domain context |
+| `engram-topic-domain-load` | `agent:bootstrap` | Inject topic domain context |
+| `engram-peer-domain-load` | `agent:bootstrap` | Inject bound DM/group domain context |
+| `engram-rule-context-load` | `agent:bootstrap` | Inject matching active OLL rules when rollout mode is active |
 
 For hook installation, race-condition guard, side-effect-delivered pattern: [references/hooks.md](references/hooks.md)
 
@@ -372,7 +386,8 @@ For hook installation, race-condition guard, side-effect-delivered pattern: [ref
 
 **Infrastructure (run by hooks/cron, not agent):**
 - `heartbeat-runner.js` — heartbeat entrypoint
-- `init.js`, `install-hooks.js`, `install-cron.js`, `install-qmd.js` — setup
+- `init.js`, `install-hooks.js`, `install-deterministic-heartbeat-cron.js`, `install-qmd.js` — clean-install setup
+- `install-cron.js` — pre-cutover compatibility only
 - `add-domain.js`, `add-session.js` — provisioning
 - `validate.js`, `memory-repair.js`, `derive-facts.js` — maintenance
 

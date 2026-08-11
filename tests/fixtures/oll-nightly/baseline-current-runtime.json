@@ -1,0 +1,22 @@
+{
+  "schema": "oll.nightly-baseline.v1",
+  "capturedAt": "2026-08-11T00:00:00.000Z",
+  "nightlyCoordinator": {
+    "requiresExplicitWorkspacePaths": true,
+    "flushesAccess": true,
+    "rebuildsSummaries": true,
+    "spawnsRethink": false
+  },
+  "heartbeat": {
+    "admits": ["hb-rethink", "hb-rethink2", "hb-autoresearch"],
+    "appliesLegacyHandoffs": ["HB-RETHINK", "HB-RETHINK2", "HB-AUTORESEARCH"]
+  },
+  "modelResolution": {
+    "semanticLookupKey": "label",
+    "fullReasoningFallbackAllowed": true
+  },
+  "handoff": {
+    "authoritativeSchema": "legacy-free-form",
+    "watcherBasedWait": false
+  }
+}

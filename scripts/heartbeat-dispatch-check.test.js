@@ -37,7 +37,7 @@ describe("heartbeat-dispatch-check", () => {
       runId: "hb-domains-2026-08-09-abcdef01",
       phase: "hb-domains-write",
       label: "hb-domains-write",
-      model: "openai/gpt-5.6-terra",
+      model: "example/full-reasoning",
       task: "do work",
       status: "queued",
     };

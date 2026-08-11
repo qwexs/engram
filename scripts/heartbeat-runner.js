@@ -13,7 +13,12 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { loadEngramConfig, resolveSubagentModel } from "./config.js";
+import {
+  isLegacyOllAdmissionEnabled,
+  loadEngramConfig,
+  resolveSubagentModel,
+  resolveWorkspaceId,
+} from "./config.js";
 import { parseHandoff, applyHandoff, defaultHandoffHandlers } from "./process-handoff-core.js";
 import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary, shouldInlineNoopDailyNote, DEFAULT_MIN_DAILY_BYTES_FOR_SPAWN } from "./domains-runner.js";
 import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerivedStatus, hasAutoDerivedMarker } from "./_lib/auto-derive-status.js";
@@ -31,21 +36,8 @@ const DEFAULT_STATE = {
   lastExtraction: {},
   lastSessionExtracted: {},
   lastDomainScan: null,
-  lastWeeklySynthesis: null,
   pendingObservations: 0,
   pendingTensions: 0,
-  rethinkInProgress: false,
-  rethinkStartedAt: null,
-  lastRethink: null,
-  lastRethinkScore: null,
-  rethinkCount: 0,
-  autoresearchInProgress: false,
-  autoresearchStartedAt: null,
-  currentExperiment: null,
-  lastAutoresearch: null,
-  pendingRethink2: null,
-  rethink2InProgress: false,
-  rethink2StartedAt: null,
   subagentRuns: {},
   activeSessions: [],
 };
@@ -131,6 +123,10 @@ process.env.ENGRAM_WORKSPACE = workspace;
 
 const config = loadEngramConfig(workspace);
 const agentId = String(opts["agent-id"] || config.agent.replace(/^agent-/, "") || "main").replace(/^agent-/, "");
+// Legacy fallback remains only until the explicit fleet migration in PR 2.
+// New configs always carry workspace.id; all spawned labels use this semantic
+// identity instead of a caller-controlled prefix.
+const workspaceId = resolveWorkspaceId(workspace, { allowAgentFallback: true });
 const agentDir = "agent-" + agentId;
 const session = opts.session || "main";
 const allActiveSessions = Boolean(opts["all-active-sessions"]);
@@ -146,9 +142,11 @@ const ollStale = {
 };
 
 const statePath = join(workspace, "memory", "heartbeat-state.json");
+const ollStatePath = join(workspace, "memory-state", "oll", "state.json");
 
 const summary = {
   workspace,
+  workspaceId,
   agentId,
   session,
   scope: allActiveSessions ? "workspace" : "session",
@@ -527,13 +525,14 @@ function staleWorker(state, phase, legacyStartedAtKey, ttlHours) {
 }
 
 function spawnLabel(phase) {
-  return labelPrefix + "-" + phase.replace(/^hb-/, "");
+  return workspaceId + "-" + phase;
 }
 
 function spawnRunId(phase) {
-  // crypto.randomUUID() prevents collisions when two spawns fire in the same
-  // millisecond (Date.now() had this gap; review opencode-review-2026-06-24.md).
-  return phase + "-" + today + "-" + randomUUID().slice(0, 8);
+  // A full UUID is the global correlation key. Phase/date remain separate
+  // structured fields and are never encoded into the run identity.
+  void phase;
+  return randomUUID();
 }
 
 // Normalize a filesystem path to forward-slash form for storage in JSON state.
@@ -544,10 +543,10 @@ function toPosixPath(p) {
   return typeof p === "string" ? p.replace(/\\/g, "/") : p;
 }
 
-async function queueSpawnRequest({ phase, runId, label, task, experimentId = null, model = resolveSubagentModel(workspace, label) }) {
+async function queueSpawnRequest({ phase, runId, label, task, experimentId = null, model = resolveSubagentModel(workspace, phase) }) {
   const dir = join(workspace, "workspace", "ops", "heartbeat-spawns");
   mkdirSync(dir, { recursive: true });
-  const payload = { runId, phase, label, runtimeLabel: runtimeSpawnLabel(label, runId), model, cleanup: "delete", status: "queued", createdAt: localIso(), experimentId, task };
+  const payload = { workspaceId, runId, phase, label, runtimeLabel: runtimeSpawnLabel(label, runId), model, cleanup: "delete", status: "queued", createdAt: localIso(), experimentId, task };
   const path = join(dir, runId + ".json");
   await atomicWrite(path, JSON.stringify(payload, null, 2) + "\n");
   return { path: toPosixPath(path), payload };
@@ -639,9 +638,9 @@ async function buildOllTask(phase, context) {
   ].join("\n");
 }
 
-async function markOllWorkerQueued({ phase, runId, label, requestPath, experimentId = null }) {
+async function markOllWorkerQueued({ phase, runId, label, runtimeLabel, model, requestPath, experimentId = null }) {
   const patches = {
-    ["subagentRuns." + phase]: { status: "queued", label, runId, requestPath, startedAt: localIso() },
+    ["subagentRuns." + phase]: { status: "queued", workspaceId, phase, label, runtimeLabel, runId, model, requestPath, startedAt: localIso() },
   };
   if (phase === "hb-rethink") {
     patches.rethinkInProgress = true;
@@ -798,6 +797,11 @@ function mondayFor(dateString) {
 }
 
 async function runSynthesis() {
+  if (!isLegacyOllAdmissionEnabled(workspace)) {
+    summary.synthesis = "skipped (owned by nightly coordinator)";
+    summary.phases.synthesis = { status: "skipped", reason: "nightly coordinator owns reconciliation" };
+    return;
+  }
   const monday = mondayFor(today);
   if (today !== monday) {
     summary.synthesis = "skipped (not Monday)";
@@ -805,7 +809,8 @@ async function runSynthesis() {
     return;
   }
   const state = await readJson(statePath, DEFAULT_STATE);
-  if (state.lastWeeklySynthesis === monday) {
+  const lastWeeklyWindow = state.lastWeeklySynthesis;
+  if (lastWeeklyWindow === monday) {
     summary.synthesis = "skipped (already ran this week)";
     summary.phases.synthesis = { status: "skipped", reason: "already ran this week", week: monday };
     return;
@@ -814,9 +819,7 @@ async function runSynthesis() {
   const stats = parseLastJsonLine(result.stdout);
   summary.phases.synthesis = { command: summarizeCommand(result), week: monday, stats };
   if (result.status === 0) {
-    await patchState({
-      lastWeeklySynthesis: monday,
-      "subagentRuns.hb-synthesis": {
+    const synthesisRun = {
         status: "ok",
         label: labelPrefix + "-synthesis",
         entitiesScanned: stats?.entitiesScanned ?? null,
@@ -828,7 +831,10 @@ async function runSynthesis() {
         warm: stats?.warm ?? null,
         coldIncluded: stats?.coldIncluded ?? null,
         coldExcluded: stats?.coldExcluded ?? null,
-      },
+    };
+    await patchState({
+      lastWeeklySynthesis: monday,
+      "subagentRuns.hb-synthesis": synthesisRun,
     });
     summary.synthesis = formatSynthesisStats(stats);
   } else {
@@ -950,6 +956,9 @@ async function applyRethinkHandoffs() {
   const doneDir = join(spawnsDir, "done");
   let applied = 0;
   let failed = 0;
+  if (!isLegacyOllAdmissionEnabled(workspace)) {
+    return { applied, failed, skipped: true, reason: "legacy OLL application disabled by nightly cutover" };
+  }
   if (!existsSync(handoffDir)) return { applied, failed };
   let files;
   try {
@@ -1185,13 +1194,14 @@ async function runDomains() {
 }
 
 async function runOllTriggerShell({ domainScan = null } = {}) {
+  const legacyAdmission = isLegacyOllAdmissionEnabled(workspace);
   let state = await readJson(statePath, DEFAULT_STATE);
-  const obs = await countPendingObservationCategories();
-  const observationsFull = await getPendingObservationsFull();
-  const tensions = await countPendingTensions();
-  const tensionsFull = await getPendingTensionsFull();
-  const experiments = await getExperimentTriggerStats();
-  const pendingAutoExperiments = await listPendingAutoExperiments();
+  const obs = legacyAdmission ? await countPendingObservationCategories() : { friction: 0, surprise: 0, pattern: 0 };
+  const observationsFull = legacyAdmission ? await getPendingObservationsFull() : [];
+  const tensions = legacyAdmission ? await countPendingTensions() : 0;
+  const tensionsFull = legacyAdmission ? await getPendingTensionsFull() : [];
+  const experiments = legacyAdmission ? await getExperimentTriggerStats() : { pending: 0, running: 0 };
+  const pendingAutoExperiments = legacyAdmission ? await listPendingAutoExperiments() : [];
   const score = obs.friction * 3 + obs.surprise * 2 + obs.pattern;
   const daysSinceRethink = daysSince(state.lastRethink);
   const rethinkReasons = [];
@@ -1221,14 +1231,14 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   if (opts["recover-stale-oll-locks"]) {
     const recoveryPatches = {};
     const staleRecords = [];
-    if (stale.rethink) {
+    if (legacyAdmission && stale.rethink) {
       recoveryPatches.rethinkInProgress = false;
       recoveryPatches.rethinkStartedAt = null;
       recoveryPatches["subagentRuns.hb-rethink.status"] = "stale-reset";
       staleRecords.push({ phase: "hb-rethink", runId: state.subagentRuns?.["hb-rethink"]?.runId });
       recovered.push("hb-rethink");
     }
-    if (stale.autoresearch) {
+    if (legacyAdmission && stale.autoresearch) {
       recoveryPatches.autoresearchInProgress = false;
       recoveryPatches.autoresearchStartedAt = null;
       recoveryPatches.currentExperiment = null;
@@ -1236,7 +1246,7 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
       staleRecords.push({ phase: "hb-autoresearch", runId: state.subagentRuns?.["hb-autoresearch"]?.runId });
       recovered.push("hb-autoresearch");
     }
-    if (stale.rethink2) {
+    if (legacyAdmission && stale.rethink2) {
       recoveryPatches.rethink2InProgress = false;
       recoveryPatches.rethink2StartedAt = null;
       recoveryPatches["subagentRuns.hb-rethink2.status"] = "stale-reset";
@@ -1275,23 +1285,31 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   // to produce a handoff — re-spawning instantly creates an infinite loop.
   // The next tick (30 min later) will re-evaluate and spawn if still due.
   const rethinkJustRecovered = recovered.includes("hb-rethink");
-  const wouldRunRethink = rethinkReasons.length > 0 && !rethinkInProgress && !isWorkerRunning(state, "hb-rethink") && !rethinkJustRecovered;
+  const wouldRunRethink = legacyAdmission && rethinkReasons.length > 0 && !rethinkInProgress && !isWorkerRunning(state, "hb-rethink") && !rethinkJustRecovered;
   const autoresearchJustRecovered = recovered.includes("hb-autoresearch");
-  const wouldRunAutoresearch = pendingAutoExperiments.length > 0 && !autoresearchInProgress && !isWorkerRunning(state, "hb-autoresearch") && !autoresearchJustRecovered;
+  const wouldRunAutoresearch = legacyAdmission && pendingAutoExperiments.length > 0 && !autoresearchInProgress && !isWorkerRunning(state, "hb-autoresearch") && !autoresearchJustRecovered;
   const rethink2JustRecovered = recovered.includes("hb-rethink2");
-  const wouldRunRethink2 = Boolean(state.pendingRethink2) && !rethink2InProgress && !rethink2JustRecovered;
-  const details = {
-    observations: obs,
-    tensions,
-    score,
-    daysSinceRethink,
-    rethink: { wouldRun: wouldRunRethink, inProgress: rethinkInProgress, staleLock: stale.rethink, reasons: rethinkReasons },
-    autoresearch: { wouldRun: wouldRunAutoresearch, inProgress: autoresearchInProgress, staleLock: stale.autoresearch, pending: pendingAutoExperiments.length, pendingTotal: experiments.pending, running: experiments.running },
-    rethink2: { wouldRun: wouldRunRethink2, inProgress: rethink2InProgress, staleLock: stale.rethink2, pendingExperiment: state.pendingRethink2 || null },
-    recovery: { enabled: Boolean(opts["recover-stale-oll-locks"]), recovered },
-    spawns: [],
-    mode: (opts["spawn-rethink"] || opts["spawn-autoresearch"] || opts["spawn-rethink2"] || opts["spawn-hb-domains-write"]) ? "spawn-queue" : "report-only",
-  };
+  const wouldRunRethink2 = legacyAdmission && Boolean(state.pendingRethink2) && !rethink2InProgress && !rethink2JustRecovered;
+  const details = legacyAdmission ? {
+      observations: obs,
+      tensions,
+      score,
+      daysSinceRethink,
+      rethink: { wouldRun: wouldRunRethink, inProgress: rethinkInProgress, staleLock: stale.rethink, reasons: rethinkReasons },
+      autoresearch: { wouldRun: wouldRunAutoresearch, inProgress: autoresearchInProgress, staleLock: stale.autoresearch, pending: pendingAutoExperiments.length, pendingTotal: experiments.pending, running: experiments.running },
+      rethink2: { wouldRun: wouldRunRethink2, inProgress: rethink2InProgress, staleLock: stale.rethink2, pendingExperiment: state.pendingRethink2 || null },
+      recovery: { enabled: Boolean(opts["recover-stale-oll-locks"]), recovered },
+      legacyAdmission: "enabled",
+      skipped: false,
+      spawns: [],
+      mode: (opts["spawn-rethink"] || opts["spawn-autoresearch"] || opts["spawn-rethink2"] || opts["spawn-hb-domains-write"]) ? "spawn-queue" : "report-only",
+    } : {
+      legacyAdmission: "disabled",
+      skipped: true,
+      reason: "nightly coordinator owns managed adaptation",
+      spawns: [],
+      mode: Boolean(opts["spawn-hb-domains-write"]) ? "domains-write-only" : "heartbeat-only",
+    };
   summary.phases.oll = details;
 
   async function maybeQueue(phase, enabled, due, context) {
@@ -1301,16 +1319,16 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
     const handoffPath = toPosixPath(join(workspace, "workspace", "ops", "heartbeat-spawns", "handoff", runId + ".md"));
     const task = await buildOllTask(phase, { ...context, runId, label, date: today, workspace, handoffPath });
     const request = await queueSpawnRequest({ phase, runId, label, task, experimentId: context.experimentId || null });
-    await markOllWorkerQueued({ phase, runId, label, requestPath: request.path, experimentId: context.experimentId || null });
-    const queued = { phase, runId, label, requestPath: request.path, experimentId: context.experimentId || null };
+    await markOllWorkerQueued({ phase, runId, label, runtimeLabel: request.payload.runtimeLabel, model: request.payload.model, requestPath: request.path, experimentId: context.experimentId || null });
+    const queued = { workspaceId, phase, runId, label, runtimeLabel: request.payload.runtimeLabel, model: request.payload.model, requestPath: request.path, experimentId: context.experimentId || null };
     details.spawns.push(queued);
     return queued;
   }
 
-  await maybeQueue("hb-rethink", Boolean(opts["spawn-rethink"]), wouldRunRethink, { observations: observationsFull, tensions: tensionsFull, score, daysSinceRethink, reasons: rethinkReasons, agentId });
+  await maybeQueue("hb-rethink", legacyAdmission && Boolean(opts["spawn-rethink"]), wouldRunRethink, { observations: observationsFull, tensions: tensionsFull, score, daysSinceRethink, reasons: rethinkReasons, agentId });
   const nextExperiment = pendingAutoExperiments[0] || null;
-  await maybeQueue("hb-autoresearch", Boolean(opts["spawn-autoresearch"]), wouldRunAutoresearch, { experimentId: nextExperiment?.id || null, experiment: nextExperiment });
-  await maybeQueue("hb-rethink2", Boolean(opts["spawn-rethink2"]), wouldRunRethink2, { experimentId: state.pendingRethink2 || null });
+  await maybeQueue("hb-autoresearch", legacyAdmission && Boolean(opts["spawn-autoresearch"]), wouldRunAutoresearch, { experimentId: nextExperiment?.id || null, experiment: nextExperiment });
+  await maybeQueue("hb-rethink2", legacyAdmission && Boolean(opts["spawn-rethink2"]), wouldRunRethink2, { experimentId: state.pendingRethink2 || null });
 
   // hb-domains-write: queue one spawn per due domain. We pass the per-domain
   // context (domain name, type, bound sessionKey, daily note path) so the
@@ -1458,7 +1476,9 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
   const rethinkText = rethinkQueued ? "rethink queued" : wouldRunRethink ? "rethink due" : rethinkInProgress ? (stale.rethink ? "rethink stale lock" : "rethink in progress") : "rethink idle";
   const autoresearchText = autoresearchQueued ? ("autoresearch queued " + (nextExperiment?.id || "")).trim() : wouldRunAutoresearch ? ("autoresearch due " + pendingAutoExperiments.length) : ("autoresearch pending " + pendingAutoExperiments.length);
   const rethink2Text = rethink2Queued ? ("rethink2 queued " + state.pendingRethink2) : wouldRunRethink2 ? ("rethink2 pending " + state.pendingRethink2) : rethink2InProgress ? (stale.rethink2 ? "rethink2 stale lock" : "rethink2 in progress") : "rethink2 idle";
-  summary.oll = `score ${score} (${obs.friction}f/${obs.surprise}s/${obs.pattern}p), tensions ${tensions}; ${rethinkText}; ${autoresearchText}; ${rethink2Text}; ${domainsWriteText}`;
+  summary.oll = legacyAdmission
+    ? `score ${score} (${obs.friction}f/${obs.surprise}s/${obs.pattern}p), tensions ${tensions}; ${rethinkText}; ${autoresearchText}; ${rethink2Text}; ${domainsWriteText}`
+    : `legacy OLL skipped (nightly coordinator owner); ${domainsWriteText}`;
   if (recovered.length > 0) summary.oll += "; recovered " + recovered.join(",");
 }
 
@@ -1547,6 +1567,7 @@ const VALIDATE_BENIGN_WARNINGS = [
 
 async function maybeAutoSeedFromValidate(validateResult) {
   if (!validateResult) return;
+  if (!isLegacyOllAdmissionEnabled(workspace)) return;
   const out = `${validateResult.stdout ?? ""}\n${validateResult.stderr ?? ""}`;
   const errorCount = (out.match(/❌/g) || []).length;
   const allWarnLines = out.split("\n").filter((l) => /⚠️/.test(l));

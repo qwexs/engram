@@ -26,7 +26,7 @@ function seedFrictionObservations(count = 5) {
   writeJson(join(dir, "index.json"), { observations: ids });
 }
 
-function runRunner(args = []) {
+function runRunnerAt(date, args = []) {
   const proc = Bun.spawnSync([
     "bun",
     RUNNER,
@@ -35,7 +35,7 @@ function runRunner(args = []) {
     "--session",
     "main",
     "--date",
-    DATE,
+    date,
     "--no-write-extraction",
     "--no-embed",
     "--skip-maintenance",
@@ -54,6 +54,10 @@ function runRunner(args = []) {
   return JSON.parse(stdout.slice(0, stdout.lastIndexOf("\nHEARTBEAT_OK")).trim());
 }
 
+function runRunner(args = []) {
+  return runRunnerAt(DATE, args);
+}
+
 function spawnFiles() {
   const dir = join(root, "workspace", "ops", "heartbeat-spawns");
   if (!existsSync(dir)) return [];
@@ -64,6 +68,12 @@ describe("heartbeat-runner OLL spawn gates", () => {
   beforeEach(() => {
     root = join(tmpdir(), "engram-hb-oll-" + Date.now() + "-" + Math.random().toString(16).slice(2));
     mkdirSync(root, { recursive: true });
+    writeJson(join(root, "engram.json"), {
+      schemaVersion: 1,
+      workspace: { id: "main" },
+      agent: "agent-main",
+      models: { heartbeat: { subagents: { "hb-rethink": "provider/full-reasoning" } } },
+    });
   });
 
   afterEach(() => {
@@ -92,6 +102,81 @@ describe("heartbeat-runner OLL spawn gates", () => {
     const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
     expect(state.rethinkInProgress).toBe(true);
     expect(state.subagentRuns["hb-rethink"].status).toBe("queued");
+    expect(state.subagentRuns["hb-rethink"]).toMatchObject({
+      workspaceId: "main",
+      phase: "hb-rethink",
+      label: "main-hb-rethink",
+      model: "provider/full-reasoning",
+    });
+    expect(state.subagentRuns["hb-rethink"].runId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(state.subagentRuns["hb-rethink"].runtimeLabel).toBe(
+      `main-hb-rethink-${state.subagentRuns["hb-rethink"].runId}`,
+    );
+  });
+
+  test("nightly schedule ownership makes legacy OLL flags inert", () => {
+    writeJson(join(root, "engram.json"), {
+      schemaVersion: 1,
+      workspace: { id: "main" },
+      agent: "agent-main",
+      oll: { scheduleOwner: "nightly", nightly: { enabled: false } },
+      models: { heartbeat: { subagents: { "hb-rethink": "provider/full-reasoning" } } },
+    });
+    writeJson(join(root, "memory-state", "oll", "state.json"), {
+      schema: "oll-nightly-state.v1",
+      schemaVersion: 1,
+      workspaceId: "main",
+      nightlyEnabled: false,
+    });
+    seedFrictionObservations();
+    const result = runRunner([
+      "--spawn-rethink",
+      "--spawn-rethink2",
+      "--spawn-autoresearch",
+      "--recover-stale-oll-locks",
+    ]);
+    expect(result.summary.phases.oll.legacyAdmission).toBe("disabled");
+    expect(result.summary.phases.oll.skipped).toBe(true);
+    expect(result.summary.phases.oll.reason).toContain("nightly coordinator");
+    expect(result.summary.phases.oll.score).toBeUndefined();
+    expect(result.summary.phases.oll.observations).toBeUndefined();
+    expect(result.summary.phases.oll.rethink).toBeUndefined();
+    expect(result.summary.phases.oll.spawns).toHaveLength(0);
+    expect(result.summary.oll).toContain("legacy OLL skipped");
+    expect(spawnFiles()).toEqual([]);
+    const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+    expect(state.rethinkInProgress).toBeUndefined();
+    expect(state.pendingRethink2).toBeUndefined();
+    expect(state.subagentRuns?.["hb-rethink"]).toBeUndefined();
+  });
+
+  test("nightly schedule ownership skips Monday synthesis and leaves nightly reconciliation state untouched", () => {
+    writeJson(join(root, "engram.json"), {
+      schemaVersion: 1,
+      workspace: { id: "main" },
+      agent: "agent-main",
+      oll: { scheduleOwner: "nightly", nightly: { enabled: false }, weeklyMode: { enabled: true } },
+      models: { heartbeat: { subagents: { "hb-rethink": "provider/full-reasoning" } } },
+    });
+    const nightlyPath = join(root, "memory-state", "oll", "state.json");
+    writeJson(nightlyPath, {
+      schema: "oll-nightly-state.v1",
+      schemaVersion: 1,
+      workspaceId: "main",
+      nightlyEnabled: false,
+      memoryReconciliation: { weeklyWindowStart: null, lastCompletedAt: null },
+    });
+    const before = readFileSync(nightlyPath, "utf8");
+    const result = runRunnerAt("2026-05-18");
+    expect(result.summary.phases.synthesis).toEqual({
+      status: "skipped",
+      reason: "nightly coordinator owns reconciliation",
+    });
+    expect(result.summary.synthesis).toBe("skipped (owned by nightly coordinator)");
+    expect(readFileSync(nightlyPath, "utf8")).toBe(before);
+    const heartbeat = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+    expect(heartbeat.lastWeeklySynthesis).toBeUndefined();
+    expect(heartbeat.subagentRuns?.["hb-synthesis"]).toBeUndefined();
   });
 
   test("recovers stale rethink lock only with explicit recovery flag", () => {

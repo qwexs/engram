@@ -3,6 +3,15 @@
 Read this document top to bottom and execute each phase sequentially.
 **State mutations:** use `bun skills/engram/scripts/heartbeat-state.js --set <path> <value>` for all state writes (`true`/`false`/`null`/numbers/JSON all parsed correctly). Read via `--get-all`.
 
+> **PR 2 CUTOVER BOUNDARY**
+> When `engram.json → oll.scheduleOwner` is `nightly` or
+> `memory-state/oll/legacy-admission-disabled.json` exists, Phases 5 and 5.5
+> below are historical compatibility only: heartbeat cannot admit, claim, or
+> apply `hb-rethink`, `hb-rethink2`, or `hb-autoresearch`. Their legacy state
+> is removed from `heartbeat-state.json` and migrated to
+> `memory-state/oll/state.json`. Nightly rethink itself remains disabled until
+> the coordinator/canary rollout.
+
 > **ARCHITECTURE NOTE — durable handoff, suppressed announce**
 > `sessions_spawn` is asynchronous. The cron requester dispatches every claimed child and finishes
 > without waiting. Each child writes its handoff to the exact absolute `handoffPath` injected in
@@ -16,21 +25,22 @@ Read this document top to bottom and execute each phase sequentially.
 
 ## Subagent Model Resolution
 
-Each `sessions_spawn` call below says `model=<resolved via engram.json>`. The actual model is picked at spawn time by `scripts/config.js → resolveSubagentModel(workspace, label)`, in this order (f73cda3, 2026-07-11):
+Each `sessions_spawn` call below says `model=<resolved via engram.json>`. The actual model is picked at spawn time by `scripts/config.js → resolveSubagentModel(workspace, phase)`, in this order:
 
-1. `process.env.ENGRAM_MODEL_<LABEL_UPPER>` (e.g. `ENGRAM_MODEL_HB_EXTRACT`) — explicit env override
-2. `engram.json → models.heartbeat.subagents[label]` (e.g. `"hb-extract": "<model-id>"`) — per-label override
-3. `engram.json → models.default` — workspace-wide default for all subagents
-4. `engram.json → models.subagents_default` — legacy alias for `models.default`
-5. `OSS_FALLBACK_MODEL = "sonnet-4-6"` — only when engram.json has no model config (fresh OSS install)
+1. `process.env.ENGRAM_MODEL_<PHASE_UPPER>` (e.g. `ENGRAM_MODEL_HB_EXTRACT`) — explicit env override
+2. `engram.json → models.heartbeat.subagents[phase]` — exact workspace phase mapping
+3. selected deployment overlay → exact phase mapping
+4. `engram.json → models.default` — grinding phases only
+5. `engram.json → models.subagents_default` — legacy grinding-phase alias
+6. `OSS_FALLBACK_MODEL = "sonnet-4-6"` — grinding phases only
 
-**Known labels** (`HB_SUBAGENT_LABELS` in `config.js`): hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch.
+**Known phases** (`HB_SUBAGENT_PHASES` in `config.js`): hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch.
 
-**Full-reasoning labels** (`FULL_REASONING_LABELS` in `config.js`): hb-synthesis, hb-rethink, hb-rethink2 — these need a capable model. Others (hb-extract, hb-domains, hb-domains-write, hb-autoresearch) are grinding/regex and can use cheaper models.
+**Full-reasoning phases**: hb-synthesis, hb-rethink, hb-rethink2. They require an exact valid mapping and fail before dispatch instead of falling back to a cheap default.
 
 **Helpers** exported from `scripts/config.js`:
-- `getHbSubagentLabels()` → array of all 7 labels
-- `isFullReasoningLabel(label)` → boolean
+- `getHbSubagentPhases()` → array of all 7 phases
+- `isFullReasoningPhase(phase)` → boolean
 
 Example `engram.json` override:
 ```json
@@ -78,7 +88,9 @@ The cron agent turn is configured independently from the subagents it spawns:
 5. Determine what to run:
    - Rotation: always check (script determines if needed)
    - Extraction: always (watermark handles incremental)
-   - Synthesis: if Monday AND `lastWeeklySynthesis` != this week Monday
+   - Synthesis: if Monday and the current owner's weekly reconciliation
+     watermark is not this week Monday (`heartbeat-state` before cutover,
+     `memory-state/oll/state.json` after cutover)
    - Domains: if `domainsEnabled !== false` AND `memory/domains/registry.json` exists
    - Maintenance: always (inline, synchronous)
 
@@ -169,6 +181,10 @@ If the heartbeat model is too weak for summarization, defer to next interactive 
 4. If any phase wrote to `life/` — already covered by steps 2-3
 
 ## Phase 5: OLL Check (inline, synchronous)
+
+> **Legacy compatibility only.** Nightly-owned workspaces skip this phase
+> before reading/scoring observations or tensions. The following algorithm is
+> retained solely to migrate and diagnose a pre-cutover workspace.
 
 1. Load `workspace/ops/observations/index.json` — collect pending obs IDs, read each file, count by category:
    - `friction_count` = pending obs where category === "friction"
@@ -367,16 +383,21 @@ Fields: Status (ok | error | partial), Summary (one line), Stats (JSON), Flags (
 
 ## Init (one-time per workspace)
 
-To provision a fresh workspace with the heartbeat cron job:
+To provision a fresh workspace with deterministic heartbeat plus the disabled,
+observe-only workspace-side OLL contract:
 
 ```bash
 # After init.js:
-bun skills/engram/scripts/install-cron.js install --agent-id <id> --workspace <path>
+bun skills/engram/scripts/install-deterministic-heartbeat-cron.js \
+  --agent-id <id> --workspace <path> --schedule '*/30 * * * *'
 # Or, do everything in one shot:
 bun skills/engram/scripts/init.js --with-cron --agent-id <id>
 ```
 
-This creates (or updates) a cron job named `Heartbeat (Engram runner) — <agent-id>` with the 4-step prose payload (runner → spawn-claim → sessions_spawn → reply). Child results travel only through durable handoff files; completion announce is deliberately suppressed. The agent-specific name prevents one workspace from editing another workspace's global cron job. Idempotent — safe to re-run. Schedule defaults to every 30 minutes.
+This creates (or updates) a no-model script cron named
+`Heartbeat (Engram deterministic) — <agent-id>`. It drains durable non-OLL
+heartbeat spawn records and never schedules managed adaptation. The single
+nightly OLL scheduler is a separate fleet-level, acknowledgement-gated install.
 
 The installer:
 

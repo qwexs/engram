@@ -16,8 +16,14 @@ describe("install-deterministic-heartbeat-cron", () => {
     expect(result.status).toBe(0); const spec = JSON.parse(result.stdout);
     expect(spec.payload.kind).toBe("script"); expect(spec.payload.source).toContain('tools.callValue("sessions_spawn"');
     expect(spec.payload.source).toContain("heartbeat-runner.js"); expect(spec.payload.source).toContain("spawn-claim.js");
+    expect(spec.payload.source).toContain("spawn-ack.js");
     expect(spec.payload.source).toContain("workdir: WORKSPACE");
-    expect(spec.payload.source).not.toContain("agentTurn"); expect(spec.payload.toolsAllow).toEqual(["exec", "sessions_spawn", "sessions_send"]);
+    expect(spec.payload.source).toContain("--spawn-hb-domains-write");
+    expect(spec.payload.source).not.toContain("--spawn-rethink");
+    expect(spec.payload.source).not.toContain("--spawn-rethink2");
+    expect(spec.payload.source).not.toContain("--recover-stale-oll-locks");
+    expect(spec.payload.source).not.toContain("rethinkAlerts");
+    expect(spec.payload.source).not.toContain("agentTurn"); expect(spec.payload.toolsAllow).toEqual(["exec", "sessions_spawn"]);
     expect(spec.schedule).toEqual({ kind: "cron", expr: "20 * * * *", tz: "UTC", staggerMs: 0 });
   });
   test("can prepare a disabled canary without changing its deterministic contract", () => {

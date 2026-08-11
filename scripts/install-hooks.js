@@ -14,11 +14,11 @@
 //   reparse as expected. Result: zero engram hooks load, even though
 //   `openclaw hooks list` shows them as "registered".
 //
-//   Empirically verified: copying `handler.js + handler.ts + HOOK.md` from
+//   Empirically verified: copying built `handler.js + HOOK.md` from
 //   `skills/engram/hooks/engram-*/` into managedHooksDir/engram-*/ as
-//   regular directories makes OpenClaw load all 8 hooks as
-//   `openclaw-workspace` source. After `openclaw gateway restart`:
-//     Hooks (11/13 ready) — 5 bundled + 8 engram.
+//   regular directories makes OpenClaw load the managed hook set as
+//   `openclaw-workspace` source. The current managed set contains 9 Engram
+//   hooks, including `engram-rule-context-load`.
 //
 //   The drift concern that motivated junctions ("edit in skill, re-pull, need
 //   to re-copy") is real but bounded: re-running this script after a `git
@@ -334,6 +334,11 @@ if (existsSync(GATEWAY_HOOKS)) {
 
 // --- Step 4: backup existing entries before install ---
 const toReplace = plan.filter((p) => p.action === 'replace');
+if (toReplace.length > 0 && !args['dry-run'] && !args.force) {
+  console.error(`install-hooks: ${toReplace.length} existing hook entr${toReplace.length === 1 ? 'y' : 'ies'} require --force`);
+  console.error('install-hooks: no files were moved or replaced');
+  process.exit(1);
+}
 if (toReplace.length > 0 && !args['dry-run']) {
   if (args['no-backup']) {
     console.error(`install-hooks: --no-backup set, refusing to replace ${toReplace.length} entries without backup`);

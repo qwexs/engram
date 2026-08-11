@@ -157,12 +157,12 @@ Engram моделирует командную память как **перес�
 | 0.5 | Ротация разросшихся daily notes | inline |
 | 1 | Extract фактов из новых notes | `hb-extract` subagent |
 | 1.5 | Summarize rotated archives | inline |
-| 2 | Weekly synthesis (понедельники) | `hb-synthesis` subagent |
+| 2 | Legacy-only weekly synthesis (после cutover выключен) | `hb-synthesis` subagent |
 | 3 | Domain status check | `hb-domains` subagent |
 | 3.5 | Apply pending changelogs | `hb-domains-write` subagent |
 | 4 | Validate KG, update QMD | inline |
-| 5 | OLL triggers (rethink/autoresearch) | inline |
-| 5.5 | OLL spawn queue | inline |
+| 5 | Legacy OLL triggers (после cutover выключены) | compatibility only |
+| 5.5 | Legacy OLL spawn queue (после cutover выключена) | compatibility only |
 | 6 | Report + unlock | inline |
 
 Падение одной фазы не валит остальные. Модели настраиваются per workspace в `engram.json`. Пайплайн идемпотентен.
@@ -171,7 +171,15 @@ Engram моделирует командную память как **перес�
 
 ## Operational Learning Loop
 
-Система наблюдает собственное поведение — friction, surprises, patterns — и возвращает эти сигналы обратно. `hb-rethink` разбирает накопленные observations в Phase 5 heartbeat, генерирует proposals и может auto-execute низкорисковые улучшения. Со временем агент становится лучше в том, чтобы быть собой.
+Система наблюдает собственное поведение — corrections, preferences, friction,
+surprises и patterns — и возвращает сигналы в управляемый контур адаптации.
+До cutover работал legacy Phase 5 heartbeat. После cutover PR 3–6 используют
+trusted capture, proposal-only handoff, deterministic applicator и durable
+strict-FIFO nightly coordinator. PR 6 добавляет scoped active-rule resolver и
+универсальную bootstrap-инъекцию с conflict/cap guards. Live observe-only
+canary на `target` и rollback drill пройдены; live вернулся к безопасному
+`nightly.enabled=false`. Active rule injection остаётся отдельным операторским
+gate. PR 7 tooling даёт dry-run plan, backup/release markers и staged rollback.
 
 ---
 
@@ -181,7 +189,8 @@ Engram моделирует командную память как **перес�
 # Установить QMD (hybrid search engine)
 bun skills/engram/scripts/install-qmd.js
 
-# Поднять memory system + heartbeat cron
+# Поднять workspace-side memory/OLL contract + deterministic heartbeat cron.
+# Nightly OLL создаётся observe-only/disabled и не активируется автоматически.
 bun skills/engram/scripts/init.js --with-cron
 
 # Активировать hooks
@@ -191,7 +200,7 @@ openclaw gateway restart
 Существующий workspace:
 
 ```bash
-bun skills/engram/scripts/install-cron.js install \
+bun skills/engram/scripts/install-deterministic-heartbeat-cron.js \
   --workspace /path/to/workspace --agent-id main --schedule '*/30 * * * *'
 ```
 
@@ -256,6 +265,7 @@ engram --version
 | Workspace watchdog | `references/watchdog.md` |
 | Meta-domain | `references/meta-domain.md` |
 | OLL | `references/oll.md` |
+| OLL nightly adaptation — implemented runtime, clean-install contract, canary evidence and gated rollout | `references/oll-nightly-adaptation.md` |
 | Hooks | `references/hooks.md` |
 | Домены субагентов | `references/subagent-memory.md` |
 | Telegram topic-thread | `references/topic-thread.md` |

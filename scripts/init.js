@@ -4,7 +4,7 @@
 // Usage: bun skills/engram/scripts/init.js [--agent-id main] [--qmd-variant auto|local|jina|ollama] [--force] [--help]
 
 import { parseArgs } from 'node:util';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync, lstatSync, realpathSync, symlinkSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 import { loadEngramConfig, resolveQmdCommand } from './config.js';
@@ -13,6 +13,7 @@ import { addQmdCollectionSync, listQmdCollections, probeQmdExecutable } from './
 const { values: args } = parseArgs({
   options: {
     'agent-id': { type: 'string' },
+    'workspace': { type: 'string' },
     'qmd-variant': { type: 'string', default: 'auto' },
     'force': { type: 'boolean', default: false },
     'with-cron': { type: 'boolean', default: false },
@@ -39,9 +40,12 @@ Usage:
 
 Options:
   --agent-id <id>           Agent identifier (default: main)
+  --workspace <path>        Workspace to initialize (default: current directory)
   --qmd-variant <v>         QMD variant: auto|local|jina|ollama (default: auto)
   --force                   Merge with existing dirs (won't overwrite files)
-  --with-cron               Also install the heartbeat cron job (idempotent)
+  --with-cron               Also install the deterministic heartbeat cron (idempotent).
+                             OLL remains owned by the separate nightly scheduler and disabled
+                             until an acknowledgement-gated rollout enables this workspace.
   --cron-schedule <e>       Schedule for the cron job: "30m" (default), "5m", "1h", or cron expr
                              Derived from engram.json -> cron.schedule, cron.expectedSchedule.expr,
                              or cron.staggerMinutes (in that order) when this flag is omitted.
@@ -74,7 +78,7 @@ What it does:
   5. Auto-detects Telegram sessions from openclaw.json (optional)
   6. Registers QMD collections (freshness is delegated to the coordinator)
   7. Installs OpenClaw hooks
-  8. Installs cron job (optional)
+  8. Installs deterministic non-OLL heartbeat cron (optional)
   9. Runs backfill-domain-agents for topic-thread domains (optional)
   10. Runs validate.js --quality to verify integrity
 
@@ -95,7 +99,7 @@ Examples:
   process.exit(0);
 }
 
-const WORKSPACE = process.cwd();
+const WORKSPACE = resolve(args.workspace || process.cwd());
 const config = loadEngramConfig(WORKSPACE);
 const QMD = resolveQmdCommand(WORKSPACE);
 const agentId = args['agent-id'] || config.agent.replace(/^agent-/, '') || 'main';
@@ -103,6 +107,42 @@ const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'assets', 'templates');
 const OSS_FALLBACK_MODEL = 'sonnet-4-6';
+
+// Generated cron payloads intentionally run from the workspace and use the
+// stable `./skills/engram/scripts/...` entrypoints. Make that contract true
+// for a clean install instead of relying on a manually-created workspace
+// symlink. Existing non-canonical paths are never overwritten.
+function ensureWorkspaceSkillLink() {
+  const link = join(WORKSPACE, 'skills', 'engram');
+  const canonical = realpathSync(SKILL_DIR);
+  try {
+    const stat = lstatSync(link);
+    if (stat && realpathSync(link) === canonical) {
+      recordSkip('workspace-skill-link', 'skills/engram', 'already points to canonical Engram');
+      return true;
+    }
+    recordError(`workspace skill path exists but is not canonical: ${link}`);
+    return false;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      recordError(`cannot inspect workspace skill path ${link}: ${error.message}`);
+      return false;
+    }
+  }
+  if (dryRun) {
+    recordCreate('workspace-skill-link', `skills/engram -> ${canonical}`);
+    return true;
+  }
+  try {
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(canonical, link, 'dir');
+    recordCreate('workspace-skill-link', `skills/engram -> ${canonical}`);
+    return true;
+  } catch (error) {
+    recordError(`cannot create workspace skill link ${link}: ${error.message}`);
+    return false;
+  }
+}
 
 // --- Dry-run mode tracking ---
 const dryRun = !!args['dry-run'];
@@ -123,7 +163,7 @@ if (!dryRun && !args['yes'] && !args['force']) {
   console.log(`  • register QMD collections (without indexing or embedding)`);
   console.log(`  • install/overwrite engram hooks (with backup)`);
   console.log(`  • disable the built-in session-memory hook`);
-  if (args['with-cron']) console.log(`  • install heartbeat cron job`);
+  if (args['with-cron']) console.log(`  • install deterministic non-OLL heartbeat cron job`);
   console.log(`  • restart the OpenClaw gateway`);
   console.log(`\nRun with --dry-run to preview without changes.`);
   console.log(`Proceed? [y/N]`);
@@ -906,6 +946,15 @@ const ollDirs = [
   'ops',
   'ops/observations',
   'ops/tensions',
+  'memory-state/oll/signals',
+  'memory-state/oll/rules',
+  'memory-state/oll/reviews',
+  'memory-state/oll/operations',
+  'memory-state/oll/audit',
+  'memory-state/oll/handoffs/incoming',
+  'memory-state/oll/handoffs/applied',
+  'memory-state/oll/handoffs/rejected',
+  'memory-state/oll/apply-journal',
 ];
 
 if (!dryRun) {
@@ -961,13 +1010,15 @@ function copyTemplate(templateName, destPath, replacements = {}) {
 }
 
 const today = new Date().toISOString().split('T')[0];
-const replacements = { AGENT_ID: agentId, DATE: today, SESSION_KEY: 'main' };
+const replacements = { AGENT_ID: agentId, DATE: today, SESSION_KEY: 'main', NOW: new Date().toISOString() };
 
 console.log('\nCopying templates...');
+ensureWorkspaceSkillLink();
 copyTemplate('MEMORY.md', 'MEMORY.md', replacements);
 copyTemplate('memory-readme.md', 'memory/README.md', replacements);
 copyTemplate('heartbeat-state.json', 'memory/heartbeat-state.json', replacements);
-copyTemplate('weekly-synthesis-tracker.json', 'memory/weekly-synthesis-tracker.json', replacements);
+copyTemplate('oll-state.json', 'memory-state/oll/state.json', replacements);
+copyTemplate('oll-legacy-admission-disabled.json', 'memory-state/oll/legacy-admission-disabled.json', replacements);
 copyTemplate('life-readme.md', 'life/README.md', replacements);
 copyTemplate('index.md', 'life/index.md', replacements);
 copyTemplate('daily-note.md', `memory/agent-${agentId}/main/${today}.md`, { ...replacements, DATE: today });
@@ -1151,22 +1202,18 @@ if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
   console.log('  skipped by ENGRAM_SKIP_HOOK_INSTALL=1');
   recordSkip('hooks', 'install', 'ENGRAM_SKIP_HOOK_INSTALL=1');
 } else if (!dryRun) {
-  // Detect if hooks already exist on this workspace. If so, pass --force to
-  // install-hooks.js so it can overwrite (after backup). Without --force,
-  // install-hooks refuses to touch existing entries — see install-hooks.js.
-  const gatewayHooksDir = process.env.OPENCLAW_HOOKS_DIR || join(process.env.USERPROFILE || process.env.HOME || '.', '.openclaw', 'hooks');
-  const anyHookExists = existsSync(join(gatewayHooksDir, 'engram-bootstrap-qmd')) ||
-    existsSync(join(gatewayHooksDir, 'engram-daily-note'));
-  const forceFlag = anyHookExists ? ' --force' : '';
+  // `install-hooks.js` owns resolution of managedHooksDir. Always ask it to
+  // replace the complete set (with backup) so a custom OPENCLAW_STATE_DIR
+  // cannot leave an older eight-hook installation without rule-context-load.
   try {
     execSync(
-      `bun ${join(SKILL_DIR, 'scripts', 'install-hooks.js')} --skill-dir ${SKILL_DIR}${forceFlag}`,
+      `bun ${join(SKILL_DIR, 'scripts', 'install-hooks.js')} --skill-dir ${SKILL_DIR} --force`,
       { stdio: 'inherit' }
     );
-    recordCreate('hooks', anyHookExists ? 'installed (force-overwrite)' : 'installed');
+    recordCreate('hooks', 'installed (force-overwrite with backup)');
   } catch (e) {
     console.log(`  install-hooks.js failed (exit ${e.status ?? '?'})`);
-    recordWarn(`install-hooks.js failed: exit ${e.status ?? '?'}`);
+    recordError(`install-hooks.js failed: exit ${e.status ?? '?'}`);
   }
 } else {
   recordCreate('hooks', 'install via install-hooks.js');
@@ -1188,21 +1235,24 @@ if (!dryRun && process.env.ENGRAM_SKIP_HOOK_INSTALL !== '1') {
 
 // --- Cron install (optional) ---
 if (args['with-cron']) {
-  console.log('\nInstalling heartbeat cron job...');
+  console.log('\nInstalling deterministic heartbeat cron job (nightly OLL remains operator-gated)...');
   const schedule = getCronSchedule();
   if (!dryRun) {
-    try {
-      execSync(
-        `bun skills/engram/scripts/install-cron.js install --agent-id ${agentId} --workspace ${WORKSPACE} --schedule ${schedule}`,
-        { stdio: 'inherit' }
-      );
-      recordCreate('cron', `installed with schedule ${schedule}`);
-    } catch (e) {
-      console.log(`  Cron install failed (exit ${e.status ?? '?'})`);
-      recordWarn(`cron install failed: exit ${e.status ?? '?'}`);
+    const cronResult = spawnSync('bun', [
+      join(SKILL_DIR, 'scripts', 'install-deterministic-heartbeat-cron.js'),
+      '--action', 'install',
+      '--agent-id', agentId,
+      '--workspace', WORKSPACE,
+      '--schedule', schedule,
+    ], { stdio: 'inherit', cwd: WORKSPACE });
+    if (cronResult.status === 0) {
+      recordCreate('cron', `deterministic heartbeat installed with schedule ${schedule}; nightly OLL disabled`);
+    } else {
+      console.log(`  Deterministic cron install failed (exit ${cronResult.status ?? '?'})`);
+      recordWarn(`deterministic cron install failed: exit ${cronResult.status ?? '?'}`);
     }
   } else {
-    recordCreate('cron', `install with schedule ${schedule}`);
+    recordCreate('cron', `install deterministic heartbeat with schedule ${schedule}; keep nightly OLL disabled`);
   }
 }
 

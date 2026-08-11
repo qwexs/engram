@@ -1,0 +1,38 @@
+{
+  "schema": "oll.workspace-registry-snapshot.v1",
+  "capturedAt": "2026-08-11T00:40:00.000Z",
+  "entries": [
+    {
+      "workspaceId": "company",
+      "workspacePath": "/fixtures/company",
+      "workspaceType": "company",
+      "registryRevision": 7,
+      "registryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "configDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "workspaceId": "main",
+      "workspacePath": "/fixtures/main",
+      "workspaceType": "personal",
+      "registryRevision": 7,
+      "registryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "configDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "workspaceId": "managers",
+      "workspacePath": "/fixtures/managers",
+      "workspaceType": "meta-domain",
+      "registryRevision": 7,
+      "registryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "configDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "workspaceId": "project-alpha",
+      "workspacePath": "/fixtures/project-alpha",
+      "workspaceType": "project",
+      "registryRevision": 7,
+      "registryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "configDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ]
+}

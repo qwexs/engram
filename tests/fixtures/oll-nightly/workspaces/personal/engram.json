@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "workspace": { "id": "main" },
+  "oll": {
+    "enabled": true,
+    "scheduleOwner": "nightly",
+    "nightly": {
+      "enabled": true,
+      "timezone": "Europe/Moscow",
+      "weekStart": "monday",
+      "coordinatorStateRoot": "${ENGRAM_STATE_ROOT}/oll-nightly",
+      "workspaceStateDir": "memory-state/oll",
+      "leaseTtlSeconds": 600,
+      "leaseRenewSeconds": 60,
+      "handoffTimeoutSeconds": 900,
+      "batchTimeoutSeconds": 21600,
+      "maxSpawnAttempts": 2,
+      "retryBackoffSeconds": [60, 300]
+    },
+    "weeklyMode": { "enabled": true, "day": "monday" },
+    "adaptation": {
+      "enabled": true,
+      "mode": "observe-only",
+      "autoApplyMaxRisk": "low",
+      "actorRegistry": "${ENGRAM_STATE_ROOT}/oll/actors.v1.json",
+      "companyRuleStore": "${ENGRAM_STATE_ROOT}/oll/company-rules",
+      "maxHandoffBytes": 262144,
+      "maxActionsPerHandoff": 50,
+      "maxInjectedRuleBytes": 8192
+    }
+  },
+  "models": { "heartbeat": { "subagents": { "hb-rethink": "deployment/full-reasoning" } } }
+}

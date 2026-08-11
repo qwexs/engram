@@ -5,17 +5,16 @@
  * Provisions the OpenClaw cron job that drives the engram heartbeat
  * (Phase 5.5: heartbeat-runner.js → spawn-claim.js → sessions_spawn).
  *
- * The cron payload is a 6-step agent turn:
+ * The cron payload is a 5-step compatibility agent turn:
  *   0. exec: spawn-claim.js (drain STALE queue left by prior fail-fast ticks)
  *   1. exec: bun skills/engram/scripts/heartbeat-runner.js ...
  *   2. exec: bun skills/engram/scripts/spawn-claim.js ... (this tick)
  *   3. for each JSON line with action="spawn": sessions_spawn(...)
- *   4. forward OLL rethink alerts to main session (sessions_send)
- *   5. concise reply + "[phase-5.5] ..." + HEARTBEAT_OK
+ *   4. concise reply + "[phase-5.5] ..." + HEARTBEAT_OK
  *
  * This script is idempotent: re-running it detects drift (old payload
  * format, orchestrator model mismatch vs engram.json, stale --agent-id / workspace,
- * missing --recover-stale-oll-locks) and updates message + tools + the
+ * or legacy OLL admission flags) and updates message + tools + the
  * dedicated orchestrator model when configured.
  * Routing is never changed implicitly. agentId, sessionKey, or workspace
  * drift fails closed unless the operator passes --repair-routing.
@@ -152,7 +151,10 @@ if (import.meta.main && firstArg !== undefined) {
 
 if (import.meta.main && args.help) {
   console.log(`
-install-cron — Install the engram heartbeat cron job
+install-cron — Maintain a pre-cutover compatibility heartbeat cron
+
+For fresh or nightly-owned workspaces use install-deterministic-heartbeat-cron.js.
+This installer remains only for explicitly admitted legacy workspaces.
 
 Usage:
   bun skills/engram/scripts/install-cron.js [action] [options]
@@ -500,29 +502,24 @@ Use tools.exec only (shell_command is not on the allow-list). workdir always "<W
 Step 0 — Drain STALE subagent-spawn queue (mandatory, BEFORE the runner):
 Previous ticks may have enqueued workspace/ops/heartbeat-spawns/*.json and then fail-fasted before claim. Always drain first.
 Call tools.exec with command="bun ./skills/engram/scripts/spawn-claim.js --workspace <WORKSPACE> --agent-id <AGENT_ID>", workdir="<WORKSPACE>", timeout_ms=60000. Capture as \`claim0\`.
-For each line in \`claim0.stdout\` that parses as JSON with action="spawn": Call tools.sessions_spawn with task=<rec.task>, label=<rec.runtimeLabel>, model=<rec.model>, cleanup="delete", cwd="<WORKSPACE>", expectsCompletionMessage=false. Count as \`spawnedStale\`.
+For each line in \`claim0.stdout\` that parses as JSON with action="spawn": Call tools.sessions_spawn with task=<rec.task>, label=<rec.runtimeLabel>, model=<rec.model>, cleanup="delete", cwd="<WORKSPACE>", expectsCompletionMessage=false. Capture the tool result, derive \`dispatchRef=encodeURIComponent(result.sessionKey || result.sessionId || result.id || rec.runId)\`, then call tools.exec with command="bun ./skills/engram/scripts/spawn-ack.js --workspace <WORKSPACE> --run-id <rec.runId> --accepted true --dispatch-ref-uri <dispatchRef> --json". On spawn error, record the same acknowledgement with \`--accepted false\` and an encoded \`dispatch-error:<message>\` reference. Count only successful sessions_spawn calls as \`spawnedStale\`.
 Ignore the final {action:"summary",...} line. If claim0 is empty / 0 claimed, continue immediately.
 
 Step 1 — Run the heartbeat runner:
-Call tools.exec with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2", workdir="<WORKSPACE>", timeout=420, yieldMs=120000. Capture the output as \`runner\`.
+Call tools.exec with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace <WORKSPACE> --agent-id <AGENT_ID> --session <SESSION> --label-prefix <LABEL_PREFIX> --all-active-sessions --timeout-ms 300000 --spawn-hb-domains-write", workdir="<WORKSPACE>", timeout=420, yieldMs=120000. Capture the output as \`runner\`.
 
-Note: --recover-stale-oll-locks clears stale worker locks that exceeded TTL (2h default), preventing permanent lockout when a subagent fails without producing a handoff.
-
-Note on spawn flags: --spawn-hb-domains-write, --spawn-rethink, --spawn-rethink2 only open the gate for hb-rethink/rethink2/domains-write to be queued when their respective triggers fire. heartbeat-runner.js filters internally (wouldRunRethink, wouldRunRethink2, domainsWriteDue); cost is zero on ticks where triggers don't fire. This is the etalon default — fresh installs bootstrap the OLL loop end-to-end without manual seeding.
+Nightly OLL ownership boundary: this heartbeat may dispatch extraction, synthesis, domain, and domains-write work only. It must never schedule or apply hb-rethink, hb-rethink2, or hb-autoresearch. Managed adaptation is owned exclusively by the acknowledgement-gated nightly coordinator.
 
 Step 2 — Drain THIS tick's subagent-spawn queue (Phase 5.5):
 The runner enqueues new spawn requests into workspace/ops/heartbeat-spawns/*.json (Bun scripts have no LLM tool access and cannot call sessions_spawn). Claim and dispatch them even if Step 1 only partially succeeded.
 Call tools.exec with command="bun ./skills/engram/scripts/spawn-claim.js --workspace <WORKSPACE> --agent-id <AGENT_ID>", workdir="<WORKSPACE>", timeout_ms=60000. Capture the output as \`claim\`.
 
 Step 3 — For each line in \`claim.stdout\` that parses as JSON with action="spawn":
-Call tools.sessions_spawn with task=<rec.task>, label=<rec.runtimeLabel>, model=<rec.model>, cleanup="delete", cwd="<WORKSPACE>", expectsCompletionMessage=false. Count successful calls as \`spawnedCount\`. \`rec.runtimeLabel\` is unique per run; do not replace it with the stable phase label in \`rec.label\`. Ignore the final {action:"summary",...} line and any non-spawn lines.
+Call tools.sessions_spawn with task=<rec.task>, label=<rec.runtimeLabel>, model=<rec.model>, cleanup="delete", cwd="<WORKSPACE>", expectsCompletionMessage=false. Capture the tool result and persist it with \`spawn-ack.js\` exactly as in Step 0. Count successful calls as \`spawnedCount\`. \`rec.runtimeLabel\` is unique per run; do not replace it with the stable phase label in \`rec.label\`. Ignore the final {action:"summary",...} line and any non-spawn lines.
 
 The exact absolute handoffPath embedded in each child task is the authoritative result transport. \`expectsCompletionMessage=false\` prevents runtime from registering a completion announce; children also finish with \`ANNOUNCE_SKIP\` as a compatibility fallback. Do not poll, wait, call sessions_yield, parse, or apply a child result in this cron turn — the next heartbeat-runner tick applies durable handoffs idempotently.
 
-Step 4 — Forward OLL rethink alerts (if any):
-Check \`runner.summary.rethinkAlerts\` — if present and non-empty, the heartbeat applied a rethink handoff with business-language alerts. For each alert string, call tools.sessions_send with sessionKey="agent:<AGENT_ID>:main", message=<the alert text>. This delivers rethink reports to the main session so the agent (and user) see them. Skip if rethinkAlerts is absent or empty, or if \`runner\` was incomplete.
-
-Step 5 — Final reply (CONCISE, NO ECHO):
+Step 4 — Final reply (CONCISE, NO ECHO):
 Delivery is \`none\` — your reply is only stored in the session log, never sent to a chat. Keep it short.
 
 Look at \`runner.summary.status\` and \`runner.summary.warnings\` (the JSON has them at the top level) when runner completed:
@@ -535,12 +532,12 @@ FAIL-FAST / NO WAIT-LOOP (mandatory):
 - Step 1 MUST use the specified \`yieldMs=120000\`: this is the single bounded foreground window for the runner to release its lock. Do not shorten it or background the command deliberately.
 - NEVER sleep, poll, retry-wait, or call process/poll on background exec sessions.
 - Step 0 MUST always run first, even if you expect the runner lock to be held.
-- If Step 1 returns \"Command still running\", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Still attempt Step 2 (drain whatever is already queued), then finish Step 5.
+- If Step 1 returns \"Command still running\", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Still attempt Step 2 (drain whatever is already queued), then finish Step 4.
 - If Step 0 or Step 2 returns still-running/empty: skip only that drain's sessions_spawn loop; do not block the other steps.
 - In fail-fast for incomplete runner reply with one line summarizing the incomplete step (≤200 chars), then \`HEARTBEAT_OK\` if only incomplete/lock/still-running, else \`NO_REPLY\` on hard error.
 - Do NOT re-run heartbeat-runner.js in the same cron turn.
 - Do NOT inspect long runner logs beyond what is needed for a ≤200 char summary.
-- Allowed tools only: exec, sessions_spawn, sessions_send, read. No process tool. No message tool.
+- Allowed tools only: exec, sessions_spawn, read. No process tool. No message tool.
 
 Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or any tool result verbatim. Do NOT call any tool beyond what is specified above. Do NOT use exec to run sleep, wait, poll, process, or any polling loop. The whole reply must fit in ≤512 tokens.`;
 
@@ -556,13 +553,12 @@ Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or
 //
 //   exec           — run heartbeat-runner.js + spawn-claim.js (Step 0/1/2)
 //   sessions_spawn — dispatch Phase 5.5 subagents (Step 0/3)
-//   sessions_send  — forward rethink alerts to main (Step 4)
 //   read           — diagnose failures (read heartbeat-state.json etc.)
 //
 // If a future heartbeat step needs a new tool (e.g. message for ALERT
 // delivery), add it here AND verify the heartbeat message template
 // still works under the new allow-list.
-const HEARTBEAT_TOOLS_ALLOW = ["exec", "sessions_spawn", "sessions_send", "read"];
+const HEARTBEAT_TOOLS_ALLOW = ["exec", "sessions_spawn", "read"];
 
 // Format for `openclaw cron add --tools` / `cron edit --tools`: comma-
 // separated list is the canonical form (space-separated also accepted).
@@ -577,16 +573,15 @@ const NEW_PAYLOAD_MARKER_2 = "Step 2 — Drain THIS tick's subagent-spawn queue"
 // ≤512-token reply cap). Presence of this string confirms the cron
 // payload is on the current format; absence means an older echo-style
 // prompt and a cron edit is required to upgrade.
-const NEW_PAYLOAD_MARKER_3 = "Step 5 — Final reply (CONCISE, NO ECHO)";
+const NEW_PAYLOAD_MARKER_3 = "Step 4 — Final reply (CONCISE, NO ECHO)";
 // 2026-06-29+: --all-active-sessions flag in Step 1 command, for workspace-scope heartbeat
 // coverage (instead of session-only). Maintained by the engram team; absence means the cron
 // is on a pre-2026-06-29 payload and should be re-installed to upgrade.
 const NEW_PAYLOAD_MARKER_4 = "--all-active-sessions --timeout-ms 300000";
-// 2026-07-05+: --spawn-rethink --spawn-rethink2 в Step 1 command. Etalon default
-// открывает gate для OLL-фаз; runner сам фильтрует по wouldRunRethink/wouldRunRethink2,
-// цена нулевая пока триггеры не сработали. Закрывает OLL bootstrap chicken-and-egg loop
-// на свежих установках.
-const NEW_PAYLOAD_MARKER_5 = "--spawn-rethink --spawn-rethink2";
+// 2026-08-11+: heartbeat no longer owns managed adaptation. This marker keeps
+// new installs on the nightly-only OLL boundary and forces old payloads to be
+// rewritten without rethink/rethink2/autoresearch admission flags.
+const NEW_PAYLOAD_MARKER_5 = "Nightly OLL ownership boundary";
 // 2026-07-16+: unique labels plus disk-authoritative handoff. Children end
 // with ANNOUNCE_SKIP because isolated cron sessions cannot receive completion
 // reliably after their turn is finalized.
@@ -599,6 +594,8 @@ const NEW_PAYLOAD_MARKER_8 = "tools.exec";
 // The previous 10-second default backgrounded normal 37–99 second runs and could
 // orphan heartbeat-state.json's lock when the cron turn ended.
 const NEW_PAYLOAD_MARKER_9 = "yieldMs=120000";
+// 2026-08-11+: persist the actual dispatch acknowledgement and resolved model.
+const NEW_PAYLOAD_MARKER_10 = "spawn-ack.js";
 
 function buildPayloadMessage({ workspace, agentId, session, labelPrefix }) {
   return PROSE_TEMPLATE
@@ -621,6 +618,11 @@ function isOnNewFormat(payload) {
     payload.message.includes(NEW_PAYLOAD_MARKER_7) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_8) &&
     payload.message.includes(NEW_PAYLOAD_MARKER_9) &&
+    payload.message.includes(NEW_PAYLOAD_MARKER_10) &&
+    !payload.message.includes("--spawn-rethink") &&
+    !payload.message.includes("--spawn-rethink2") &&
+    !payload.message.includes("--recover-stale-oll-locks") &&
+    !payload.message.includes("rethinkAlerts") &&
     !payload.message.includes("Call tools.shell_command") &&
     // toolsAllow must be present and match HEARTBEAT_TOOLS_ALLOW.
     // If absent (older install) or divergent, we re-apply via edit.
@@ -654,11 +656,11 @@ function detectCronDrift(existing, spec) {
   if (!msg.includes(`--agent-id ${spec.agentId}`)) {
     reasons.push("agent-id");
   }
-  if (!msg.includes("--recover-stale-oll-locks")) {
-    reasons.push("recover-stale-oll-locks");
-  }
   if (!msg.includes("--spawn-hb-domains-write")) {
     reasons.push("spawn-hb-domains-write");
+  }
+  if (msg.includes("--spawn-rethink") || msg.includes("--spawn-rethink2") || msg.includes("--recover-stale-oll-locks")) {
+    reasons.push("legacy-oll-admission");
   }
   // Workspace path in Step 1 command — accept either absolute form we emit.
   const wsPosix = String(WORKSPACE).replace(/\\/g, "/");

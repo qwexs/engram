@@ -253,8 +253,10 @@ Step 0 — Drain STALE subagent-spawn queue (mandatory, BEFORE the runner):
 Call tools.exec with command="bun ./skills/engram/scripts/spawn-claim.js --workspace ${workspace} --agent-id ${agentId}"
 
 Step 1 — Run the heartbeat runner:
-Call tools.exec with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace ${workspace} --agent-id ${agentId} --session main --label-prefix hb --all-active-sessions --timeout-ms 300000 --recover-stale-oll-locks --spawn-hb-domains-write --spawn-rethink --spawn-rethink2"
+Call tools.exec with command="bun ./skills/engram/scripts/heartbeat-runner.js --workspace ${workspace} --agent-id ${agentId} --session main --label-prefix hb --all-active-sessions --timeout-ms 300000 --spawn-hb-domains-write"
 The runner foreground window uses yieldMs=120000.
+
+Nightly OLL ownership boundary: heartbeat never schedules or applies hb-rethink, hb-rethink2, or hb-autoresearch.
 
 Step 2 — Drain THIS tick's subagent-spawn queue (Phase 5.5):
 Call tools.exec with command="bun ./skills/engram/scripts/spawn-claim.js --workspace ${workspace} --agent-id ${agentId}"
@@ -262,10 +264,11 @@ workdir="${workspace}" timeout_ms=60000.
 
 Step 3 — For each line in claim.stdout that parses as JSON with action="spawn":
 Call tools.sessions_spawn with label=<rec.runtimeLabel>, expectsCompletionMessage=false.
+Persist the dispatch acknowledgement with spawn-ack.js.
 
 Children persist the exact absolute handoffPath and finish with \`ANNOUNCE_SKIP\`.
 
-Step 5 — Final reply (CONCISE, NO ECHO):
+Step 4 — Final reply (CONCISE, NO ECHO):
 Delivery is \`none\` — your reply is only stored in the session log, never sent to a chat. Keep it short.
 
 Look at \`runner.summary.status\` and \`runner.summary.warnings\`:
@@ -277,11 +280,11 @@ If either claim drained work, append one final line: \`[phase-5.5] staleSpawned=
 FAIL-FAST / NO WAIT-LOOP (mandatory):
 - NEVER sleep, wait, poll, retry-wait, or call process/poll on background exec sessions.
 - Step 0 MUST always run first, even if you expect the runner lock to be held.
-- If Step 1 returns "Command still running", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Still attempt Step 2 (drain whatever is already queued), then finish Step 5.
+- If Step 1 returns "Command still running", background session id, empty output, lock active, or no parseable runner JSON: do NOT wait. Still attempt Step 2 (drain whatever is already queued), then finish Step 4.
 - In that fail-fast case reply with one line summarizing the incomplete step (≤200 chars), then \`HEARTBEAT_OK\` if only incomplete/lock/still-running, else \`NO_REPLY\` on hard error.
 - Do NOT re-run heartbeat-runner.js in the same cron turn.
 - Do NOT inspect long runner logs beyond what is needed for a ≤200 char summary.
-- Allowed tools only: exec, sessions_spawn, sessions_send, read. No process tool. No message tool.
+- Allowed tools only: exec, sessions_spawn, read. No process tool. No message tool.
 
 Do NOT echo the full runner output. Do NOT include the JSON, daily-note text, or any tool result verbatim. Do NOT call any tool beyond what is specified above. Do NOT use exec to run sleep, wait, poll, process, or any polling loop. The whole reply must fit in ≤512 tokens.`; }
 
@@ -345,8 +348,12 @@ describe("install-cron.js", () => {
     expect(spec.payload.message).not.toContain("Call tools.shell_command");
     expect(spec.payload.message).toContain("expectsCompletionMessage=false");
     expect(spec.payload.message).toContain("label=<rec.runtimeLabel>");
+    expect(spec.payload.message).toContain("spawn-ack.js");
     expect(spec.payload.message).not.toContain("tools.sessions_yield");
-    expect(spec.payload.toolsAllow).toEqual(["exec", "sessions_spawn", "sessions_send", "read"]);
+    expect(spec.payload.toolsAllow).toEqual(["exec", "sessions_spawn", "read"]);
+    expect(spec.payload.message).not.toContain("--spawn-rethink");
+    expect(spec.payload.message).not.toContain("--spawn-rethink2");
+    expect(spec.payload.message).not.toContain("--recover-stale-oll-locks");
     expect(spec.payload.message).toContain(`workdir="${tmp}"`);
     expect(spec.payload.message).toContain("--label-prefix hb");
     expect(spec.payload.message).toContain("--agent-id main");
@@ -436,7 +443,7 @@ describe("install-cron.js", () => {
           id: "job-new-1",
           name: "Heartbeat (Engram runner) — main",
           message: newPayload(tmp),
-          toolsAllow: ["exec", "sessions_spawn", "sessions_send", "read"],
+          toolsAllow: ["exec", "sessions_spawn", "read"],
         }),
       ],
       total: 1,
@@ -487,7 +494,7 @@ describe("install-cron.js", () => {
     const toolsIdx = editCall.args.indexOf("--tools");
     expect(toolsIdx).toBeGreaterThan(-1);
     // Comma-separated canonical form per openclaw cron edit --help.
-    expect(editCall.args[toolsIdx + 1]).toBe("exec,sessions_spawn,sessions_send,read");
+    expect(editCall.args[toolsIdx + 1]).toBe("exec,sessions_spawn,read");
   });
 
   test("6c. install replaces identifying legacy cron descriptions", async () => {
@@ -496,7 +503,7 @@ describe("install-cron.js", () => {
         id: "job-private-description",
         name: "Heartbeat (Engram runner) — main",
         message: newPayload(tmp),
-        toolsAllow: ["exec", "sessions_spawn", "sessions_send", "read"],
+        toolsAllow: ["exec", "sessions_spawn", "read"],
         description: "Heartbeat for a private user workspace",
       })],
       total: 1,
@@ -523,7 +530,7 @@ describe("install-cron.js", () => {
         id: "job-custom-model",
         name: "Heartbeat (Engram runner) — main",
         message: newPayload(tmp),
-        toolsAllow: ["exec", "sessions_spawn", "sessions_send", "read"],
+        toolsAllow: ["exec", "sessions_spawn", "read"],
         model: "ollama-cloud/minimax-m3",
       })],
       total: 1,
@@ -557,7 +564,7 @@ describe("install-cron.js", () => {
         id: "job-independent-orchestrator",
         name: "Heartbeat (Engram runner) — main",
         message: newPayload(tmp),
-        toolsAllow: ["exec", "sessions_spawn", "sessions_send", "read"],
+        toolsAllow: ["exec", "sessions_spawn", "read"],
         model: "provider/orchestrator-current",
       })],
       total: 1,
@@ -591,7 +598,7 @@ describe("install-cron.js", () => {
         id: "job-orchestrator-drift",
         name: "Heartbeat (Engram runner) — main",
         message: newPayload(tmp),
-        toolsAllow: ["exec", "sessions_spawn", "sessions_send", "read"],
+        toolsAllow: ["exec", "sessions_spawn", "read"],
         model: "provider/old-orchestrator",
       })],
       total: 1,
@@ -649,7 +656,7 @@ describe("install-cron.js", () => {
     // This is the regression test for the Windows/cmd.exe newline bug.
     expect(editCall.args[messageIdx + 1]).toContain("Step 3 — For each line");
     expect(editCall.args[messageIdx + 1]).toContain("expectsCompletionMessage=false");
-    expect(editCall.args[messageIdx + 1]).toContain("Step 5 — Final reply");
+    expect(editCall.args[messageIdx + 1]).toContain("Step 4 — Final reply");
     expect(editCall.args[messageIdx + 1]).toContain("tools.exec");
     expect(editCall.args[messageIdx + 1]).not.toContain("Call tools.shell_command");
     const addCall = calls.find(
@@ -998,7 +1005,7 @@ describe("install-cron.js", () => {
         id: "wrong-owner",
         name: "Heartbeat (Engram runner) — main",
         message: newPayload(tmp),
-        toolsAllow: ["exec", "sessions_spawn", "sessions_send", "read"],
+        toolsAllow: ["exec", "sessions_spawn", "read"],
         agentId: "other",
         sessionKey: "agent:other:main",
       })],

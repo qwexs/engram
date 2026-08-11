@@ -17,7 +17,8 @@
  *     --workspace <path> --agent-id <id> [--spawns-dir <path>]
  *
  * Output (stdout, one JSON object per line, identical schema to spawn-pump.js):
- *   {"action":"spawn", "runId":..., "phase":..., "label":..., "model":...,
+ *   {"action":"spawn", "runId":..., "phase":..., "label":...,
+ *    "runtimeLabel":..., "model":...,
  *    "task":..., "requestPath":..., "requestFile":...}
  *   ...
  *   {"action":"summary", "scanned":N, "claimed":M, "errors":E}
@@ -52,6 +53,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { runtimeSpawnLabel } from "./spawn-lifecycle.js";
+import { isLegacyOllAdmissionEnabled, isLegacyOllPhase } from "./config.js";
 
 const REQUIRED_FIELDS = ["runId", "phase", "label", "model", "task"];
 
@@ -131,6 +133,15 @@ for (const name of files) {
     continue;
   }
 
+
+  if (isLegacyOllPhase(payload.phase) && !isLegacyOllAdmissionEnabled(workspace)) {
+    console.error(
+      `[spawn-claim] WARN (agent=${agentId}): ${name} blocked by nightly cutover (${payload.phase})`,
+    );
+    errors++;
+    continue;
+  }
+
   const missing = REQUIRED_FIELDS.filter(
     (f) => payload[f] === undefined || payload[f] === null,
   );
@@ -176,6 +187,7 @@ for (const name of files) {
   const posixDestPath = destPath.replace(/\\/g, "/");
 
   claimedRecords.push({
+    workspaceId: payload.workspaceId || null,
     runId: payload.runId,
     phase: payload.phase,
     label: payload.label,
@@ -199,9 +211,12 @@ if (claimedRecords.length > 0) {
       state.subagentRuns[rec.phase] = {
         ...(state.subagentRuns[rec.phase] || {}),
         status: "spawned",
+        workspaceId: rec.workspaceId,
+        phase: rec.phase,
         label: rec.label,
         runtimeLabel: rec.runtimeLabel,
         runId: rec.runId,
+        model: rec.model,
         requestPath: rec.requestPath,
         spawnedAt: now,
       };
@@ -221,6 +236,7 @@ for (const rec of claimedRecords) {
   console.log(
     JSON.stringify({
       action: "spawn",
+      workspaceId: rec.workspaceId,
       runId: rec.runId,
       phase: rec.phase,
       label: rec.label,

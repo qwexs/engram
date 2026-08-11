@@ -202,17 +202,21 @@ bun skills/engram/scripts/memory-observe.js \
 
 **Max 1-3 observations per session.** Scarcity enforces quality.
 
-### 16. Cron Heartbeat Is Part Of Init
+### 16. Deterministic Heartbeat Is Part Of Init
 
-After `init.js` is done, install the cron job that drives the heartbeat (Phase 5.5):
+`init.js --with-cron` installs the deterministic heartbeat only. Workspace-side
+OLL is created in `observe-only` with `nightly.enabled=false`; the single fleet
+nightly scheduler and registry enrollment remain acknowledgement-gated.
 
 ```bash
 bun skills/engram/scripts/init.js --with-cron
 # OR explicitly
-bun skills/engram/scripts/install-cron.js install --schedule 30m
+bun skills/engram/scripts/install-deterministic-heartbeat-cron.js \
+  --workspace <workspace> --schedule '*/30 * * * *'
 ```
 
-The installer is **idempotent**: re-running it detects the existing cron job by name, and updates the payload to the current 4-step prose form without touching agentId, schedule, model, or delivery. It never duplicates jobs. Why: cron jobs were historically hand-copied between workspaces and got stuck on the old runner-only format that did not drain the Phase 5.5 spawn queue — making install idempotent is what keeps every workspace on the same payload.
+The installer is **idempotent** and emits no rethink/rethink2/autoresearch
+admission flags. Managed adaptation is owned only by the nightly coordinator.
 
 ### 17. Phase 5.5 Spawn Queue Is Automatic
 

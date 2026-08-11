@@ -48,6 +48,43 @@ describe("daily-summary-coordinator", () => {
     expect(readFileSync(join(second, "life", "people", "second", "summary.md"), "utf8")).toContain("second prefers concise summaries");
   });
 
+  test("accepts a transport-safe encoded workspace list without repeated path arguments", () => {
+    root = mkdtempSync(join(tmpdir(), "engram-summary-coordinator-"));
+    const first = workspace("first");
+    const second = workspace("second");
+    const encoded = encodeURIComponent(JSON.stringify([first, second]));
+    const proc = Bun.spawnSync(["bun", SCRIPT, "--workspaces-uri", encoded, "--json"], {
+      cwd: ENGRAM_DIR,
+      env: { ...process.env, ENGRAM_TZ: "Europe/Moscow" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = proc.stdout.toString();
+    expect(proc.exitCode, proc.stderr.toString() || stdout).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.workspaces.map((item) => item.workspace)).toEqual([first, second]);
+  });
+
+  test("reads ordered workspaces from a scheduler declaration", () => {
+    root = mkdtempSync(join(tmpdir(), "engram-summary-coordinator-"));
+    const first = workspace("first");
+    const second = workspace("second");
+    const declaration = join(root, "scheduler.json");
+    writeFileSync(declaration, JSON.stringify({
+      schema: "engram.daily-summary-scheduler.v1",
+      payload: { argv: ["bun", SCRIPT, "--workspace", first, "--workspace", second, "--json"] },
+    }));
+    const proc = Bun.spawnSync(["bun", SCRIPT, "--scheduler-declaration", declaration, "--json"], {
+      cwd: ENGRAM_DIR,
+      env: { ...process.env, ENGRAM_TZ: "Europe/Moscow" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = proc.stdout.toString();
+    expect(proc.exitCode, proc.stderr.toString() || stdout).toBe(0);
+    expect(JSON.parse(stdout).workspaces.map((item) => item.workspace)).toEqual([first, second]);
+  });
+
   test("flushes queued access before rebuilding summaries", () => {
     root = mkdtempSync(join(tmpdir(), "engram-summary-coordinator-"));
     const first = workspace("first");

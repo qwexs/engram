@@ -1,5 +1,11 @@
 # Heartbeat Integration
 
+> **Historical compatibility reference.** Nightly-owned workspaces do not use
+> heartbeat for weekly reconciliation or OLL scheduling. For a fresh or
+> migrated workspace install the deterministic heartbeat with
+> `scripts/install-deterministic-heartbeat-cron.js`; use this document only to
+> understand and retire pre-cutover payloads.
+
 ## Flow (every 30 minutes)
 
 ```
@@ -284,9 +290,12 @@ model's thinking budget, which is set per-model, not per-reply).
 
 `scripts/validate.js` (cron drift guard) flags any heartbeat job whose
 payload still contains `Reply with: the runner output (as text)` with an
-`error`-level message. To upgrade an existing job, re-run
-`bun skills/engram/scripts/install-cron.js install` in that workspace —
-`isOnNewFormat()` returns false for the old form, so the script emits
-`openclaw cron edit <id> --message "<new>"` and preserves agentId,
-schedule, model, thinking, timeoutSeconds, lightContext, delivery, and
-sessionKey. The step is idempotent and safe to run repeatedly.
+`error`-level message. Replace it with the deterministic installer:
+
+```bash
+bun skills/engram/scripts/install-deterministic-heartbeat-cron.js \
+  --workspace <path> --agent-id <id> --schedule '*/30 * * * *'
+```
+
+Use `install-cron.js` only when deliberately maintaining a still-admitted
+legacy workspace during its migration window.

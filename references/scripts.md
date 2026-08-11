@@ -25,17 +25,18 @@ Interactive installer for QMD. Three variants:
 
 Handles npm install, API key configuration, .env file creation, and verification.
 
-## install-cron.js — Install heartbeat cron job
+## install-cron.js — Legacy compatibility heartbeat cron
 
 ```bash
 bun skills/engram/scripts/install-cron.js [install|uninstall|status] [options]
 ```
 
-Provisions the OpenClaw cron job that drives the heartbeat. The default name includes the logical agent id (`Heartbeat (Engram runner) — <agent-id>`) because cron jobs are gateway-global. It detects the matching job, creates it if missing, and upgrades it to the current durable-handoff prose form. Existing routing, schedule and delivery are preserved; message, tools allow-list and heartbeat model are synchronized.
+Compatibility installer for the older LLM-driven heartbeat cron. New installs
+use `install-deterministic-heartbeat-cron.js`. If this command is used for an
+upgrade, its generated payload contains no rethink/rethink2/autoresearch gate:
+managed adaptation belongs only to the nightly coordinator.
 
-Use after `init.js`, or pass `--with-cron` to `init.js` to do both in one step.
-
-Since 2026-07-05 the canonical payload includes `--spawn-rethink --spawn-rethink2` so fresh installs bootstrap the OLL loop without manual seeding. `install-cron.js` detects old payloads via `NEW_PAYLOAD_MARKER_5` (`"--spawn-rethink --spawn-rethink2"`) in `isOnNewFormat()` and patches them on `install`.
+`init.js --with-cron` no longer calls this compatibility installer.
 
 Since 2026-07-16 the payload dispatches each child with a unique `runtimeLabel` and `expectsCompletionMessage=false`. The child writes to the exact injected absolute `handoffPath` and returns `ANNOUNCE_SKIP` as fallback, avoiding retries against a finalized isolated cron session. `NEW_PAYLOAD_MARKER_6` plus the exact `toolsAllow` list force existing jobs onto this format.
 
@@ -47,7 +48,12 @@ Since 2026-07-16 the payload dispatches each child with a unique `runtimeLabel` 
 bun skills/engram/scripts/init.js [--agent-id main] [--qmd-variant auto|local|jina] [--force]
 ```
 
-Creates complete directory structure, copies templates, sets up QMD collections, runs initial index. Use `--force` to merge with existing directories.
+Creates the complete workspace-side OLL contract: explicit workspace ID,
+nightly-only ownership, disabled/observe-only state, durable legacy-admission
+barrier, adaptation stores, all nine hooks, and QMD collections. `--with-cron`
+adds only the deterministic non-OLL heartbeat. Fleet registry enrollment and
+the single nightly scheduler are deployment-level, acknowledgement-gated steps;
+init never creates a second per-workspace OLL cron.
 
 ## add-session.js — Add new session
 
@@ -319,7 +325,10 @@ bun skills/engram/scripts/daily-summary-coordinator.js \
 
 Flushes queued access then runs `rebuild-summaries.js --apply-decay` sequentially for explicit workspaces.
 It never calls QMD or an LLM. Use one global scheduled job, not concurrent
-daily jobs per workspace. A lock directory prevents overlapping runs.
+daily jobs per workspace. A lock directory prevents overlapping runs. The
+same fail-fast flush/rebuild sequence is exposed by
+`src/oll/reconciliation.ts` for the PR 5 nightly coordinator; the CLI and
+library share one implementation.
 
 ## rotate-notes.js — Three-Layer Rotation
 
@@ -340,7 +349,126 @@ bun skills/engram/scripts/heartbeat-state.js --get-all
 bun skills/engram/scripts/heartbeat-state.js --set pendingObservations 5
 ```
 
-Atomic read/write of `memory/heartbeat-state.json`. All heartbeat phase trackers must be updated via this script — never edit the JSON directly.
+Atomic read/write of `memory/heartbeat-state.json`. After the OLL cutover this
+file contains heartbeat mechanics only; weekly/rethink state lives in
+`memory-state/oll/state.json` (`oll-nightly-state.v1`). Never edit either state
+projection directly.
+
+## oll-legacy-cutover.ts — PR 2 state separation and fleet cutover
+
+```bash
+# dry-run (default), one workspace
+bun skills/engram/scripts/oll-legacy-cutover.ts \
+  --workspace /path/to/workspace --workspace-id main
+
+# reviewed fleet apply from an immutable registry snapshot
+bun skills/engram/scripts/oll-legacy-cutover.ts \
+  --registry-snapshot /private/registry-snapshot.json \
+  --state-root /var/lib/engram --apply --ack-cutover
+```
+
+Writes a durable cutover marker first, then backs up source files with SHA-256
+hashes, quarantines active/stale legacy queue and handoff records, migrates
+watermarks into `oll-nightly-state.v1`, removes deprecated heartbeat keys, and
+writes a resumable workspace/fleet journal. Duplicate runs are idempotent.
+Terminal history is retained with an explicit disposition. Nightly rethink and
+rule activation remain disabled (`nightly.enabled=false`, observe-only).
+
+## oll-adaptation.ts — Trusted capture and managed review store
+
+```bash
+bun skills/engram/scripts/oll-adaptation.ts capture \
+  --workspace /path --state-root /var/lib/engram --request-file /trusted/request.json
+bun skills/engram/scripts/oll-adaptation.ts pending \
+  --workspace /path --state-root /var/lib/engram
+bun skills/engram/scripts/oll-adaptation.ts decide-review \
+  --workspace /path --state-root /var/lib/engram --request-file /trusted/decision.json
+```
+
+PR 3 observe-only adapter. It writes UUID/CAS signal, rule, and review
+projections under `memory-state/oll/`, serializes concurrent writers with a
+workspace lock, deduplicates exact evidence, and appends privacy-minimized
+audit events before projection changes. Actor/scope authority comes only from
+trusted metadata plus `$ENGRAM_STATE_ROOT/oll/actors.v1.json`. Current registry
+authorization is checked again on review decisions. No rule injection or
+activation is performed in observe-only mode.
+
+## Nightly coordinator core — PR 5 trusted orchestration candidate
+
+`src/oll/nightly-coordinator.ts` is an injectable library rather than an
+untrusted generic CLI. A deployment supplies a versioned registry adapter,
+phase model resolver, and `TrustedSpawnTransport`; the latter maps exactly one
+new runtime label to `sessions_spawn`. `src/oll/handoff-watcher.ts` performs a
+bounded filesystem wait with pre/post checks and no polling.
+
+The coordinator freezes discovery and context artifacts, owns a renewable
+fenced lease, persists CAS batch state plus immutable events, retries with the
+same evaluation snapshot, resumes interrupted batches, and enforces terminal
+apply/failure before advancing FIFO. PR 5 does not install or modify a live
+nightly cron; an operator-supplied declaration is the candidate boundary for a
+later canary rollout.
+
+## Rule context resolver and bootstrap hook — PR 6 rollout candidate
+
+`src/oll/rule-context.ts` resolves active company/workspace/domain/person
+rules, canonicalizes the rule identity hash, blocks conflicting directives,
+and rejects the complete projection when it exceeds
+`oll.adaptation.maxInjectedRuleBytes`. `preflightRuleActivation()` is reused by
+the deterministic applicator so overflow/conflict becomes review before an
+activation transition.
+
+`hooks/engram-rule-context-load` covers main/direct, bound peer/group, and
+topic bootstrap sessions through `event.messages`. Person rules require one
+exact actor-registry binding and are excluded from multi-person contexts. The
+hook is inert unless `oll.adaptation.mode=active`; default and production
+configuration remain observe-only until PR 7.
+
+## oll-rollout.ts — PR 7 canary and rollback operator boundary
+
+```bash
+# read-only deterministic plan
+bun skills/engram/scripts/oll-rollout.ts plan \
+  --request-file /trusted/rollout.json
+
+# explicit mutations after reviewed evidence
+bun skills/engram/scripts/oll-rollout.ts apply \
+  --request-file /trusted/rollout.json --ack-rollout
+bun skills/engram/scripts/oll-rollout.ts rollback \
+  --request-file /trusted/rollback.json --ack-rollback
+```
+
+The request names exact workspace paths, release/batch IDs, scheduler job ID,
+payload revision, scheduler CLI read-back evidence path, readiness evidence,
+and target mode. Apply is sequential and
+writes config/state projections, backup manifests, immutable events, and a
+release marker. `active` is rejected until observe-only canary evidence is
+true. Rollback preserves evidence, suspends batch rules, disables nightly
+rethink, and never restores the legacy heartbeat owner. The CLI does not edit
+the OpenClaw scheduler; that live deployment action remains external and
+approval-gated.
+
+## oll-nightly-runtime.ts and install-oll-nightly-cron.ts — trusted deployment boundary
+
+`oll-nightly-runtime.ts` bridges the fenced coordinator to OpenClaw Code Mode
+through immutable spawn requests and acknowledgements. A dispatch interruption
+is reconciled by exact runtime label before any new `sessions_spawn`; the
+coordinator then resumes the same durable batch and filesystem watcher.
+
+`install-oll-nightly-cron.ts --action plan` reads the existing `00:40 UTC` job
+through `openclaw cron get`, builds the exact script payload, and reports both
+current and candidate JCS/SHA-256 revisions without writing. Install requires
+`--ack-scheduler`, saves the complete old job JSON, updates the same job, reads
+it back, and writes scheduler release evidence. Rollback requires
+`--ack-scheduler-rollback` plus that exact backup. The generated script always
+runs deterministic reconciliation for the declared full fleet before the
+OLL-only canary step, so a one-workspace canary cannot starve the other
+workspaces or reconcile the canary twice. OpenClaw currently caps script jobs
+at 900 seconds, so the payload uses an 840-second internal budget while the
+six-hour batch timeout remains durable across invocations. Runtime source
+revision is embedded in the payload evidence. Command rollback passes the
+required managed environment marker and clears script-only tool restrictions;
+the executable is taken from the operator-supplied scheduler declaration rather than
+an obsolete absolute Bun path.
 
 ## heartbeat-runner.js — Deterministic cron entrypoint
 
@@ -352,7 +480,7 @@ bun skills/engram/scripts/heartbeat-runner.js \
   --label-prefix hb
 ```
 
-Runs the mechanical heartbeat path without relying on an LLM to interpret `HEARTBEAT.md`: lock handling, daily note creation, extraction watermark, weekly summary rebuild, heartbeat report, validation, and QMD maintenance through the typed runtime adapter. Legacy/shadow workspaces retain scoped maintenance; coordinated workspaces delegate QMD to the single global scheduler.
+Runs the mechanical heartbeat path without relying on an LLM to interpret `HEARTBEAT.md`: lock handling, daily note creation, extraction watermark, weekly summary rebuild, heartbeat report, validation, and QMD maintenance through the typed runtime adapter. Legacy/shadow workspaces retain scoped maintenance; coordinated workspaces delegate QMD to the single global scheduler. When `oll.scheduleOwner=nightly` or the durable cutover marker exists, legacy rethink/rethink2/autoresearch admission and handoff application fail closed while unrelated heartbeat work continues.
 
 ## heartbeat-dispatch-check.js — Conditional subagent-dispatch admission
 
@@ -397,8 +525,8 @@ Creates an opt-in OpenClaw `script` payload. It runs the existing heartbeat
 runner, claims durable spawn records before and after the run, and invokes
 `sessions_spawn` directly — no LLM turn is created. Begin with `--disabled`;
 before enabling, verify the gateway setting `cron.triggers.enabled=true`.
-The legacy `install-cron.js` remains unchanged for compatibility during the
-rollout.
+The legacy `install-cron.js` remains a compatibility path, but its generated
+payload also excludes legacy OLL admission.
 
 Use `--all-active-sessions` for workspace-level heartbeat. Use `engram.json` `qmd.index`, `qmd.collections`, and optional `qmd.command` when a workspace has a named QMD index or needs a Windows-safe command path.
 
@@ -447,7 +575,7 @@ bun skills/engram/scripts/spawn-pump.js --drain [--max <N>]           # drain с
 bun skills/engram/scripts/spawn-pump.js --status                       # показать очередь
 ```
 
-OLL Phase 5.5 ставит в очередь `hb-rethink2` / `hb-autoresearch` если не получилось direct spawn. Claim-токен TTL = 60 сек; один активный spawn at a time per workspace.
+Legacy OLL Phase 5.5 может выдать `hb-rethink2` / `hb-autoresearch` только до PR 2 cutover. После cutover `spawn-pump` не эмитит legacy spawn-записи даже при ручном возврате queue-файла.
 
 ## spawn-claim.js — Drain spawn-pump queue → sessions_spawn
 
@@ -455,7 +583,29 @@ OLL Phase 5.5 ставит в очередь `hb-rethink2` / `hb-autoresearch` �
 bun skills/engram/scripts/spawn-claim.js [--max <N>] [--label-prefix hb]
 ```
 
-Claims queued JSON records, assigns a unique per-run `runtimeLabel`, moves them to `done/` with `status: spawned`, and emits records for OpenClaw `sessions_spawn`. After a durable handoff is applied, the matching JSON transitions idempotently to `status: done`.
+Claims permitted queued JSON records, assigns a unique per-run `runtimeLabel`, moves them to `done/` with `status: spawned`, and emits records for OpenClaw `sessions_spawn`. After cutover, legacy OLL phases are rejected before claim. After a durable permitted handoff is applied, the matching JSON transitions idempotently to `status: done`.
+
+## spawn-ack.js — Persist dispatch acknowledgement
+
+```bash
+bun skills/engram/scripts/spawn-ack.js --workspace /path --run-id <uuid> \
+  --accepted true --dispatch-ref-uri <encoded-ref> --json
+```
+
+Persists the actual `sessions_spawn` acknowledgement together with the exact
+resolved model and full-UUID runtime label. Replays with identical correlation
+data are idempotent; conflicting acknowledgements fail closed.
+
+## migrate-workspace-id.js — Add canonical workspace identity
+
+```bash
+bun skills/engram/scripts/migrate-workspace-id.js \
+  --workspace /path/to/workspace --workspace-id managers --dry-run --json
+```
+
+Atomically adds `schemaVersion: 1` and `workspace.id` to an existing
+`engram.json`. It derives the ID from `agent` when omitted, is idempotent, and
+rejects conflicts or path-like identifiers.
 
 ## spawn-reconcile.js — Close stranded spawn records
 

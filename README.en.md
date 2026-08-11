@@ -157,12 +157,12 @@ Mechanical work runs inline. Judgment work spawns isolated subagents.
 | 0.5 | Rotate oversized daily notes | inline |
 | 1 | Extract facts from new notes | `hb-extract` subagent |
 | 1.5 | Summarize rotated archives | inline |
-| 2 | Weekly synthesis (Mondays) | `hb-synthesis` subagent |
+| 2 | Legacy-only weekly synthesis (Mondays) | `hb-synthesis` subagent |
 | 3 | Domain status check | `hb-domains` subagent |
 | 3.5 | Apply pending changelogs | `hb-domains-write` subagent |
 | 4 | Validate KG, update QMD | inline |
-| 5 | OLL triggers (rethink/autoresearch) | inline |
-| 5.5 | OLL spawn queue | inline |
+| 5 | Legacy-only OLL triggers (rethink/autoresearch) | inline |
+| 5.5 | Legacy-only OLL spawn queue | inline |
 | 6 | Report + unlock | inline |
 
 One phase failing doesn't kill the rest. Models are configured per workspace in `engram.json`. The pipeline is idempotent.
@@ -171,7 +171,7 @@ One phase failing doesn't kill the rest. Models are configured per workspace in 
 
 ## Operational Learning Loop
 
-The system observes its own behavior — friction, surprises, patterns — and feeds those signals back. `hb-rethink` reviews accumulated observations during heartbeat Phase 5, generates proposals, and can auto-execute low-risk improvements. Over time the agent gets better at being itself.
+The system observes its own behavior — friction, surprises, patterns — and feeds those signals back. After the PR 2 cutover, the acknowledgement-gated nightly coordinator owns `hb-rethink`; heartbeat never dispatches it. Legacy heartbeat Phase 5 remains only for pre-cutover compatibility.
 
 ---
 
@@ -181,7 +181,7 @@ The system observes its own behavior — friction, surprises, patterns — and f
 # Install QMD (hybrid search engine)
 bun skills/engram/scripts/install-qmd.js
 
-# Bootstrap memory system + heartbeat cron
+# Bootstrap workspace-side OLL (observe-only/disabled) + deterministic heartbeat
 bun skills/engram/scripts/init.js --with-cron
 
 # Activate hooks
@@ -191,7 +191,7 @@ openclaw gateway restart
 Existing workspace:
 
 ```bash
-bun skills/engram/scripts/install-cron.js install \
+bun skills/engram/scripts/install-deterministic-heartbeat-cron.js \
   --workspace /path/to/workspace --agent-id main --schedule '*/30 * * * *'
 ```
 

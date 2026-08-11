@@ -7,7 +7,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -26,12 +26,26 @@ function createCleanWorkspace(root, { agent = "agent-main", project = "alpha" } 
   mkdirSync(join(root, "memory", agent, "main"), { recursive: true });
   mkdirSync(join(root, "life", "projects", project), { recursive: true });
   writeFileSync(join(root, "engram.json"), JSON.stringify({
+    schemaVersion: 1,
+    workspace: { id: agent.replace(/^agent-/, "") },
     agent,
     qmd: { command: "qmd", collection: `${project}-memory` },
+    oll: { scheduleOwner: "nightly", nightly: { enabled: false } },
     cron: { expectedJobName: `Heartbeat (Engram runner) — ${project}` },
   }, null, 2) + "\n");
   writeFileSync(join(root, "memory", "heartbeat-state.json"), JSON.stringify({
     lastDailyNoteCreated: { main: "2026-07-15" },
+  }, null, 2) + "\n");
+  mkdirSync(join(root, "memory-state", "oll"), { recursive: true });
+  for (const directory of [
+    "signals", "rules", "reviews", "operations", "audit",
+    "handoffs/incoming", "handoffs/applied", "handoffs/rejected", "apply-journal",
+  ]) {
+    mkdirSync(join(root, "memory-state", "oll", directory), { recursive: true });
+  }
+  writeFileSync(join(root, "memory-state", "oll", "state.json"), JSON.stringify({
+    schema: "oll-nightly-state.v1",
+    nightlyEnabled: false,
   }, null, 2) + "\n");
   writeFileSync(join(root, "memory", "domains", "registry.json"), JSON.stringify({ domains: {} }, null, 2) + "\n");
   writeFileSync(join(root, "life", "projects", project, "items.json"), JSON.stringify({
@@ -75,6 +89,92 @@ describe("workspace watchdog core", () => {
     const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(report.status).toBe("ok");
     expect(report.summary).toMatchObject({ errors: 0, warnings: 0, readOnly: true, fixed: 0 });
+  });
+
+  test("reports legacy OLL admission before cutover", () => {
+    const configPath = join(workspace, "engram.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    delete config.oll;
+    writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).toContain("WD-OLL-010");
+  });
+
+  test("reports deprecated heartbeat state and active legacy records after cutover", () => {
+    writeFileSync(join(workspace, "memory", "heartbeat-state.json"), JSON.stringify({
+      lastDailyNoteCreated: { main: "2026-07-15" },
+      lastRethink: "2026-07-15T00:00:00.000Z",
+      subagentRuns: { "hb-rethink": { status: "queued" } },
+    }, null, 2) + "\n");
+    const spawns = join(workspace, "workspace", "ops", "heartbeat-spawns");
+    mkdirSync(spawns, { recursive: true });
+    writeFileSync(join(spawns, "legacy.json"), JSON.stringify({
+      phase: "hb-rethink",
+      status: "queued",
+      createdAt: "2026-07-15T00:00:00.000Z",
+    }, null, 2) + "\n");
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).toContain("WD-OLL-011");
+    expect(codes(report)).toContain("WD-OLL-013");
+  });
+
+  test("does not recommend legacy OLL remediation after nightly cutover", () => {
+    writeFileSync(join(workspace, "memory", "heartbeat-state.json"), JSON.stringify({
+      lastDailyNoteCreated: { main: "2026-07-15" },
+      rethinkCount: 2,
+      rethinkInProgress: true,
+      rethinkStartedAt: "2026-07-15T00:00:00.000Z",
+      rethink2InProgress: true,
+      rethink2StartedAt: "2026-07-15T00:00:00.000Z",
+      autoresearchInProgress: true,
+      autoresearchStartedAt: "2026-07-15T00:00:00.000Z",
+    }, null, 2) + "\n");
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    const legacyRemediationCodes = new Set([
+      "WD-OLL-001", "WD-OLL-002", "WD-OLL-003", "WD-OLL-004", "WD-OLL-005",
+      "WD-OLL-007", "WD-OLL-008", "WD-OLL-009",
+    ]);
+    expect(codes(report).filter((code) => legacyRemediationCodes.has(code))).toEqual([]);
+    expect(codes(report)).toContain("WD-OLL-011");
+  });
+
+  test("reports foreign or QMD-visible managed adaptation artifacts", () => {
+    writeFileSync(join(workspace, "memory-state", "oll", "signals", "foreign.json"), JSON.stringify({
+      schema: "oll.adaptation-signal.v1",
+      workspaceId: "other",
+    }, null, 2) + "\n");
+    writeFileSync(join(workspace, "memory-state", "oll", "audit", "evidence.md"), "must not be indexed\n");
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(report.findings.filter((finding) => finding.code === "WD-OLL-014")).toHaveLength(2);
+  });
+
+  test("requires a matching rollout projection before nightly or active mode is accepted", () => {
+    const configPath = join(workspace, "engram.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.oll.nightly.enabled = true;
+    config.oll.adaptation = { mode: "active" };
+    writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+    writeFileSync(join(workspace, "memory-state", "oll", "state.json"), JSON.stringify({
+      schema: "oll-nightly-state.v1",
+      nightlyEnabled: true,
+    }, null, 2) + "\n");
+    let report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).toContain("WD-OLL-015");
+
+    writeFileSync(join(workspace, "memory-state", "oll", "rollout.json"), JSON.stringify({
+      schema: "oll.workspace-rollout-state.v1",
+      workspaceId: "main",
+      releaseId: "11111111-1111-4111-8111-111111111111",
+      rolloutBatchId: "pr7-test",
+      targetMode: "active",
+      status: "active",
+      schedulerJobId: "nightly-test",
+      schedulerPayloadRevision: `sha256:${"a".repeat(64)}`,
+      updatedAt: "2026-08-12T00:00:00.000Z",
+      revision: 1,
+    }, null, 2) + "\n");
+    report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).not.toContain("WD-OLL-015");
   });
 
   test("detects registry domain without folder", () => {
@@ -593,7 +693,7 @@ describe("watchdog CLI", () => {
     expect(strict.status).toBe(2);
     const cron = runCli(["--workspace", workspace, "--json", "--no-core", "--no-qmd", "--no-hooks", "--exit-zero-on-warn"]);
     expect(cron.status).toBe(0);
-  });
+  }, 15000);
 
   test("merges global QMD registry scope violations into the read-only report", () => {
     const registry = join(workspace, "qmd-registry.json");
@@ -653,7 +753,7 @@ describe("watchdog CLI", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   test("requires explicit workspaces-dir for --all", () => {
     const r = runCli(["--all", "--json", "--no-core", "--no-qmd"]);

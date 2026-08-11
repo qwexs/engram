@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
 import { tmpdir } from "os";
-import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { spawnSync } from "child_process";
 
 const SKILL_DIR = join(import.meta.dir, "..");
@@ -11,7 +11,7 @@ const FAKE_QMD = process.platform === "win32"
   ? `bun "${join(import.meta.dir, "fixtures", "fake-qmd.js")}"`
   : "true";
 
-async function runInit(workspace, extraArgs = [], { force = true } = {}) {
+async function runInit(workspace, extraArgs = [], { force = true, extraEnv = {} } = {}) {
   // Always pass --skip-gateway-restart in tests so the suite doesn't hang on
   // 'openclaw gateway restart' when no gateway is running.
   const args = [INIT_SCRIPT, "--skip-gateway-restart"];
@@ -33,6 +33,7 @@ async function runInit(workspace, extraArgs = [], { force = true } = {}) {
         HOME: workspace,
         USERPROFILE: workspace,
         OPENCLAW_HOOKS_DIR: join(workspace, ".openclaw", "hooks"),
+        ...extraEnv,
       },
     }
   );
@@ -131,6 +132,15 @@ describe("init.js — fresh install happy path", () => {
     expect(existsSync(join(workspace, "ops"))).toBe(true);
     expect(existsSync(join(workspace, "ops", "observations"))).toBe(true);
     expect(existsSync(join(workspace, "ops", "tensions"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "signals"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "rules"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "reviews"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "operations"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "audit"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "handoffs", "incoming"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "handoffs", "applied"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "handoffs", "rejected"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "apply-journal"))).toBe(true);
   });
 
   test("init creates template files", async () => {
@@ -140,9 +150,91 @@ describe("init.js — fresh install happy path", () => {
     expect(existsSync(join(workspace, "MEMORY.md"))).toBe(true);
     expect(existsSync(join(workspace, "memory", "README.md"))).toBe(true);
     expect(existsSync(join(workspace, "memory", "heartbeat-state.json"))).toBe(true);
-    expect(existsSync(join(workspace, "memory", "weekly-synthesis-tracker.json"))).toBe(true);
+    expect(existsSync(join(workspace, "memory", "weekly-synthesis-tracker.json"))).toBe(false);
+    expect(existsSync(join(workspace, "memory-state", "oll", "state.json"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "legacy-admission-disabled.json"))).toBe(true);
     expect(existsSync(join(workspace, "life", "README.md"))).toBe(true);
     expect(existsSync(join(workspace, "life", "index.md"))).toBe(true);
+    const config = JSON.parse(readFileSync(join(workspace, "engram.json"), "utf8"));
+    expect(config.schemaVersion).toBe(1);
+    expect(config.workspace).toEqual({ id: "main" });
+    expect(config.oll).toMatchObject({
+      scheduleOwner: "nightly",
+      nightly: { enabled: false },
+      adaptation: { mode: "observe-only" },
+    });
+    expect(config.models.heartbeat.subagents["hb-rethink"]).toBeDefined();
+    expect(config.models.heartbeat.subagents["hb-rethink2"]).toBeUndefined();
+    expect(config.models.heartbeat.subagents["hb-autoresearch"]).toBeUndefined();
+    const ollState = JSON.parse(readFileSync(join(workspace, "memory-state", "oll", "state.json"), "utf8"));
+    expect(ollState).toMatchObject({ schema: "oll-nightly-state.v1", workspaceId: "main", nightlyEnabled: false });
+    const cutover = JSON.parse(readFileSync(join(workspace, "memory-state", "oll", "legacy-admission-disabled.json"), "utf8"));
+    expect(cutover).toMatchObject({
+      schema: "oll.legacy-admission-disabled.v1",
+      workspaceId: "main",
+      migrationId: "fresh-init",
+    });
+    expect(lstatSync(join(workspace, "skills", "engram")).isSymbolicLink()).toBe(true);
+    expect(realpathSync(join(workspace, "skills", "engram"))).toBe(realpathSync(SKILL_DIR));
+    const generatedEntrypoint = Bun.spawn(
+      ["bun", "./skills/engram/scripts/heartbeat-runner.js", "--help"],
+      { cwd: workspace, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await generatedEntrypoint.exited).toBe(0);
+  });
+
+  test("init --workspace initializes the explicit target, not the caller cwd", async () => {
+    const caller = mkdtempSync(join(tmpdir(), "engram-init-caller-"));
+    const target = mkdtempSync(join(tmpdir(), "engram-init-target-"));
+    try {
+      const proc = Bun.spawn(["bun", INIT_SCRIPT, "--workspace", target, "--force", "--skip-gateway-restart"], {
+        cwd: caller,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          ENGRAM_QMD: FAKE_QMD,
+          ENGRAM_SKIP_HOOK_INSTALL: "1",
+          HOME: caller,
+          USERPROFILE: caller,
+        },
+      });
+      expect(await proc.exited).toBe(0);
+      expect(existsSync(join(target, "engram.json"))).toBe(true);
+      expect(existsSync(join(caller, "engram.json"))).toBe(false);
+    } finally {
+      rmSync(caller, { recursive: true, force: true });
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  test("init --with-cron installs deterministic heartbeat without legacy OLL admission", async () => {
+    const fake = join(workspace, "fake-openclaw.js");
+    const log = join(workspace, "fake-openclaw-log.jsonl");
+    writeFileSync(fake, `#!/usr/bin/env bun
+import { appendFileSync, readFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const input = args.includes("--script") ? readFileSync(0, "utf8") : "";
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input }) + "\\n");
+if (args[0] === "cron" && args[1] === "list") { console.log(JSON.stringify({ jobs: [] })); process.exit(0); }
+if (args[0] === "cron" && args[1] === "add") { console.log(JSON.stringify({ id: "fresh-heartbeat" })); process.exit(0); }
+process.exit(2);
+`);
+    chmodSync(fake, 0o755);
+    const result = await runInit(workspace, ["--with-cron", "--cron-schedule", "20 * * * *"], {
+      extraEnv: { ENGRAM_OPENCLAW: fake },
+    });
+    expect(result.exitCode, result.stderr || result.stdout).toBe(0);
+    expect(result.stdout).toContain("deterministic heartbeat cron");
+    const calls = readFileSync(log, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    const added = calls.find((entry) => entry.args[0] === "cron" && entry.args[1] === "add");
+    expect(added).toBeDefined();
+    expect(added.args).toContain("--script");
+    expect(added.input).toContain("Generated by install-deterministic-heartbeat-cron.js");
+    expect(added.input).toContain("--spawn-hb-domains-write");
+    expect(added.input).not.toContain("--spawn-rethink");
+    expect(added.input).not.toContain("--spawn-rethink2");
+    expect(added.input).not.toContain("--recover-stale-oll-locks");
   });
 
   test("init prints structured summary (AC11)", async () => {

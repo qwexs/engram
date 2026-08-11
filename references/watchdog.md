@@ -212,6 +212,24 @@ Expected files follow current domain templates:
 - `WD-SESSION-004` — topic-bound domain has no matching session dir/state yet (informational for dormant topics).
 - `WD-SESSION-005` — session state is older than 30 days.
 
+### OLL cutover and state separation
+
+- `WD-OLL-010` — legacy heartbeat OLL admission is still enabled.
+- `WD-OLL-011` — deprecated heartbeat OLL keys or legacy subagent run records
+  were reintroduced after cutover.
+- `WD-OLL-012` — `oll-nightly-state.v1` is missing/invalid or its activation
+  state disagrees with `engram.json`.
+- `WD-OLL-013` — an active legacy rethink/rethink2/autoresearch queue or
+  handoff record remains after cutover.
+- `WD-OLL-014` — a managed adaptation directory is missing, contains a
+  non-JSON/QMD-visible file, or holds a foreign-workspace projection.
+- `WD-OLL-015` — nightly or active adaptation is enabled without a matching
+  `oll.workspace-rollout-state.v1` projection and exact target mode/status.
+
+These checks are read-only. Repair is performed only by the explicit
+`oll-legacy-cutover.ts` and `oll-rollout.ts` workflows, which produce backup,
+quarantine, release, and rollback evidence. Watchdog never performs rollout.
+
 ### KG schema and likely pollution
 
 - `WD-KG-001` — invalid `items.json` or missing required v2 fields.

@@ -1,0 +1,13 @@
+{
+  "schema": "oll.nightly-orchestration-declaration.v1",
+  "kind": "script",
+  "schedulerCount": 1,
+  "capabilities": ["exec", "sessions_spawn"],
+  "helpers": ["oll-await-handoff"],
+  "durableState": true,
+  "resumePolicy": "durable-batch",
+  "usesIntervalPolling": false,
+  "maxActiveRethinkRuns": 1,
+  "handoffTimeoutSeconds": 900,
+  "batchTimeoutSeconds": 21600
+}

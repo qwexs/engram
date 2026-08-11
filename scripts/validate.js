@@ -140,10 +140,14 @@ ok('Directory structure checked');
 const requiredFiles = [
   'MEMORY.md',
   'memory/heartbeat-state.json',
-  'memory/weekly-synthesis-tracker.json',
   'life/README.md',
   'life/index.md',
 ];
+if (_config?.oll?.scheduleOwner === 'nightly') {
+  requiredFiles.push('memory-state/oll/state.json');
+} else {
+  requiredFiles.push('memory/weekly-synthesis-tracker.json');
+}
 
 console.log('\n--- Required Files ---');
 for (const file of requiredFiles) {
@@ -483,6 +487,33 @@ if (existsSync(heartbeatPath)) {
     const sessions = Object.keys(state.lastDailyNoteCreated || {});
     if (!sessions.includes('main')) {
       warn('heartbeat-state.json missing "main" session');
+    }
+    if (_config?.oll?.scheduleOwner === 'nightly') {
+      const deprecatedOllKeys = [
+        'lastHeartbeat', 'schedule', 'enabled', 'cronJobId', 'model', 'notes',
+        'lastWeeklySynthesis', 'lastRethink', 'lastRethinkScore', 'rethinkCount',
+        'rethinkInProgress', 'rethinkStartedAt', 'pendingRethink2',
+        'rethink2InProgress', 'rethink2StartedAt', 'autoresearchInProgress',
+        'autoresearchStartedAt', 'currentExperiment', 'lastAutoresearch', 'lastAutoSeedAt',
+      ].filter((key) => Object.prototype.hasOwnProperty.call(state, key));
+      const legacyRuns = ['hb-rethink', 'hb-rethink2', 'hb-autoresearch']
+        .filter((phase) => Object.prototype.hasOwnProperty.call(state.subagentRuns || {}, phase));
+      if (deprecatedOllKeys.length || legacyRuns.length) {
+        error(`heartbeat-state.json contains deprecated nightly-cutover state: ${[...deprecatedOllKeys, ...legacyRuns].join(', ')}`);
+      }
+      try {
+        const nightlyState = JSON.parse(readFileSync(join(WORKSPACE, 'memory-state/oll/state.json'), 'utf8'));
+        if (nightlyState.schema !== 'oll-nightly-state.v1') {
+          error('memory-state/oll/state.json must use oll-nightly-state.v1');
+        }
+        if (nightlyState.nightlyEnabled !== Boolean(_config?.oll?.nightly?.enabled)) {
+          error('memory-state/oll/state.json nightlyEnabled does not match engram.json');
+        }
+      } catch (e) {
+        error(`memory-state/oll/state.json parse error: ${e.message}`);
+      }
+    } else {
+      warn('Legacy heartbeat OLL admission remains enabled; run oll-legacy-cutover before nightly rollout');
     }
     // Check session dirs exist
     const agentDir = join(WORKSPACE, `memory/agent-${agentId}`);

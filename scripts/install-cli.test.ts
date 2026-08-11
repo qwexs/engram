@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const installer = join(root, "scripts", "install-cli.js");
+const packageVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
@@ -89,7 +90,7 @@ describe("install-cli", () => {
     const content = readFileSync(launcher, "utf8");
     expect(content).toContain("managed by scripts/install-cli.js");
     expect(content).toContain(join(root, "bin", "engram"));
-    expect(stdout(first)).toContain("Post-check: engram --version → 3.6.0");
+    expect(stdout(first)).toContain(`Post-check: engram --version → ${packageVersion}`);
 
     const second = run(binDir);
     expect(second.exitCode).toBe(0);

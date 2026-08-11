@@ -7,13 +7,18 @@ import { randomUUID } from "node:crypto";
 
 const TERMINAL_STATUSES = new Set(["done", "failed"]);
 const SAFE_RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const LOCK_STALE_MS = 30_000;
 const LOCK_RETRY_MS = 10;
 const LOCK_RETRIES = 100;
 
 export function runtimeSpawnLabel(label, runId) {
   const base = String(label || "hb").replace(/[^a-zA-Z0-9._-]+/g, "-");
-  const suffix = String(runId || randomUUID()).split("-").at(-1);
+  // Target identity contract requires a complete UUID suffix. Legacy queue
+  // records may carry timestamp-shaped run IDs; generate a fresh runtime UUID
+  // for them rather than preserving the old collision-prone short suffix.
+  const candidate = String(runId || "");
+  const suffix = UUID_RE.test(candidate) ? candidate.toLowerCase() : randomUUID();
   return `${base}-${suffix}`;
 }
 

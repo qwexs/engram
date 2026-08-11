@@ -3,7 +3,7 @@
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { getAgentDir } from "./config.js";
+import { getAgentDir, isLegacyOllAdmissionEnabled } from "./config.js";
 import { applyDomainWriteHandoff } from "./domains-runner.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18,21 +18,8 @@ const DEFAULT_STATE = {
   lastExtraction: {},
   lastSessionExtracted: {},
   lastDomainScan: null,
-  lastWeeklySynthesis: null,
   pendingObservations: 0,
   pendingTensions: 0,
-  rethinkInProgress: false,
-  rethinkStartedAt: null,
-  lastRethink: null,
-  lastRethinkScore: null,
-  rethinkCount: 0,
-  autoresearchInProgress: false,
-  autoresearchStartedAt: null,
-  currentExperiment: null,
-  lastAutoresearch: null,
-  pendingRethink2: null,
-  rethink2InProgress: false,
-  rethink2StartedAt: null,
   subagentRuns: {},
 };
 
@@ -93,13 +80,22 @@ export async function applyHandoff(handoff, handlersOrContext = {}) {
 
 export function defaultHandoffHandlers(context = {}) {
   const ctx = createHandoffContext(context);
+  const legacyOllHandler = (handler) => (handoff) => {
+    if (!isLegacyOllAdmissionEnabled(ctx.workspace)) {
+      return result(ctx, handoff, {
+        status: "error",
+        error: `Legacy ${handoff.type} application is disabled by the nightly cutover`,
+      });
+    }
+    return handler(handoff, ctx);
+  };
   return {
     "HB-EXTRACT": (handoff) => applyExtractHandoff(handoff, ctx),
     "HB-DOMAINS": (handoff) => applyDomainsHandoff(handoff, ctx),
     "HB-SYNTHESIS": (handoff) => applySynthesisHandoff(handoff, ctx),
-    "HB-RETHINK": (handoff) => applyRethinkHandoff(handoff, ctx),
-    "HB-AUTORESEARCH": (handoff) => applyAutoresearchHandoff(handoff, ctx),
-    "HB-RETHINK2": (handoff) => applyRethink2Handoff(handoff, ctx),
+    "HB-RETHINK": legacyOllHandler(applyRethinkHandoff),
+    "HB-AUTORESEARCH": legacyOllHandler(applyAutoresearchHandoff),
+    "HB-RETHINK2": legacyOllHandler(applyRethink2Handoff),
   };
 }
 

@@ -88,6 +88,59 @@ For every eligible entry in its immutable registry snapshot, the coordinator:
 The next invocation resumes a durable incomplete batch. It does not create an
 overlapping batch or repeat a completed side effect.
 
+## Derived candidate producer (proposed)
+
+This proposed ingress is deliberately a quiet continuation of the existing
+heartbeat extraction, not a new task for the conversational agent and not a
+message listener.  It exists to surface already-filtered learning candidates
+without retaining raw user messages or creating a second stream of agent work.
+
+### Inputs and boundary
+
+After a successful deterministic extraction pass, the producer may inspect
+only derived, workspace-local artifacts: bounded Events and Decisions in daily
+notes, conservatively written KG facts, and operational observations or
+tensions.  It may create a typed candidate only for an explicit correction,
+preference, or workflow instruction already represented by those artifacts.
+Ambiguous inference, sentiment, and reconstructed conversational detail are
+skipped.
+
+The candidate records the derived artifact reference and a digest, not raw
+message text, transport metadata, or a message log.  `engram-message-log` is
+not an input and is not required by this design.
+
+### Safety and lifecycle
+
+Derived provenance is not an authorization grant.  Every candidate from this
+producer is `review_required`; it cannot directly create, activate, broaden,
+or suspend a rule.  The producer is deterministic, watermark-driven, and
+idempotent: it emits at most one candidate for a normalized assertion and
+source digest, then records the disposition for later audit.  It must run only
+after its source artifact is durably written, and a failure to produce a
+candidate must not affect heartbeat maintenance.
+
+The nightly coordinator consumes all pending candidates accumulated since the
+workspace's successful evaluation watermark in one sequential workspace run.
+With no candidates or other actionable context, it records a durable skip and
+does not invoke a model.  This preserves one nightly decision point rather
+than reacting to each memory write.
+
+### Weekly view
+
+Weekly mode is the Monday window of the same coordinator, not a second
+scheduler or agent.  It aggregates the preceding local week of unresolved
+candidates, observations, and tensions and considers the full rule lifecycle
+to identify repetition and drift.  Derived candidates remain review-only in
+both daily and weekly mode.
+
+### Non-goals and activation
+
+This design does not capture raw incoming messages, analyze message logs,
+require an extra agent prompt or tool call, or auto-activate any adaptation.
+It is a proposed core contract only: implementation, migration, tests, and a
+separate observe-only rollout gate are required before any workspace enables
+it.
+
 ## Risk and authorization
 
 Core automatic activation is restricted to a low-risk, reversible local rule

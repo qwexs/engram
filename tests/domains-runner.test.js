@@ -136,6 +136,52 @@ describe("domains-runner write handoff", () => {
     }
   });
 
+  test("terminally suppresses Promotions while applying domain files and run id", async () => {
+    const root = makeWorkspace();
+    try {
+      writeFileSync(join(root, "engram.json"), JSON.stringify({ kg: { automaticIngress: "disabled" } }));
+      writeFileSync(join(root, "memory", "domains", "registry.json"), JSON.stringify({
+        domains: { engram: { type: "dev-project", subagentLabel: "engram" } },
+      }));
+      writeDomain(root, "engram", {
+        "status.md": "# old status\n",
+        "changelog.md": "# changelog\n",
+      });
+      const hashes = {
+        "status.md": hashDomainFile({ workspace: root, domain: "engram", file: "status.md" }),
+        "changelog.md": hashDomainFile({ workspace: root, domain: "engram", file: "changelog.md" }),
+      };
+      const handoff = { body: [
+        "Domain: engram",
+        "Run-Id: run-contained",
+        "Subagent-Label: engram",
+        "Base-Hashes: " + JSON.stringify(hashes),
+        "Status-Content: |",
+        "  # contained status",
+        "Changelog-Entries: [{\"id\":\"contained-entry\",\"runId\":\"run-contained\",\"content\":\"## Contained domain update\"}]",
+        "Promotions: [{\"entity\":\"projects/engram\",\"fact\":\"raw domain payload must not reach KG\",\"category\":\"decision\",\"confidence\":0.9}]",
+        "Proposed-Decisions: []",
+        "Proposed-Workflow: []",
+      ].join("\n") };
+      let commandCalls = 0;
+      const first = await applyDomainWriteHandoff(handoff, {
+        workspace: root,
+        commandRunner: async () => { commandCalls++; return { ok: true }; },
+      });
+      expect(first).toMatchObject({ status: "ok", promotedFacts: 0, suppressedPromotions: 1 });
+      expect(commandCalls).toBe(0);
+      expect(readFileSync(join(root, "memory", "domains", "engram", "status.md"), "utf8")).toContain("contained status");
+      expect(readFileSync(join(root, "memory", "domains", "engram", "changelog.md"), "utf8")).toContain("run-contained");
+
+      const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
+      expect(state.domainRuns.engram.appliedRunIds).toContain("run-contained");
+      const replay = await applyDomainWriteHandoff(handoff, { workspace: root });
+      expect(replay).toMatchObject({ status: "noop", idempotent: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // ISS-9 A2: base-hash mismatch returns status:"stale" (NOT throw) and advances
   // lastCheckedAt — closes the re-fire-every-tick storm. Full unit coverage of the
   // new contract lives in scripts/domains-runner.test.ts (A2 race recovery block).

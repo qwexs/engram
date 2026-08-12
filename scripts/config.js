@@ -61,6 +61,20 @@ export function loadEngramConfig(workspace) {
   return _cache;
 }
 
+/**
+ * Fleet-wide containment policy for legacy automatic KG producers.
+ * Only an explicit `legacy` value enables automatic ingress; missing,
+ * malformed, and unknown values fail closed to `disabled`.
+ *
+ * Accepts either an already-loaded config object or a workspace path.
+ */
+export function resolveAutomaticIngress(configOrWorkspace) {
+  const config = typeof configOrWorkspace === "string"
+    ? loadEngramConfig(configOrWorkspace)
+    : configOrWorkspace;
+  return config?.kg?.automaticIngress === "legacy" ? "legacy" : "disabled";
+}
+
 export function getAgentDir(workspace) {
   const config = loadEngramConfig(workspace);
   return config.agent;

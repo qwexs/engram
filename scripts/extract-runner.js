@@ -12,7 +12,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { loadEngramConfig } from "./config.js";
+import { loadEngramConfig, resolveAutomaticIngress } from "./config.js";
 import { parseHandoff } from "./process-handoff-core.js";
 import { findSimilarFacts } from "./memory-dedup.js";
 
@@ -542,6 +542,7 @@ export async function runExtraction() {
 
   const registry = loadDomainRegistry(workspace);
   const resolvedDomain = resolveDomainForSession(registry, session);
+  const automaticIngress = resolveAutomaticIngress(config);
   const kgPolicy = shouldExtractToKg(resolvedDomain, config);
 
   const dailyContent = await readFile(notePath, "utf8");
@@ -565,6 +566,48 @@ export async function runExtraction() {
   let supersedeMinSim = null;
   const tensions = [];
   const flags = [];
+
+  // Fleet containment is terminal consumption: scan and count candidates,
+  // advance the daily/session cursors, and never invoke the legacy writer.
+  if (automaticIngress === "disabled") {
+    const dailyBodyLastLine = lineCount(removeWatermarks(dailyContent));
+    const newDailyCandidates = daily.watermark && dailyBodyLastLine <= daily.watermark.watermark
+      ? []
+      : daily.candidates;
+    const suppressedCandidates = newDailyCandidates.length + sessionCandidates.length;
+    const watermarkAdvanced = !noWrite || advanceWatermarkOnNoWrite;
+    const targetWatermark = Math.max(daily.watermark?.watermark ?? 0, dailyBodyLastLine);
+    const newWatermark = watermarkAdvanced
+      ? await updateWatermark(notePath, targetWatermark)
+      : (daily.watermark?.watermark ?? 0);
+    const stats = {
+      facts_written: 0,
+      facts_skipped_dedup: 0,
+      facts_planned: 0,
+      facts_suppressed: suppressedCandidates,
+      facts_domain_only: 0,
+      kg_extract: false,
+      kg_policy: "automatic-ingress-disabled",
+      automatic_ingress: automaticIngress,
+      domain: resolvedDomain.domain,
+      domain_type: resolvedDomain.type,
+      superseded_count: 0,
+      supersede_ambiguous_count: 0,
+      supersede_min_jaccard: null,
+      new_watermark: `L${newWatermark}`,
+      previous_watermark: `L${daily.watermark?.watermark ?? 0}`,
+      last_session_file: watermarkAdvanced ? lastSessionFile : null,
+      sessions_processed: sessions.files.length,
+      daily_candidates: newDailyCandidates.length,
+      session_candidates: sessionCandidates.length,
+      scan_mode: daily.scanMode || "full-high-signal",
+      dry_run: noWrite,
+      watermark_advanced: watermarkAdvanced,
+    };
+    const summary = `automatic KG ingress suppressed (${suppressedCandidates} candidates), daily L${daily.watermark?.watermark ?? 0}->L${newWatermark}${watermarkAdvanced ? "" : " (watermark not advanced)"}, sessions ${sessions.files.length}`;
+    const block = handoffBlock({ status: "ok", summary, stats, flags, tensions });
+    return { handoff: parseHandoff(block), block };
+  }
 
   // Domain-first: topic/project sessions promote via hb-domains-write, not life/.
   // Still advance watermark so extract phase does not re-queue the same day.

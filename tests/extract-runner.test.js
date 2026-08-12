@@ -12,10 +12,14 @@ import {
   shouldExtractToKg,
 } from "../scripts/extract-runner.js";
 
-function makeWorkspace() {
+function makeWorkspace(config = {}) {
   const root = mkdtempSync(join(tmpdir(), "engram-extract-"));
   mkdirSync(join(root, "memory", "agent-main", "main", "sessions"), { recursive: true });
-  writeFileSync(join(root, "engram.json"), JSON.stringify({ agent: "agent-main" }));
+  writeFileSync(join(root, "engram.json"), JSON.stringify({
+    agent: "agent-main",
+    kg: { automaticIngress: "legacy" },
+    ...config,
+  }));
   return root;
 }
 
@@ -296,6 +300,81 @@ describe("extract-runner dry run", () => {
       expect(stdout).toContain('"dry_run":true');
       expect(stdout).toContain('"watermark_advanced":false');
       expect(readFileSync(notePath, "utf8")).toContain("<!-- extracted:L4:2026-05-21T00:00:00+03:00 -->");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("automatic extraction containment", () => {
+  test("suppresses daily/session writes and a consumed session is not replayed", async () => {
+    const root = makeWorkspace({ kg: { automaticIngress: "disabled" } });
+    try {
+      const notePath = join(root, "memory", "agent-main", "main", "2026-05-21.md");
+      writeFileSync(notePath, "# 2026-05-21\n\n## Events\n- Completed durable containment rollout milestone\n\n## Decisions\n\n## Learnings\n");
+      const sessionName = "2026-05-21-010000-contained.md";
+      writeFileSync(join(root, "memory", "agent-main", "main", "sessions", sessionName), [
+        "# Session: 2026-05-21 01:00:00 UTC",
+        "",
+        "user: Я предпочитаю automatic containment without legacy memory writes.",
+      ].join("\n"));
+
+      const run = async () => {
+        const proc = Bun.spawn([
+          "bun", join(import.meta.dir, "..", "scripts", "extract-runner.js"),
+          "--workspace", root, "--agent-id", "main", "--session", "main", "--date", "2026-05-21",
+        ], { stdout: "pipe", stderr: "pipe" });
+        const stdout = await new Response(proc.stdout).text();
+        expect(await proc.exited).toBe(0);
+        return JSON.parse(stdout.match(/^Stats: (.+)$/m)[1]);
+      };
+
+      const first = await run();
+      expect(first).toMatchObject({ facts_written: 0, facts_suppressed: 2, daily_candidates: 1, sessions_processed: 1 });
+      expect(first.last_session_file).toBe(sessionName);
+      expect(existsSync(join(root, "life"))).toBe(false);
+      writeFileSync(join(root, "memory", "heartbeat-state.json"), JSON.stringify({
+        lastSessionExtracted: { main: sessionName },
+      }));
+
+      const second = await run();
+      expect(second).toMatchObject({ facts_written: 0, facts_suppressed: 0, daily_candidates: 0, sessions_processed: 0 });
+      expect(existsSync(join(root, "life"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("never regresses a preexisting watermark when the rewritten note body is shorter", async () => {
+    const root = makeWorkspace({ kg: { automaticIngress: "disabled" } });
+    try {
+      const notePath = join(root, "memory", "agent-main", "main", "2026-05-21.md");
+      writeFileSync(notePath, [
+        "# 2026-05-21",
+        "",
+        "## Events",
+        "- Previously consumed durable containment milestone",
+        "",
+        "## Decisions",
+        "",
+        "<!-- extracted:L35:2026-05-21T00:00:00+03:00 -->",
+        "",
+      ].join("\n"));
+
+      const proc = Bun.spawn([
+        "bun", join(import.meta.dir, "..", "scripts", "extract-runner.js"),
+        "--workspace", root, "--agent-id", "main", "--session", "main", "--date", "2026-05-21",
+      ], { stdout: "pipe", stderr: "pipe" });
+      const stdout = await new Response(proc.stdout).text();
+      expect(await proc.exited).toBe(0);
+      const stats = JSON.parse(stdout.match(/^Stats: (.+)$/m)[1]);
+      expect(stats).toMatchObject({
+        facts_suppressed: 0,
+        daily_candidates: 0,
+        previous_watermark: "L35",
+        new_watermark: "L35",
+      });
+      expect(readFileSync(notePath, "utf8")).toMatch(/<!-- extracted:L35:/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

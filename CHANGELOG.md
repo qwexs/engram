@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **feat(kg): contain legacy automatic KG ingress fleet-wide.** A single
+  fail-closed `kg.automaticIngress` policy now suppresses session/daily
+  extraction, domain promotions and legacy OLL promotions while terminally
+  consuming their checkpoints. Explicit `memory-write.js` remains available.
+
 - **feat(cron): add deterministic maintenance primitives.** Global QMD
   maintenance can now be provisioned as an OpenClaw command job rather than
   an agent turn. `heartbeat-dispatch-check.js` provides a read-only trigger

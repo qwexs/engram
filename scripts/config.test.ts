@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   resolveSubagentModel,
+  resolveAutomaticIngress,
   resolveWorkspaceId,
   SubagentModelResolutionError,
   WorkspaceIdentityError,
@@ -139,5 +140,24 @@ describe("canonical workspace identity", () => {
   test("invalid explicit identity never falls back", () => {
     const root = workspace({ workspace: { id: "../escape" }, agent: "agent-main" });
     expect(() => resolveWorkspaceId(root, { allowAgentFallback: true })).toThrow("invalid workspace.id");
+  });
+});
+
+describe("automatic KG ingress policy", () => {
+  test.each([
+    [{}, "disabled"],
+    [{ kg: {} }, "disabled"],
+    [{ kg: { automaticIngress: "disabled" } }, "disabled"],
+    [{ kg: { automaticIngress: "LEGACY" } }, "disabled"],
+    [{ kg: { automaticIngress: true } }, "disabled"],
+    [{ kg: { automaticIngress: "unknown" } }, "disabled"],
+    [{ kg: { automaticIngress: "legacy" } }, "legacy"],
+  ] as const)("resolves %# fail closed", (config, expected) => {
+    expect(resolveAutomaticIngress(config)).toBe(expected);
+  });
+
+  test("accepts a workspace path", () => {
+    const root = workspace({ kg: { automaticIngress: "legacy" } });
+    expect(resolveAutomaticIngress(root)).toBe("legacy");
   });
 });

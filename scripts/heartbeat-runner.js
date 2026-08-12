@@ -1178,6 +1178,7 @@ async function runDomains() {
         idempotent: applied.idempotent,
         appendedEntries: applied.appendedEntries ?? 0,
         promotedFacts: applied.promotedFacts ?? 0,
+        suppressedPromotions: applied.suppressedPromotions ?? 0,
         proposedDecisionChanges: applied.proposedDecisionChanges ?? 0,
       },
     });

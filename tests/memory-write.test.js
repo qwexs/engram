@@ -205,6 +205,21 @@ describe("memory-write — entity handling", () => {
 // ─────────────────────────────────────────────────────────────
 
 describe("memory-write — write flow", () => {
+  test("explicit writer remains available when automatic ingress is disabled", async () => {
+    createEntity();
+    writeFileSync(join(TEST_WORKSPACE, "engram.json"), JSON.stringify({
+      kg: { automaticIngress: "disabled" },
+    }));
+    const { result, exitCode } = await runJson([
+      "--entity", TEST_ENTITY,
+      "--fact", "Explicit user-intent write remains authorized during containment",
+      "--category", "decision",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(result?.status).toBe("created");
+    expect(readItems().facts).toHaveLength(1);
+  });
+
   test("creates fact with all required fields", async () => {
     createEntity();
     const { result } = await runJson([

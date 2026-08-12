@@ -3,7 +3,7 @@
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { getAgentDir, isLegacyOllAdmissionEnabled } from "./config.js";
+import { getAgentDir, isLegacyOllAdmissionEnabled, resolveAutomaticIngress } from "./config.js";
 import { applyDomainWriteHandoff } from "./domains-runner.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -294,6 +294,7 @@ export async function applyDomainsHandoff(handoff, context = {}) {
         idempotent: applied.idempotent,
         appendedEntries: applied.appendedEntries ?? 0,
         promotedFacts: applied.promotedFacts ?? 0,
+        suppressedPromotions: applied.suppressedPromotions ?? 0,
         proposedDecisionChanges: applied.proposedDecisionChanges ?? 0,
       });
       await updateReport(ctx, "domains", `ok — ${applied.domain} ${applied.status}; changed ${applied.changed ? "yes" : "no"}`);
@@ -371,9 +372,25 @@ export async function applyRethinkHandoff(handoff, context = {}) {
     }
   }
   let promoteCount = 0;
+  let suppressedPromotionCount = 0;
   const promoteDetails = [];
   for (const action of proposedActions) {
     if (action.type === "promote" && action.obs_id && action.entity && action.fact && action.category && action.confidence) {
+      if (resolveAutomaticIngress(ctx.workspace) === "disabled") {
+        const archived = await runScript(ctx, "memory-promote.js", [
+          "--archive", "--obs-id", String(action.obs_id),
+          "--reason", "automatic KG promotion suppressed by kg.automaticIngress=disabled",
+        ]);
+        if (!archived) {
+          const message = `failed to terminally suppress automatic promotion for observation ${action.obs_id}`;
+          log(ctx, `[hb-rethink] ${message}`);
+          setState(ctx, "subagentRuns.hb-rethink.status", "failed");
+          await updateReport(ctx, "rethink", `error — ${message}`);
+          return result(ctx, handoff, { status: "error", error: message });
+        }
+        suppressedPromotionCount++;
+        continue;
+      }
       const args = ["--obs-id", String(action.obs_id), "--entity", action.entity, "--fact", action.fact, "--category", action.category, "--confidence", String(action.confidence)];
       if (action.abstraction) args.push("--abstraction", action.abstraction);
       if (action.tags) args.push("--tags", action.tags);
@@ -439,6 +456,9 @@ export async function applyRethinkHandoff(handoff, context = {}) {
       if (d.if_done) reportLines.push(`  → ${d.if_done}`);
     }
   }
+  if (suppressedPromotionCount > 0) {
+    reportLines.push(`**Подавлено автоматических KG-продвижений: ${suppressedPromotionCount}**`);
+  }
   if (tensionResolvedCount > 0) {
     reportLines.push(`**Разрешено противоречий: ${tensionResolvedCount}**`);
     for (const d of tensionDetails) {
@@ -461,7 +481,7 @@ export async function applyRethinkHandoff(handoff, context = {}) {
     setPath(state, "subagentRuns.hb-rethink.status", "ok");
     state.rethinkCount = (state.rethinkCount || 0) + 1;
   });
-  await updateReport(ctx, "rethink", `ok — ${handoff.summary}; archived ${archiveCount}, promoted ${promoteCount}, tensions ${tensionResolvedCount}, experiments ${createdExperiments.length}`);
+  await updateReport(ctx, "rethink", `ok — ${handoff.summary}; archived ${archiveCount}, promoted ${promoteCount}, suppressed ${suppressedPromotionCount}, tensions ${tensionResolvedCount}, experiments ${createdExperiments.length}`);
 
   // Surface the business-language report as an alert
   const extraAlerts = [];
@@ -469,7 +489,7 @@ export async function applyRethinkHandoff(handoff, context = {}) {
   extraAlerts.push(alertHeader);
 
   log(ctx, `[hb-rethink] ✅ ${handoff.summary} | archived: ${archiveCount}, promoted: ${promoteCount}, tensions: ${tensionResolvedCount}, experiments: ${createdExperiments.length}`);
-  return result(ctx, handoff, { alerts: extraAlerts, details: { archiveCount, promoteCount, tensionResolvedCount, createdExperiments, archiveDetails, promoteDetails, tensionDetails, experimentDetails } });
+  return result(ctx, handoff, { alerts: extraAlerts, details: { archiveCount, promoteCount, suppressedPromotionCount, tensionResolvedCount, createdExperiments, archiveDetails, promoteDetails, tensionDetails, experimentDetails } });
 }
 
 export async function applyAutoresearchHandoff(handoff, context = {}) {

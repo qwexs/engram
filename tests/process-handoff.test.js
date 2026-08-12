@@ -254,6 +254,81 @@ Alerts: []
   });
 });
 
+describe("process-handoff.js — automatic OLL promotion containment", () => {
+  beforeEach(() => {
+    WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "engram-handoff-oll-contained-"));
+    OBS_DIR = join(WORKSPACE_ROOT, "workspace", "ops", "observations");
+    MEMORY_DIR = join(WORKSPACE_ROOT, "memory", "agent-main", "main");
+    STATE_PATH = join(WORKSPACE_ROOT, "memory", "heartbeat-state.json");
+    mkdirSync(OBS_DIR, { recursive: true });
+    writeFileSync(join(WORKSPACE_ROOT, "engram.json"), JSON.stringify({
+      agent: "agent-main",
+      kg: { automaticIngress: "disabled" },
+    }));
+    writeDailyNote();
+    writeFileSync(join(OBS_DIR, "obs-0001.json"), JSON.stringify({
+      id: "obs-0001",
+      observation: "raw observation payload",
+      category: "friction",
+      status: "pending",
+    }));
+    writeFileSync(join(OBS_DIR, "index.json"), JSON.stringify({ observations: ["obs-0001"], lastId: 1 }));
+  });
+
+  afterEach(() => {
+    if (WORKSPACE_ROOT?.startsWith(tmpdir())) rmSync(WORKSPACE_ROOT, { recursive: true, force: true });
+  });
+
+  function promotionHandoff() {
+    return parseHandoff([
+      "=== HB-RETHINK HANDOFF ===",
+      "Status: ok",
+      "Summary: containment test",
+      "Stats: {\"weighted_score\":9}",
+      "Proposed-Actions: [{\"type\":\"promote\",\"obs_id\":\"obs-0001\",\"entity\":\"projects/engram\",\"fact\":\"raw automatic OLL fact\",\"category\":\"context\",\"confidence\":0.9}]",
+      "Experiment-Specs: []",
+      "Alerts: []",
+      "=== END ===",
+    ].join("\n"));
+  }
+
+  test("archives the observation as a terminal suppressed outcome without KG write", async () => {
+    const result = await applyHandoff(promotionHandoff(), {
+      workspace: WORKSPACE_ROOT,
+      session: "main",
+      date: TEST_DATE,
+    });
+    expect(result.status).toBe("ok");
+    expect(result.details).toMatchObject({ promoteCount: 0, suppressedPromotionCount: 1 });
+    const observation = JSON.parse(readFileSync(join(OBS_DIR, "obs-0001.json"), "utf8"));
+    expect(observation).toMatchObject({
+      status: "archived",
+      archiveReason: "automatic KG promotion suppressed by kg.automaticIngress=disabled",
+    });
+    expect(existsSync(join(WORKSPACE_ROOT, "life"))).toBe(false);
+  });
+
+  test("fails the handoff when terminal archive fails instead of leaving a silent replay backlog", async () => {
+    const commands = [];
+    const result = await applyHandoff(promotionHandoff(), {
+      workspace: WORKSPACE_ROOT,
+      session: "main",
+      date: TEST_DATE,
+      commandRunner: async (args) => {
+        commands.push(args);
+        return args.some((arg) => String(arg).endsWith("memory-promote.js"))
+          ? { ok: false, exitCode: 1, stderr: "archive failed" }
+          : { ok: true, exitCode: 0, stdout: "" };
+      },
+    });
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("failed to terminally suppress");
+    expect(commands.some((args) => args.includes("--archive"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(OBS_DIR, "obs-0001.json"), "utf8")).status).toBe("pending");
+    expect(readState().subagentRuns["hb-rethink"].status).toBe("failed");
+  });
+});
+
 describe("process-handoff.js — HB-SYNTHESIS", () => {
   beforeEach(() => {
     WORKSPACE_ROOT = mkdtempSync(join(tmpdir(), "engram-handoff-"));

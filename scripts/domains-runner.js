@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { resolveAutomaticIngress } from "./config.js";
 
 const EXPECTED_FILES_BY_TYPE = {
   "dev-project": ["decisions.md", "workflow.md", "status.md", "changelog.md"],
@@ -823,7 +824,9 @@ export async function applyDomainWriteHandoff(handoff, {
   if (Buffer.byteLength(appendText, "utf8") > MAX_CHANGELOG_APPEND_BYTES) throw new Error("Changelog append exceeds size limit");
 
   let promotedFacts = 0;
-  if (!dryRun && promotions.length && commandRunner) {
+  const suppressPromotions = resolveAutomaticIngress(root) === "disabled";
+  const suppressedPromotions = suppressPromotions ? promotions.length : 0;
+  if (!dryRun && !suppressPromotions && promotions.length && commandRunner) {
     for (const item of promotions) {
       if (await runPromotion(commandRunner, scriptsDir, root, item, domain + ":" + runId)) promotedFacts++;
     }
@@ -859,6 +862,7 @@ export async function applyDomainWriteHandoff(handoff, {
     wroteStatus: statusContent != null,
     appendedEntries: newEntries.length,
     promotedFacts,
+    suppressedPromotions,
     proposedDecisionChanges: Array.isArray(proposedDecisions) ? proposedDecisions.length : 0,
     proposedWorkflowChanges: Array.isArray(proposedWorkflow) ? proposedWorkflow.length : 0,
   };

@@ -73,6 +73,20 @@ describe("PR3 canary control plane", () => {
     expect(existsSync(join(h.workspace, "memory-state", "kg-v3", "authority.json"))).toBe(false);
   });
 
+  test("rollback then re-begin reuses the exact persisted backup and its digest", async () => {
+    const h = fixture();
+    const backupPath = join(h.workspace, "memory-state", "kg-v3", "canary", h.manifest.releaseDigest.slice(7), "backup.json");
+    const first = await beginKgCanary({ ...h.options, now: "2026-08-12T15:00:00Z", acknowledge: true });
+    const persistedBytes = readFileSync(backupPath);
+    const persistedDigest = kgCanaryDigest(JSON.parse(persistedBytes.toString("utf8")));
+    expect(first.backupDigest).toBe(persistedDigest);
+    rollbackKgCanary({ ...h.options, acknowledge: true });
+    const second = await beginKgCanary({ ...h.options, now: "2026-08-13T16:30:00Z", acknowledge: true });
+    expect(readFileSync(backupPath)).toEqual(persistedBytes);
+    expect(second.backupDigest).toBe(persistedDigest);
+    expect(() => rollbackKgCanary({ ...h.options, acknowledge: true })).not.toThrow();
+  });
+
   test("replay plan writes nothing, execute requires ack, and forged grants fail closed", async () => {
     const h = fixture();
     const options = { ...h.options, runtimeGrantsPath: h.runtimeGrantsPath };

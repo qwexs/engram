@@ -201,9 +201,11 @@ export async function beginKgCanary(options: KgCanaryOptions & { acknowledge?: b
     if (current.workspaceId !== options.workspaceId || current.schemaDigest !== KG_V3_SCHEMA_DIGEST || current.releaseDigest !== manifest.releaseDigest || current.mode !== "legacy-contained") throw new KgCanaryError("MARKER_DRIFT", "existing authority marker does not match safe pre-canary state");
   }
   const backup = { schema: "engram.kg-v3-canary-backup.v1", workspaceId: options.workspaceId, releaseDigest: manifest.releaseDigest, inventory: inventory(value.workspace), authority: backupFile(canaryPaths.authority), context: backupFile(canaryPaths.context), createdAt: options.now || new Date().toISOString() };
+  let persistedBackup = backup;
   if (existsSync(canaryPaths.backup)) {
     const prior = readObject<any>(canaryPaths.backup);
     if (prior.workspaceId !== backup.workspaceId || prior.releaseDigest !== backup.releaseDigest || prior.inventory.digest !== backup.inventory.digest || prior.authority.digest !== backup.authority.digest || prior.context.digest !== backup.context.digest) throw new KgCanaryError("BACKUP_DRIFT", "existing backup does not match current pre-activation state");
+    persistedBackup = prior;
   } else atomicJson(canaryPaths.backup, backup);
   const marker: KgAuthorityMarkerV1 = { schema: KG_V3_AUTHORITY_SCHEMA, workspaceId: options.workspaceId, releaseDigest: manifest.releaseDigest, schemaDigest: KG_V3_SCHEMA_DIGEST, mode: "canary", enabledSessionCapabilities: manifest.enabledSessionCapabilities, currentProjectionVersion: 1, approvedBy: manifest.approvedBy, approvedAt: manifest.approvedAt };
   if (!marker.enabledSessionCapabilities.some((entry) => entry.capabilities.includes("kg:v3:seed"))) throw new KgCanaryError("SEED_CAPABILITY_MISSING", "canary marker must explicitly enable seed capability");
@@ -219,10 +221,10 @@ export async function beginKgCanary(options: KgCanaryOptions & { acknowledge?: b
     receipts.push(receipt);
    }
   } catch (error) {
-    restoreControlPlane(canaryPaths, backup);
+    restoreControlPlane(canaryPaths, persistedBackup);
     throw error;
   }
-  const state = { schema: "engram.kg-v3-canary-state.v1", workspaceId: options.workspaceId, releaseDigest: manifest.releaseDigest, status: "collecting", manifestDigest: kgCanaryDigest(manifest), backupDigest: kgCanaryDigest(backup), seedReceipts: receipts, startedAt: options.now || new Date().toISOString() };
+  const state = { schema: "engram.kg-v3-canary-state.v1", workspaceId: options.workspaceId, releaseDigest: manifest.releaseDigest, status: "collecting", manifestDigest: kgCanaryDigest(manifest), backupDigest: kgCanaryDigest(persistedBackup), seedReceipts: receipts, startedAt: options.now || new Date().toISOString() };
   atomicJson(canaryPaths.canaryState, state);
   return state;
 }

@@ -124,12 +124,12 @@ runner.
 
 ## Hooks
 
-Engram ships 9 hooks under `skills/engram/hooks/`:
+Engram ships 10 hooks under `skills/engram/hooks/`:
 
 - `engram-bootstrap-qmd`, `engram-daily-note`, `engram-message-log`
 - `engram-session-start`, `engram-session-end`, `engram-session-memory`
 - `engram-topic-domain-load`, `engram-peer-domain-load`,
-  `engram-rule-context-load`
+  `engram-rule-context-load`, `engram-kg-context-load`
 
 OpenClaw 2026.6.6 loads hooks from its **managed hooks directory** —
 `~/clawd/hooks/` on Windows (`%USERPROFILE%\clawd\hooks\`,
@@ -167,17 +167,17 @@ Use `scripts/install-hooks.js` to mirror the skill's hooks into
 that actually loads on OpenClaw 2026.6.6.
 
 ```bash
-bun skills/engram/scripts/install-hooks.js            # install all 9 on a fresh target
+bun skills/engram/scripts/install-hooks.js            # install all 10 on a fresh target
 bun skills/engram/scripts/install-hooks.js --dry-run  # preview, no changes
 bun skills/engram/scripts/install-hooks.js --force    # overwrite existing entries
 openclaw gateway restart
-bun scripts/install-hooks.js --dry-run                # should enumerate 9 managed Engram hooks
-openclaw hooks list                                   # should include engram-rule-context-load
+bun scripts/install-hooks.js --dry-run                # should enumerate 10 managed Engram hooks
+openclaw hooks list                                   # should include rule and KG context loaders
 ```
 
-After `openclaw gateway restart`, `openclaw hooks list` must include all nine
+After `openclaw gateway restart`, `openclaw hooks list` must include all ten
 Engram entries. `engram-message-log` may remain disabled by configuration;
-`engram-rule-context-load` is ready but injects only in active adaptation mode.
+the context loaders inject only in their independently authorized modes.
 
 `init.js --with-cron --auto-detect-sessions` already calls
 `install-hooks.js` for you during first-time setup (and restarts the
@@ -211,7 +211,7 @@ rejects workspace-specific names like `<agent-a>` or `<agent-b>` as
 
 Always use the installer. Source hooks are TypeScript; it builds the runtime
 `handler.js`, backs up an existing managed entry, and installs the complete
-nine-hook set. A direct `cp -r` from the source tree is unsupported and can
+ten-hook set. A direct `cp -r` from the source tree is unsupported and can
 leave stale or missing runtime handlers:
 
 ```bash

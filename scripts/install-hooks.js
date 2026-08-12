@@ -17,8 +17,8 @@
 //   Empirically verified: copying built `handler.js + HOOK.md` from
 //   `skills/engram/hooks/engram-*/` into managedHooksDir/engram-*/ as
 //   regular directories makes OpenClaw load the managed hook set as
-//   `openclaw-workspace` source. The current managed set contains 9 Engram
-//   hooks, including `engram-rule-context-load`.
+//   `openclaw-workspace` source. The current managed set contains 10 Engram
+//   hooks, including guarded rule and KG context loaders.
 //
 //   The drift concern that motivated junctions ("edit in skill, re-pull, need
 //   to re-copy") is real but bounded: re-running this script after a `git

@@ -216,7 +216,7 @@ export function validateKgAssertion(value: unknown): string[] {
   return errors;
 }
 
-function validateRegistry(value: unknown, workspaceId: string): KgRegistryV1 {
+export function validateKgRegistry(value: unknown, workspaceId: string): KgRegistryV1 {
   const registry = value as KgRegistryV1;
   if (!registry || registry.schema !== KG_V3_REGISTRY_SCHEMA || registry.workspaceId !== workspaceId) {
     throw new Error("KG v3 registry schema/workspace mismatch");
@@ -343,7 +343,7 @@ export class KgV3Core {
 
   private registry(): KgRegistryV1 {
     if (!existsSync(this.registryPath)) throw new Error("KG v3 registry is unavailable");
-    return validateRegistry(readJson(this.registryPath), this.options.workspaceId);
+    return validateKgRegistry(readJson(this.registryPath), this.options.workspaceId);
   }
 
   private authority(caller: TrustedKgCallerContext, capability: "kg:v3:write" | "kg:v3:retract" | "kg:v3:seed"): boolean {

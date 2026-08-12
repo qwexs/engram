@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import kgContextHook from "../../hooks/engram-kg-context-load/handler.ts";
 import {
   KG_V3_AUTHORITY_SCHEMA, KG_V3_SCHEMA_DIGEST, TrustedInboundVerifier, TrustedKgRuntime,
-  deriveKgOperationId, defaultContextArchiveLeakage, type KgWriteRequest,
+  deriveKgOperationId, defaultContextArchiveLeakage, runKgV3Benchmark, type KgBenchmarkManifestV1, type KgWriteRequest,
 } from "./index.ts";
 
 const roots: string[] = [];
@@ -46,6 +46,29 @@ describe("PR3 default-context safety", () => {
     expect(defaultContextArchiveLeakage({ sources: ["life/v3/current-summary.md"], archiveIncludedInDefault: false })).toBe(false);
     expect(defaultContextArchiveLeakage({ sources: ["life/projects/engram/items.json"], archiveIncludedInDefault: false })).toBe(true);
     expect(defaultContextArchiveLeakage({ sources: ["life/v3/current-summary.md"], embeddedBodies: ["historical archive"], archiveIncludedInDefault: false })).toBe(true);
+  });
+
+  test("benchmark requires exact proposed source and rejects missing, non-file, and escaping symlink sources", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "kg-benchmark-paths-")); roots.push(workspace);
+    const outside = mkdtempSync(join(tmpdir(), "kg-benchmark-outside-")); roots.push(outside);
+    mkdirSync(join(workspace, "life", "_derived", "directory"), { recursive: true });
+    mkdirSync(join(workspace, "life", "v3"), { recursive: true });
+    writeFileSync(join(workspace, "life", "_derived", "facts-active.md"), "legacy aggregate\n");
+    writeFileSync(join(workspace, "life", "v3", "current-summary.md"), "# current\n");
+    writeFileSync(join(outside, "escaped.md"), "outside\n");
+    symlinkSync(join(outside, "escaped.md"), join(workspace, "life", "_derived", "escaped.md"));
+    const reader = { current: async () => [], historicalV2: () => [] } as any;
+    const manifest: KgBenchmarkManifestV1 = {
+      schema: "engram.kg-v3-benchmark.v1", workspaceId: "main",
+      essential: [{ id: "one", entityId: "systems/engram", predicate: "seed", expectedObject: { type: "string", value: "one" } }],
+      baselineDefaultContext: { sources: ["life/_derived/facts-active.md"], archiveIncludedInDefault: true },
+      proposedDefaultContext: { sources: ["life/v3/current-summary.md"], archiveIncludedInDefault: false },
+      humanApprovedOperationIds: [],
+    };
+    await expect(runKgV3Benchmark({ workspace, workspaceId: "main", reader, manifest: { ...manifest, proposedDefaultContext: { ...manifest.proposedDefaultContext, sources: ["life/v3/not-current.md"] } } })).rejects.toThrow("source set");
+    await expect(runKgV3Benchmark({ workspace, workspaceId: "main", reader, manifest: { ...manifest, baselineDefaultContext: { ...manifest.baselineDefaultContext, sources: ["life/_derived/missing.md"] } } })).rejects.toThrow("missing");
+    await expect(runKgV3Benchmark({ workspace, workspaceId: "main", reader, manifest: { ...manifest, baselineDefaultContext: { ...manifest.baselineDefaultContext, sources: ["life/_derived/directory"] } } })).rejects.toThrow("not a file");
+    await expect(runKgV3Benchmark({ workspace, workspaceId: "main", reader, manifest: { ...manifest, baselineDefaultContext: { ...manifest.baselineDefaultContext, sources: ["life/_derived/escaped.md"] } } })).rejects.toThrow("symlink escapes");
   });
 
   test("bootstrap hook injects only authorized main current projection and no-ops otherwise", async () => {

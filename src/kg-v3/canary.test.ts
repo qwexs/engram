@@ -27,6 +27,10 @@ function fixture(options: { wrongBenchmark?: boolean } = {}) {
   const registryPath = join(workspace, "memory-state", "kg-v3", "registry.json"); json(registryPath, registry);
   const seed = writeRequest("seed-message", "seed", "operator-curated");
   json(join(workspace, "life", "systems", "engram", "items.json"), { entityId: "systems/engram", facts: [{ id: "engram-001", fact: "seed historical truth", category: "decision", status: "active", source: "2025" }] });
+  const baselineBody = `# v2 aggregate\n${"x".repeat(20_000)}\n`;
+  const baselineEmbeddedBody = "legacy injected principle\n";
+  mkdirSync(join(workspace, "life", "_derived"), { recursive: true });
+  writeFileSync(join(workspace, "life", "_derived", "facts-active.md"), baselineBody);
   const explicitRequests = Array.from({ length: 20 }, (_, index) => writeRequest(`explicit-message-${index + 1}`, `explicit${index + 1}`));
   const runtimeGrants = { schema: "engram.kg-v3-runtime-grants.v1" as const, workspaceId: "main", revision: 1, principals: [{ principalId: "operator", bindings: [{ transport: "telegram" as const, accountId: "default", actorId: "operator" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write" as const] }] }] };
   const runtimeGrantsPath = join(workspace, "memory-state", "kg-v3", "runtime-grants.json"); json(runtimeGrantsPath, runtimeGrants);
@@ -39,7 +43,7 @@ function fixture(options: { wrongBenchmark?: boolean } = {}) {
     benchmark: {
       schema: "engram.kg-v3-benchmark.v1", workspaceId: "main",
       essential: [{ id: "seed", entityId: "systems/engram", predicate: "seed", expectedObject: options.wrongBenchmark ? { type: "string", value: "wrong" } : seed.assertion.object, v2FactId: "engram-001", expectedV2Text: "seed historical truth" }],
-      baselineDefaultContext: { body: "x".repeat(20_000) },
+      baselineDefaultContext: { sources: ["life/_derived/facts-active.md"], embeddedBodies: [baselineEmbeddedBody], archiveIncludedInDefault: true },
       proposedDefaultContext: { sources: ["life/v3/current-summary.md"], archiveIncludedInDefault: false },
       humanApprovedOperationIds: [seed.assertion.provenance.operationId],
     },
@@ -47,7 +51,7 @@ function fixture(options: { wrongBenchmark?: boolean } = {}) {
     approvedBy: "operator", approvedAt: "2026-08-12T15:00:00Z",
   };
   const manifestPath = join(workspace, "memory-state", "kg-v3", "canary-manifest.json"); json(manifestPath, manifest);
-  return { workspace, registryPath, manifestPath, runtimeGrantsPath, runtimeGrants, manifest, seed, explicitRequests, options: { workspace, workspaceId: "main", manifestPath, now: "2026-08-12T15:00:00Z" } };
+  return { workspace, registryPath, manifestPath, runtimeGrantsPath, runtimeGrants, manifest, seed, explicitRequests, baselineBody, baselineEmbeddedBody, options: { workspace, workspaceId: "main", manifestPath, now: "2026-08-12T15:00:00Z" } };
 }
 
 describe("PR3 canary control plane", () => {
@@ -135,6 +139,11 @@ describe("PR3 canary control plane", () => {
     const report = await finalizeKgCanary({ ...h.options, acknowledge: true });
     expect(report).toMatchObject({ status: "passed", projectionSwitched: true, archiveLeakage: false });
     expect(report.benchmark).toMatchObject({ baselineRecallPercent: 100, v3RecallPercent: 100, provenanceCompletenessPercent: 100, humanApprovedPercent: 100 });
+    const baselineBytes = Buffer.byteLength(h.baselineBody) + Buffer.byteLength(h.baselineEmbeddedBody);
+    const proposedBytes = readFileSync(join(h.workspace, "life", "v3", "current-summary.md")).byteLength;
+    expect(report.benchmark.baselineFootprintBytes).toBe(baselineBytes);
+    expect(report.benchmark.v3FootprintBytes).toBe(proposedBytes);
+    expect(report.benchmark.footprintReductionPercent).toBe(Number(((1 - proposedBytes / baselineBytes) * 100).toFixed(2)));
     expect(report.explicitReceipts).toHaveLength(20);
     expect(resolveKgDefaultContext({ workspace: h.workspace, workspaceId: "main" })).toEqual({ mode: "v3-current", sources: ["life/v3/current-summary.md"], archiveIncludedInDefault: false });
     const result = rollbackKgCanary({ ...h.options, acknowledge: true });

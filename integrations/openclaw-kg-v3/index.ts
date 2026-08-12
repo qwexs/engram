@@ -11,6 +11,7 @@ import {
   createKgLiveRetractionRequest,
   createKgLiveWriteRequest,
   readKgLiveRegistry,
+  resolveKgLiveInboundHookIdentity,
   resolveKgLiveIngressProjection,
   type KgLiveRetractInput,
   type KgLiveWriteInput,
@@ -172,8 +173,12 @@ export default definePluginEntry({
   register(api: any) {
     api.on("inbound_claim", (event: any, ctx: any) => {
       try {
-        if (!event?.runId || !event?.sessionKey || !event?.messageId || !event?.senderId) return;
-        const agentId = agentIdFromSessionKey(event.sessionKey);
+        const identity = resolveKgLiveInboundHookIdentity(event || {}, ctx || {});
+        const sessionAgentId = agentIdFromSessionKey(identity.runtimeSessionKey);
+        const agentId = typeof ctx?.agentId === "string" && ctx.agentId.trim() ? ctx.agentId.trim() : sessionAgentId;
+        if (sessionAgentId && agentId && sessionAgentId !== agentId) {
+          throw new KgLiveIngressError("INVALID_TURN", "agentId differs from the canonical session key");
+        }
         const config = api.runtime.config?.current?.() ?? api.config;
         if (!agentId || !config) return;
         const workspace = resolveAgentWorkspace(config, agentId);
@@ -183,18 +188,17 @@ export default definePluginEntry({
         const contextKind = event.threadId !== undefined && event.threadId !== null ? "topic" : event.isGroup ? "group" : "direct";
         if (!projection.allowedContextKinds.includes(contextKind) || (projection.requireOwner && event.senderIsOwner !== true)) return;
         const transport = event.channel === "telegram" ? "telegram" : event.channel === "openclaw" ? "openclaw" : null;
-        const accountId = event.accountId || ctx.accountId;
-        if (!transport || typeof accountId !== "string") return;
+        if (!transport) return;
         authority.capture({
-          runId: event.runId,
-          runtimeSessionKey: event.sessionKey,
+          runId: identity.runId,
+          runtimeSessionKey: identity.runtimeSessionKey,
           workspace,
           workspaceId: id,
           grantSessionKey: projection.grantSessionKey,
           transport,
-          accountId,
-          actorId: event.senderId,
-          messageId: event.messageId,
+          accountId: identity.accountId,
+          actorId: identity.actorId,
+          messageId: identity.messageId,
           contextKind,
           observedAt: timestamp(event.timestamp),
           senderIsOwner: event.senderIsOwner === true,

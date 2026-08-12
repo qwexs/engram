@@ -50,6 +50,14 @@ export interface KgLiveToolRequester {
   senderIsOwner?: boolean;
 }
 
+export interface KgLiveInboundHookIdentity {
+  runId: string;
+  runtimeSessionKey: string;
+  messageId: string;
+  actorId: string;
+  accountId: string;
+}
+
 export interface KgLiveWriteInput {
   entityId: string;
   kind: KgKind;
@@ -84,6 +92,35 @@ function readJson<T>(path: string): T {
 
 function token(value: unknown, max = 512): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= max && value.trim() === value;
+}
+
+function sharedHookToken(label: string, eventValue: unknown, contextValue: unknown): string {
+  const eventToken = eventValue === undefined || eventValue === null ? null : token(eventValue) ? eventValue : undefined;
+  const contextToken = contextValue === undefined || contextValue === null ? null : token(contextValue) ? contextValue : undefined;
+  if (eventToken === undefined || contextToken === undefined) {
+    throw new KgLiveIngressError("INVALID_TURN", `${label} is invalid`);
+  }
+  if (eventToken && contextToken && eventToken !== contextToken) {
+    throw new KgLiveIngressError("INVALID_TURN", `${label} differs between inbound event and context`);
+  }
+  const value = eventToken || contextToken;
+  if (!value) throw new KgLiveIngressError("INVALID_TURN", `${label} is missing from inbound event/context`);
+  return value;
+}
+
+/**
+ * Normalize the server-owned identity duplicated across OpenClaw's
+ * `inbound_claim` event and context. SDK fields are optional on each surface,
+ * so either may supply a value, but disagreement must fail closed.
+ */
+export function resolveKgLiveInboundHookIdentity(event: Record<string, unknown>, context: Record<string, unknown>): KgLiveInboundHookIdentity {
+  return {
+    runId: sharedHookToken("runId", event.runId, context.runId),
+    runtimeSessionKey: sharedHookToken("sessionKey", event.sessionKey, context.sessionKey),
+    messageId: sharedHookToken("messageId", event.messageId, context.messageId),
+    actorId: sharedHookToken("senderId", event.senderId, context.senderId),
+    accountId: sharedHookToken("accountId", event.accountId, context.accountId),
+  };
 }
 
 function digest(value: unknown): value is `sha256:${string}` {

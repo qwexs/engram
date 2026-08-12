@@ -9,6 +9,7 @@ import {
   KgLiveTurnAuthority,
   createKgLiveRetractionRequest,
   createKgLiveWriteRequest,
+  resolveKgLiveInboundHookIdentity,
   resolveKgLiveIngressProjection,
 } from "./live-ingress.ts";
 import { TrustedKgRuntime } from "./trusted-runtime.ts";
@@ -156,6 +157,27 @@ describe("KG v3 single-use live turn authority", () => {
       runtimeSessionKey: turn(root).runtimeSessionKey,
       requester: { channel: "telegram", accountId: "default", senderId: "actor-001", senderIsOwner: true },
     })).toThrow("does not belong to a captured inbound turn");
+  });
+});
+
+describe("KG v3 inbound hook identity normalization", () => {
+  test("accepts canonical identity supplied only by inbound context", () => {
+    expect(resolveKgLiveInboundHookIdentity(
+      {},
+      { runId: "run-context", sessionKey: "agent:main:telegram:direct:actor-001", messageId: "8279", senderId: "actor-001", accountId: "default" },
+    )).toEqual({
+      runId: "run-context",
+      runtimeSessionKey: "agent:main:telegram:direct:actor-001",
+      messageId: "8279",
+      actorId: "actor-001",
+      accountId: "default",
+    });
+  });
+
+  test("accepts matching duplicated identity and rejects disagreement", () => {
+    const identity = { runId: "run-1", sessionKey: "agent:main:main", messageId: "8279", senderId: "actor-001", accountId: "default" };
+    expect(resolveKgLiveInboundHookIdentity(identity, identity).runId).toBe("run-1");
+    expect(() => resolveKgLiveInboundHookIdentity(identity, { ...identity, runId: "run-2" })).toThrow("runId differs");
   });
 });
 

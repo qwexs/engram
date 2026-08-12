@@ -13,6 +13,7 @@ import {
   readKgLiveRegistry,
   resolveKgLiveInboundHookIdentity,
   resolveKgLiveIngressProjection,
+  resolveKgLiveReplyDispatchHookIdentity,
   type KgLiveRetractInput,
   type KgLiveWriteInput,
   type KgRuntimeGrantRegistryV1,
@@ -171,6 +172,52 @@ export default definePluginEntry({
   name: "Engram KG v3 live ingress",
   description: "Trusted, typed, explicit-only KG v3 tools with per-workspace authority markers.",
   register(api: any) {
+    api.on("reply_dispatch", (event: any) => {
+      try {
+        const finalized = event?.ctx;
+        if (!finalized || finalized.InboundAccessAuthorized !== true) return;
+        const identity = resolveKgLiveReplyDispatchHookIdentity(event || {}, finalized);
+        const sessionAgentId = agentIdFromSessionKey(identity.runtimeSessionKey);
+        const finalizedAgentId = typeof finalized.AgentId === "string" && finalized.AgentId.trim() ? finalized.AgentId.trim() : null;
+        const agentId = finalizedAgentId || sessionAgentId;
+        if (sessionAgentId && agentId && sessionAgentId !== agentId) {
+          throw new KgLiveIngressError("INVALID_TURN", "agentId differs from the canonical session key");
+        }
+        const config = api.runtime.config?.current?.() ?? api.config;
+        if (!agentId || !config) return;
+        const workspace = resolveAgentWorkspace(config, agentId);
+        const id = workspace ? workspaceId(workspace) : null;
+        if (!workspace || !id) return;
+        const projection = resolveKgLiveIngressProjection({ workspace, workspaceId: id, expectedPluginDigest: installedPluginDigest });
+        const contextKind = finalized.MessageThreadId !== undefined && finalized.MessageThreadId !== null
+          ? "topic"
+          : finalized.ChatType === "group" || finalized.ChatType === "supergroup" || finalized.GroupSubject || finalized.GroupChannel
+            ? "group"
+            : "direct";
+        if (!projection.allowedContextKinds.includes(contextKind)) return;
+        const channel = String(finalized.OriginatingChannel || finalized.Surface || finalized.Provider || "").toLowerCase();
+        const transport = channel === "telegram" ? "telegram" : channel === "openclaw" ? "openclaw" : null;
+        if (!transport) return;
+        authority.capture({
+          runId: identity.runId,
+          runtimeSessionKey: identity.runtimeSessionKey,
+          workspace,
+          workspaceId: id,
+          grantSessionKey: projection.grantSessionKey,
+          transport,
+          accountId: identity.accountId,
+          actorId: identity.actorId,
+          messageId: identity.messageId,
+          contextKind,
+          observedAt: timestamp(finalized.Timestamp),
+          requireOwner: projection.requireOwner,
+          senderIsOwner: false,
+        });
+      } catch (error) {
+        api.logger.debug?.(`engram-kg-v3: reply dispatch not eligible: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+
     api.on("inbound_claim", (event: any, ctx: any) => {
       try {
         const identity = resolveKgLiveInboundHookIdentity(event || {}, ctx || {});
@@ -201,6 +248,7 @@ export default definePluginEntry({
           messageId: identity.messageId,
           contextKind,
           observedAt: timestamp(event.timestamp),
+          requireOwner: projection.requireOwner,
           senderIsOwner: event.senderIsOwner === true,
         });
       } catch (error) {

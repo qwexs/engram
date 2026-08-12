@@ -40,6 +40,7 @@ export interface KgLiveInboundTurn {
   messageId: string;
   contextKind: "direct" | "group" | "topic";
   observedAt: string;
+  requireOwner: boolean;
   senderIsOwner: boolean;
 }
 
@@ -123,6 +124,27 @@ export function resolveKgLiveInboundHookIdentity(event: Record<string, unknown>,
   };
 }
 
+function requiredHookToken(label: string, value: unknown): string {
+  if (!token(value)) throw new KgLiveIngressError("INVALID_TURN", `${label} is missing or invalid`);
+  return value;
+}
+
+/**
+ * Resolve the normal channel-turn identity exposed by OpenClaw's global
+ * `reply_dispatch` hook. Unlike `inbound_claim`, this hook is reached for
+ * ordinary agent conversations in addition to plugin-owned bindings.
+ */
+export function resolveKgLiveReplyDispatchHookIdentity(event: Record<string, unknown>, context: Record<string, unknown>): KgLiveInboundHookIdentity {
+  const messageId = context.MessageSidFull ?? context.MessageSid ?? context.MessageSidFirst ?? context.MessageSidLast;
+  return {
+    runId: requiredHookToken("runId", event.runId),
+    runtimeSessionKey: sharedHookToken("sessionKey", event.sessionKey, context.SessionKey),
+    messageId: requiredHookToken("messageId", messageId),
+    actorId: requiredHookToken("senderId", context.SenderId),
+    accountId: requiredHookToken("accountId", context.AccountId),
+  };
+}
+
 function digest(value: unknown): value is `sha256:${string}` {
   return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
 }
@@ -134,8 +156,22 @@ function iso(value: unknown): value is string {
 function sameRequester(turn: KgLiveInboundTurn, requester: KgLiveToolRequester): boolean {
   return requester.channel === turn.transport
     && requester.accountId === turn.accountId
-    && requester.senderId === turn.actorId
-    && (!turn.senderIsOwner || requester.senderIsOwner === true);
+    && requester.senderId === turn.actorId;
+}
+
+function sameCapturedTurn(left: KgLiveInboundTurn, right: KgLiveInboundTurn): boolean {
+  return left.runId === right.runId
+    && left.runtimeSessionKey === right.runtimeSessionKey
+    && left.workspace === right.workspace
+    && left.workspaceId === right.workspaceId
+    && left.grantSessionKey === right.grantSessionKey
+    && left.transport === right.transport
+    && left.accountId === right.accountId
+    && left.actorId === right.actorId
+    && left.messageId === right.messageId
+    && left.contextKind === right.contextKind
+    && left.observedAt === right.observedAt
+    && left.requireOwner === right.requireOwner;
 }
 
 /**
@@ -201,9 +237,21 @@ export class KgLiveTurnAuthority {
     if (!token(turn.runId) || !token(turn.runtimeSessionKey) || !token(turn.workspace)
       || !token(turn.workspaceId) || !token(turn.grantSessionKey) || !token(turn.accountId)
       || !token(turn.actorId) || !token(turn.messageId) || !iso(turn.observedAt)
+      || typeof turn.requireOwner !== "boolean" || typeof turn.senderIsOwner !== "boolean"
       || !["telegram", "openclaw"].includes(turn.transport)
       || !["direct", "group", "topic"].includes(turn.contextKind)) {
       throw new KgLiveIngressError("INVALID_TURN", "live inbound turn is incomplete");
+    }
+    const existing = this.#turns.get(turn.runId);
+    if (existing) {
+      if (!sameCapturedTurn(existing.turn, turn)) {
+        this.dropRun(turn.runId);
+        throw new KgLiveIngressError("INVALID_TURN", "conflicting trusted captures share one runId");
+      }
+      if (turn.senderIsOwner && !existing.turn.senderIsOwner) {
+        existing.turn = Object.freeze({ ...existing.turn, senderIsOwner: true });
+      }
+      return;
     }
     this.#turns.set(turn.runId, { turn: Object.freeze({ ...turn }), used: false, expiresAt: now + (this.options.ttlMs ?? 10 * 60_000) });
   }
@@ -222,18 +270,24 @@ export class KgLiveTurnAuthority {
     if (!input.requester || !sameRequester(state.turn, input.requester)) {
       throw new KgLiveIngressError("REQUESTER_MISMATCH", "tool requester does not match captured inbound sender");
     }
+    if (state.turn.requireOwner && input.requester.senderIsOwner !== true) {
+      throw new KgLiveIngressError("REQUESTER_MISMATCH", "tool requester is not the authorized owner");
+    }
+    const boundTurn = state.turn.senderIsOwner || input.requester.senderIsOwner !== true
+      ? state.turn
+      : Object.freeze({ ...state.turn, senderIsOwner: true });
     const expected: InboundMetadataEnvelope = {
-      transport: state.turn.transport,
-      accountId: state.turn.accountId,
-      workspaceId: state.turn.workspaceId,
-      sessionKey: state.turn.grantSessionKey,
-      actorId: state.turn.actorId,
-      messageId: state.turn.messageId,
-      contextKind: state.turn.contextKind,
+      transport: boundTurn.transport,
+      accountId: boundTurn.accountId,
+      workspaceId: boundTurn.workspaceId,
+      sessionKey: boundTurn.grantSessionKey,
+      actorId: boundTurn.actorId,
+      messageId: boundTurn.messageId,
+      contextKind: boundTurn.contextKind,
     };
     const verifier = new TrustedInboundVerifier((candidate) => JSON.stringify(candidate) === JSON.stringify(expected));
     state.used = true;
-    this.#toolCalls.set(input.toolCallId, { turn: state.turn, verifier });
+    this.#toolCalls.set(input.toolCallId, { turn: boundTurn, verifier });
   }
 
   consumeToolCall(toolCallId: string): { turn: KgLiveInboundTurn; metadata: AttestedInboundMetadata; verifier: TrustedInboundVerifier } {

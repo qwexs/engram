@@ -80,11 +80,15 @@ unless the current workspace has a valid, enabled `live-ingress.json` whose
 workspace, release, mode, session capability, and installed plugin digest
 match the guarded KG authority marker.
 
-The adapter correlates `inbound_claim` and `before_tool_call` with the
-server-owned `runId` and `toolCallId`. Transport, account, sender, message,
-runtime session, owner bit, and observation time are captured from hooks, not
-model parameters. One source run can bind at most one KG mutation tool call;
-the in-memory attestation is single-use and expires fail closed.
+The adapter captures ordinary channel turns from the global `reply_dispatch`
+hook and preserves `inbound_claim` compatibility for plugin-owned bindings,
+then correlates either source with `before_tool_call` through the server-owned
+`runId` and `toolCallId`. Transport, account, sender, message, runtime session,
+and observation time come from trusted hook context, while owner authority is
+required again from the host requester at tool admission. One source run can
+bind at most one KG mutation tool call; duplicate captures do not reset that
+budget, conflicting captures fail closed, and the in-memory attestation
+expires fail closed.
 
 The model supplies only the typed semantic fields. Entity type and scope are
 resolved from the registry, while provenance and stable operation identity are

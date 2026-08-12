@@ -11,6 +11,7 @@ import {
   createKgLiveWriteRequest,
   resolveKgLiveInboundHookIdentity,
   resolveKgLiveIngressProjection,
+  resolveKgLiveReplyDispatchHookIdentity,
 } from "./live-ingress.ts";
 import { TrustedKgRuntime } from "./trusted-runtime.ts";
 import { KG_V3_AUTHORITY_SCHEMA, KG_V3_REGISTRY_SCHEMA, type KgRegistryV1 } from "./types.ts";
@@ -84,6 +85,7 @@ function turn(root: string) {
     messageId: "8260",
     contextKind: "direct" as const,
     observedAt: "2026-08-13T00:40:07.000Z",
+    requireOwner: true,
     senderIsOwner: true,
   };
 }
@@ -158,6 +160,42 @@ describe("KG v3 single-use live turn authority", () => {
       requester: { channel: "telegram", accountId: "default", senderId: "actor-001", senderIsOwner: true },
     })).toThrow("does not belong to a captured inbound turn");
   });
+
+  test("defers owner proof to the host requester without resetting single-use authority", () => {
+    const root = workspace();
+    const authority = new KgLiveTurnAuthority();
+    const deferred = { ...turn(root), senderIsOwner: false };
+    authority.capture(deferred);
+    authority.capture(deferred);
+    expect(() => authority.bindToolCall({
+      runId: "run-1",
+      toolCallId: "call-non-owner",
+      runtimeSessionKey: deferred.runtimeSessionKey,
+      requester: { channel: "telegram", accountId: "default", senderId: "actor-001", senderIsOwner: false },
+    })).toThrow("not the authorized owner");
+    authority.bindToolCall({
+      runId: "run-1",
+      toolCallId: "call-owner",
+      runtimeSessionKey: deferred.runtimeSessionKey,
+      requester: { channel: "telegram", accountId: "default", senderId: "actor-001", senderIsOwner: true },
+    });
+    expect(authority.consumeToolCall("call-owner").turn.senderIsOwner).toBe(true);
+    authority.capture(deferred);
+    expect(() => authority.bindToolCall({
+      runId: "run-1",
+      toolCallId: "call-second",
+      runtimeSessionKey: deferred.runtimeSessionKey,
+      requester: { channel: "telegram", accountId: "default", senderId: "actor-001", senderIsOwner: true },
+    })).toThrow("already used");
+  });
+
+  test("conflicting recapture fails closed and drops the run", () => {
+    const root = workspace();
+    const authority = new KgLiveTurnAuthority();
+    authority.capture(turn(root));
+    expect(() => authority.capture({ ...turn(root), messageId: "different" })).toThrow("conflicting trusted captures");
+    expect(authority.hasRun("run-1", turn(root).runtimeSessionKey)).toBe(false);
+  });
 });
 
 describe("KG v3 inbound hook identity normalization", () => {
@@ -178,6 +216,26 @@ describe("KG v3 inbound hook identity normalization", () => {
     const identity = { runId: "run-1", sessionKey: "agent:main:main", messageId: "8279", senderId: "actor-001", accountId: "default" };
     expect(resolveKgLiveInboundHookIdentity(identity, identity).runId).toBe("run-1");
     expect(() => resolveKgLiveInboundHookIdentity(identity, { ...identity, runId: "run-2" })).toThrow("runId differs");
+  });
+
+  test("resolves ordinary channel turns from global reply dispatch", () => {
+    expect(resolveKgLiveReplyDispatchHookIdentity(
+      { runId: "run-reply", sessionKey: "agent:main:telegram:direct:actor-001" },
+      { SessionKey: "agent:main:telegram:direct:actor-001", MessageSidFull: "telegram:actor-001#8297", SenderId: "actor-001", AccountId: "default" },
+    )).toEqual({
+      runId: "run-reply",
+      runtimeSessionKey: "agent:main:telegram:direct:actor-001",
+      messageId: "telegram:actor-001#8297",
+      actorId: "actor-001",
+      accountId: "default",
+    });
+  });
+
+  test("rejects reply dispatch session disagreement", () => {
+    expect(() => resolveKgLiveReplyDispatchHookIdentity(
+      { runId: "run-reply", sessionKey: "agent:main:one" },
+      { SessionKey: "agent:main:two", MessageSid: "8297", SenderId: "actor-001", AccountId: "default" },
+    )).toThrow("sessionKey differs");
   });
 });
 

@@ -38,6 +38,19 @@ replacement makes each step idempotent. Projection is generated only after a
 terminal commit. A committed record whose projection was interrupted repairs
 the projection before returning its original receipt.
 
+After terminal commit, the async typed API marks the owned knowledge-graph
+collection dirty through the existing maintenance integration and never runs
+raw QMD update/embed. Marker success, disabled mode, or best-effort failure is
+persisted in the operation journal and returned in the receipt; bookkeeping
+failure never rolls back KG state and is retried by replay/recovery.
+
+Normal replay and recovery-before-mark issue one dirty notification. There is
+an intentionally accepted at-least-once window if the process crashes after a
+successful maintenance-state mark but before its journal read-back is stored;
+recovery may increment dirty generation once more. This is safe because dirty
+generation is idempotent work for the coordinator. PR2 does not add a global,
+unbounded QMD idempotency index for distributed exactly-once delivery.
+
 The writer recomputes `operationId` from trusted workspace/session/actor,
 message identity and the semantic target (entity + predicate, or entity +
 retracted assertion ID). Runtime timestamps do not participate. The journal
@@ -46,7 +59,7 @@ payload returns `OPERATION_CONFLICT`.
 
 ## Read boundaries
 
-`KgV3Reader.current()` recovers pending WAL records and returns active v3 only.
+`await KgV3Reader.current()` recovers pending WAL records and returns active v3 only.
 `historicalV2(entityId)` is a separate explicit adapter and never contributes
 to current/default projection.
 

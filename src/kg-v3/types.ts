@@ -114,6 +114,12 @@ export interface KgReceipt {
   reason: KgAdmissionReason | null;
   payloadDigest: `sha256:${string}`;
   committedAt: string | null;
+  qmdDirty?: {
+    status: "pending" | "marked" | "disabled" | "error";
+    generation: number | null;
+    collections: string[];
+    error: string | null;
+  };
 }
 
 export interface KgRegistryPredicate {

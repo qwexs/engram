@@ -21,7 +21,7 @@ export class KgV3Reader {
   }
 
   /** Default reader: only active v3 assertions; v2 is never mixed in. */
-  current(): KgAssertionV3[] {
+  current(): Promise<KgAssertionV3[]> {
     return this.core.current();
   }
 

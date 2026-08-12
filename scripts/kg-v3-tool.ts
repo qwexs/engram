@@ -39,22 +39,22 @@ const coreOptions = {
 
 let output: unknown;
 if (command === "write") {
-  output = new KgV3Core(coreOptions).write(
+  output = await new KgV3Core(coreOptions).write(
     jsonFile<KgWriteRequest>(options.request, "request"),
     jsonFile<TrustedKgCallerContext>(options.context, "context"),
   );
 } else if (command === "retract") {
-  output = new KgV3Core(coreOptions).retract(
+  output = await new KgV3Core(coreOptions).retract(
     jsonFile<KgRetractionRequest>(options.request, "request"),
     jsonFile<TrustedKgCallerContext>(options.context, "context"),
   );
 } else if (command === "current") {
-  output = new KgV3Reader(coreOptions).current();
+  output = await new KgV3Reader(coreOptions).current();
 } else if (command === "historical-v2") {
   if (typeof options.entity !== "string") throw new Error("--entity is required");
   output = new KgV3Reader(coreOptions).historicalV2(options.entity);
 } else if (command === "recover") {
-  output = new KgV3Core(coreOptions).recover();
+  output = await new KgV3Core(coreOptions).recover();
 } else {
   throw new Error("--command must be write, retract, current, historical-v2, or recover");
 }

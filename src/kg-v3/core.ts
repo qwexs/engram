@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import assertionSchema from "../../schemas/kg-assertion-v3-mvp.schema.json";
+import { markWorkspaceQmdDirty, type WorkspaceDirtyMarkResult } from "../qmd/maintenance-integration.ts";
 import {
   KG_V3_ASSERTION_SCHEMA,
   KG_V3_AUTHORITY_SCHEMA,
@@ -49,6 +50,12 @@ interface OperationRecord {
   previousAfter: KgAssertionV3 | null;
   receipt: KgReceipt | null;
   projectionCommitted: boolean;
+  qmdDirty: {
+    status: "pending" | "marked" | "disabled" | "error";
+    generation: number | null;
+    collections: string[];
+    error: string | null;
+  };
 }
 
 export interface KgV3CoreOptions {
@@ -57,6 +64,7 @@ export interface KgV3CoreOptions {
   registryPath?: string;
   authorityPath?: string;
   crashAt?: KgCrashPoint;
+  qmdDirtyMarker?: (input: { workspace: string; reason: string; collectionRole: "knowledge-graph" }) => Promise<WorkspaceDirtyMarkResult>;
 }
 
 export class KgV3Error extends Error {
@@ -280,6 +288,31 @@ function withLock<T>(path: string, fn: () => T): T {
   }
 }
 
+async function withLockAsync<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  mkdirSync(dirname(path), { recursive: true });
+  for (;;) {
+    try {
+      mkdirSync(path, { mode: 0o700 });
+      atomicWriteJson(join(path, "owner.json"), { pid: process.pid, acquiredAt: new Date().toISOString() });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      let remove = false;
+      try {
+        const owner = readJson<{ pid?: number }>(join(path, "owner.json"));
+        remove = !Number.isInteger(owner.pid) || !processAlive(owner.pid!);
+      } catch {
+        try { remove = Date.now() - statSync(path).mtimeMs > 30_000; } catch { remove = false; }
+      }
+      if (remove) { rmSync(path, { recursive: true, force: true }); continue; }
+      if (Date.now() - started >= 10_000) throw new Error(`KG v3 lock timeout: ${path}`);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+  }
+  try { return await fn(); } finally { rmSync(path, { recursive: true, force: true }); }
+}
+
 function rejected(operation: string, payloadDigest: `sha256:${string}`, reason: KgAdmissionReason): KgReceipt {
   return { schema: "engram.kg-v3-receipt.v1", operationId: operation, status: "rejected", assertionId: null, reason, payloadDigest, committedAt: null };
 }
@@ -341,13 +374,14 @@ export class KgV3Core {
     return join(this.assertionsRoot, `${id}.json`);
   }
 
-  private nonCanonicalOperationReceipt(operation: `sha256:${string}`, entityId: string, payloadDigest: `sha256:${string}`): KgReceipt {
+  private nonCanonicalOperationReceipt(operation: `sha256:${string}`, entityId: string, payloadDigest: `sha256:${string}`, workspaceLockHeld = false): KgReceipt {
     const paths = this.paths(operation, entityId);
-    return withLock(paths.commitLock, () => (
+    const resolveReceipt = () => (
       existsSync(paths.operation)
         ? rejected(operation, payloadDigest, "OPERATION_CONFLICT")
         : rejected(operation, payloadDigest, "PROVENANCE_MISSING")
-    ));
+    );
+    return workspaceLockHeld ? resolveReceipt() : withLock(paths.commitLock, resolveReceipt);
   }
 
   private readOperation(path: string): OperationRecord {
@@ -390,6 +424,8 @@ export class KgV3Core {
     } else if (record.receipt !== null) {
       throw new Error(`non-terminal KG v3 operation has a receipt: ${path}`);
     }
+    if (!record.qmdDirty || !["pending", "marked", "disabled", "error"].includes(record.qmdDirty.status)
+      || !Array.isArray(record.qmdDirty.collections)) throw new Error(`invalid KG v3 QMD audit state: ${path}`);
     return record;
   }
 
@@ -460,7 +496,7 @@ export class KgV3Core {
     return record.receipt;
   }
 
-  write(request: KgWriteRequest, caller: TrustedKgCallerContext): KgReceipt {
+  private writeSync(request: KgWriteRequest, caller: TrustedKgCallerContext, workspaceLockHeld = false): KgReceipt {
     const input = request?.assertion;
     const op = input?.provenance?.operationId || "";
     const payloadDigest = digest(request);
@@ -480,7 +516,7 @@ export class KgV3Core {
       predicate: input.predicate,
       action: "write",
     });
-    if (op !== expectedOperation) return this.nonCanonicalOperationReceipt(op, input.entityId, payloadDigest);
+    if (op !== expectedOperation) return this.nonCanonicalOperationReceipt(op, input.entityId, payloadDigest, workspaceLockHeld);
     if (input.provenance.sourceKind !== "user_message" && input.provenance.sourceKind !== "operator-curated") return rejected(op, payloadDigest, "SOURCE_NOT_EXPLICIT");
     if (!request.intent?.explicit) return rejected(op, payloadDigest, "SOURCE_NOT_EXPLICIT");
     if (request.intent.compound) return rejected(op, payloadDigest, "COMPOUND_ASSERTION");
@@ -502,7 +538,7 @@ export class KgV3Core {
     if (typeof input.object.value !== valueType || (valueType === "number" && !Number.isFinite(input.object.value))) return rejected(op, payloadDigest, "OBJECT_TYPE_MISMATCH");
 
     const paths = this.paths(op, input.entityId);
-    return withLock(paths.commitLock, () => {
+    const commit = () => {
       this.recoverUnlocked();
       return withLock(paths.entityLock, () => {
       if (existsSync(paths.operation)) {
@@ -515,7 +551,7 @@ export class KgV3Core {
       const duplicate = active.find((assertion) => assertion.kind === input.kind && semanticObjectEqual(assertion.object, input.object));
       if (duplicate) {
         const receipt: KgReceipt = { schema: "engram.kg-v3-receipt.v1", operationId: op, status: "skipped", assertionId: duplicate.id, reason: "DUPLICATE", payloadDigest, committedAt: duplicate.lifecycle.changedAt };
-        const record: OperationRecord = { schema: KG_V3_OPERATION_SCHEMA, operationId: op, payloadDigest, workspaceId: input.workspaceId, entityId: input.entityId, action: "write", actionProvenance: input.provenance, status: "skipped", assertionId: duplicate.id, assertionAfter: null, previousId: null, previousAfter: null, receipt, projectionCommitted: true };
+        const record: OperationRecord = { schema: KG_V3_OPERATION_SCHEMA, operationId: op, payloadDigest, workspaceId: input.workspaceId, entityId: input.entityId, action: "write", actionProvenance: input.provenance, status: "skipped", assertionId: duplicate.id, assertionAfter: null, previousId: null, previousAfter: null, receipt, projectionCommitted: true, qmdDirty: { status: "disabled", generation: null, collections: [], error: null } };
         atomicWriteJson(paths.operation, record);
         return receipt;
       }
@@ -540,15 +576,16 @@ export class KgV3Core {
       const errors = validateKgAssertion(assertion);
       if (errors.length) throw new Error(`invalid canonical KG v3 assertion: ${errors.join("; ")}`);
       const previousAfter = current ? { ...current, lifecycle: { ...current.lifecycle, status: "superseded" as const, supersededById: id, changedAt: input.provenance.observedAt } } : null;
-      const record: OperationRecord = { schema: KG_V3_OPERATION_SCHEMA, operationId: op, payloadDigest, workspaceId: input.workspaceId, entityId: input.entityId, action: "write", actionProvenance: input.provenance, status: "prepared", assertionId: id, assertionAfter: assertion, previousId: current?.id || null, previousAfter, receipt: null, projectionCommitted: false };
+      const record: OperationRecord = { schema: KG_V3_OPERATION_SCHEMA, operationId: op, payloadDigest, workspaceId: input.workspaceId, entityId: input.entityId, action: "write", actionProvenance: input.provenance, status: "prepared", assertionId: id, assertionAfter: assertion, previousId: current?.id || null, previousAfter, receipt: null, projectionCommitted: false, qmdDirty: { status: "pending", generation: null, collections: [], error: null } };
       atomicWriteJson(paths.operation, record);
       this.crash("after-prepared");
       return this.finish(paths.operation, record);
       });
-    });
+    };
+    return workspaceLockHeld ? commit() : withLock(paths.commitLock, commit);
   }
 
-  retract(request: KgRetractionRequest, caller: TrustedKgCallerContext): KgReceipt {
+  private retractSync(request: KgRetractionRequest, caller: TrustedKgCallerContext, workspaceLockHeld = false): KgReceipt {
     const op = request?.provenance?.operationId || "";
     const payloadDigest = digest(request);
     if (!operationId(op) || !request?.provenance || !iso(request.provenance.observedAt)) return rejected(op, payloadDigest, "PROVENANCE_MISSING");
@@ -564,9 +601,9 @@ export class KgV3Core {
       assertionId: request.assertionId,
       action: "retract",
     });
-    if (op !== expectedOperation) return this.nonCanonicalOperationReceipt(op, request.entityId, payloadDigest);
+    if (op !== expectedOperation) return this.nonCanonicalOperationReceipt(op, request.entityId, payloadDigest, workspaceLockHeld);
     const paths = this.paths(op, request.entityId);
-    return withLock(paths.commitLock, () => {
+    const commit = () => {
       this.recoverUnlocked();
       return withLock(paths.entityLock, () => {
       if (existsSync(paths.operation)) {
@@ -579,12 +616,13 @@ export class KgV3Core {
       const target = readJson<KgAssertionV3>(targetPath);
       if (target.entityId !== request.entityId || target.workspaceId !== request.workspaceId || target.lifecycle.status !== "active") return rejected(op, payloadDigest, "REPLACEMENT_REQUIRED");
       const after: KgAssertionV3 = { ...target, lifecycle: { ...target.lifecycle, status: "retracted", changedAt: request.provenance.observedAt } };
-      const record: OperationRecord = { schema: KG_V3_OPERATION_SCHEMA, operationId: op, payloadDigest, workspaceId: request.workspaceId, entityId: request.entityId, action: "retract", actionProvenance: request.provenance, status: "prepared", assertionId: target.id, assertionAfter: after, previousId: null, previousAfter: null, receipt: null, projectionCommitted: false };
+      const record: OperationRecord = { schema: KG_V3_OPERATION_SCHEMA, operationId: op, payloadDigest, workspaceId: request.workspaceId, entityId: request.entityId, action: "retract", actionProvenance: request.provenance, status: "prepared", assertionId: target.id, assertionAfter: after, previousId: null, previousAfter: null, receipt: null, projectionCommitted: false, qmdDirty: { status: "pending", generation: null, collections: [], error: null } };
       atomicWriteJson(paths.operation, record);
       this.crash("after-prepared");
       return this.finish(paths.operation, record);
       });
-    });
+    };
+    return workspaceLockHeld ? commit() : withLock(paths.commitLock, commit);
   }
 
   /** Recover every non-terminal WAL record before exposing current state. */
@@ -600,15 +638,58 @@ export class KgV3Core {
     return receipts;
   }
 
-  recover(): KgReceipt[] {
-    const lock = join(this.locksRoot, "workspace-commit.lock");
-    return withLock(lock, () => this.recoverUnlocked());
+  private async ensureQmdDirtyUnlocked(receipt: KgReceipt): Promise<KgReceipt> {
+    if (receipt.status !== "committed") return receipt;
+    const operation = receipt.operationId;
+    const recordPath = this.paths(operation, "qmd").operation;
+    const record = this.readOperation(recordPath);
+    if (record.qmdDirty.status !== "pending" && record.qmdDirty.status !== "error") {
+      return { ...record.receipt!, qmdDirty: record.qmdDirty };
+    }
+    const marker = this.options.qmdDirtyMarker || ((input) => markWorkspaceQmdDirty(input));
+    let result: WorkspaceDirtyMarkResult;
+    try {
+      result = await marker({ workspace: this.workspace, collectionRole: "knowledge-graph", reason: `kg-v3:${record.operationId}` });
+    } catch (error) {
+      result = { schema: "engram.qmd.dirty-mark.v1", status: "error", mode: "legacy", workspace: this.workspace, error: error instanceof Error ? error.message : String(error) };
+    }
+    record.qmdDirty = {
+      status: result.status,
+      generation: result.generation ?? null,
+      collections: result.collections ?? [],
+      error: result.error ?? null,
+    };
+    atomicWriteJson(recordPath, record);
+    return { ...record.receipt!, qmdDirty: record.qmdDirty };
   }
 
-  current(): KgAssertionV3[] {
+  async write(request: KgWriteRequest, caller: TrustedKgCallerContext): Promise<KgReceipt> {
     const lock = join(this.locksRoot, "workspace-commit.lock");
-    return withLock(lock, () => {
+    return withLockAsync(lock, async () => this.ensureQmdDirtyUnlocked(this.writeSync(request, caller, true)));
+  }
+
+  async retract(request: KgRetractionRequest, caller: TrustedKgCallerContext): Promise<KgReceipt> {
+    const lock = join(this.locksRoot, "workspace-commit.lock");
+    return withLockAsync(lock, async () => this.ensureQmdDirtyUnlocked(this.retractSync(request, caller, true)));
+  }
+
+  async recover(): Promise<KgReceipt[]> {
+    const lock = join(this.locksRoot, "workspace-commit.lock");
+    return withLockAsync(lock, async () => {
+      const output: KgReceipt[] = [];
+      for (const receipt of this.recoverUnlocked()) output.push(await this.ensureQmdDirtyUnlocked(receipt));
+      return output;
+    });
+  }
+
+  async current(): Promise<KgAssertionV3[]> {
+    const lock = join(this.locksRoot, "workspace-commit.lock");
+    return withLockAsync(lock, async () => {
       this.recoverUnlocked();
+      const operations = existsSync(this.operationsRoot)
+        ? readdirSync(this.operationsRoot).filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).map((name) => this.readOperation(join(this.operationsRoot, name)))
+        : [];
+      for (const record of operations.filter((item) => item.status === "committed")) await this.ensureQmdDirtyUnlocked(record.receipt!);
       return this.readAssertions().filter((assertion) => assertion.lifecycle.status === "active");
     });
   }

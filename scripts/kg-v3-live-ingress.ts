@@ -91,11 +91,14 @@ if (command === "plan") {
     writeFileSync(join(packageDir, "openclaw.plugin.json"), readFileSync(join(repository, "integrations", "openclaw-kg-v3", "openclaw.plugin.json")));
     const installed = spawnSync("openclaw", ["plugins", "install", "--force", packageDir], { encoding: "utf8" });
     if (installed.status !== 0) throw new Error(`plugin install failed: ${(installed.stderr || installed.stdout).trim()}`);
+    const permission = spawnSync("openclaw", ["config", "set", "plugins.entries.engram-kg-v3.hooks.allowConversationAccess", "true", "--strict-json"], { encoding: "utf8" });
+    if (permission.status !== 0) throw new Error(`plugin conversation-hook permission failed: ${(permission.stderr || permission.stdout).trim()}`);
   } finally {
     rmSync(packageDir, { recursive: true, force: true });
   }
   const readBack = inspectPlugin();
   if (!readBack.installed || readBack.digest !== bundle.digest) throw new Error("installed plugin byte read-back mismatch");
+  if (readBack.diagnostics.length > 0) throw new Error(`installed plugin diagnostics are not clean: ${JSON.stringify(readBack.diagnostics)}`);
   console.log(JSON.stringify({ schema: "engram.kg-v3-live-ingress-install.v1", status: "installed-dormant", pluginDigest: bundle.digest, plugin: readBack, projection: localProjection(), gatewayRestartRequired: true }, null, 2));
 } else if (command === "activate") {
   if (values["ack-gateway-restarted"] !== true) throw new Error("activation requires --ack-gateway-restarted");

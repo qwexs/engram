@@ -1,0 +1,19 @@
+{
+  "id": "engram-kg-v3",
+  "name": "Engram KG v3 live ingress",
+  "description": "Trusted, typed, explicit-only KG v3 tools with per-workspace authority markers.",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "engram_memory_save",
+      "engram_memory_retract"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

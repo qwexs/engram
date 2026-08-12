@@ -12,6 +12,7 @@ memory-state/kg-v3/operations/<operation-sha256-hex>.json
 memory-state/kg-v3/locks/<workspace-entity-sha256>.lock/
 memory-state/kg-v3/registry.json
 memory-state/kg-v3/authority.json
+memory-state/kg-v3/live-ingress.json
 life/v3/current-summary.md
 ```
 
@@ -70,3 +71,37 @@ the same capability enabled for that exact session in the marker.
 `scripts/kg-v3-tool.ts --context` is an operator/test harness, not a trusted
 agent boundary. Production ingress must construct `TrustedKgCallerContext` in
 the runtime adapter from verified inbound metadata and call the typed core API.
+
+## OpenClaw live ingress boundary
+
+`integrations/openclaw-kg-v3/` is the thin OpenClaw adapter. It registers
+`engram_memory_save` and `engram_memory_retract`, but both tools remain absent
+unless the current workspace has a valid, enabled `live-ingress.json` whose
+workspace, release, mode, session capability, and installed plugin digest
+match the guarded KG authority marker.
+
+The adapter correlates `inbound_claim` and `before_tool_call` with the
+server-owned `runId` and `toolCallId`. Transport, account, sender, message,
+runtime session, owner bit, and observation time are captured from hooks, not
+model parameters. One source run can bind at most one KG mutation tool call;
+the in-memory attestation is single-use and expires fail closed.
+
+The model supplies only the typed semantic fields. Entity type and scope are
+resolved from the registry, while provenance and stable operation identity are
+constructed from the trusted inbound turn. Operational/progress/test/status
+material stays in daily/domain stores.
+
+Rollout is explicit and read-back guarded:
+
+```bash
+bun scripts/kg-v3-live-ingress.ts plan --workspace /opt/openclaw/workspace --workspace-id main
+bun scripts/kg-v3-live-ingress.ts install --workspace /opt/openclaw/workspace --workspace-id main --ack-plugin-install
+# restart and verify the OpenClaw gateway before activation
+bun scripts/kg-v3-live-ingress.ts activate --workspace /opt/openclaw/workspace --workspace-id main \
+  --approved-by '<authority>' --ack-gateway-restarted --ack-live-ingress
+bun scripts/kg-v3-live-ingress.ts status --workspace /opt/openclaw/workspace --workspace-id main
+```
+
+Rollback disables only the local live projection and preserves assertions,
+operation journals, canary evidence, and the v3 read projection. Installing the
+plugin globally never activates another workspace.

@@ -6,3 +6,5 @@ export * from "./benchmark.ts";
 export * from "./context.ts";
 export * from "./canary.ts";
 export * from "./canary-executor.ts";
+export * from "./live-ingress.ts";
+export * from "./live-rollout.ts";

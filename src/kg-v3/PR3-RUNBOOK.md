@@ -47,5 +47,46 @@ Hook installation and gateway restart are separate operator-controlled live
 steps after code, manifest, benchmark, and dry-run gates. PR3 tooling does not
 install hooks, restart the gateway, or create live registry/authority files.
 The replay executor is deliberately not live-turn ingress. `TrustedKgRuntime`
-is the adapter boundary; live OpenClaw turn registration remains a separately
-reviewed PR4 rollout step.
+is the adapter boundary; live OpenClaw turn registration is the separately
+gated main-canary completion step below, before PR4 fleet rollout.
+
+## Main-only live-turn completion gate
+
+After the reviewed replay, read-back, benchmark, rollback drill, and guarded
+context hook are green, the OpenClaw adapter is installed dormant and activated
+with a separate local projection:
+
+```bash
+bun scripts/kg-v3-live-ingress.ts plan \
+  --workspace /opt/openclaw/workspace --workspace-id main
+
+bun scripts/kg-v3-live-ingress.ts install \
+  --workspace /opt/openclaw/workspace --workspace-id main \
+  --ack-plugin-install
+
+# Operator restarts and verifies the gateway here. The plugin is still dormant
+# because live-ingress.json does not exist yet.
+
+bun scripts/kg-v3-live-ingress.ts activate \
+  --workspace /opt/openclaw/workspace --workspace-id main \
+  --approved-by '<operator authority>' \
+  --ack-gateway-restarted --ack-live-ingress
+
+bun scripts/kg-v3-live-ingress.ts status \
+  --workspace /opt/openclaw/workspace --workspace-id main
+```
+
+This closes the live-turn gap inside the main canary; it is not fleet rollout.
+The adapter uses server-stamped inbound metadata, supplies no classifier or
+outbox, and exposes at most one typed KG mutation per eligible source turn.
+
+Rollback:
+
+```bash
+bun scripts/kg-v3-live-ingress.ts rollback \
+  --workspace /opt/openclaw/workspace --workspace-id main \
+  --approved-by '<operator authority>' --ack-live-ingress-rollback
+```
+
+Rollback leaves committed assertions, journals, and read-back evidence intact.
+PR4 fleet rollout remains separately gated on observed main live-turn evidence.

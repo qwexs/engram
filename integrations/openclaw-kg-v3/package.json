@@ -1,0 +1,11 @@
+{
+  "name": "@qwexs/engram-openclaw-kg-v3",
+  "version": "3.6.1",
+  "private": true,
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

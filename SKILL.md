@@ -199,6 +199,16 @@ For QMD installation: [references/qmd-setup.md](references/qmd-setup.md)
 
 ## Real-Time Extraction
 
+> **KG v3 cutover note:** when the runtime exposes `engram_memory_save` and
+> the workspace has an enabled `memory-state/kg-v3/live-ingress.json`, that
+> typed tool is the sole inline KG writer. Use it at most once for an explicit
+> durable user assertion. Do not run `memory-signal.js`, `memory-write.js`, or
+> heartbeat extraction for the same KG intent. Operational/progress/test/status
+> material still goes to daily/domain stores. If the tool is absent or rejects
+> an unregistered entity/predicate, do not bypass it with the legacy writer.
+
+The legacy v2 inline path below applies only before a guarded KG v3 cutover.
+
 Instead of waiting for heartbeats (up to 30 min), extract high-signal facts **inline during conversations**.
 
 ```

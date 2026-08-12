@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **feat(kg): add guarded OpenClaw live-turn ingress for KG v3.** A thin
+  plugin binds typed save/retract calls to server-stamped inbound run,
+  message, sender, account, and session metadata; each source turn has one
+  expiring mutation authority. Per-workspace release/plugin projections keep
+  installation dormant until explicit activation, with plan, byte read-back,
+  readiness, status, and non-destructive rollback tooling.
+
 - **feat(kg): contain legacy automatic KG ingress fleet-wide.** A single
   fail-closed `kg.automaticIngress` policy now suppresses session/daily
   extraction, domain promotions and legacy OLL promotions while terminally

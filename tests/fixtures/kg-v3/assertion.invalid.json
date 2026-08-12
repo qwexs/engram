@@ -1,0 +1,27 @@
+{
+  "schema": "engram.kg-assertion.v3-mvp",
+  "id": "not-a-uuid",
+  "workspaceId": "main",
+  "entityId": "../escape",
+  "entityType": "system",
+  "kind": "event",
+  "predicate": "rolloutStrategy",
+  "object": { "type": "boolean", "value": "yes" },
+  "scope": [],
+  "lifecycle": {
+    "status": "disputed",
+    "replacesId": null,
+    "supersededById": null,
+    "changedAt": "yesterday"
+  },
+  "provenance": {
+    "sourceKind": "transcript",
+    "sessionKey": "",
+    "messageId": "",
+    "actorId": "",
+    "operationId": "random",
+    "observedAt": "never"
+  },
+  "createdAt": "never",
+  "extra": true
+}

@@ -121,6 +121,29 @@ if (opts.access) {
   process.exit(0);
 }
 
+// KG v3 cutover makes the typed writer the sole canonical mutator. Missing
+// marker keeps the pre-cutover explicit v2 writer available; once a marker is
+// present, malformed/unknown state fails closed and canary|enabled always
+// blocks this legacy mutation entrypoint.
+{
+  const authorityPath = join(WORKSPACE, "memory-state", "kg-v3", "authority.json");
+  const authorityFile = Bun.file(authorityPath);
+  if (await authorityFile.exists()) {
+    let marker = null;
+    try { marker = await authorityFile.json(); } catch {}
+    const legacyStillAllowed = marker?.schema === "engram.kg-v3-authority.v1"
+      && marker?.mode === "legacy-contained";
+    if (!legacyStillAllowed) {
+      console.error(JSON.stringify({
+        status: "rejected",
+        reason: "LEGACY_WRITER_DISABLED",
+        message: "Typed KG v3 writer is the sole canonical mutator after cutover.",
+      }));
+      process.exit(1);
+    }
+  }
+}
+
 // Валидация обязательных полей
 const required = ["entity", "fact", "category"];
 for (const r of required) {

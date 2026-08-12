@@ -1,0 +1,26 @@
+{
+  "schema": "engram.kg-assertion.v3-mvp",
+  "id": "123e4567-e89b-42d3-a456-426614174000",
+  "workspaceId": "main",
+  "entityId": "systems/engram",
+  "entityType": "system",
+  "kind": "decision",
+  "predicate": "rolloutStrategy",
+  "object": { "type": "string", "value": "main canary, then fleet rollout" },
+  "scope": ["engram"],
+  "lifecycle": {
+    "status": "active",
+    "replacesId": null,
+    "supersededById": null,
+    "changedAt": "2026-08-12T15:00:00Z"
+  },
+  "provenance": {
+    "sourceKind": "user_message",
+    "sessionKey": "main",
+    "messageId": "8242",
+    "actorId": "actor-001",
+    "operationId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "observedAt": "2026-08-12T15:00:00Z"
+  },
+  "createdAt": "2026-08-12T15:00:00Z"
+}

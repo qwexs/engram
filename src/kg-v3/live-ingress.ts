@@ -35,7 +35,6 @@ export interface KgLiveInboundTurn {
   workspaceId: string;
   grantSessionKey: string;
   transport: "telegram" | "openclaw";
-  accountId: string;
   actorId: string;
   messageId: string;
   contextKind: "direct" | "group" | "topic";
@@ -53,7 +52,6 @@ export interface KgLiveAdoptedInboundTurn extends KgLivePendingInboundTurn {
 
 export interface KgLiveToolRequester {
   channel?: string;
-  accountId?: string;
   senderId?: string;
   senderIsOwner?: boolean;
 }
@@ -63,7 +61,6 @@ export interface KgLiveInboundHookIdentity {
   runtimeSessionKey: string;
   messageId: string;
   actorId: string;
-  accountId: string;
 }
 
 export interface KgLivePersistedUserTurnHookIdentity {
@@ -77,8 +74,6 @@ export interface KgLivePersistedUserTurnHookIdentity {
 export interface KgLiveAgentTurnPrepareHookIdentity {
   runId: string;
   runtimeSessionKey: string;
-  actorId: string;
-  accountId: string;
 }
 
 export interface KgLiveWriteInput {
@@ -142,7 +137,6 @@ export function resolveKgLiveInboundHookIdentity(event: Record<string, unknown>,
     runtimeSessionKey: sharedHookToken("sessionKey", event.sessionKey, context.sessionKey),
     messageId: sharedHookToken("messageId", event.messageId, context.messageId),
     actorId: sharedHookToken("senderId", event.senderId, context.senderId),
-    accountId: sharedHookToken("accountId", event.accountId, context.accountId),
   };
 }
 
@@ -163,7 +157,6 @@ export function resolveKgLiveMessageReceivedHookIdentity(event: Record<string, u
     runtimeSessionKey: sharedHookToken("sessionKey", event.sessionKey, context.sessionKey),
     messageId,
     actorId,
-    accountId: sharedHookToken("accountId", event.accountId, context.accountId),
   };
 }
 
@@ -211,8 +204,6 @@ export function resolveKgLiveAgentTurnPrepareHookIdentity(_event: Record<string,
   return {
     runId: requiredHookToken("runId", context.runId),
     runtimeSessionKey: requiredHookToken("sessionKey", context.sessionKey),
-    actorId: requiredHookToken("senderId", context.senderId),
-    accountId: requiredHookToken("accountId", context.accountId),
   };
 }
 
@@ -231,7 +222,6 @@ function iso(value: unknown): value is string {
 
 function sameRequester(turn: KgLiveInboundTurn, requester: KgLiveToolRequester): boolean {
   return requester.channel === turn.transport
-    && requester.accountId === turn.accountId
     && requester.senderId === turn.actorId;
 }
 
@@ -241,7 +231,6 @@ function samePendingTurn(left: KgLivePendingInboundTurn, right: KgLivePendingInb
     && left.workspaceId === right.workspaceId
     && left.grantSessionKey === right.grantSessionKey
     && left.transport === right.transport
-    && left.accountId === right.accountId
     && left.actorId === right.actorId
     && left.messageId === right.messageId
     && left.contextKind === right.contextKind
@@ -256,7 +245,6 @@ function sameCapturedTurn(left: KgLiveInboundTurn, right: KgLiveInboundTurn): bo
     && left.workspaceId === right.workspaceId
     && left.grantSessionKey === right.grantSessionKey
     && left.transport === right.transport
-    && left.accountId === right.accountId
     && left.actorId === right.actorId
     && left.messageId === right.messageId
     && left.contextKind === right.contextKind
@@ -327,7 +315,7 @@ export class KgLiveTurnAuthority {
     const now = this.options.now?.() ?? Date.now();
     this.prune(now);
     if (!token(turn.runtimeSessionKey) || !token(turn.workspace) || !token(turn.workspaceId)
-      || !token(turn.grantSessionKey) || !token(turn.accountId)
+      || !token(turn.grantSessionKey)
       || !token(turn.actorId) || !token(turn.messageId) || !iso(turn.observedAt)
       || typeof turn.requireOwner !== "boolean"
       || !["telegram", "openclaw"].includes(turn.transport)
@@ -387,25 +375,21 @@ export class KgLiveTurnAuthority {
     this.#adopted.set(adoptedKey, { turn, expiresAt: now + (this.options.ttlMs ?? 10 * 60_000) });
   }
 
-  attachAdoptedRun(input: { runId?: string; runtimeSessionKey?: string; accountId?: string; actorId?: string }): void {
+  attachAdoptedRun(input: { runId?: string; runtimeSessionKey?: string }): void {
     const now = this.options.now?.() ?? Date.now();
     this.prune(now);
-    if (!token(input.runId) || !token(input.runtimeSessionKey) || !token(input.accountId) || !token(input.actorId)) {
+    if (!token(input.runId) || !token(input.runtimeSessionKey)) {
       throw new KgLiveIngressError("TURN_NOT_FOUND", "agent turn has no trusted adopted-turn identity");
     }
     const captured = this.#turns.get(input.runId);
     if (captured) {
-      if (captured.turn.runtimeSessionKey !== input.runtimeSessionKey
-        || captured.turn.accountId !== input.accountId
-        || captured.turn.actorId !== input.actorId) {
+      if (captured.turn.runtimeSessionKey !== input.runtimeSessionKey) {
         this.dropRun(input.runId);
         throw new KgLiveIngressError("INVALID_TURN", "agent run identity conflicts with its captured turn");
       }
       return;
     }
-    const matches = [...this.#adopted.entries()].filter(([, state]) => state.turn.runtimeSessionKey === input.runtimeSessionKey
-      && state.turn.accountId === input.accountId
-      && state.turn.actorId === input.actorId);
+    const matches = [...this.#adopted.entries()].filter(([, state]) => state.turn.runtimeSessionKey === input.runtimeSessionKey);
     if (matches.length !== 1) {
       if (matches.length > 1) {
         for (const [key] of matches) this.#adopted.delete(key);
@@ -424,7 +408,7 @@ export class KgLiveTurnAuthority {
     const now = this.options.now?.() ?? Date.now();
     this.prune(now);
     if (!token(turn.runId) || !token(turn.runtimeSessionKey) || !token(turn.workspace)
-      || !token(turn.workspaceId) || !token(turn.grantSessionKey) || !token(turn.accountId)
+      || !token(turn.workspaceId) || !token(turn.grantSessionKey)
       || !token(turn.actorId) || !token(turn.messageId) || !iso(turn.observedAt)
       || typeof turn.requireOwner !== "boolean" || typeof turn.senderIsOwner !== "boolean"
       || !["telegram", "openclaw"].includes(turn.transport)
@@ -467,7 +451,6 @@ export class KgLiveTurnAuthority {
       : Object.freeze({ ...state.turn, senderIsOwner: true });
     const expected: InboundMetadataEnvelope = {
       transport: boundTurn.transport,
-      accountId: boundTurn.accountId,
       workspaceId: boundTurn.workspaceId,
       sessionKey: boundTurn.grantSessionKey,
       actorId: boundTurn.actorId,
@@ -485,7 +468,6 @@ export class KgLiveTurnAuthority {
     this.#toolCalls.delete(toolCallId);
     const envelope: InboundMetadataEnvelope = {
       transport: binding.turn.transport,
-      accountId: binding.turn.accountId,
       workspaceId: binding.turn.workspaceId,
       sessionKey: binding.turn.grantSessionKey,
       actorId: binding.turn.actorId,

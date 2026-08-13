@@ -32,7 +32,7 @@ function fixture(options: { wrongBenchmark?: boolean } = {}) {
   mkdirSync(join(workspace, "life", "_derived"), { recursive: true });
   writeFileSync(join(workspace, "life", "_derived", "facts-active.md"), baselineBody);
   const explicitRequests = Array.from({ length: 20 }, (_, index) => writeRequest(`explicit-message-${index + 1}`, `explicit${index + 1}`));
-  const runtimeGrants = { schema: "engram.kg-v3-runtime-grants.v1" as const, workspaceId: "main", revision: 1, principals: [{ principalId: "operator", bindings: [{ transport: "telegram" as const, accountId: "default", actorId: "operator" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write" as const] }] }] };
+  const runtimeGrants = { schema: "engram.kg-v3-runtime-grants.v1" as const, workspaceId: "main", revision: 1, principals: [{ principalId: "operator", bindings: [{ transport: "telegram" as const, actorId: "operator" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write" as const] }] }] };
   const runtimeGrantsPath = join(workspace, "memory-state", "kg-v3", "runtime-grants.json"); json(runtimeGrantsPath, runtimeGrants);
   const releaseDigest = currentKgCanaryReleaseDigest();
   const manifest: KgCanaryManifestV1 = {
@@ -143,10 +143,10 @@ describe("PR3 canary control plane", () => {
     expect(begun.status).toBe("collecting");
     expect(resolveKgDefaultContext({ workspace: h.workspace, workspaceId: "main" }).mode).toBe("v2-current");
     const core = new KgV3Core({ workspace: h.workspace, workspaceId: "main", registryPath: h.registryPath });
-    const verifier = new TrustedInboundVerifier((metadata) => metadata.transport === "telegram" && metadata.accountId === "default");
-    const runtime = new TrustedKgRuntime(core, { schema: "engram.kg-v3-runtime-grants.v1", workspaceId: "main", revision: 1, principals: [{ principalId: "operator", bindings: [{ transport: "telegram", accountId: "default", actorId: "operator" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] }] }, verifier);
+    const verifier = new TrustedInboundVerifier((metadata) => metadata.transport === "telegram");
+    const runtime = new TrustedKgRuntime(core, { schema: "engram.kg-v3-runtime-grants.v1", workspaceId: "main", revision: 1, principals: [{ principalId: "operator", bindings: [{ transport: "telegram", actorId: "operator" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] }] }, verifier);
     for (const request of h.explicitRequests) {
-      const metadata = verifier.attest({ transport: "telegram", accountId: "default", workspaceId: "main", sessionKey: "main", actorId: "operator", messageId: request.assertion.provenance.messageId, contextKind: "direct" });
+      const metadata = verifier.attest({ transport: "telegram", workspaceId: "main", sessionKey: "main", actorId: "operator", messageId: request.assertion.provenance.messageId, contextKind: "direct" });
       expect((await runtime.write(request, metadata)).status).toBe("committed");
       recordCanaryExplicitReceipt({ ...h.options, operationId: request.assertion.provenance.operationId });
     }
@@ -171,9 +171,9 @@ describe("PR3 canary control plane", () => {
     await beginKgCanary({ ...h.options, acknowledge: true });
     const core = new KgV3Core({ workspace: h.workspace, workspaceId: "main", registryPath: h.registryPath });
     const verifier = new TrustedInboundVerifier(() => true);
-    const runtime = new TrustedKgRuntime(core, { schema: "engram.kg-v3-runtime-grants.v1", workspaceId: "main", revision: 1, principals: [{ principalId: "operator", bindings: [{ transport: "telegram", accountId: "default", actorId: "operator" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] }] }, verifier);
+    const runtime = new TrustedKgRuntime(core, { schema: "engram.kg-v3-runtime-grants.v1", workspaceId: "main", revision: 1, principals: [{ principalId: "operator", bindings: [{ transport: "telegram", actorId: "operator" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] }] }, verifier);
     for (const request of h.explicitRequests) {
-      await runtime.write(request, verifier.attest({ transport: "telegram", accountId: "default", workspaceId: "main", sessionKey: "main", actorId: "operator", messageId: request.assertion.provenance.messageId, contextKind: "direct" }));
+      await runtime.write(request, verifier.attest({ transport: "telegram", workspaceId: "main", sessionKey: "main", actorId: "operator", messageId: request.assertion.provenance.messageId, contextKind: "direct" }));
       recordCanaryExplicitReceipt({ ...h.options, operationId: request.assertion.provenance.operationId });
     }
     await expect(finalizeKgCanary({ ...h.options, acknowledge: true })).rejects.toMatchObject({ code: "BENCHMARK_FAILED" });

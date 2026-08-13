@@ -50,7 +50,7 @@ function fixture() {
     schema: "engram.kg-v3-runtime-grants.v1",
     workspaceId: "main",
     revision: 1,
-    principals: [{ principalId: "operator", bindings: [{ transport: "telegram", accountId: "default", actorId: "1" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] }],
+    principals: [{ principalId: "operator", bindings: [{ transport: "telegram", actorId: "1" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] }],
   });
   json(join(release, "state.json"), { status: "finalized", releaseDigest });
   json(join(release, "read-back-report.json"), { status: "passed", releaseDigest, benchmark: { gates: { passed: true } } });

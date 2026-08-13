@@ -30,7 +30,7 @@ function readObject<T>(path: string): T {
 }
 
 function exactMetadata(a: InboundMetadataEnvelope, b: InboundMetadataEnvelope): boolean {
-  return a.transport === b.transport && a.accountId === b.accountId && a.workspaceId === b.workspaceId
+  return a.transport === b.transport && a.workspaceId === b.workspaceId
     && a.sessionKey === b.sessionKey && a.actorId === b.actorId && a.messageId === b.messageId
     && a.contextKind === b.contextKind;
 }
@@ -58,7 +58,6 @@ function replayInputs(options: KgCanaryReplayOptions) {
     if (bindings.length !== 1 || grantsForSession.length !== 1) throw new KgCanaryError("REPLAY_BINDING_INVALID", "request requires one exact transport binding and one exact session write grant");
     const metadata: InboundMetadataEnvelope = {
       transport: bindings[0].transport,
-      accountId: bindings[0].accountId,
       workspaceId: options.workspaceId,
       sessionKey: provenance.sessionKey,
       actorId: provenance.actorId,

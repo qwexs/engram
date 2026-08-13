@@ -89,14 +89,14 @@ message_received → before_message_write → agent_turn_prepare
   → before_tool_call → tool consume
 ```
 
-`message_received` supplies the channel-owned session, account, sender, and
+`message_received` supplies the channel-owned session, sender, and
 message identity. The synchronous `before_message_write` hook adopts exactly
 that pending message only when OpenClaw's protected persisted user-turn
 metadata agrees on transport/message identity, owner status, and the stable
 `channel-user:v1` source-turn key. `agent_turn_prepare` binds the single
-eligible adopted turn to the server-owned `runId` before prompt construction;
+eligible adopted turn to the server-owned `runId` by canonical session before prompt construction;
 prompt text is never an authority or correlation key. `before_tool_call`
-rechecks run, session, requester, owner status, and the server-owned
+rechecks run, session, requester channel/sender, owner status, and the server-owned
 `toolCallId`.
 
 One source run can bind at most one KG mutation tool call. Duplicate hook

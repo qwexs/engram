@@ -202,7 +202,6 @@ export default definePluginEntry({
           workspaceId: id,
           grantSessionKey: projection.grantSessionKey,
           transport,
-          accountId: identity.accountId,
           actorId: identity.actorId,
           messageId: identity.messageId,
           contextKind,
@@ -236,8 +235,6 @@ export default definePluginEntry({
         authority.attachAdoptedRun({
           runId: identity.runId,
           runtimeSessionKey: identity.runtimeSessionKey,
-          accountId: identity.accountId,
-          actorId: identity.actorId,
         });
         return { appendContext: `Engram KG v3 live canary is active for this turn. For one explicit durable user assertion, use ${SAVE_TOOL} (or ${RETRACT_TOOL} for an explicit correction) instead of legacy memory-write.js. Do not call either tool for operational progress, proposals, test output, project status, or ordinary conversation. At most one KG mutation tool call is authorized for this source turn.` };
       } catch (error) {
@@ -270,7 +267,6 @@ export default definePluginEntry({
           workspaceId: id,
           grantSessionKey: projection.grantSessionKey,
           transport,
-          accountId: identity.accountId,
           actorId: identity.actorId,
           messageId: identity.messageId,
           contextKind,

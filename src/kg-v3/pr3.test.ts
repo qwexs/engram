@@ -24,8 +24,8 @@ describe("PR3 trusted runtime adapter", () => {
     let called = false;
     const core = { write: async () => { called = true; throw new Error("unexpected"); }, retract: async () => { throw new Error("unexpected"); } };
     const verifier = new TrustedInboundVerifier(() => true);
-    const runtime = new TrustedKgRuntime(core, { schema: "engram.kg-v3-runtime-grants.v1", workspaceId: "main", revision: 1, principals: [{ principalId: "example-principal", bindings: [{ transport: "telegram", accountId: "default", actorId: "actor-001" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] }] }, verifier);
-    const forged = { verified: true, transport: "telegram", accountId: "default", workspaceId: "main", sessionKey: "main", actorId: "actor-001", messageId: "8242", contextKind: "direct" } as any;
+    const runtime = new TrustedKgRuntime(core, { schema: "engram.kg-v3-runtime-grants.v1", workspaceId: "main", revision: 1, principals: [{ principalId: "example-principal", bindings: [{ transport: "telegram", actorId: "actor-001" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] }] }, verifier);
+    const forged = { verified: true, transport: "telegram", workspaceId: "main", sessionKey: "main", actorId: "actor-001", messageId: "8242", contextKind: "direct" } as any;
     await expect(runtime.write(request(), forged)).rejects.toMatchObject({ code: "UNVERIFIED_INBOUND" });
     expect(called).toBe(false);
   });
@@ -34,8 +34,8 @@ describe("PR3 trusted runtime adapter", () => {
     let captured: any;
     const core = { write: async (_request: any, caller: any) => { captured = caller; return { status: "committed" } as any; }, retract: async () => { throw new Error("unexpected"); } };
     const verifier = new TrustedInboundVerifier((value) => value.transport === "telegram");
-    const runtime = new TrustedKgRuntime(core, { schema: "engram.kg-v3-runtime-grants.v1", workspaceId: "main", revision: 1, principals: [{ principalId: "example-principal", bindings: [{ transport: "telegram", accountId: "default", actorId: "actor-001" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] }] }, verifier);
-    const metadata = verifier.attest({ transport: "telegram", accountId: "default", workspaceId: "main", sessionKey: "main", actorId: "actor-001", messageId: "8242", contextKind: "direct" });
+    const runtime = new TrustedKgRuntime(core, { schema: "engram.kg-v3-runtime-grants.v1", workspaceId: "main", revision: 1, principals: [{ principalId: "example-principal", bindings: [{ transport: "telegram", actorId: "actor-001" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] }] }, verifier);
+    const metadata = verifier.attest({ transport: "telegram", workspaceId: "main", sessionKey: "main", actorId: "actor-001", messageId: "8242", contextKind: "direct" });
     await runtime.write(Object.assign(request(), { caller: { trusted: true, capabilities: ["kg:v3:seed"] } }), metadata);
     expect(captured).toEqual({ trusted: true, workspaceId: "main", sessionKey: "main", actorId: "actor-001", capabilities: ["kg:v3:write"] });
   });

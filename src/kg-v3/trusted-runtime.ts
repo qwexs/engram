@@ -2,7 +2,6 @@ import type { KgReceipt, KgRetractionRequest, KgWriteRequest, TrustedKgCallerCon
 
 export interface InboundMetadataEnvelope {
   transport: "telegram" | "openclaw";
-  accountId: string;
   workspaceId: string;
   sessionKey: string;
   actorId: string;
@@ -33,7 +32,7 @@ export interface KgRuntimeGrantRegistryV1 {
   revision: number;
   principals: Array<{
     principalId: string;
-    bindings: Array<{ transport: "telegram" | "openclaw"; accountId: string; actorId: string }>;
+    bindings: Array<{ transport: "telegram" | "openclaw"; actorId: string }>;
     grants: Array<{ sessionKey: string; capabilities: Array<"kg:v3:write" | "kg:v3:retract"> }>;
   }>;
 }
@@ -53,7 +52,7 @@ export class TrustedKgRuntimeError extends Error {
 function callerFromVerifiedInbound(metadata: AttestedInboundMetadata, registry: KgRuntimeGrantRegistryV1, verifier: TrustedInboundVerifier, capability: "kg:v3:write" | "kg:v3:retract"): TrustedKgCallerContext {
   if (!verifier.isAttested(metadata)) throw new TrustedKgRuntimeError("UNVERIFIED_INBOUND", "runtime-attested inbound metadata is required");
   if (registry.schema !== "engram.kg-v3-runtime-grants.v1" || registry.workspaceId !== metadata.workspaceId) throw new TrustedKgRuntimeError("WORKSPACE_MISMATCH", "runtime grant registry workspace mismatch");
-  const principals = registry.principals.filter((principal) => principal.bindings.some((binding) => binding.transport === metadata.transport && binding.accountId === metadata.accountId && binding.actorId === metadata.actorId));
+  const principals = registry.principals.filter((principal) => principal.bindings.some((binding) => binding.transport === metadata.transport && binding.actorId === metadata.actorId));
   if (principals.length !== 1) throw new TrustedKgRuntimeError("ACTOR_UNRESOLVED", "verified actor binding must resolve exactly once");
   const grants = principals[0].grants.filter((grant) => grant.sessionKey === metadata.sessionKey && grant.capabilities.includes(capability));
   if (grants.length !== 1) throw new TrustedKgRuntimeError("GRANT_MISSING", "exact session capability grant is required");

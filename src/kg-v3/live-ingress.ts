@@ -71,10 +71,12 @@ export interface KgLivePersistedUserTurnHookIdentity {
   senderIsOwner: boolean;
 }
 
-export interface KgLiveAgentTurnPrepareHookIdentity {
+export interface KgLiveAgentRunHookIdentity {
   runId: string;
   runtimeSessionKey: string;
 }
+
+export type KgLiveAgentTurnPrepareHookIdentity = KgLiveAgentRunHookIdentity;
 
 export interface KgLiveWriteInput {
   entityId: string;
@@ -199,12 +201,17 @@ export function resolveKgLivePersistedUserTurnHookIdentity(event: Record<string,
   };
 }
 
-/** Attach an adopted user message to the run allocated by OpenClaw. */
-export function resolveKgLiveAgentTurnPrepareHookIdentity(_event: Record<string, unknown>, context: Record<string, unknown>): KgLiveAgentTurnPrepareHookIdentity {
+/** Attach an adopted user message to the run allocated by an agent harness. */
+export function resolveKgLiveAgentRunHookIdentity(_event: Record<string, unknown>, context: Record<string, unknown>): KgLiveAgentRunHookIdentity {
   return {
     runId: requiredHookToken("runId", context.runId),
     runtimeSessionKey: requiredHookToken("sessionKey", context.sessionKey),
   };
+}
+
+/** @deprecated Use the harness-neutral resolver above. */
+export function resolveKgLiveAgentTurnPrepareHookIdentity(event: Record<string, unknown>, context: Record<string, unknown>): KgLiveAgentTurnPrepareHookIdentity {
+  return resolveKgLiveAgentRunHookIdentity(event, context);
 }
 
 function requiredHookToken(label: string, value: unknown): string {

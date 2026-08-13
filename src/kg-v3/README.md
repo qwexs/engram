@@ -85,7 +85,7 @@ For ordinary channel turns it uses a plugin-only adoption FSM across existing
 OpenClaw hooks:
 
 ```text
-message_received → before_message_write → agent_turn_prepare
+message_received → before_message_write → agent_turn_prepare | before_prompt_build
   → before_tool_call → tool consume
 ```
 
@@ -93,8 +93,9 @@ message_received → before_message_write → agent_turn_prepare
 message identity. The synchronous `before_message_write` hook adopts exactly
 that pending message only when OpenClaw's protected persisted user-turn
 metadata agrees on transport/message identity, owner status, and the stable
-`channel-user:v1` source-turn key. `agent_turn_prepare` binds the single
-eligible adopted turn to the server-owned `runId` by canonical session before prompt construction;
+`channel-user:v1` source-turn key. `agent_turn_prepare` (embedded/CLI) or
+`before_prompt_build` (including Codex app-server) binds the single eligible
+adopted turn to the server-owned `runId` by canonical session before prompt construction;
 prompt text is never an authority or correlation key. `before_tool_call`
 rechecks run, session, requester channel/sender, owner status, and the server-owned
 `toolCallId`.

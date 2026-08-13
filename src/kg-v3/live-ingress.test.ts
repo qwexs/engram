@@ -10,6 +10,7 @@ import {
   createKgLiveRetractionRequest,
   createKgLiveWriteRequest,
   resolveKgLiveAgentTurnPrepareHookIdentity,
+  resolveKgLiveAgentRunHookIdentity,
   resolveKgLiveInboundHookIdentity,
   resolveKgLiveIngressProjection,
   resolveKgLiveMessageReceivedHookIdentity,
@@ -140,6 +141,19 @@ describe("KG v3 single-use live turn authority", () => {
       runtimeSessionKey: turn(root).runtimeSessionKey,
     });
     expect(authority.hasRun("run-ordinary", turn(root).runtimeSessionKey)).toBe(true);
+  });
+
+  test("binds the adopted message on the Codex before-prompt-build lifecycle", () => {
+    const root = workspace();
+    const authority = new KgLiveTurnAuthority();
+    authority.capturePending(pendingTurn(root));
+    authority.adoptPendingTurn(adoptedIdentity());
+    const identity = resolveKgLiveAgentRunHookIdentity(
+      { prompt: "model-visible prompt is not an authority key", messages: [] },
+      { runId: "run-codex", sessionKey: turn(root).runtimeSessionKey, trigger: "user" },
+    );
+    authority.attachAdoptedRun(identity);
+    expect(authority.hasRun(identity.runId, identity.runtimeSessionKey)).toBe(true);
   });
 
   test("fails closed when hooks are reordered or adopted identity is ambiguous", () => {
@@ -341,6 +355,15 @@ describe("KG v3 inbound hook identity normalization", () => {
       runtimeSessionKey: "agent:main:telegram:direct:actor-001",
     });
     expect(() => resolveKgLiveAgentTurnPrepareHookIdentity({}, { ...context, runId: undefined })).toThrow("runId is missing");
+  });
+
+  test("normalizes Codex before-prompt-build identity from the same host context", () => {
+    const context = { runId: "run-codex", sessionKey: "agent:main:telegram:direct:actor-001" };
+    expect(resolveKgLiveAgentRunHookIdentity({ prompt: "ignored", messages: [] }, context)).toEqual({
+      runId: "run-codex",
+      runtimeSessionKey: "agent:main:telegram:direct:actor-001",
+    });
+    expect(() => resolveKgLiveAgentRunHookIdentity({}, { ...context, sessionKey: undefined })).toThrow("sessionKey is missing");
   });
 
   test("accepts canonical identity supplied only by inbound context", () => {

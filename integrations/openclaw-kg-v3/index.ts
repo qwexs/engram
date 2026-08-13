@@ -11,7 +11,7 @@ import {
   createKgLiveRetractionRequest,
   createKgLiveWriteRequest,
   readKgLiveRegistry,
-  resolveKgLiveAgentTurnPrepareHookIdentity,
+  resolveKgLiveAgentRunHookIdentity,
   resolveKgLiveInboundHookIdentity,
   resolveKgLiveIngressProjection,
   resolveKgLiveMessageReceivedHookIdentity,
@@ -25,6 +25,9 @@ const SAVE_TOOL = "engram_memory_save";
 const RETRACT_TOOL = "engram_memory_retract";
 const TOOL_NAMES = new Set([SAVE_TOOL, RETRACT_TOOL]);
 const authority = new KgLiveTurnAuthority();
+const guidedRuns = new Set<string>();
+
+const LIVE_TURN_CONTEXT = `Engram KG v3 live canary is active for this turn. For one explicit durable user assertion, use ${SAVE_TOOL} (or ${RETRACT_TOOL} for an explicit correction) instead of legacy memory-write.js. Do not call either tool for operational progress, proposals, test output, project status, or ordinary conversation. At most one KG mutation tool call is authorized for this source turn.`;
 
 function pluginDigest(): `sha256:${string}` {
   const bytes = readFileSync(fileURLToPath(import.meta.url));
@@ -85,6 +88,22 @@ function activeWorkspaceFromToolContext(ctx: any) {
     return { workspace, workspaceId: id, projection };
   } catch {
     return null;
+  }
+}
+
+function attachAdoptedAgentRun(event: any, ctx: any, hookName: string) {
+  if (ctx.trigger !== "user") return;
+  try {
+    const identity = resolveKgLiveAgentRunHookIdentity(event || {}, ctx || {});
+    authority.attachAdoptedRun({
+      runId: identity.runId,
+      runtimeSessionKey: identity.runtimeSessionKey,
+    });
+    if (guidedRuns.has(identity.runId)) return;
+    guidedRuns.add(identity.runId);
+    return { appendContext: LIVE_TURN_CONTEXT };
+  } catch (error) {
+    return { error: `engram-kg-v3: ${hookName} has no adopted ordinary inbound authority: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
@@ -229,17 +248,15 @@ export default definePluginEntry({
     });
 
     api.on("agent_turn_prepare", (event: any, ctx: any) => {
-      if (ctx.trigger !== "user") return;
-      try {
-        const identity = resolveKgLiveAgentTurnPrepareHookIdentity(event || {}, ctx || {});
-        authority.attachAdoptedRun({
-          runId: identity.runId,
-          runtimeSessionKey: identity.runtimeSessionKey,
-        });
-        return { appendContext: `Engram KG v3 live canary is active for this turn. For one explicit durable user assertion, use ${SAVE_TOOL} (or ${RETRACT_TOOL} for an explicit correction) instead of legacy memory-write.js. Do not call either tool for operational progress, proposals, test output, project status, or ordinary conversation. At most one KG mutation tool call is authorized for this source turn.` };
-      } catch (error) {
-        api.logger.debug?.(`engram-kg-v3: agent turn has no adopted ordinary inbound authority: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      const result = attachAdoptedAgentRun(event, ctx, "agent_turn_prepare");
+      if (result?.error) return api.logger.debug?.(result.error);
+      return result;
+    });
+
+    api.on("before_prompt_build", (event: any, ctx: any) => {
+      const result = attachAdoptedAgentRun(event, ctx, "before_prompt_build");
+      if (result?.error) return api.logger.debug?.(result.error);
+      return result;
     });
 
     api.on("inbound_claim", (event: any, ctx: any) => {
@@ -289,7 +306,10 @@ export default definePluginEntry({
       }
     });
 
-    api.on("agent_end", (_event: any, ctx: any) => authority.dropRun(ctx.runId));
+    api.on("agent_end", (_event: any, ctx: any) => {
+      authority.dropRun(ctx.runId);
+      if (ctx.runId) guidedRuns.delete(ctx.runId);
+    });
     api.registerTool((ctx: any) => createSaveTool(ctx), { name: SAVE_TOOL });
     api.registerTool((ctx: any) => createRetractTool(ctx), { name: RETRACT_TOOL });
     api.registerToolMetadata({ toolName: SAVE_TOOL, displayName: "Engram memory save", description: "Write one explicit durable KG v3 assertion.", risk: "high", tags: ["memory", "engram", "kg-v3"] });

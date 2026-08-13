@@ -9,11 +9,11 @@ import {
   KgLiveTurnAuthority,
   createKgLiveRetractionRequest,
   createKgLiveWriteRequest,
-  resolveKgLiveAgentRunHookIdentity,
+  resolveKgLiveAgentTurnPrepareHookIdentity,
   resolveKgLiveInboundHookIdentity,
   resolveKgLiveIngressProjection,
   resolveKgLiveMessageReceivedHookIdentity,
-  resolveKgLiveReplyDispatchHookIdentity,
+  resolveKgLivePersistedUserTurnHookIdentity,
 } from "./live-ingress.ts";
 import { TrustedKgRuntime } from "./trusted-runtime.ts";
 import { KG_V3_AUTHORITY_SCHEMA, KG_V3_REGISTRY_SCHEMA, type KgRegistryV1 } from "./types.ts";
@@ -94,7 +94,19 @@ function turn(root: string) {
 
 function pendingTurn(root: string) {
   const { runId: _runId, senderIsOwner: _senderIsOwner, ...pending } = turn(root);
-  return { ...pending, content: "remember this" };
+  return pending;
+}
+
+const sourceTurnId = `channel-user:v1:${"a".repeat(64)}`;
+
+function adoptedIdentity(messageId = "8260", idempotencyKey = sourceTurnId) {
+  return {
+    runtimeSessionKey: "agent:main:telegram:direct:actor-001",
+    transport: "telegram" as const,
+    messageId,
+    sourceTurnId: idempotencyKey,
+    senderIsOwner: true,
+  };
 }
 
 describe("KG v3 live ingress projection", () => {
@@ -119,42 +131,78 @@ describe("KG v3 live ingress projection", () => {
 });
 
 describe("KG v3 single-use live turn authority", () => {
-  test("attaches one ordinary pending inbound message to its allocated agent run", () => {
+  test("binds an adopted ordinary message to its run without comparing prompt text", () => {
     const root = workspace();
     const authority = new KgLiveTurnAuthority();
     authority.capturePending(pendingTurn(root));
-    authority.attachPendingRun({
+    authority.adoptPendingTurn(adoptedIdentity());
+    authority.attachAdoptedRun({
       runId: "run-ordinary",
       runtimeSessionKey: turn(root).runtimeSessionKey,
       accountId: "default",
       actorId: "actor-001",
-      content: "remember this",
-      senderIsOwner: true,
     });
     expect(authority.hasRun("run-ordinary", turn(root).runtimeSessionKey)).toBe(true);
   });
 
-  test("pending attachment fails closed on identity mismatch or ambiguity", () => {
+  test("fails closed when hooks are reordered or adopted identity is ambiguous", () => {
     const root = workspace();
     const authority = new KgLiveTurnAuthority();
     authority.capturePending(pendingTurn(root));
-    expect(() => authority.attachPendingRun({
+    expect(() => authority.attachAdoptedRun({
       runId: "run-bad",
       runtimeSessionKey: turn(root).runtimeSessionKey,
       accountId: "default",
-      actorId: "attacker",
-      content: "remember this",
-      senderIsOwner: true,
+      actorId: "actor-001",
     })).toThrow("does not match");
+    authority.adoptPendingTurn(adoptedIdentity());
     authority.capturePending({ ...pendingTurn(root), messageId: "8261" });
-    expect(() => authority.attachPendingRun({
+    authority.adoptPendingTurn(adoptedIdentity("8261", `channel-user:v1:${"b".repeat(64)}`));
+    expect(() => authority.attachAdoptedRun({
       runId: "run-ambiguous",
       runtimeSessionKey: turn(root).runtimeSessionKey,
       accountId: "default",
       actorId: "actor-001",
-      content: "remember this",
-      senderIsOwner: true,
-    })).toThrow("multiple pending");
+    })).toThrow("multiple adopted");
+    expect(() => authority.attachAdoptedRun({
+      runId: "run-stale",
+      runtimeSessionKey: turn(root).runtimeSessionKey,
+      accountId: "default",
+      actorId: "actor-001",
+    })).toThrow("does not match");
+  });
+
+  test("keeps duplicate adoption and run preparation idempotent", () => {
+    const root = workspace();
+    const authority = new KgLiveTurnAuthority();
+    authority.capturePending(pendingTurn(root));
+    authority.adoptPendingTurn(adoptedIdentity());
+    authority.adoptPendingTurn(adoptedIdentity());
+    const run = {
+      runId: "run-retry",
+      runtimeSessionKey: turn(root).runtimeSessionKey,
+      accountId: "default",
+      actorId: "actor-001",
+    };
+    authority.attachAdoptedRun(run);
+    authority.attachAdoptedRun(run);
+    authority.capturePending(pendingTurn(root));
+    expect(authority.hasRun(run.runId, run.runtimeSessionKey)).toBe(true);
+  });
+
+  test("drops conflicting reuse of a persisted source identity", () => {
+    const root = workspace();
+    const authority = new KgLiveTurnAuthority();
+    authority.capturePending(pendingTurn(root));
+    authority.adoptPendingTurn(adoptedIdentity());
+    authority.capturePending({ ...pendingTurn(root), messageId: "8261" });
+    expect(() => authority.adoptPendingTurn(adoptedIdentity("8261"))).toThrow("conflicting persisted turns");
+    expect(() => authority.attachAdoptedRun({
+      runId: "run-conflict",
+      runtimeSessionKey: turn(root).runtimeSessionKey,
+      accountId: "default",
+      actorId: "actor-001",
+    })).toThrow("does not match");
   });
 
   test("binds trusted requester metadata and permits only one tool call", () => {
@@ -204,6 +252,21 @@ describe("KG v3 single-use live turn authority", () => {
       runtimeSessionKey: turn(root).runtimeSessionKey,
       requester: { channel: "telegram", accountId: "default", senderId: "actor-001", senderIsOwner: true },
     })).toThrow("does not belong to a captured inbound turn");
+  });
+
+  test("expires adopted turns fail closed", () => {
+    const root = workspace();
+    let now = 1_000;
+    const authority = new KgLiveTurnAuthority({ now: () => now, ttlMs: 50 });
+    authority.capturePending(pendingTurn(root));
+    authority.adoptPendingTurn(adoptedIdentity());
+    now = 1_051;
+    expect(() => authority.attachAdoptedRun({
+      runId: "run-expired",
+      runtimeSessionKey: turn(root).runtimeSessionKey,
+      accountId: "default",
+      actorId: "actor-001",
+    })).toThrow("does not match");
   });
 
   test("defers owner proof to the host requester without resetting single-use authority", () => {
@@ -263,19 +326,40 @@ describe("KG v3 inbound hook identity normalization", () => {
     )).toThrow("messageId differs");
   });
 
-  test("normalizes agent-run identity and rejects disagreement or missing owner proof", () => {
-    const event = { prompt: "remember this", senderId: "actor-001", accountId: "default", senderIsOwner: true };
+  test("normalizes protected persisted-turn metadata and rejects malformed adoption", () => {
+    const event = {
+      message: {
+        role: "user",
+        content: "remember this",
+        idempotencyKey: sourceTurnId,
+        __openclaw: {
+          senderIsOwner: true,
+          transport: { channel: "telegram", messageId: "8260" },
+        },
+      },
+    };
+    const context = { sessionKey: "agent:main:telegram:direct:actor-001" };
+    expect(resolveKgLivePersistedUserTurnHookIdentity(event, context)).toEqual(adoptedIdentity());
+    expect(() => resolveKgLivePersistedUserTurnHookIdentity({
+      message: { ...event.message, idempotencyKey: "model-supplied" },
+    }, context)).toThrow("source identity is invalid");
+    expect(() => resolveKgLivePersistedUserTurnHookIdentity({
+      message: { ...event.message, __openclaw: { ...event.message.__openclaw, senderIsOwner: undefined } },
+    }, context)).toThrow("senderIsOwner is missing");
+    expect(() => resolveKgLivePersistedUserTurnHookIdentity({
+      message: { ...event.message, role: "assistant" },
+    }, context)).toThrow("not a user message");
+  });
+
+  test("normalizes agent-turn preparation from host context only", () => {
     const context = { runId: "run-ordinary", sessionKey: "agent:main:telegram:direct:actor-001", senderId: "actor-001", accountId: "default" };
-    expect(resolveKgLiveAgentRunHookIdentity(event, context)).toEqual({
+    expect(resolveKgLiveAgentTurnPrepareHookIdentity({ prompt: "runtime envelope differs" }, context)).toEqual({
       runId: "run-ordinary",
       runtimeSessionKey: "agent:main:telegram:direct:actor-001",
       actorId: "actor-001",
       accountId: "default",
-      content: "remember this",
-      senderIsOwner: true,
     });
-    expect(() => resolveKgLiveAgentRunHookIdentity({ ...event, senderId: "other" }, context)).toThrow("senderId differs");
-    expect(() => resolveKgLiveAgentRunHookIdentity({ ...event, senderIsOwner: undefined }, context)).toThrow("senderIsOwner is missing");
+    expect(() => resolveKgLiveAgentTurnPrepareHookIdentity({}, { ...context, runId: undefined })).toThrow("runId is missing");
   });
 
   test("accepts canonical identity supplied only by inbound context", () => {
@@ -297,25 +381,6 @@ describe("KG v3 inbound hook identity normalization", () => {
     expect(() => resolveKgLiveInboundHookIdentity(identity, { ...identity, runId: "run-2" })).toThrow("runId differs");
   });
 
-  test("resolves ordinary channel turns from global reply dispatch", () => {
-    expect(resolveKgLiveReplyDispatchHookIdentity(
-      { runId: "run-reply", sessionKey: "agent:main:telegram:direct:actor-001" },
-      { SessionKey: "agent:main:telegram:direct:actor-001", MessageSidFull: "telegram:actor-001#8297", SenderId: "actor-001", AccountId: "default" },
-    )).toEqual({
-      runId: "run-reply",
-      runtimeSessionKey: "agent:main:telegram:direct:actor-001",
-      messageId: "telegram:actor-001#8297",
-      actorId: "actor-001",
-      accountId: "default",
-    });
-  });
-
-  test("rejects reply dispatch session disagreement", () => {
-    expect(() => resolveKgLiveReplyDispatchHookIdentity(
-      { runId: "run-reply", sessionKey: "agent:main:one" },
-      { SessionKey: "agent:main:two", MessageSid: "8297", SenderId: "actor-001", AccountId: "default" },
-    )).toThrow("sessionKey differs");
-  });
 });
 
 test("live builder derives provenance and commits through TrustedKgRuntime", async () => {

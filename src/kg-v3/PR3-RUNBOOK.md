@@ -79,6 +79,11 @@ bun scripts/kg-v3-live-ingress.ts status \
 This closes the live-turn gap inside the main canary; it is not fleet rollout.
 The adapter uses server-stamped inbound metadata, supplies no classifier or
 outbox, and exposes at most one typed KG mutation per eligible source turn.
+Ordinary channel turns are authorized only after the plugin observes the full
+`message_received → before_message_write → agent_turn_prepare →
+before_tool_call` chain. Runtime prompt enrichment is expected and does not
+participate in correlation. Collected/batched turns or any ambiguous/reordered
+chain fail closed and therefore cannot prove the main live-turn gate.
 
 Rollback:
 

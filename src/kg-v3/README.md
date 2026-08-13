@@ -80,15 +80,30 @@ unless the current workspace has a valid, enabled `live-ingress.json` whose
 workspace, release, mode, session capability, and installed plugin digest
 match the guarded KG authority marker.
 
-The adapter captures ordinary channel turns from the global `reply_dispatch`
-hook and preserves `inbound_claim` compatibility for plugin-owned bindings,
-then correlates either source with `before_tool_call` through the server-owned
-`runId` and `toolCallId`. Transport, account, sender, message, runtime session,
-and observation time come from trusted hook context, while owner authority is
-required again from the host requester at tool admission. One source run can
-bind at most one KG mutation tool call; duplicate captures do not reset that
-budget, conflicting captures fail closed, and the in-memory attestation
-expires fail closed.
+The adapter preserves direct `inbound_claim` capture for plugin-owned bindings.
+For ordinary channel turns it uses a plugin-only adoption FSM across existing
+OpenClaw hooks:
+
+```text
+message_received → before_message_write → agent_turn_prepare
+  → before_tool_call → tool consume
+```
+
+`message_received` supplies the channel-owned session, account, sender, and
+message identity. The synchronous `before_message_write` hook adopts exactly
+that pending message only when OpenClaw's protected persisted user-turn
+metadata agrees on transport/message identity, owner status, and the stable
+`channel-user:v1` source-turn key. `agent_turn_prepare` binds the single
+eligible adopted turn to the server-owned `runId` before prompt construction;
+prompt text is never an authority or correlation key. `before_tool_call`
+rechecks run, session, requester, owner status, and the server-owned
+`toolCallId`.
+
+One source run can bind at most one KG mutation tool call. Duplicate hook
+delivery is idempotent and does not reset that budget. Missing/reordered hooks,
+conflicts, multiple adopted candidates (including collected/batched turns),
+and expired in-memory attestations fail closed. Ordinary turns never use
+`reply_dispatch`, text equality, or FIFO guessing for authority.
 
 The model supplies only the typed semantic fields. Entity type and scope are
 resolved from the registry, while provenance and stable operation identity are

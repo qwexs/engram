@@ -11,11 +11,11 @@ import {
   createKgLiveRetractionRequest,
   createKgLiveWriteRequest,
   readKgLiveRegistry,
-  resolveKgLiveAgentRunHookIdentity,
+  resolveKgLiveAgentTurnPrepareHookIdentity,
   resolveKgLiveInboundHookIdentity,
   resolveKgLiveIngressProjection,
   resolveKgLiveMessageReceivedHookIdentity,
-  resolveKgLiveReplyDispatchHookIdentity,
+  resolveKgLivePersistedUserTurnHookIdentity,
   type KgLiveRetractInput,
   type KgLiveWriteInput,
   type KgRuntimeGrantRegistryV1,
@@ -208,73 +208,40 @@ export default definePluginEntry({
           contextKind,
           observedAt: timestamp(event.timestamp),
           requireOwner: projection.requireOwner,
-          content: event.content,
         });
       } catch (error) {
         api.logger.debug?.(`engram-kg-v3: ordinary inbound not eligible: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
 
-    api.on("before_agent_run", (event: any, ctx: any) => {
-      if (ctx.trigger !== "user") return;
+    api.on("before_message_write", (event: any, ctx: any) => {
       try {
-        const identity = resolveKgLiveAgentRunHookIdentity(event || {}, ctx || {});
-        authority.attachPendingRun({
-          runId: identity.runId,
+        const identity = resolveKgLivePersistedUserTurnHookIdentity(event || {}, ctx || {});
+        authority.adoptPendingTurn({
           runtimeSessionKey: identity.runtimeSessionKey,
-          accountId: identity.accountId,
-          actorId: identity.actorId,
-          content: identity.content,
+          transport: identity.transport,
+          messageId: identity.messageId,
+          sourceTurnId: identity.sourceTurnId,
           senderIsOwner: identity.senderIsOwner,
         });
       } catch (error) {
-        api.logger.debug?.(`engram-kg-v3: agent run has no ordinary inbound authority: ${error instanceof Error ? error.message : String(error)}`);
+        api.logger.debug?.(`engram-kg-v3: persisted user turn has no ordinary inbound authority: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
 
-    api.on("reply_dispatch", (event: any) => {
+    api.on("agent_turn_prepare", (event: any, ctx: any) => {
+      if (ctx.trigger !== "user") return;
       try {
-        const finalized = event?.ctx;
-        if (!finalized || finalized.InboundAccessAuthorized !== true) return;
-        const identity = resolveKgLiveReplyDispatchHookIdentity(event || {}, finalized);
-        const sessionAgentId = agentIdFromSessionKey(identity.runtimeSessionKey);
-        const finalizedAgentId = typeof finalized.AgentId === "string" && finalized.AgentId.trim() ? finalized.AgentId.trim() : null;
-        const agentId = finalizedAgentId || sessionAgentId;
-        if (sessionAgentId && agentId && sessionAgentId !== agentId) {
-          throw new KgLiveIngressError("INVALID_TURN", "agentId differs from the canonical session key");
-        }
-        const config = api.runtime.config?.current?.() ?? api.config;
-        if (!agentId || !config) return;
-        const workspace = resolveAgentWorkspace(config, agentId);
-        const id = workspace ? workspaceId(workspace) : null;
-        if (!workspace || !id) return;
-        const projection = resolveKgLiveIngressProjection({ workspace, workspaceId: id, expectedPluginDigest: installedPluginDigest });
-        const contextKind = finalized.MessageThreadId !== undefined && finalized.MessageThreadId !== null
-          ? "topic"
-          : finalized.ChatType === "group" || finalized.ChatType === "supergroup" || finalized.GroupSubject || finalized.GroupChannel
-            ? "group"
-            : "direct";
-        if (!projection.allowedContextKinds.includes(contextKind)) return;
-        const channel = String(finalized.OriginatingChannel || finalized.Surface || finalized.Provider || "").toLowerCase();
-        const transport = channel === "telegram" ? "telegram" : channel === "openclaw" ? "openclaw" : null;
-        if (!transport) return;
-        authority.capture({
+        const identity = resolveKgLiveAgentTurnPrepareHookIdentity(event || {}, ctx || {});
+        authority.attachAdoptedRun({
           runId: identity.runId,
           runtimeSessionKey: identity.runtimeSessionKey,
-          workspace,
-          workspaceId: id,
-          grantSessionKey: projection.grantSessionKey,
-          transport,
           accountId: identity.accountId,
           actorId: identity.actorId,
-          messageId: identity.messageId,
-          contextKind,
-          observedAt: timestamp(finalized.Timestamp),
-          requireOwner: projection.requireOwner,
-          senderIsOwner: false,
         });
+        return { appendContext: `Engram KG v3 live canary is active for this turn. For one explicit durable user assertion, use ${SAVE_TOOL} (or ${RETRACT_TOOL} for an explicit correction) instead of legacy memory-write.js. Do not call either tool for operational progress, proposals, test output, project status, or ordinary conversation. At most one KG mutation tool call is authorized for this source turn.` };
       } catch (error) {
-        api.logger.debug?.(`engram-kg-v3: reply dispatch not eligible: ${error instanceof Error ? error.message : String(error)}`);
+        api.logger.debug?.(`engram-kg-v3: agent turn has no adopted ordinary inbound authority: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
 
@@ -314,11 +281,6 @@ export default definePluginEntry({
       } catch (error) {
         api.logger.debug?.(`engram-kg-v3: inbound not eligible: ${error instanceof Error ? error.message : String(error)}`);
       }
-    });
-
-    api.on("before_prompt_build", (_event: any, ctx: any) => {
-      if (ctx.trigger !== "user" || !authority.hasRun(ctx.runId, ctx.sessionKey)) return;
-      return { appendSystemContext: `Engram KG v3 live canary is active for this turn. For one explicit durable user assertion, use ${SAVE_TOOL} (or ${RETRACT_TOOL} for an explicit correction) instead of legacy memory-write.js. Do not call either tool for operational progress, proposals, test output, project status, or ordinary conversation. At most one KG mutation tool call is authorized for this source turn.` };
     });
 
     api.on("before_tool_call", (event: any, ctx: any) => {

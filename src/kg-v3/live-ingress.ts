@@ -44,8 +44,11 @@ export interface KgLiveInboundTurn {
   senderIsOwner: boolean;
 }
 
-export interface KgLivePendingInboundTurn extends Omit<KgLiveInboundTurn, "runId" | "senderIsOwner"> {
-  content: string;
+export type KgLivePendingInboundTurn = Omit<KgLiveInboundTurn, "runId" | "senderIsOwner">;
+
+export interface KgLiveAdoptedInboundTurn extends KgLivePendingInboundTurn {
+  sourceTurnId: string;
+  senderIsOwner: boolean;
 }
 
 export interface KgLiveToolRequester {
@@ -63,13 +66,19 @@ export interface KgLiveInboundHookIdentity {
   accountId: string;
 }
 
-export interface KgLiveAgentRunHookIdentity {
+export interface KgLivePersistedUserTurnHookIdentity {
+  runtimeSessionKey: string;
+  transport: "telegram" | "openclaw";
+  messageId: string;
+  sourceTurnId: string;
+  senderIsOwner: boolean;
+}
+
+export interface KgLiveAgentTurnPrepareHookIdentity {
   runId: string;
   runtimeSessionKey: string;
   actorId: string;
   accountId: string;
-  content: string;
-  senderIsOwner: boolean;
 }
 
 export interface KgLiveWriteInput {
@@ -158,40 +167,58 @@ export function resolveKgLiveMessageReceivedHookIdentity(event: Record<string, u
   };
 }
 
-/** Attach an ordinary pending inbound message to the run allocated by OpenClaw. */
-export function resolveKgLiveAgentRunHookIdentity(event: Record<string, unknown>, context: Record<string, unknown>): KgLiveAgentRunHookIdentity {
-  if (typeof event.senderIsOwner !== "boolean") {
-    throw new KgLiveIngressError("INVALID_TURN", "senderIsOwner is missing from agent run");
+/**
+ * Normalize the protected user-turn metadata exposed to the synchronous
+ * `before_message_write` hook. OpenClaw restores these fields after hooks, so
+ * they are an adoption barrier rather than model-controlled provenance.
+ */
+export function resolveKgLivePersistedUserTurnHookIdentity(event: Record<string, unknown>, context: Record<string, unknown>): KgLivePersistedUserTurnHookIdentity {
+  const message = event.message && typeof event.message === "object" && !Array.isArray(event.message)
+    ? event.message as Record<string, unknown>
+    : null;
+  if (!message || message.role !== "user") {
+    throw new KgLiveIngressError("INVALID_TURN", "persisted turn is not a user message");
+  }
+  const metadata = message.__openclaw && typeof message.__openclaw === "object" && !Array.isArray(message.__openclaw)
+    ? message.__openclaw as Record<string, unknown>
+    : null;
+  const transport = metadata?.transport && typeof metadata.transport === "object" && !Array.isArray(metadata.transport)
+    ? metadata.transport as Record<string, unknown>
+    : null;
+  const channel = requiredHookToken("transport.channel", transport?.channel);
+  if (channel !== "telegram" && channel !== "openclaw") {
+    throw new KgLiveIngressError("INVALID_TURN", "persisted turn transport is unsupported");
+  }
+  const sourceTurnId = requiredHookToken("sourceTurnId", message.idempotencyKey);
+  if (!/^channel-user:v1:[a-f0-9]{64}$/.test(sourceTurnId)) {
+    throw new KgLiveIngressError("INVALID_TURN", "persisted turn source identity is invalid");
+  }
+  const senderIsOwner = metadata?.senderIsOwner;
+  if (typeof senderIsOwner !== "boolean") {
+    throw new KgLiveIngressError("INVALID_TURN", "senderIsOwner is missing from persisted turn");
   }
   return {
-    runId: sharedHookToken("runId", event.runId, context.runId),
     runtimeSessionKey: sharedHookToken("sessionKey", event.sessionKey, context.sessionKey),
-    actorId: sharedHookToken("senderId", event.senderId, context.senderId),
-    accountId: sharedHookToken("accountId", event.accountId, context.accountId),
-    content: requiredHookToken("prompt", event.prompt),
-    senderIsOwner: event.senderIsOwner,
+    transport: channel,
+    messageId: requiredHookToken("transport.messageId", transport?.messageId),
+    sourceTurnId,
+    senderIsOwner,
+  };
+}
+
+/** Attach an adopted user message to the run allocated by OpenClaw. */
+export function resolveKgLiveAgentTurnPrepareHookIdentity(_event: Record<string, unknown>, context: Record<string, unknown>): KgLiveAgentTurnPrepareHookIdentity {
+  return {
+    runId: requiredHookToken("runId", context.runId),
+    runtimeSessionKey: requiredHookToken("sessionKey", context.sessionKey),
+    actorId: requiredHookToken("senderId", context.senderId),
+    accountId: requiredHookToken("accountId", context.accountId),
   };
 }
 
 function requiredHookToken(label: string, value: unknown): string {
   if (!token(value)) throw new KgLiveIngressError("INVALID_TURN", `${label} is missing or invalid`);
   return value;
-}
-
-/**
- * Resolve the normal channel-turn identity exposed by OpenClaw's global
- * `reply_dispatch` hook. Unlike `inbound_claim`, this hook is reached for
- * ordinary agent conversations in addition to plugin-owned bindings.
- */
-export function resolveKgLiveReplyDispatchHookIdentity(event: Record<string, unknown>, context: Record<string, unknown>): KgLiveInboundHookIdentity {
-  const messageId = context.MessageSidFull ?? context.MessageSid ?? context.MessageSidFirst ?? context.MessageSidLast;
-  return {
-    runId: requiredHookToken("runId", event.runId),
-    runtimeSessionKey: sharedHookToken("sessionKey", event.sessionKey, context.SessionKey),
-    messageId: requiredHookToken("messageId", messageId),
-    actorId: requiredHookToken("senderId", context.SenderId),
-    accountId: requiredHookToken("accountId", context.AccountId),
-  };
 }
 
 function digest(value: unknown): value is `sha256:${string}` {
@@ -206,6 +233,20 @@ function sameRequester(turn: KgLiveInboundTurn, requester: KgLiveToolRequester):
   return requester.channel === turn.transport
     && requester.accountId === turn.accountId
     && requester.senderId === turn.actorId;
+}
+
+function samePendingTurn(left: KgLivePendingInboundTurn, right: KgLivePendingInboundTurn): boolean {
+  return left.runtimeSessionKey === right.runtimeSessionKey
+    && left.workspace === right.workspace
+    && left.workspaceId === right.workspaceId
+    && left.grantSessionKey === right.grantSessionKey
+    && left.transport === right.transport
+    && left.accountId === right.accountId
+    && left.actorId === right.actorId
+    && left.messageId === right.messageId
+    && left.contextKind === right.contextKind
+    && left.observedAt === right.observedAt
+    && left.requireOwner === right.requireOwner;
 }
 
 function sameCapturedTurn(left: KgLiveInboundTurn, right: KgLiveInboundTurn): boolean {
@@ -277,6 +318,7 @@ type BoundToolCall = { turn: KgLiveInboundTurn; verifier: TrustedInboundVerifier
 export class KgLiveTurnAuthority {
   readonly #turns = new Map<string, { turn: KgLiveInboundTurn; used: boolean; expiresAt: number }>();
   readonly #pending = new Map<string, { turn: KgLivePendingInboundTurn; expiresAt: number }>();
+  readonly #adopted = new Map<string, { turn: KgLiveAdoptedInboundTurn; expiresAt: number }>();
   readonly #toolCalls = new Map<string, BoundToolCall>();
 
   constructor(readonly options: { now?: () => number; ttlMs?: number } = {}) {}
@@ -284,8 +326,8 @@ export class KgLiveTurnAuthority {
   capturePending(turn: KgLivePendingInboundTurn): void {
     const now = this.options.now?.() ?? Date.now();
     this.prune(now);
-    if (!token(turn.content, 1_000_000) || !token(turn.runtimeSessionKey) || !token(turn.workspace)
-      || !token(turn.workspaceId) || !token(turn.grantSessionKey) || !token(turn.accountId)
+    if (!token(turn.runtimeSessionKey) || !token(turn.workspace) || !token(turn.workspaceId)
+      || !token(turn.grantSessionKey) || !token(turn.accountId)
       || !token(turn.actorId) || !token(turn.messageId) || !iso(turn.observedAt)
       || typeof turn.requireOwner !== "boolean"
       || !["telegram", "openclaw"].includes(turn.transport)
@@ -294,33 +336,88 @@ export class KgLiveTurnAuthority {
     }
     const key = `${turn.runtimeSessionKey}\u0000${turn.messageId}`;
     const frozen = Object.freeze({ ...turn });
+    const adopted = [...this.#adopted.entries()].find(([, state]) => state.turn.runtimeSessionKey === turn.runtimeSessionKey
+      && state.turn.messageId === turn.messageId);
+    if (adopted) {
+      if (samePendingTurn(adopted[1].turn, frozen)) return;
+      this.#adopted.delete(adopted[0]);
+      throw new KgLiveIngressError("INVALID_TURN", "conflicting pending capture follows an adopted messageId");
+    }
+    const captured = [...this.#turns.entries()].find(([, state]) => state.turn.runtimeSessionKey === turn.runtimeSessionKey
+      && state.turn.messageId === turn.messageId);
+    if (captured) {
+      if (samePendingTurn(captured[1].turn, frozen)) return;
+      this.dropRun(captured[0]);
+      throw new KgLiveIngressError("INVALID_TURN", "conflicting pending capture follows a captured messageId");
+    }
     const existing = this.#pending.get(key);
-    if (existing && JSON.stringify(existing.turn) !== JSON.stringify(frozen)) {
+    if (existing && !samePendingTurn(existing.turn, frozen)) {
       this.#pending.delete(key);
       throw new KgLiveIngressError("INVALID_TURN", "conflicting pending captures share one messageId");
     }
     this.#pending.set(key, { turn: frozen, expiresAt: now + (this.options.ttlMs ?? 10 * 60_000) });
   }
 
-  attachPendingRun(input: { runId?: string; runtimeSessionKey?: string; accountId?: string; actorId?: string; content?: string; senderIsOwner?: boolean }): void {
+  adoptPendingTurn(input: { runtimeSessionKey?: string; transport?: string; messageId?: string; sourceTurnId?: string; senderIsOwner?: boolean }): void {
     const now = this.options.now?.() ?? Date.now();
     this.prune(now);
-    if (!token(input.runId) || !token(input.runtimeSessionKey) || !token(input.accountId)
-      || !token(input.actorId) || !token(input.content, 1_000_000) || typeof input.senderIsOwner !== "boolean") {
-      throw new KgLiveIngressError("TURN_NOT_FOUND", "agent run has no trusted pending-turn identity");
+    if (!token(input.runtimeSessionKey) || !token(input.messageId) || !token(input.sourceTurnId)
+      || !["telegram", "openclaw"].includes(input.transport || "") || typeof input.senderIsOwner !== "boolean") {
+      throw new KgLiveIngressError("TURN_NOT_FOUND", "persisted user turn has no trusted pending-turn identity");
     }
-    const matches = [...this.#pending.entries()].filter(([, state]) => state.turn.runtimeSessionKey === input.runtimeSessionKey
+    const pendingKey = `${input.runtimeSessionKey}\u0000${input.messageId}`;
+    const adoptedKey = `${input.runtimeSessionKey}\u0000${input.sourceTurnId}`;
+    const existing = this.#adopted.get(adoptedKey);
+    if (existing) {
+      if (existing.turn.messageId !== input.messageId
+        || existing.turn.transport !== input.transport
+        || existing.turn.senderIsOwner !== input.senderIsOwner) {
+        this.#adopted.delete(adoptedKey);
+        this.#pending.delete(pendingKey);
+        throw new KgLiveIngressError("INVALID_TURN", "conflicting persisted turns share one source identity");
+      }
+      return;
+    }
+    const state = this.#pending.get(pendingKey);
+    if (!state || state.turn.transport !== input.transport) {
+      throw new KgLiveIngressError("TURN_NOT_FOUND", "persisted user turn does not match a pending inbound turn");
+    }
+    this.#pending.delete(pendingKey);
+    const turn = Object.freeze({ ...state.turn, sourceTurnId: input.sourceTurnId, senderIsOwner: input.senderIsOwner });
+    this.#adopted.set(adoptedKey, { turn, expiresAt: now + (this.options.ttlMs ?? 10 * 60_000) });
+  }
+
+  attachAdoptedRun(input: { runId?: string; runtimeSessionKey?: string; accountId?: string; actorId?: string }): void {
+    const now = this.options.now?.() ?? Date.now();
+    this.prune(now);
+    if (!token(input.runId) || !token(input.runtimeSessionKey) || !token(input.accountId) || !token(input.actorId)) {
+      throw new KgLiveIngressError("TURN_NOT_FOUND", "agent turn has no trusted adopted-turn identity");
+    }
+    const captured = this.#turns.get(input.runId);
+    if (captured) {
+      if (captured.turn.runtimeSessionKey !== input.runtimeSessionKey
+        || captured.turn.accountId !== input.accountId
+        || captured.turn.actorId !== input.actorId) {
+        this.dropRun(input.runId);
+        throw new KgLiveIngressError("INVALID_TURN", "agent run identity conflicts with its captured turn");
+      }
+      return;
+    }
+    const matches = [...this.#adopted.entries()].filter(([, state]) => state.turn.runtimeSessionKey === input.runtimeSessionKey
       && state.turn.accountId === input.accountId
-      && state.turn.actorId === input.actorId
-      && state.turn.content === input.content);
+      && state.turn.actorId === input.actorId);
     if (matches.length !== 1) {
+      if (matches.length > 1) {
+        for (const [key] of matches) this.#adopted.delete(key);
+      }
       throw new KgLiveIngressError("TURN_NOT_FOUND", matches.length === 0
-        ? "agent run does not match a pending inbound turn"
-        : "agent run matches multiple pending inbound turns");
+        ? "agent run does not match an adopted inbound turn"
+        : "agent run matches multiple adopted inbound turns");
     }
     const [key, state] = matches[0]!;
-    this.#pending.delete(key);
-    this.capture({ ...state.turn, runId: input.runId, senderIsOwner: input.senderIsOwner });
+    this.#adopted.delete(key);
+    const { sourceTurnId: _sourceTurnId, ...turn } = state.turn;
+    this.capture({ ...turn, runId: input.runId });
   }
 
   capture(turn: KgLiveInboundTurn): void {
@@ -414,6 +511,7 @@ export class KgLiveTurnAuthority {
 
   private prune(now: number): void {
     for (const [key, state] of this.#pending) if (state.expiresAt <= now) this.#pending.delete(key);
+    for (const [key, state] of this.#adopted) if (state.expiresAt <= now) this.#adopted.delete(key);
     for (const [runId, state] of this.#turns) if (state.expiresAt <= now) this.dropRun(runId);
   }
 }

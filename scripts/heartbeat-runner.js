@@ -24,6 +24,7 @@ import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary, shouldIn
 import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerivedStatus, hasAutoDerivedMarker } from "./_lib/auto-derive-status.js";
 import { runtimeSpawnLabel, transitionSpawnRecord } from "./spawn-lifecycle.js";
 import { runWorkspaceQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
+import { legacyKgMutationState } from "./_lib/kg-v3-authority.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -1459,8 +1460,9 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
 }
 
 async function runMaintenance() {
+  const legacyMutation = legacyKgMutationState(workspace);
   const validateArgs = [scriptPath("validate.js")];
-  if (!opts["no-fix"]) validateArgs.push("--fix");
+  if (!opts["no-fix"] && legacyMutation.allowed) validateArgs.push("--fix");
   validateArgs.push("--agent-id", agentId);
 
   const validate = run("bun", validateArgs);
@@ -1477,7 +1479,9 @@ async function runMaintenance() {
 
   // Regenerate derived facts-active.md (BEFORE qmd update, so qmd picks it up).
   // Закрывает backburner "QMD индексирует *.md, а не items.json" (см. v3.3 §3.5).
-  const deriveFacts = run("node", [scriptPath("derive-facts.js")]);
+  const deriveFacts = legacyMutation.allowed
+    ? run("node", [scriptPath("derive-facts.js")])
+    : { status: 0, command: "derive-facts retired under KG v3 authority", stdout: "", stderr: "" };
 
   const qmdMaintenance = await runWorkspaceQmdMaintenance({
     workspace,
@@ -1508,7 +1512,9 @@ async function runMaintenance() {
 
   summary.maintenance = [
     validate.status === 0 ? "validate ok" : "validate error",
-    deriveFacts.status === 0 ? "derive-facts ok" : "derive-facts error",
+    legacyMutation.allowed
+      ? (deriveFacts.status === 0 ? "derive-facts ok" : "derive-facts error")
+      : "legacy projection retired",
     qmdMaintenance.status === "delegated"
       ? "qmd scheduler owns index"
       : (qmdUpdate?.ok ? "qmd update ok" : "qmd update error"),

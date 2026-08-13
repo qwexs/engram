@@ -8,6 +8,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, lstatS
 import { join, relative, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadEngramConfig } from './config.js';
+import { legacyKgMutationState } from './_lib/kg-v3-authority.ts';
 
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')).replace(/[\\\/]scripts$/, '');
 
@@ -50,7 +51,11 @@ const WORKSPACE = process.cwd();
 const _config = loadEngramConfig(WORKSPACE);
 const agentId = args['agent-id'] || _config.agent.replace(/^agent-/, '') || 'main';
 const LIFE_DIR = join(WORKSPACE, 'life');
-const fix = args.fix;
+const authority = legacyKgMutationState(WORKSPACE);
+const fix = Boolean(args.fix) && authority.allowed;
+if (args.fix && !fix) {
+  console.warn(`⚠️ --fix disabled: v2 archive is immutable under KG v3 authority mode ${authority.mode}`);
+}
 const quality = args.quality;
 let errors = 0;
 let warnings = 0;

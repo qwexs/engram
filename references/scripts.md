@@ -178,6 +178,7 @@ bun skills/engram/scripts/migrate-v2.js [--dry-run]
 ```
 
 Adds missing v2 fields (confidence, abstractionLevel, tags) to all items.json files with sensible defaults.
+Write mode is blocked by active KG v3 authority; `--dry-run` remains available.
 
 ## memory-signal.js — Signal detection (diagnostic only)
 

@@ -148,13 +148,16 @@ Rules: brief entries (1-2 lines), facts not feelings, record as you go.
 
 ### 14. Memory Decay & Access Tracking
 
-Facts decay over time (Hot → Warm → Cold). The changed entity is rebuilt after a successful `memory-write`; a global sequential daily coordinator reconciles all workspaces, and Monday heartbeat synthesis remains an additional check. Cold facts are excluded from `summary.md` but remain in `items.json` (searchable via QMD).
+This section applies only before workspace KG v3 authority activation. Legacy
+facts decay over time (Hot → Warm → Cold), and the sequential coordinator may
+update access counters and summaries. After cutover the v2 archive is immutable;
+native v3 access/decay tracking is a separate future contract.
 
-**Access tracking** — when you use a fact from KG in a reply, queue a recency event:
+**Pre-cutover access tracking** — when you use a legacy fact in a reply, queue a recency event:
 ```bash
 bun scripts/memory-access-buffer.js --entity "people/alice" --id <fact-id>
 ```
-The command is append-only and fast. The nightly sequential coordinator resolves
+Before cutover the command is append-only and fast. The nightly sequential coordinator resolves
 the event, updates `lastAccessed` and `accessCount`, then rebuilds summaries.
 If no ID is available, use the exact fact text instead:
 ```bash
@@ -166,7 +169,8 @@ bun scripts/memory-access-buffer.js --entity "people/alice" --fact "Exact fact t
 - A fact was referenced in a decision or recommendation
 - NOT for bulk reads (e.g. rebuild-summaries, heartbeat extraction)
 
-After an actual use, queue one event per fact in the same turn. Do not invent an
+After KG v3 cutover, do not queue legacy access events; the command returns
+`retired`. Before cutover, queue one event per actually used fact. Do not invent an
 ID: use the ID returned by KG/QMD, or the exact-text fallback. Merely loading a
 summary or search result is not use. `memory-write.js --access` remains an
 operator repair command, not the normal dialogue path.

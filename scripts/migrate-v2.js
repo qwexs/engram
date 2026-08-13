@@ -6,6 +6,7 @@
 import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { legacyKgMutationState } from './_lib/kg-v3-authority.ts';
 
 const { values: args } = parseArgs({
   options: {
@@ -36,6 +37,15 @@ Adds missing v2 fields:
 
 const WORKSPACE = process.cwd();
 const dryRun = args['dry-run'];
+const authority = legacyKgMutationState(WORKSPACE);
+if (!dryRun && !authority.allowed) {
+  console.error(JSON.stringify({
+    status: 'rejected',
+    reason: 'LEGACY_MUTATOR_DISABLED',
+    authorityMode: authority.mode,
+  }));
+  process.exit(1);
+}
 
 function findItemsJson(dir) {
   const results = [];

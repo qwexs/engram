@@ -39,6 +39,8 @@ describe("KG v3 automatic legacy producer retirement", () => {
       "scripts/flush-access-buffer.js",
       "scripts/memory-repair.js",
       "scripts/audit-superseded.js",
+      "scripts/validate.js",
+      "scripts/migrate-v2.js",
     ]) {
       expect(source(path)).toContain("legacyKgMutationState");
     }

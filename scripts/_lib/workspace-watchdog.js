@@ -1195,7 +1195,7 @@ function checkKg(workspace, findings) {
               reason: isHbRunId ? "heartbeat-run-id" : (isHbPhrase ? "heartbeat-phrase" : "heartbeat-tags"),
               text: text.slice(0, 120),
               fix: legacyKgMutationState(workspace).allowed
-                ? 'Supersede via compatibility writer before KG v3 cutover: bun skills/engram/scripts/memory-write.js --entity "' + (data.entityId || 'unknown') + '" --supersede ' + fact?.id
+                ? 'Before KG v3 cutover, create a reviewed replacement through the compatibility writer with --supersedes ' + fact?.id + '; do not mutate the orphan directly.'
                 : "Historical v2 archive is immutable after KG v3 cutover; record remediation separately.",
             },
           }));

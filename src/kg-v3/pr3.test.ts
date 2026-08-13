@@ -82,9 +82,7 @@ describe("PR3 default-context safety", () => {
     mkdirSync(join(workspace, "life", "v3"), { recursive: true }); writeFileSync(join(workspace, "life", "v3", "current-summary.md"), "# current\n");
     await kgContextHook(event);
     expect(event.messages).toHaveLength(1);
-    expect(event.context.bootstrapFiles[0].content).toContain("FROZEN pointer");
-    expect(event.context.bootstrapFiles[0].content).not.toContain("stale writer guidance");
-    expect(event.context.bootstrapFiles[0].content).not.toContain("memory-write.js");
+    expect(event.context.bootstrapFiles[0].content).toBe("stale writer guidance");
     const invalidSchema = JSON.parse(readFileSync(join(workspace, "memory-state", "kg-v3", "authority.json"), "utf8"));
     invalidSchema.schemaDigest = op("wrong-schema");
     json(join(workspace, "memory-state", "kg-v3", "authority.json"), invalidSchema);

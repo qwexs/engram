@@ -6,8 +6,6 @@ metadata:
     events: ["agent:bootstrap"]
 ---
 
-Injects only the guarded `life/v3/current-summary.md` projection and replaces
-the prompt copy of `MEMORY.md` with a compact frozen-pointer contract. The file
-on disk is never modified. Missing or invalid authority/context manifests,
-non-primary sessions, archive references, and oversized projections are
-terminal no-ops.
+Injects only the guarded `life/v3/current-summary.md` projection. Missing or
+invalid authority/context manifests, non-primary sessions, archive references,
+and oversized projections are terminal no-ops.

@@ -32,11 +32,11 @@ afterEach(() => {
 });
 
 describe("PR 5 reusable deterministic reconciliation", () => {
-  test("is permanently retired after KG v3 fleet cutover", async () => {
+  test("skips workspaces without active KG v3 authority", async () => {
     const workspace = setup();
     const runtime = new FakeRuntime([]);
     const result = await reconcileWorkspaceMemory({ workspace, scriptsDir: "/canonical/scripts", runtime, dryRun: true });
-    expect(result).toMatchObject({ status: "ok", skipped: "legacy-v2-reconciliation-retired" });
+    expect(result).toMatchObject({ status: "ok", skipped: "kg-v3-authority-inactive" });
     expect(runtime.commands).toHaveLength(0);
   });
 });

@@ -43,7 +43,19 @@ describe("KG v3 automatic legacy producer retirement", () => {
     const watchdog = source("scripts/kg-v3-zero-legacy-watchdog.ts");
     expect(watchdog).toContain("memory-write.js");
     expect(watchdog).toContain("writeFileSync(entry.itemsPath");
+    expect(watchdog).toContain("legacy writer guidance");
     expect(watchdog).toContain("status: violations.length ? \"failed\" : \"passed\"");
+  });
+
+  test("canonical prompt and workspace templates do not advertise the removed writer", () => {
+    for (const path of [
+      "assets/templates/MEMORY.md",
+      "integrations/openclaw-kg-v3/index.ts",
+      "templates/domain/topic-thread/agents.md",
+      "templates/spawn-prompts/_shared/agents-section.template.md",
+    ]) {
+      expect(source(path)).not.toContain("memory-write.js");
+    }
   });
 
 });

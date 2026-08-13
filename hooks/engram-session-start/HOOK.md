@@ -17,7 +17,9 @@ Writes a `<!-- session:start:{ISO} -->` watermark to today's daily note when a n
 
 Uses `agentId` and `sessionKey` from event context. Falls back to `agent-main/main` if not available.
 
-Runs on `agent:bootstrap` — after `engram-daily-note` (gateway:startup) has already created the file.
+Runs on `agent:bootstrap` and creates today's note lazily for this concrete
+session when it does not exist. Gateway startup does not pre-create notes for
+historical session directories.
 
 ## ISS-10 piggy-back: auto-create domain for Telegram topics
 

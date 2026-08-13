@@ -50,7 +50,7 @@ No idempotency hash check is needed: bootstrap fires once per session.
 - `engram-peer-domain-load` (sister — peer-DM + group-direct bindings)
 - `engram-session-start` (also fires on `agent:bootstrap`, creates
   the daily note and auto-creates domains for unbound topics)
-- `engram-daily-note` (creates daily notes on gateway startup)
+- `engram-daily-note` (reconciles existing note state on gateway startup)
 
 ## Out of scope
 

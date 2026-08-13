@@ -1,6 +1,6 @@
 ---
 name: engram-daily-note
-description: "Create today's daily note for all agents on gateway startup"
+description: "Reconcile existing daily-note state on gateway startup without creating empty notes"
 metadata:
   {
     "openclaw": {
@@ -13,6 +13,9 @@ metadata:
 
 # engram-daily-note
 
-On gateway startup, scans `memory/agent-*/` directories and creates today's daily note for each agent's `main` session if it doesn't exist.
+On gateway startup, scans `memory/agent-*/` directories and reconciles
+`lastDailyNoteCreated` only for today's notes that already exist.
 
-Supports session isolation: creates notes in `memory/agent-{id}/main/YYYY-MM-DD.md`.
+It never creates notes for historical or inactive session directories. The
+`engram-session-start` hook creates `memory/agent-{id}/{session}/YYYY-MM-DD.md`
+lazily when that session actually bootstraps.

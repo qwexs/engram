@@ -6,7 +6,7 @@
 
 | Hook | Event | What it does |
 |------|-------|--------------|
-| `engram-daily-note` | `gateway:startup` | Creates today's daily note for all sessions. |
+| `engram-daily-note` | `gateway:startup` | Reconciles state for today's existing notes; creates nothing. |
 | `engram-session-start` | `agent:bootstrap` | Appends `<!-- session:start:{ISO} -->` to daily note. Silently auto-creates a `topic-thread` domain (description `auto-bound`) on first bootstrap for an unbound Telegram topic (ISS-10 piggy-back). |
 | `engram-session-end` | `command:new`, `command:reset` | Appends `<!-- session:end:{ISO} -->` to daily note. |
 | `engram-session-memory` | `command:new`, `command:reset` | Save session transcript to `sessions/` subdir (QMD-indexed). Replaces native `session-memory`. |
@@ -24,7 +24,8 @@
 2. `engram-session-memory` fires on `command:new` → archive session transcript (QMD-indexed)
 3. New agent session starts → `agent:bootstrap` fires
 4. `engram-session-start` → writes `<!-- session:start -->` (creates sessionDir + daily note)
-5. `engram-daily-note` fires on `gateway:startup` → create daily note template
+5. `engram-daily-note` fires on `gateway:startup` → reconcile state for notes that already exist
+6. `engram-session-start` creates a note lazily when a concrete session bootstraps
 6. domain-load hooks append bound domain context to bootstrap messages
 7. `engram-rule-context-load` appends matching active rules when rollout mode is `active`
 8. `engram-bootstrap-qmd` leaves index maintenance to the configured scheduler

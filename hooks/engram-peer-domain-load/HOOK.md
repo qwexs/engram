@@ -49,4 +49,4 @@ No idempotency hash check is needed: bootstrap fires once per session.
 
 - `engram-topic-domain-load` (sibling — topic-thread bindings)
 - `engram-session-start` (also fires on `agent:bootstrap`)
-- `engram-daily-note` (creates daily notes on gateway startup)
+- `engram-daily-note` (reconciles existing note state on gateway startup)

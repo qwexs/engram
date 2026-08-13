@@ -28,8 +28,8 @@ qmd query "topic" -c life
 
 ### 5. Daily Note Creation
 Handled automatically by hooks:
-- `engram-daily-note` (gateway:startup) — creates daily notes for all sessions
-- `engram-session-start` (agent:bootstrap) — appends `<!-- session:start:{ISO} -->`
+- `engram-daily-note` (gateway:startup) — reconciles state for notes that already exist
+- `engram-session-start` (agent:bootstrap) — lazily creates this session's note and appends `<!-- session:start:{ISO} -->`
 - `engram-session-end` (command:new/reset) — appends `<!-- session:end:{ISO} -->`
 
 Paths: Main `memory/agent-{{AGENT_ID}}/main/YYYY-MM-DD.md`, Group `memory/agent-{{AGENT_ID}}/{platform}-{groupId}/YYYY-MM-DD.md`.
@@ -74,9 +74,9 @@ ops/session material into KG automatically.
 
 - explicit durable assertion in a KG v3-enabled source turn → typed ingress
 - unregistered assertion → daily/domain note; extend the registry separately
-- session insight is personally significant → update MEMORY.md
+- agent identity/methodology change → update the appropriate self-space file; `MEMORY.md` remains frozen
 - life/ fact is NEVER moved back to memory/ (ops)
-- MEMORY.md content is NEVER demoted to daily notes
+- `MEMORY.md` remains a frozen routing pointer
 
 Direction is source turn → typed KG, or source turn → ops/self. No automatic
 ops → KG replay.

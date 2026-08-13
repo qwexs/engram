@@ -27,7 +27,7 @@ const TOOL_NAMES = new Set([SAVE_TOOL, RETRACT_TOOL]);
 const authority = new KgLiveTurnAuthority();
 const guidedRuns = new Set<string>();
 
-const LIVE_TURN_CONTEXT = `Engram KG v3 live canary is active for this turn. For one explicit durable user assertion, use ${SAVE_TOOL} (or ${RETRACT_TOOL} for an explicit correction) instead of legacy memory-write.js. Do not call either tool for operational progress, proposals, test output, project status, or ordinary conversation. At most one KG mutation tool call is authorized for this source turn.`;
+const LIVE_TURN_CONTEXT = `Engram KG v3 live canary is active for this turn. For one explicit durable user assertion, use ${SAVE_TOOL} (or ${RETRACT_TOOL} for an explicit correction). Do not call either tool for operational progress, proposals, test output, project status, or ordinary conversation. At most one KG mutation tool call is authorized for this source turn.`;
 
 function pluginDigest(): `sha256:${string}` {
   const bytes = readFileSync(fileURLToPath(import.meta.url));

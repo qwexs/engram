@@ -71,4 +71,26 @@ describe("Engram hook heartbeat-state updates", () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  test("daily-note startup does not create notes for historical session directories", async () => {
+    const workspace = makeWorkspace();
+    try {
+      const date = today();
+      const sessionDir = join(workspace, "memory", "agent-main", "historical-session");
+      mkdirSync(sessionDir, { recursive: true });
+
+      await dailyNoteHandler({
+        type: "gateway",
+        action: "startup",
+        context: { workspaceDir: workspace },
+        messages: [],
+      });
+
+      expect(() => readFileSync(join(sessionDir, `${date}.md`), "utf8")).toThrow();
+      const state = readState(workspace);
+      expect(state.lastDailyNoteCreated["historical-session"]).toBeUndefined();
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });

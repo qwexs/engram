@@ -60,7 +60,7 @@
 - ✅ **`memory/domains/{{DOMAIN}}/status.md`** — обновление при завершении тематического блока (3–5 сообщений по теме) или по явному «статус?», «где остановились?».
 - ✅ **`memory/domains/{{DOMAIN}}/changelog.md`** — curated, один блок = один тематический кусок разговора. Не каждое сообщение.
 - ✅ **`memory/domains/{{DOMAIN}}/agents.md`** (этот файл) — manual override Operator'ом или агентом по явному «обнови правила».
-- ❌ **`life/`** — никогда. Только main-агент через `memory-write.js`.
+- ❌ **`life/`** — никогда. Durable KG доступен только авторизованной direct-сессии через typed ingress.
 - ❌ **`memory/domains/{other-slug}/`** — не писать в чужие домены.
 - ❌ **Workspace-уровень `MEMORY.md` / `AGENTS.md`** — без явного OK Operator.
 - ❌ **Telegram-сообщения, посты в Сетку, Хабр** — только по явному «да» Operator.

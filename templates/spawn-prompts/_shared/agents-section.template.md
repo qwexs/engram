@@ -47,7 +47,7 @@
 - ✅ **`memory/domains/{{DOMAIN}}/status.md`** — перезапись при завершении тематического блока.
 - ✅ **`memory/domains/{{DOMAIN}}/changelog.md`** — append в начало, формат `## YYYY-MM-DD HH:MM — Заголовок`.
 - ✅ **`memory/domains/{{DOMAIN}}/agents.md`** — manual override по явному «обнови правила».
-- ❌ **`life/`** — никогда. Только main-агент через `memory-write.js`.
+- ❌ **`life/`** — никогда. Durable KG доступен только авторизованной direct-сессии через typed ingress.
 - ❌ **`memory/domains/{other-slug}/`** — не писать в чужие домены.
 - ❌ **Workspace-уровень `MEMORY.md` / `AGENTS.md`** — без явного OK Operator.
 

@@ -1,21 +1,8 @@
-import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
-
-const TEMPLATE = (date: string) => `# ${date}
-
-## Events
-
-## Decisions
-
-## Learnings
-
-## Active Threads
-
-## Next
-`;
 
 const handler = async (event: any) => {
   if (event.type !== "gateway" || event.action !== "startup") return;
@@ -30,8 +17,6 @@ const handler = async (event: any) => {
 
   // Scan all agent-* directories
   const entries = readdirSync(memoryDir, { withFileTypes: true });
-  let created = 0;
-
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith("agent-")) continue;
 
@@ -44,22 +29,12 @@ const handler = async (event: any) => {
       if (/^cron-.+-run-/.test(session.name)) continue;
 
       const notePath = join(agentDir, session.name, `${today}.md`);
-      if (existsSync(notePath)) {
-        updateLastDailyNote(workspaceDir, session.name, today);
-        continue;
-      }
-
-      mkdirSync(join(agentDir, session.name), { recursive: true });
-      writeFileSync(notePath, TEMPLATE(today));
-      created++;
-      console.log(`[engram-daily-note] Created ${notePath}`);
-      // Update heartbeat-state.json: lastDailyNoteCreated.<session> = today
-      updateLastDailyNote(workspaceDir, session.name, today);
+      // Gateway startup must not materialize a note for every historical
+      // session directory. Active sessions create their note lazily in the
+      // agent:bootstrap hook; here we only reconcile state for notes that
+      // already exist.
+      if (existsSync(notePath)) updateLastDailyNote(workspaceDir, session.name, today);
     }
-  }
-
-  if (created > 0) {
-    event.messages?.push(`📅 Created ${created} daily note(s) for ${today}`);
   }
 };
 

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **fix(memory): stop bootstrap noise from inactive sessions and stale writer
+  guidance.** Gateway startup now reconciles only daily notes that already
+  exist; the active session bootstrap remains the sole lazy creator. KG v3
+  bootstrap replaces the prompt copy of frozen `MEMORY.md` without mutating
+  the file, canonical templates no longer advertise removed writer paths, and
+  the zero-legacy watchdog covers those instructions.
+
 - **refactor(kg): retire automatic legacy producer branches.** Mechanical
   session/daily extraction is permanently cursor-only without reading message
   bodies, domain and legacy OLL

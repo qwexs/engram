@@ -74,7 +74,7 @@ describe("PR3 default-context safety", () => {
   test("bootstrap hook injects only authorized main current projection and no-ops otherwise", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "kg-hook-")); roots.push(workspace);
     json(join(workspace, "engram.json"), { workspace: { id: "main" } });
-    const event = { type: "agent", action: "bootstrap", context: { workspaceDir: workspace, sessionKey: "agent:main:main" }, messages: [] as string[] };
+    const event = { type: "agent", action: "bootstrap", context: { workspaceDir: workspace, sessionKey: "agent:main:main", bootstrapFiles: [{ name: "MEMORY.md", path: join(workspace, "MEMORY.md"), content: "stale writer guidance", missing: false }] }, messages: [] as string[] };
     await kgContextHook(event);
     expect(event.messages).toEqual([]);
     json(join(workspace, "memory-state", "kg-v3", "authority.json"), { schema: KG_V3_AUTHORITY_SCHEMA, workspaceId: "main", releaseDigest: op("release"), schemaDigest: KG_V3_SCHEMA_DIGEST, mode: "canary", enabledSessionCapabilities: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }], currentProjectionVersion: 1, approvedBy: "operator", approvedAt: "2026-08-12T15:00:00Z" });
@@ -82,12 +82,17 @@ describe("PR3 default-context safety", () => {
     mkdirSync(join(workspace, "life", "v3"), { recursive: true }); writeFileSync(join(workspace, "life", "v3", "current-summary.md"), "# current\n");
     await kgContextHook(event);
     expect(event.messages).toHaveLength(1);
+    expect(event.context.bootstrapFiles[0].content).toContain("FROZEN pointer");
+    expect(event.context.bootstrapFiles[0].content).not.toContain("stale writer guidance");
+    expect(event.context.bootstrapFiles[0].content).not.toContain("memory-write.js");
     const invalidSchema = JSON.parse(readFileSync(join(workspace, "memory-state", "kg-v3", "authority.json"), "utf8"));
     invalidSchema.schemaDigest = op("wrong-schema");
     json(join(workspace, "memory-state", "kg-v3", "authority.json"), invalidSchema);
     const schemaMismatch = { ...event, messages: [] as string[] };
+    schemaMismatch.context.bootstrapFiles[0].content = "unchanged on invalid authority";
     await kgContextHook(schemaMismatch);
     expect(schemaMismatch.messages).toEqual([]);
+    expect(schemaMismatch.context.bootstrapFiles[0].content).toBe("unchanged on invalid authority");
     invalidSchema.schemaDigest = KG_V3_SCHEMA_DIGEST;
     json(join(workspace, "memory-state", "kg-v3", "authority.json"), invalidSchema);
     const wrongRelease = JSON.parse(readFileSync(join(workspace, "memory-state", "kg-v3", "default-context.json"), "utf8"));

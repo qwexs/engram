@@ -67,7 +67,7 @@ const handler = async (event: any) => {
   const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey);
   const notePath = join(sessionDir, `${today}.md`);
 
-  // Create daily note if missing (fallback — normally engram-daily-note handles this)
+  // Create daily note lazily for the session that is actually bootstrapping.
   if (!existsSync(notePath)) {
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(notePath, TEMPLATE(today));

@@ -8,7 +8,8 @@
   "contracts": {
     "tools": [
       "engram_memory_save",
-      "engram_memory_retract"
+      "engram_memory_retract",
+      "engram_memory_access"
     ]
   },
   "configSchema": {

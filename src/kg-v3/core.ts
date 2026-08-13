@@ -15,6 +15,8 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import assertionSchema from "../../schemas/kg-assertion-v3-mvp.schema.json";
 import { markWorkspaceQmdDirty, type WorkspaceDirtyMarkResult } from "../qmd/maintenance-integration.ts";
+import { readKgV3AccessState, type KgV3AccessState } from "./access.ts";
+import { renderKgV3Projection, type KgV3ProjectionStats } from "./projection.ts";
 import {
   KG_V3_ASSERTION_SCHEMA,
   KG_V3_AUTHORITY_SCHEMA,
@@ -64,6 +66,7 @@ export interface KgV3CoreOptions {
   registryPath?: string;
   authorityPath?: string;
   crashAt?: KgCrashPoint;
+  now?: () => Date;
   qmdDirtyMarker?: (input: { workspace: string; reason: string; collectionRole: "knowledge-graph" }) => Promise<WorkspaceDirtyMarkResult>;
 }
 
@@ -327,6 +330,7 @@ export class KgV3Core {
   readonly operationsRoot: string;
   readonly locksRoot: string;
   readonly projectionPath: string;
+  readonly searchProjectionPath: string;
   readonly registryPath: string;
   readonly authorityPath: string;
 
@@ -336,9 +340,10 @@ export class KgV3Core {
     this.operationsRoot = join(this.workspace, "memory-state", "kg-v3", "operations");
     this.locksRoot = join(this.workspace, "memory-state", "kg-v3", "locks");
     this.projectionPath = join(this.workspace, "life", "v3", "current-summary.md");
+    this.searchProjectionPath = join(this.workspace, "life", "v3", "search-index.md");
     this.registryPath = resolve(options.registryPath || join(this.workspace, "memory-state", "kg-v3", "registry.json"));
     this.authorityPath = resolve(options.authorityPath || join(this.workspace, "memory-state", "kg-v3", "authority.json"));
-    for (const path of [this.assertionsRoot, this.operationsRoot, this.locksRoot, this.projectionPath, this.registryPath, this.authorityPath]) assertInside(this.workspace, path);
+    for (const path of [this.assertionsRoot, this.operationsRoot, this.locksRoot, this.projectionPath, this.searchProjectionPath, this.registryPath, this.authorityPath]) assertInside(this.workspace, path);
   }
 
   private registry(): KgRegistryV1 {
@@ -439,20 +444,27 @@ export class KgV3Core {
     });
   }
 
-  private writeProjection(operation: string): void {
+  private writeProjection(operation: string, accessState?: KgV3AccessState, dryRun = false): KgV3ProjectionStats & { changed: boolean } {
     const lock = this.paths(operation, "projection").projectionLock;
-    withLock(lock, () => {
-      const active = this.readAssertions().filter((assertion) => assertion.lifecycle.status === "active")
-        .sort((a, b) => a.entityId.localeCompare(b.entityId) || a.predicate.localeCompare(b.predicate) || a.id.localeCompare(b.id));
-      const lines = ["# Engram KG v3 current", "", "_Generated from committed active v3 assertions. Do not edit._", ""];
-      for (const assertion of active) {
-        lines.push(`- \`${assertion.entityId}\` · \`${assertion.predicate}\` = ${JSON.stringify(assertion.object.value)} (\`${assertion.id}\`)`);
-      }
-      mkdirSync(dirname(this.projectionPath), { recursive: true });
-      const temporary = join(dirname(this.projectionPath), `.${randomUUID()}.tmp`);
-      const fd = openSync(temporary, "wx", 0o600);
-      try { writeFileSync(fd, `${lines.join("\n")}\n`, "utf8"); fsyncSync(fd); } finally { closeSync(fd); }
-      renameSync(temporary, this.projectionPath);
+    return withLock(lock, () => {
+      const state = accessState || readKgV3AccessState(this.workspace, this.options.workspaceId);
+      const projection = renderKgV3Projection(this.readAssertions(), state, this.options.now?.() || new Date());
+      const prior = existsSync(this.projectionPath) ? readFileSync(this.projectionPath, "utf8") : null;
+      const priorSearch = existsSync(this.searchProjectionPath) ? readFileSync(this.searchProjectionPath, "utf8") : null;
+      const changedCurrent = prior !== projection.body;
+      const changedSearch = priorSearch !== projection.searchBody;
+      const changed = changedCurrent || changedSearch;
+      if (dryRun || !changed) return { ...projection.stats, changed };
+      const writeText = (path: string, body: string) => {
+        mkdirSync(dirname(path), { recursive: true });
+        const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
+        const fd = openSync(temporary, "wx", 0o600);
+        try { writeFileSync(fd, body, "utf8"); fsyncSync(fd); } finally { closeSync(fd); }
+        renameSync(temporary, path);
+      };
+      if (changedCurrent) writeText(this.projectionPath, projection.body);
+      if (changedSearch) writeText(this.searchProjectionPath, projection.searchBody);
+      return { ...projection.stats, changed };
     });
   }
 
@@ -691,6 +703,15 @@ export class KgV3Core {
         : [];
       for (const record of operations.filter((item) => item.status === "committed")) await this.ensureQmdDirtyUnlocked(record.receipt!);
       return this.readAssertions().filter((assertion) => assertion.lifecycle.status === "active");
+    });
+  }
+
+  /** Reconcile the prompt projection from immutable assertions plus native v3 access state. */
+  async rebuildProjection(options: { accessState?: KgV3AccessState; dryRun?: boolean } = {}): Promise<KgV3ProjectionStats & { changed: boolean }> {
+    const lock = join(this.locksRoot, "workspace-commit.lock");
+    return withLockAsync(lock, async () => {
+      if (!options.dryRun) this.recoverUnlocked();
+      return this.writeProjection("sha256:projection-reconcile", options.accessState, Boolean(options.dryRun));
     });
   }
 }

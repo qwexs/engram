@@ -14,6 +14,7 @@ memory-state/kg-v3/registry.json
 memory-state/kg-v3/authority.json
 memory-state/kg-v3/live-ingress.json
 life/v3/current-summary.md
+life/v3/search-index.md
 ```
 
 The registry and authority marker are declarative inputs; the PR2 writer never
@@ -72,10 +73,15 @@ Automatic session/daily extraction, domain Promotions, and legacy OLL
 promotion are permanently non-mutating in canonical code; no configuration
 value can restore those v2 writer calls.
 
-The v2 archive is immutable. Access-counter, repair, auto-fix, migration,
+The v2 archive is immutable. Its access-counter, repair, auto-fix, migration,
 derived-facts, and summary-rebuild entrypoints are physically absent. Native v3
-access/decay tracking is deliberately deferred; no v2 mutation is used as a
-substitute. `scripts/kg-v3-zero-legacy-watchdog.ts` enforces this boundary.
+access tracking uses append-only per-turn events plus a separate idempotent
+access-state projection; it never mutates assertion bodies or v2 files. The
+daily coordinator applies pending events and rebuilds the decay-aware
+`life/v3/current-summary.md`. A separate `life/v3/search-index.md` keeps every
+active assertion discoverable by QMD without injecting Cold preferences and
+decisions into default context. `scripts/kg-v3-zero-legacy-watchdog.ts`
+enforces the v2 boundary.
 
 ## Fleet acceptance
 

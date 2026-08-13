@@ -152,8 +152,11 @@ categories, keywords, confidence. It does not authorize or perform a KG write.
 `engram_memory_save` / `engram_memory_retract` are the only canonical current
 mutation tools and are exposed only inside a trusted, admitted source turn.
 Legacy v2 writer, access-buffer, repair, auto-fix, and migration entrypoints were
-physically removed after fleet acceptance. `items.json` remains available only
-through the explicit immutable historical reader.
+physically removed after fleet acceptance. Native `engram_memory_access`
+records actual use as append-only KG v3 events; the daily coordinator applies
+them to a separate access-state overlay and rebuilds the v3 current projection.
+`items.json` remains available only through the explicit immutable historical
+reader.
 
 ```bash
 bun skills/engram/scripts/kg-v3-zero-legacy-watchdog.ts

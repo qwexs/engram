@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// Fleet-cutover compatibility coordinator. Legacy v2 summary/access mutation
-// is permanently retired; the scheduled command now records deterministic skips.
+// Sequential fleet coordinator for native KG v3 access reconciliation and
+// decay-aware current projection. Workspaces without active v3 authority skip.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -26,8 +26,9 @@ const opts = parseArgs(process.argv);
 if (opts.help || opts.h) {
   console.log(`daily-summary-coordinator.js
 
-Sequentially reports the permanent retirement of legacy v2 reconciliation for
-explicit Engram workspaces. It never mutates items.json or summary.md.
+Sequentially flushes native KG v3 access events and rebuilds the decay-aware
+life/v3/current-summary.md projection for explicit Engram workspaces. It never
+mutates historical items.json or summary.md.
 
 Usage:
   bun skills/engram/scripts/daily-summary-coordinator.js \\

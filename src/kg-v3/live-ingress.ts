@@ -311,7 +311,7 @@ type BoundToolCall = { turn: KgLiveInboundTurn; verifier: TrustedInboundVerifier
  * tool execution. Model parameters never contain provenance authority.
  */
 export class KgLiveTurnAuthority {
-  readonly #turns = new Map<string, { turn: KgLiveInboundTurn; used: boolean; expiresAt: number }>();
+  readonly #turns = new Map<string, { turn: KgLiveInboundTurn; mutationUsed: boolean; accessUsed: boolean; expiresAt: number }>();
   readonly #pending = new Map<string, { turn: KgLivePendingInboundTurn; expiresAt: number }>();
   readonly #adopted = new Map<string, { turn: KgLiveAdoptedInboundTurn; expiresAt: number }>();
   readonly #toolCalls = new Map<string, BoundToolCall>();
@@ -433,7 +433,7 @@ export class KgLiveTurnAuthority {
       }
       return;
     }
-    this.#turns.set(turn.runId, { turn: Object.freeze({ ...turn }), used: false, expiresAt: now + (this.options.ttlMs ?? 10 * 60_000) });
+    this.#turns.set(turn.runId, { turn: Object.freeze({ ...turn }), mutationUsed: false, accessUsed: false, expiresAt: now + (this.options.ttlMs ?? 10 * 60_000) });
   }
 
   bindToolCall(input: { runId?: string; toolCallId?: string; runtimeSessionKey?: string; requester?: KgLiveToolRequester }): void {
@@ -446,7 +446,7 @@ export class KgLiveTurnAuthority {
     if (!state || state.turn.runtimeSessionKey !== input.runtimeSessionKey) {
       throw new KgLiveIngressError("TURN_NOT_FOUND", "tool call does not belong to a captured inbound turn");
     }
-    if (state.used) throw new KgLiveIngressError("TURN_ALREADY_USED", "source turn already used its KG write authority");
+    if (state.mutationUsed) throw new KgLiveIngressError("TURN_ALREADY_USED", "source turn already used its KG write authority");
     if (!input.requester || !sameRequester(state.turn, input.requester)) {
       throw new KgLiveIngressError("REQUESTER_MISMATCH", "tool requester does not match captured inbound sender");
     }
@@ -465,7 +465,40 @@ export class KgLiveTurnAuthority {
       contextKind: boundTurn.contextKind,
     };
     const verifier = new TrustedInboundVerifier((candidate) => JSON.stringify(candidate) === JSON.stringify(expected));
-    state.used = true;
+    state.mutationUsed = true;
+    this.#toolCalls.set(input.toolCallId, { turn: boundTurn, verifier });
+  }
+
+  bindAccessToolCall(input: { runId?: string; toolCallId?: string; runtimeSessionKey?: string; requester?: KgLiveToolRequester }): void {
+    const now = this.options.now?.() ?? Date.now();
+    this.prune(now);
+    if (!token(input.runId) || !token(input.toolCallId) || !token(input.runtimeSessionKey)) {
+      throw new KgLiveIngressError("TURN_NOT_FOUND", "access tool call has no trusted run/session identity");
+    }
+    const state = this.#turns.get(input.runId);
+    if (!state || state.turn.runtimeSessionKey !== input.runtimeSessionKey) {
+      throw new KgLiveIngressError("TURN_NOT_FOUND", "access tool call does not belong to a captured inbound turn");
+    }
+    if (state.accessUsed) throw new KgLiveIngressError("TURN_ALREADY_USED", "source turn already recorded KG access");
+    if (!input.requester || !sameRequester(state.turn, input.requester)) {
+      throw new KgLiveIngressError("REQUESTER_MISMATCH", "access tool requester does not match captured inbound sender");
+    }
+    if (state.turn.requireOwner && input.requester.senderIsOwner !== true) {
+      throw new KgLiveIngressError("REQUESTER_MISMATCH", "access tool requester is not the authorized owner");
+    }
+    const boundTurn = state.turn.senderIsOwner || input.requester.senderIsOwner !== true
+      ? state.turn
+      : Object.freeze({ ...state.turn, senderIsOwner: true });
+    const expected: InboundMetadataEnvelope = {
+      transport: boundTurn.transport,
+      workspaceId: boundTurn.workspaceId,
+      sessionKey: boundTurn.grantSessionKey,
+      actorId: boundTurn.actorId,
+      messageId: boundTurn.messageId,
+      contextKind: boundTurn.contextKind,
+    };
+    const verifier = new TrustedInboundVerifier((candidate) => JSON.stringify(candidate) === JSON.stringify(expected));
+    state.accessUsed = true;
     this.#toolCalls.set(input.toolCallId, { turn: boundTurn, verifier });
   }
 
@@ -495,7 +528,7 @@ export class KgLiveTurnAuthority {
     const now = this.options.now?.() ?? Date.now();
     this.prune(now);
     const state = this.#turns.get(runId);
-    return Boolean(state && !state.used && state.turn.runtimeSessionKey === runtimeSessionKey);
+    return Boolean(state && !state.mutationUsed && state.turn.runtimeSessionKey === runtimeSessionKey);
   }
 
   private prune(now: number): void {

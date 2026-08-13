@@ -10,6 +10,7 @@ import {
   TrustedKgRuntime,
   createKgLiveRetractionRequest,
   createKgLiveWriteRequest,
+  recordKgV3AccessEvent,
   readKgLiveRegistry,
   resolveKgLiveAgentRunHookIdentity,
   resolveKgLiveInboundHookIdentity,
@@ -23,11 +24,12 @@ import {
 
 const SAVE_TOOL = "engram_memory_save";
 const RETRACT_TOOL = "engram_memory_retract";
-const TOOL_NAMES = new Set([SAVE_TOOL, RETRACT_TOOL]);
+const ACCESS_TOOL = "engram_memory_access";
+const TOOL_NAMES = new Set([SAVE_TOOL, RETRACT_TOOL, ACCESS_TOOL]);
 const authority = new KgLiveTurnAuthority();
 const guidedRuns = new Set<string>();
 
-const LIVE_TURN_CONTEXT = `Engram KG v3 live canary is active for this turn. For one explicit durable user assertion, use ${SAVE_TOOL} (or ${RETRACT_TOOL} for an explicit correction). Do not call either tool for operational progress, proposals, test output, project status, or ordinary conversation. At most one KG mutation tool call is authorized for this source turn.`;
+const LIVE_TURN_CONTEXT = `Engram KG v3 live canary is active for this turn. For one explicit durable user assertion, use ${SAVE_TOOL} (or ${RETRACT_TOOL} for an explicit correction). Do not call either mutation tool for operational progress, proposals, test output, project status, or ordinary conversation. At most one KG mutation is authorized. If the final answer materially uses one or more assertion UUIDs from the injected KG v3 current projection, call ${ACCESS_TOOL} once with exactly those UUIDs; do not record bulk reads or unused context.`;
 
 function pluginDigest(): `sha256:${string}` {
   const bytes = readFileSync(fileURLToPath(import.meta.url));
@@ -196,6 +198,46 @@ function createRetractTool(ctx: any) {
   };
 }
 
+function createAccessTool(ctx: any) {
+  const active = activeWorkspaceFromToolContext(ctx);
+  if (!active) return null;
+  return {
+    name: ACCESS_TOOL,
+    label: "Engram Memory Access",
+    description: "Record actual use of active KG v3 assertions for native access-aware decay. Call once after materially using assertion content in the answer. Pass only exact assertion UUIDs from the injected current projection; never record search results, bulk reads, or merely visible context.",
+    parameters: {
+      type: "object",
+      properties: {
+        assertionIds: {
+          type: "array",
+          minItems: 1,
+          maxItems: 64,
+          uniqueItems: true,
+          items: { type: "string", format: "uuid" },
+        },
+      },
+      required: ["assertionIds"],
+      additionalProperties: false,
+    },
+    execute: async (toolCallId: string, params: { assertionIds: string[] }) => {
+      const bound = authority.consumeToolCall(toolCallId);
+      const projection = resolveKgLiveIngressProjection({ workspace: bound.turn.workspace, workspaceId: bound.turn.workspaceId, expectedPluginDigest: installedPluginDigest });
+      if (!projection.allowedContextKinds.includes(bound.turn.contextKind) || (projection.requireOwner && !bound.turn.senderIsOwner)) {
+        throw new KgLiveIngressError("LIVE_INGRESS_DISABLED", "source turn is outside the live-ingress projection");
+      }
+      const result = recordKgV3AccessEvent({
+        workspace: bound.turn.workspace,
+        workspaceId: bound.turn.workspaceId,
+        sessionKey: bound.metadata.sessionKey,
+        messageId: bound.metadata.messageId,
+        assertionIds: params.assertionIds,
+        observedAt: bound.turn.observedAt,
+      });
+      return { content: [{ type: "text", text: `${result.status} assertions=${result.event.assertionIds.length}` }], details: result };
+    },
+  };
+}
+
 export default definePluginEntry({
   id: "engram-kg-v3",
   name: "Engram KG v3 live ingress",
@@ -299,7 +341,9 @@ export default definePluginEntry({
     api.on("before_tool_call", (event: any, ctx: any) => {
       if (!TOOL_NAMES.has(event.toolName)) return;
       try {
-        authority.bindToolCall({ runId: ctx.runId || event.runId, toolCallId: ctx.toolCallId || event.toolCallId, runtimeSessionKey: ctx.sessionKey, requester: ctx.requester });
+        const input = { runId: ctx.runId || event.runId, toolCallId: ctx.toolCallId || event.toolCallId, runtimeSessionKey: ctx.sessionKey, requester: ctx.requester };
+        if (event.toolName === ACCESS_TOOL) authority.bindAccessToolCall(input);
+        else authority.bindToolCall(input);
       } catch (error) {
         const reason = error instanceof KgLiveIngressError ? `${error.code}: ${error.message}` : "UNVERIFIED_INBOUND: live turn authority unavailable";
         return { block: true, blockReason: reason };
@@ -312,7 +356,9 @@ export default definePluginEntry({
     });
     api.registerTool((ctx: any) => createSaveTool(ctx), { name: SAVE_TOOL });
     api.registerTool((ctx: any) => createRetractTool(ctx), { name: RETRACT_TOOL });
+    api.registerTool((ctx: any) => createAccessTool(ctx), { name: ACCESS_TOOL });
     api.registerToolMetadata({ toolName: SAVE_TOOL, displayName: "Engram memory save", description: "Write one explicit durable KG v3 assertion.", risk: "high", tags: ["memory", "engram", "kg-v3"] });
     api.registerToolMetadata({ toolName: RETRACT_TOOL, displayName: "Engram memory retract", description: "Retract one explicitly incorrect KG v3 assertion.", risk: "high", tags: ["memory", "engram", "kg-v3"] });
+    api.registerToolMetadata({ toolName: ACCESS_TOOL, displayName: "Engram memory access", description: "Record actual assertion use for native v3 decay.", risk: "low", tags: ["memory", "engram", "kg-v3", "decay"] });
   },
 });

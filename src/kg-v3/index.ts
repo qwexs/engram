@@ -8,3 +8,5 @@ export * from "./canary.ts";
 export * from "./canary-executor.ts";
 export * from "./live-ingress.ts";
 export * from "./live-rollout.ts";
+export * from "./access.ts";
+export * from "./projection.ts";

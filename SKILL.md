@@ -172,6 +172,12 @@ generate cards automatically, backfill ordinary notes, or add a cron for them.
 
 Full decay rules: [references/decay-rules.md](references/decay-rules.md)
 
+KG v3 records actual use through `engram_memory_access` once per source turn,
+with exact assertion UUIDs that materially influenced the answer. The tool
+writes append-only events; the daily coordinator applies them idempotently to a
+separate access-state overlay and rebuilds `life/v3/current-summary.md`.
+Canonical assertion bodies and the historical v2 archive remain immutable.
+
 ### QMD Search
 
 QMD = hybrid search engine (BM25 + embeddings + rerank). Two providers: local (Vulkan), jina (cloud).

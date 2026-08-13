@@ -240,6 +240,19 @@ describe("KG v3 single-use live turn authority", () => {
     expect(() => authority.consumeToolCall("call-1")).toThrow("no server-stamped inbound authority");
   });
 
+  test("keeps one access receipt separate from the one mutation budget", () => {
+    const root = workspace();
+    const authority = new KgLiveTurnAuthority();
+    const requester = { channel: "telegram" as const, senderId: "actor-001", senderIsOwner: true };
+    authority.capture(turn(root));
+    authority.bindToolCall({ runId: "run-1", toolCallId: "write-1", runtimeSessionKey: turn(root).runtimeSessionKey, requester });
+    authority.bindAccessToolCall({ runId: "run-1", toolCallId: "access-1", runtimeSessionKey: turn(root).runtimeSessionKey, requester });
+    expect(authority.consumeToolCall("write-1").metadata.messageId).toBe("8260");
+    expect(authority.consumeToolCall("access-1").metadata.messageId).toBe("8260");
+    expect(() => authority.bindAccessToolCall({ runId: "run-1", toolCallId: "access-2", runtimeSessionKey: turn(root).runtimeSessionKey, requester })).toThrow("already recorded");
+    expect(() => authority.bindToolCall({ runId: "run-1", toolCallId: "write-2", runtimeSessionKey: turn(root).runtimeSessionKey, requester })).toThrow("already used");
+  });
+
   test("expires captured turns fail closed", () => {
     const root = workspace();
     let now = 1_000;

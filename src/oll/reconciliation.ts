@@ -1,5 +1,10 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { reconcileKgV3Access, type KgV3AccessReconcileResult } from "../kg-v3/access.ts";
+import { KgV3Core } from "../kg-v3/core.ts";
+import type { KgV3ProjectionStats } from "../kg-v3/projection.ts";
+import { KG_V3_AUTHORITY_SCHEMA, type KgAuthorityMarkerV1 } from "../kg-v3/types.ts";
+import { markWorkspaceQmdDirty, type WorkspaceDirtyMarkResult } from "../qmd/maintenance-integration.ts";
 
 export interface ReconciliationCommandResult {
   exitCode: number;
@@ -17,6 +22,9 @@ export interface WorkspaceReconciliationResult {
   status: "ok" | "error";
   error?: string;
   skipped?: string;
+  access?: KgV3AccessReconcileResult;
+  projection?: KgV3ProjectionStats & { changed: boolean };
+  qmdDirty?: WorkspaceDirtyMarkResult;
 }
 
 export class BunReconciliationRuntime implements ReconciliationRuntime {
@@ -42,7 +50,7 @@ export class BunReconciliationRuntime implements ReconciliationRuntime {
   }
 }
 
-/** Fleet-cutover compatibility surface: v2 reconciliation is permanently retired. */
+/** Reconcile native KG v3 access state and decay-aware prompt projection. */
 export async function reconcileWorkspaceMemory(options: {
   workspace: string;
   scriptsDir: string;
@@ -55,5 +63,30 @@ export async function reconcileWorkspaceMemory(options: {
   const result: WorkspaceReconciliationResult = { workspace, status: "ok" };
   if (!existsSync(join(workspace, "engram.json"))) return { ...result, status: "error", error: "engram.json is missing" };
   void timeoutMs;
-  return { ...result, skipped: "legacy-v2-reconciliation-retired" };
+  let workspaceId: string;
+  let authority: KgAuthorityMarkerV1;
+  try {
+    const config = JSON.parse(readFileSync(join(workspace, "engram.json"), "utf8"));
+    workspaceId = String(config?.workspace?.id || "").trim();
+    authority = JSON.parse(readFileSync(join(workspace, "memory-state", "kg-v3", "authority.json"), "utf8"));
+  } catch {
+    return { ...result, skipped: "kg-v3-authority-inactive" };
+  }
+  if (!workspaceId || authority.schema !== KG_V3_AUTHORITY_SCHEMA || authority.workspaceId !== workspaceId
+    || !["canary", "enabled"].includes(authority.mode)) {
+    return { ...result, skipped: "kg-v3-authority-inactive" };
+  }
+  try {
+    const access = reconcileKgV3Access({ workspace, workspaceId, dryRun: options.dryRun });
+    if (access.invalid > 0) return { ...result, status: "error", error: `invalid KG v3 access events: ${access.invalid}`, access };
+    const core = new KgV3Core({ workspace, workspaceId });
+    const projection = await core.rebuildProjection({ accessState: access.state, dryRun: options.dryRun });
+    const output: WorkspaceReconciliationResult = { ...result, access, projection };
+    if (!options.dryRun && projection.changed) {
+      output.qmdDirty = await markWorkspaceQmdDirty({ workspace, collectionRole: "knowledge-graph", reason: "kg-v3:decay-reconcile" });
+    }
+    return output;
+  } catch (error) {
+    return { ...result, status: "error", error: error instanceof Error ? error.message : String(error) };
+  }
 }

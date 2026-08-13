@@ -8,43 +8,45 @@
 | **Warm** | Accessed 8-30 days ago | Yes (lower priority) | Available but secondary |
 | **Cold** | Not accessed in 30+ days | No (omitted) | Still in items.json, searchable via QMD |
 
-These rules describe the frozen v2 projection model. After fleet cutover the v2
-archive, access counters, tiers, and summaries are immutable. Native v3 decay
-requires a separate reviewed contract.
+The v2 archive, its access counters, tiers, and summaries remain immutable.
+Native v3 uses the same 7/30-day recency thresholds in a separate projection:
+append-only `engram.kg-v3-access-event.v1` events are applied idempotently to
+`memory-state/kg-v3/access/state.json`, then the daily coordinator rebuilds
+`life/v3/current-summary.md` without changing canonical assertions.
 
 ## Modifiers
 
-### Low-Confidence Acceleration
-Facts with `confidence < 0.5` use a Cold threshold of **14 days** instead of 30.
+### Low-Confidence Acceleration (v2 only)
+Frozen v2 facts with `confidence < 0.5` used a Cold threshold of **14 days**.
+KG v3 assertions have no confidence field, so this modifier does not apply.
 
 ### Frequency Resistance
 Facts with `accessCount >= 10` bump from Cold to Warm, regardless of recency.
 
-### Abstraction-Aware Inclusion
-- `principle` (L3) — **always** include in summary regardless of tier
-- `pattern` (L2) — include if Warm or Hot
-- `episode` (L1) — standard decay rules (Hot + Warm only)
+### Kind-Aware Inclusion
+- v3 `identity` and `constraint` — always include as stable context
+- v3 `preference` and `decision` — include only when Hot or Warm
+- frozen v2 `principle`/`pattern`/`episode` keep their historical behavior
 
 ## Summary Refresh Algorithm
 
-`summary.md` is the frozen materialized view of the v2 archive. No active
-runtime path refreshes it after fleet cutover.
+Historical `summary.md` files are frozen materialized views of the v2 archive.
+The active native projection is `life/v3/current-summary.md`.
 
-The historical refresh algorithm was:
+The native v3 refresh algorithm is:
 
-1. For each entity in `life/`:
-   - Load all facts with `status: "active"` from `items.json`
-   - Calculate tier for each fact based on `lastAccessed`
-   - Apply modifiers (low-confidence, frequency, abstraction)
-2. Sort: Hot > Warm > Cold; within tier by `accessCount` desc
-3. Write included facts into `summary.md`
-4. Omit Cold episodes (they remain in items.json, searchable via QMD)
-5. Update `heartbeat-state.json` → `lastWeeklySynthesis`
+1. Load committed active assertions from `life/v3/assertions/`.
+2. Apply pending access events once to the separate access-state overlay.
+3. Calculate each tier from `lastAccessed`, falling back to `createdAt`.
+4. Apply frequency resistance and kind-aware inclusion.
+5. Sort Hot > Warm > Cold; within tier by `accessCount` descending.
+6. Atomically replace `life/v3/current-summary.md` and mark KG QMD state dirty.
+7. Rebuild `life/v3/search-index.md` from every active assertion so Cold
+   content remains QMD-searchable without entering default prompt context.
 
-If no fact remains eligible for the projection, the refresh writes an explicit
-empty-summary stub. It never leaves an older `summary.md` in place: stale
-Hot/Warm content would otherwise bypass decay. The underlying active facts
-remain in `items.json` and QMD.
+If no assertion remains eligible, the refresh writes an explicit empty current
+projection. It never leaves stale Hot/Warm content in place. Canonical active
+assertions remain immutable and searchable through QMD.
 
 ## Tier Calculation
 
@@ -52,10 +54,7 @@ remain in `items.json` and QMD.
 today = current date
 daysSinceAccess = today - fact.lastAccessed
 
-if fact.confidence < 0.5:
-    coldThreshold = 14
-else:
-    coldThreshold = 30
+coldThreshold = 30
 
 if daysSinceAccess <= 7:
     tier = "Hot"
@@ -71,8 +70,9 @@ if tier == "Cold" and fact.accessCount >= 10:
 
 ## Summary Inclusion Matrix
 
-| Abstraction | Hot | Warm | Cold |
+| KG v3 kind | Hot | Warm | Cold |
 |-------------|-----|------|------|
-| principle | ✅ | ✅ | ✅ |
-| pattern | ✅ | ✅ | ❌ |
-| episode | ✅ | ✅ | ❌ |
+| identity | ✅ | ✅ | ✅ |
+| constraint | ✅ | ✅ | ✅ |
+| preference | ✅ | ✅ | ❌ |
+| decision | ✅ | ✅ | ❌ |

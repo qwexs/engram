@@ -2,6 +2,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { recordKgV3AccessEvent } from "../src/kg-v3/access.ts";
 
 const ENGRAM_DIR = join(import.meta.dir, "..");
 const SCRIPT = join(ENGRAM_DIR, "scripts", "daily-summary-coordinator.js");
@@ -28,7 +29,7 @@ afterEach(() => {
 });
 
 describe("daily-summary-coordinator", () => {
-  test("reports permanent retirement for explicit workspaces sequentially", () => {
+  test("skips workspaces without active KG v3 authority sequentially", () => {
     root = mkdtempSync(join(tmpdir(), "engram-summary-coordinator-"));
     const first = workspace("first");
     const second = workspace("second");
@@ -44,7 +45,7 @@ describe("daily-summary-coordinator", () => {
     expect(report.sequential).toBe(true);
     expect(report.errors).toBe(0);
     expect(report.workspaces.map((item) => item.workspace)).toEqual([first, second]);
-    expect(report.workspaces.every((item) => item.skipped === "legacy-v2-reconciliation-retired")).toBe(true);
+    expect(report.workspaces.every((item) => item.skipped === "kg-v3-authority-inactive")).toBe(true);
     expect(existsSync(join(first, "life", "people", "first", "summary.md"))).toBe(false);
     expect(existsSync(join(second, "life", "people", "second", "summary.md"))).toBe(false);
   });
@@ -101,9 +102,42 @@ describe("daily-summary-coordinator", () => {
     });
     expect(proc.exitCode, proc.stderr.toString()).toBe(0);
     const report = JSON.parse(proc.stdout.toString());
-    expect(report.workspaces[0].skipped).toBe("legacy-v2-reconciliation-retired");
+    expect(report.workspaces[0].skipped).toBe("kg-v3-authority-inactive");
     const data = JSON.parse(readFileSync(join(first, "life", "people", "first", "items.json"), "utf8"));
     expect(data.facts[0].accessCount).toBe(1);
     expect(existsSync(join(first, "workspace", "memory-state", "access-buffer.jsonl"))).toBe(true);
+  });
+
+  test("applies native v3 access and rebuilds the decay-aware current projection", () => {
+    root = mkdtempSync(join(tmpdir(), "engram-summary-coordinator-"));
+    const first = join(root, "main");
+    const assertionId = "11111111-1111-4111-8111-111111111111";
+    mkdirSync(join(first, "life", "v3", "assertions"), { recursive: true });
+    mkdirSync(join(first, "memory-state", "kg-v3"), { recursive: true });
+    writeFileSync(join(first, "engram.json"), JSON.stringify({ workspace: { id: "main" } }));
+    writeFileSync(join(first, "memory-state", "kg-v3", "authority.json"), JSON.stringify({
+      schema: "engram.kg-v3-authority.v1", workspaceId: "main", mode: "canary",
+    }));
+    writeFileSync(join(first, "life", "v3", "assertions", `${assertionId}.json`), JSON.stringify({
+      schema: "engram.kg-assertion.v3-mvp", id: assertionId, workspaceId: "main",
+      entityId: "people/example", entityType: "person", kind: "decision", predicate: "deliveryPolicy",
+      object: { type: "string", value: "Use concise delivery" }, scope: ["personal"],
+      lifecycle: { status: "active", replacesId: null, supersededById: null, changedAt: "2026-06-01T00:00:00.000Z" },
+      provenance: { sourceKind: "user_message", sessionKey: "main", messageId: "1", actorId: "owner", operationId: `sha256:${"1".repeat(64)}`, observedAt: "2026-06-01T00:00:00.000Z" },
+      createdAt: "2026-06-01T00:00:00.000Z",
+    }));
+    recordKgV3AccessEvent({ workspace: first, workspaceId: "main", sessionKey: "main", messageId: "8554", assertionIds: [assertionId], observedAt: new Date().toISOString() });
+    const proc = Bun.spawnSync(["bun", SCRIPT, "--workspace", first, "--json"], {
+      cwd: ENGRAM_DIR,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.exitCode, proc.stderr.toString()).toBe(0);
+    const report = JSON.parse(proc.stdout.toString());
+    expect(report.workspaces[0].access).toMatchObject({ applied: 1, assertionTouches: 1 });
+    expect(report.workspaces[0].projection).toMatchObject({ included: 1, hot: 1 });
+    expect(readFileSync(join(first, "life", "v3", "current-summary.md"), "utf8")).toContain(assertionId);
+    const state = JSON.parse(readFileSync(join(first, "memory-state", "kg-v3", "access", "state.json"), "utf8"));
+    expect(state.assertions[assertionId].accessCount).toBe(1);
   });
 });

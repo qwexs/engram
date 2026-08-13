@@ -55,8 +55,15 @@ const grantSessionKey = values["grant-session-key"] || "main";
 if (typeof workspaceId !== "string" || !workspaceId) throw new Error("workspace id is required");
 
 async function buildPlugin() {
-  const entry = join(repository, "integrations", "openclaw-kg-v3", "index.ts");
-  const result = await Bun.build({ entrypoints: [entry], target: "node", format: "esm", external: ["openclaw/plugin-sdk/core"], minify: false, sourcemap: "none", write: false });
+  const previousWorkingDirectory = process.cwd();
+  const result = await (async () => {
+    try {
+      process.chdir(repository);
+      return await Bun.build({ entrypoints: ["./integrations/openclaw-kg-v3/index.ts"], target: "node", format: "esm", external: ["openclaw/plugin-sdk/core"], minify: false, sourcemap: "none", write: false });
+    } finally {
+      process.chdir(previousWorkingDirectory);
+    }
+  })();
   if (!result.success || result.outputs.length !== 1) throw new Error(`plugin build failed: ${result.logs.map(String).join("; ")}`);
   const bytes = Buffer.from(await result.outputs[0].arrayBuffer());
   return { bytes, digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}` as `sha256:${string}` };

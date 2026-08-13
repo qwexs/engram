@@ -21,6 +21,7 @@ const { positionals, values } = parseArgs({
     "approved-by": { type: "string" },
     "ack-plugin-install": { type: "boolean", default: false },
     "ack-gateway-restarted": { type: "boolean", default: false },
+    "ack-loaded-plugin-readback": { type: "boolean", default: false },
     "ack-live-ingress": { type: "boolean", default: false },
     "ack-live-ingress-rollback": { type: "boolean", default: false },
     help: { type: "boolean", short: "h", default: false },
@@ -33,7 +34,8 @@ if (values.help || !positionals[0]) {
 
 plan      Read-only readiness and exact plugin bundle digest
 install   Build and install the global plugin dormant (requires --ack-plugin-install)
-activate  Write the main-only live projection after restart (requires --ack-gateway-restarted --ack-live-ingress)
+activate  Write the live projection after restart or unchanged-plugin read-back
+          (requires --ack-live-ingress plus --ack-gateway-restarted or --ack-loaded-plugin-readback)
 status    Read back source/installed plugin digests and local projection
 rollback  Disable the local projection, preserving all data/evidence (requires --ack-live-ingress-rollback)
 
@@ -108,7 +110,7 @@ if (command === "plan") {
   if (readBack.diagnostics.length > 0) throw new Error(`installed plugin diagnostics are not clean: ${JSON.stringify(readBack.diagnostics)}`);
   console.log(JSON.stringify({ schema: "engram.kg-v3-live-ingress-install.v1", status: "installed-dormant", pluginDigest: bundle.digest, plugin: readBack, projection: localProjection(), gatewayRestartRequired: true }, null, 2));
 } else if (command === "activate") {
-  if (values["ack-gateway-restarted"] !== true) throw new Error("activation requires --ack-gateway-restarted");
+  if (values["ack-gateway-restarted"] !== true && values["ack-loaded-plugin-readback"] !== true) throw new Error("activation requires --ack-gateway-restarted or --ack-loaded-plugin-readback");
   const approvedBy = values["approved-by"];
   if (!approvedBy) throw new Error("activation requires --approved-by");
   const plugin = inspectPlugin();

@@ -26,7 +26,7 @@ export function resolveKgDefaultContext(options: { workspace: string; workspaceI
   const context = JSON.parse(readFileSync(contextPath, "utf8")) as KgDefaultContextV1;
   const marker = JSON.parse(readFileSync(authorityPath, "utf8")) as KgAuthorityMarkerV1;
   if (context.schema !== "engram.kg-v3-default-context.v1" || context.workspaceId !== options.workspaceId || context.mode !== "v3-current" || !/^sha256:[a-f0-9]{64}$/.test(context.releaseDigest)) throw new Error("invalid KG v3 default-context manifest");
-  if (marker.schema !== KG_V3_AUTHORITY_SCHEMA || marker.workspaceId !== options.workspaceId || marker.mode !== "canary" || marker.releaseDigest !== context.releaseDigest || marker.schemaDigest !== KG_V3_SCHEMA_DIGEST) throw new Error("KG v3 default-context authority mismatch");
+  if (marker.schema !== KG_V3_AUTHORITY_SCHEMA || marker.workspaceId !== options.workspaceId || !["canary", "enabled"].includes(marker.mode) || marker.releaseDigest !== context.releaseDigest || marker.schemaDigest !== KG_V3_SCHEMA_DIGEST) throw new Error("KG v3 default-context authority mismatch");
   if (defaultContextArchiveLeakage(context)) throw new Error("KG v3 default-context archive leakage");
   if (context.sources.length !== 1 || context.sources[0] !== "life/v3/current-summary.md") throw new Error("KG v3 default-context source is not canonical current projection");
   return { mode: "v3-current", sources: [...context.sources], archiveIncludedInDefault: false };

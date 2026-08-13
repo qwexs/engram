@@ -7,6 +7,7 @@ import {
   kgCanaryDigest, planKgCanary, recordCanaryExplicitReceipt, resolveKgDefaultContext, rollbackKgCanary,
   executeKgCanaryReplay, planKgCanaryReplay,
   TrustedInboundVerifier, TrustedKgRuntime, KG_V3_CANARY_RELEASE_FILES,
+  KG_V3_SCHEMA_DIGEST,
   computeKgCanaryReleaseDigest,
   type KgCanaryManifestV1, type KgWriteRequest, type TrustedKgCallerContext,
 } from "./index.ts";
@@ -87,6 +88,22 @@ describe("PR3 canary control plane", () => {
     expect(() => rollbackKgCanary({ ...h.options, acknowledge: true })).not.toThrow();
   });
 
+  test("main canary can re-attest a new release and rollback to the prior active release", async () => {
+    const h = fixture();
+    const authorityPath = join(h.workspace, "memory-state", "kg-v3", "authority.json");
+    const contextPath = join(h.workspace, "memory-state", "kg-v3", "default-context.json");
+    const priorRelease = `sha256:${"0".repeat(64)}`;
+    const priorAuthority = { schema: "engram.kg-v3-authority.v1", workspaceId: "main", releaseDigest: priorRelease, schemaDigest: KG_V3_SCHEMA_DIGEST, mode: "canary", enabledSessionCapabilities: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }], currentProjectionVersion: 1, approvedBy: "operator", approvedAt: "2026-08-11T15:00:00Z" };
+    const priorContext = { schema: "engram.kg-v3-default-context.v1", workspaceId: "main", releaseDigest: priorRelease, mode: "v3-current", sources: ["life/v3/current-summary.md"], archiveIncludedInDefault: false, switchedAt: "2026-08-11T15:00:00Z" };
+    json(authorityPath, priorAuthority);
+    json(contextPath, priorContext);
+    await beginKgCanary({ ...h.options, acknowledge: true });
+    expect(JSON.parse(readFileSync(authorityPath, "utf8")).releaseDigest).toBe(h.manifest.releaseDigest);
+    rollbackKgCanary({ ...h.options, acknowledge: true });
+    expect(JSON.parse(readFileSync(authorityPath, "utf8"))).toEqual(priorAuthority);
+    expect(JSON.parse(readFileSync(contextPath, "utf8"))).toEqual(priorContext);
+  });
+
   test("replay plan writes nothing, execute requires ack, and forged grants fail closed", async () => {
     const h = fixture();
     const options = { ...h.options, runtimeGrantsPath: h.runtimeGrantsPath };
@@ -164,6 +181,23 @@ describe("PR3 canary control plane", () => {
     expect(result).toMatchObject({ status: "rolled_back", readBack: true, assertionsPreserved: true, operationsPreserved: true });
     expect(existsSync(join(h.workspace, "memory-state", "kg-v3", "authority.json"))).toBe(false);
     expect(existsSync(join(h.workspace, "memory-state", "kg-v3", "default-context.json"))).toBe(false);
+  });
+
+  test("fleet rollout uses curated seed, enables authority, and retires seed capability", async () => {
+    const h = fixture();
+    h.manifest.rolloutPhase = "fleet";
+    h.manifest.explicitRequests = [];
+    h.manifest.explicitRequestManifestDigest = kgCanaryDigest([]);
+    json(h.manifestPath, h.manifest);
+    expect(planKgCanary(h.options)).toMatchObject({ rolloutPhase: "fleet", explicitRequestCount: 0, mutatesWorkspace: false });
+    await beginKgCanary({ ...h.options, acknowledge: true });
+    expect(JSON.parse(readFileSync(join(h.workspace, "memory-state", "kg-v3", "authority.json"), "utf8")).mode).toBe("enabled");
+    const report = await finalizeKgCanary({ ...h.options, acknowledge: true });
+    expect(report).toMatchObject({ status: "passed", rolloutPhase: "fleet", explicitReceipts: [] });
+    const marker = JSON.parse(readFileSync(join(h.workspace, "memory-state", "kg-v3", "authority.json"), "utf8"));
+    expect(marker.mode).toBe("enabled");
+    expect(marker.enabledSessionCapabilities).toEqual([{ sessionKey: "main", capabilities: ["kg:v3:write", "kg:v3:retract"] }]);
+    expect(resolveKgDefaultContext({ workspace: h.workspace, workspaceId: "main" }).mode).toBe("v3-current");
   });
 
   test("benchmark stop restores control plane while preserving committed stores", async () => {

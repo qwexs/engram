@@ -20,6 +20,7 @@ export class KgCanaryError extends Error {
 
 export interface KgCanaryManifestV1 {
   schema: "engram.kg-v3-canary.v1";
+  rolloutPhase?: "main-canary" | "fleet";
   workspaceId: string;
   releaseDigest: `sha256:${string}`;
   registryDigest: `sha256:${string}`;
@@ -123,7 +124,10 @@ function validate(options: KgCanaryOptions) {
   const manifestPath = inside(workspace, options.manifestPath);
   const manifest = readObject<KgCanaryManifestV1>(manifestPath);
   if (manifest.schema !== "engram.kg-v3-canary.v1" || manifest.workspaceId !== options.workspaceId || !/^sha256:[a-f0-9]{64}$/.test(manifest.releaseDigest) || !/^sha256:[a-f0-9]{64}$/.test(manifest.runtimeGrantsDigest)) throw new KgCanaryError("MANIFEST_INVALID", "canary manifest identity is invalid");
-  if (!Array.isArray(manifest.seedRequests) || manifest.seedRequests.length === 0 || !Array.isArray(manifest.explicitRequests) || manifest.explicitRequests.length < 20 || manifest.explicitRequests.length > 30) throw new KgCanaryError("MANIFEST_INVALID", "seed is required and explicit request manifest must contain exactly 20-30 requests");
+  const rolloutPhase = manifest.rolloutPhase || "main-canary";
+  if (!Array.isArray(manifest.seedRequests) || manifest.seedRequests.length === 0 || !Array.isArray(manifest.explicitRequests)) throw new KgCanaryError("MANIFEST_INVALID", "seed and explicit request manifests are required");
+  if (rolloutPhase === "main-canary" && (manifest.explicitRequests.length < 20 || manifest.explicitRequests.length > 30)) throw new KgCanaryError("MANIFEST_INVALID", "main canary explicit request manifest must contain exactly 20-30 requests");
+  if (rolloutPhase === "fleet" && manifest.explicitRequests.length !== 0) throw new KgCanaryError("MANIFEST_INVALID", "fleet rollout must use curated seed only; live user assertions are admitted only from their own source turns");
   if (kgCanaryDigest(manifest.seedRequests) !== manifest.seedManifestDigest || kgCanaryDigest(manifest.explicitRequests) !== manifest.explicitRequestManifestDigest) throw new KgCanaryError("MANIFEST_DIGEST_MISMATCH", "seed or explicit request manifest digest mismatch");
   const canaryPaths = paths(workspace, manifest.releaseDigest);
   const registryPath = inside(workspace, options.registryPath || canaryPaths.registry);
@@ -133,7 +137,7 @@ function validate(options: KgCanaryOptions) {
   if (manifest.benchmark.workspaceId !== options.workspaceId) throw new KgCanaryError("WORKSPACE_MISMATCH", "benchmark workspace mismatch");
   const releaseDigest = computeKgCanaryReleaseDigest(resolve(import.meta.dir, "..", ".."));
   if (releaseDigest !== manifest.releaseDigest) throw new KgCanaryError("RELEASE_DIGEST_MISMATCH", "manifest release digest does not match loaded KG v3 bundle");
-  return { workspace, manifestPath, manifest, registryPath, registryRaw, canaryPaths };
+  return { workspace, manifestPath, manifest, rolloutPhase, registryPath, registryRaw, canaryPaths };
 }
 
 export function currentKgCanaryReleaseDigest(): `sha256:${string}` {
@@ -158,7 +162,23 @@ export function recordCanaryExplicitReceipt(options: KgCanaryOptions & { operati
   if (operation.payloadDigest !== requestDigest) throw new KgCanaryError("RECEIPT_INVALID", "operation payload does not match approved request manifest");
   const assertionPath = join(value.workspace, "life", "v3", "assertions", `${operation.assertionId}.json`);
   const assertion = readObject<any>(assertionPath);
-  if (kgCanaryDigest(assertion) !== kgCanaryDigest(operation.assertionAfter)) throw new KgCanaryError("RECEIPT_INVALID", "assertion store does not match journal");
+  const exactStoreMatch = kgCanaryDigest(assertion) === kgCanaryDigest(operation.assertionAfter);
+  const { lifecycle: storedLifecycle, ...storedImmutable } = assertion;
+  const { lifecycle: journalLifecycle, ...journalImmutable } = operation.assertionAfter;
+  let validSupersession = false;
+  if (!exactStoreMatch && storedLifecycle?.status === "superseded" && typeof storedLifecycle.supersededById === "string") {
+    const successorPath = join(value.workspace, "life", "v3", "assertions", `${storedLifecycle.supersededById}.json`);
+    if (existsSync(successorPath)) {
+      const successor = readObject<any>(successorPath);
+      validSupersession = kgCanaryDigest(storedImmutable) === kgCanaryDigest(journalImmutable)
+        && storedLifecycle.replacesId === journalLifecycle.replacesId
+        && successor.lifecycle?.replacesId === assertion.id
+        && successor.workspaceId === assertion.workspaceId
+        && successor.entityId === assertion.entityId
+        && successor.predicate === assertion.predicate;
+    }
+  }
+  if (!exactStoreMatch && !validSupersession) throw new KgCanaryError("RECEIPT_INVALID", "assertion store does not match journal or a valid supersession chain");
   const existing: KgCanaryReceiptLedgerV1 = existsSync(value.canaryPaths.ledger) ? readObject(value.canaryPaths.ledger) : { schema: "engram.kg-v3-canary-receipts.v1", workspaceId: options.workspaceId, releaseDigest: value.manifest.releaseDigest, explicitRequestManifestDigest: value.manifest.explicitRequestManifestDigest, entries: [] };
   if (existing.workspaceId !== options.workspaceId || existing.releaseDigest !== value.manifest.releaseDigest || existing.explicitRequestManifestDigest !== value.manifest.explicitRequestManifestDigest) throw new KgCanaryError("LEDGER_MISMATCH", "explicit receipt ledger identity mismatch");
   const prior = existing.entries.find((entry) => entry.operationId === options.operationId);
@@ -174,12 +194,15 @@ export function planKgCanary(options: KgCanaryOptions) {
   const value = validate(options);
   return {
     schema: "engram.kg-v3-canary-plan.v1",
+    rolloutPhase: value.rolloutPhase,
     workspaceId: options.workspaceId,
     releaseDigest: value.manifest.releaseDigest,
     schemaDigest: KG_V3_SCHEMA_DIGEST,
     seedCount: value.manifest.seedRequests.length,
     explicitRequestCount: value.manifest.explicitRequests.length,
-    actions: ["begin:backup-v2-and-projection", "begin:write-canary-marker", "begin:apply-curated-seed", "collect:20-30-trusted-explicit-receipts", "finalize:run-essential-benchmark", "finalize:switch-default-context", "read-back", "rollback-drill"],
+    actions: value.rolloutPhase === "main-canary"
+      ? ["begin:backup-v2-and-projection", "begin:write-canary-marker", "begin:apply-curated-seed", "collect:20-30-trusted-explicit-receipts", "finalize:run-essential-benchmark", "finalize:switch-default-context", "read-back", "rollback-drill"]
+      : ["begin:backup-v2-and-projection", "begin:write-enabled-marker", "begin:apply-curated-seed", "finalize:run-essential-benchmark", "finalize:switch-default-context", "read-back", "rollback-drill"],
     markerPath: value.canaryPaths.authority,
     contextPath: value.canaryPaths.context,
     reportPath: value.canaryPaths.report,
@@ -198,7 +221,10 @@ export async function beginKgCanary(options: KgCanaryOptions & { acknowledge?: b
   const { manifest, canaryPaths } = value;
   if (existsSync(canaryPaths.authority)) {
     const current = readObject<KgAuthorityMarkerV1>(canaryPaths.authority);
-    if (current.workspaceId !== options.workspaceId || current.schemaDigest !== KG_V3_SCHEMA_DIGEST || current.releaseDigest !== manifest.releaseDigest || current.mode !== "legacy-contained") throw new KgCanaryError("MARKER_DRIFT", "existing authority marker does not match safe pre-canary state");
+    const legacyContained = current.mode === "legacy-contained" && current.releaseDigest === manifest.releaseDigest;
+    const mainReleaseTransition = value.rolloutPhase === "main-canary" && current.mode === "canary";
+    const fleetReleaseTransition = value.rolloutPhase === "fleet" && current.mode === "enabled";
+    if (current.schema !== KG_V3_AUTHORITY_SCHEMA || current.workspaceId !== options.workspaceId || current.schemaDigest !== KG_V3_SCHEMA_DIGEST || !/^sha256:[a-f0-9]{64}$/.test(current.releaseDigest) || (!legacyContained && !mainReleaseTransition && !fleetReleaseTransition)) throw new KgCanaryError("MARKER_DRIFT", "existing authority marker does not match safe pre-rollout state");
   }
   const backup = { schema: "engram.kg-v3-canary-backup.v1", workspaceId: options.workspaceId, releaseDigest: manifest.releaseDigest, inventory: inventory(value.workspace), authority: backupFile(canaryPaths.authority), context: backupFile(canaryPaths.context), createdAt: options.now || new Date().toISOString() };
   let persistedBackup = backup;
@@ -207,7 +233,7 @@ export async function beginKgCanary(options: KgCanaryOptions & { acknowledge?: b
     if (prior.workspaceId !== backup.workspaceId || prior.releaseDigest !== backup.releaseDigest || prior.inventory.digest !== backup.inventory.digest || prior.authority.digest !== backup.authority.digest || prior.context.digest !== backup.context.digest) throw new KgCanaryError("BACKUP_DRIFT", "existing backup does not match current pre-activation state");
     persistedBackup = prior;
   } else atomicJson(canaryPaths.backup, backup);
-  const marker: KgAuthorityMarkerV1 = { schema: KG_V3_AUTHORITY_SCHEMA, workspaceId: options.workspaceId, releaseDigest: manifest.releaseDigest, schemaDigest: KG_V3_SCHEMA_DIGEST, mode: "canary", enabledSessionCapabilities: manifest.enabledSessionCapabilities, currentProjectionVersion: 1, approvedBy: manifest.approvedBy, approvedAt: manifest.approvedAt };
+  const marker: KgAuthorityMarkerV1 = { schema: KG_V3_AUTHORITY_SCHEMA, workspaceId: options.workspaceId, releaseDigest: manifest.releaseDigest, schemaDigest: KG_V3_SCHEMA_DIGEST, mode: value.rolloutPhase === "fleet" ? "enabled" : "canary", enabledSessionCapabilities: manifest.enabledSessionCapabilities, currentProjectionVersion: 1, approvedBy: manifest.approvedBy, approvedAt: manifest.approvedAt };
   if (!marker.enabledSessionCapabilities.some((entry) => entry.capabilities.includes("kg:v3:seed"))) throw new KgCanaryError("SEED_CAPABILITY_MISSING", "canary marker must explicitly enable seed capability");
   atomicJson(canaryPaths.authority, marker);
   const core = new KgV3Core({ workspace: value.workspace, workspaceId: options.workspaceId, registryPath: value.registryPath, authorityPath: canaryPaths.authority });
@@ -235,14 +261,15 @@ export async function finalizeKgCanary(options: KgCanaryOptions & { acknowledge?
   const plan = planKgCanary(options);
   const { manifest, canaryPaths } = value;
   const state = readObject<any>(canaryPaths.canaryState);
-  if (state.schema !== "engram.kg-v3-canary-state.v1" || state.workspaceId !== options.workspaceId || state.releaseDigest !== manifest.releaseDigest || state.manifestDigest !== kgCanaryDigest(manifest) || state.status !== "collecting") throw new KgCanaryError("CANARY_STATE_MISMATCH", "canary is not collecting the exact approved manifest");
+  if (state.schema !== "engram.kg-v3-canary-state.v1" || state.workspaceId !== options.workspaceId || state.releaseDigest !== manifest.releaseDigest || state.manifestDigest !== kgCanaryDigest(manifest) || state.status !== "collecting") throw new KgCanaryError("CANARY_STATE_MISMATCH", "rollout is not collecting the exact approved manifest");
   const marker = readObject<KgAuthorityMarkerV1>(canaryPaths.authority);
-  if (marker.mode !== "canary" || marker.workspaceId !== options.workspaceId || marker.releaseDigest !== manifest.releaseDigest || marker.schemaDigest !== KG_V3_SCHEMA_DIGEST) throw new KgCanaryError("MARKER_DRIFT", "canary authority read-back mismatch");
+  const expectedMode = value.rolloutPhase === "fleet" ? "enabled" : "canary";
+  if (marker.mode !== expectedMode || marker.workspaceId !== options.workspaceId || marker.releaseDigest !== manifest.releaseDigest || marker.schemaDigest !== KG_V3_SCHEMA_DIGEST) throw new KgCanaryError("MARKER_DRIFT", "rollout authority read-back mismatch");
   const backup = readObject<any>(canaryPaths.backup);
   if (state.backupDigest !== kgCanaryDigest(backup)) throw new KgCanaryError("BACKUP_MISMATCH", "canary backup digest does not match collecting state");
   const ledger = existsSync(canaryPaths.ledger) ? readObject<KgCanaryReceiptLedgerV1>(canaryPaths.ledger) : null;
   const declared = new Set<string>(manifest.explicitRequests.map((request) => request.assertion.provenance.operationId));
-  if (!ledger || ledger.releaseDigest !== manifest.releaseDigest || ledger.entries.length < 20 || ledger.entries.length > 30 || ledger.entries.length !== declared.size || ledger.entries.some((entry) => !declared.has(entry.operationId) || entry.humanApproved !== true || entry.provenanceComplete !== true)) {
+  if (value.rolloutPhase === "main-canary" && (!ledger || ledger.releaseDigest !== manifest.releaseDigest || ledger.entries.length < 20 || ledger.entries.length > 30 || ledger.entries.length !== declared.size || ledger.entries.some((entry) => !declared.has(entry.operationId) || entry.humanApproved !== true || entry.provenanceComplete !== true))) {
     restoreControlPlane(canaryPaths, backup);
     throw new KgCanaryError("EXPLICIT_LEDGER_INCOMPLETE", "20-30 trusted explicit terminal receipts are required before benchmark");
   }
@@ -264,6 +291,14 @@ export async function finalizeKgCanary(options: KgCanaryOptions & { acknowledge?
     archiveIncludedInDefault: manifest.benchmark.proposedDefaultContext.archiveIncludedInDefault,
     switchedAt: options.now || new Date().toISOString(),
   };
+  if (value.rolloutPhase === "fleet") {
+    atomicJson(canaryPaths.authority, {
+      ...marker,
+      enabledSessionCapabilities: marker.enabledSessionCapabilities
+        .map((entry) => ({ ...entry, capabilities: entry.capabilities.filter((capability) => capability !== "kg:v3:seed") }))
+        .filter((entry) => entry.capabilities.length > 0),
+    });
+  }
   atomicJson(canaryPaths.context, context);
   const markerReadback = readObject<KgAuthorityMarkerV1>(canaryPaths.authority);
   const contextReadback = readObject<typeof context>(canaryPaths.context);
@@ -271,7 +306,7 @@ export async function finalizeKgCanary(options: KgCanaryOptions & { acknowledge?
     restoreControlPlane(canaryPaths, backup);
     throw new KgCanaryError("READBACK_FAILED", "canary read-back failed closed");
   }
-  const report = { schema: "engram.kg-v3-canary-readback.v1", status: "passed", workspaceId: options.workspaceId, releaseDigest: manifest.releaseDigest, markerDigest: kgCanaryDigest(markerReadback), contextDigest: kgCanaryDigest(contextReadback), seedReceipts: state.seedReceipts, explicitReceipts: ledger.entries, benchmark, projectionSwitched: true, archiveLeakage: benchmark.archiveLeakage };
+  const report = { schema: "engram.kg-v3-canary-readback.v1", status: "passed", rolloutPhase: value.rolloutPhase, workspaceId: options.workspaceId, releaseDigest: manifest.releaseDigest, markerDigest: kgCanaryDigest(markerReadback), contextDigest: kgCanaryDigest(contextReadback), seedReceipts: state.seedReceipts, explicitReceipts: ledger?.entries || [], benchmark, projectionSwitched: true, archiveLeakage: benchmark.archiveLeakage };
   atomicJson(canaryPaths.report, report);
   atomicJson(canaryPaths.canaryState, { ...state, status: "finalized", finalizedAt: options.now || new Date().toISOString(), reportDigest: kgCanaryDigest(report) });
   return report;

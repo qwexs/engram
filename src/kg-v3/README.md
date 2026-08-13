@@ -68,6 +68,12 @@ At a valid `canary` or `enabled` marker, `scripts/memory-write.js` blocks legacy
 fact mutation. The typed API still requires both trusted caller capability and
 the same capability enabled for that exact session in the marker.
 
+Automatic session/daily extraction, domain Promotions, and legacy OLL
+promotion are permanently non-mutating in canonical code; no configuration
+value can restore those v2 writer calls. The remaining direct
+`scripts/memory-write.js` entrypoint exists only for workspaces that have not
+completed typed fleet rollout and must be physically retired after their gate.
+
 `scripts/kg-v3-tool.ts --context` is an operator/test harness, not a trusted
 agent boundary. Production ingress must construct `TrustedKgCallerContext` in
 the runtime adapter from verified inbound metadata and call the typed core API.
@@ -121,6 +127,9 @@ bun scripts/kg-v3-live-ingress.ts activate --workspace /opt/openclaw/workspace -
   --approved-by '<authority>' --ack-gateway-restarted --ack-live-ingress
 bun scripts/kg-v3-live-ingress.ts status --workspace /opt/openclaw/workspace --workspace-id main
 ```
+
+The rollout CLI always builds from the canonical repository working directory;
+plugin digest verification is independent of the caller's current directory.
 
 Rollback disables only the local live projection and preserves assertions,
 operation journals, canary evidence, and the v3 read projection. Installing the

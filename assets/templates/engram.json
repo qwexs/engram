@@ -5,9 +5,6 @@
     "id": "{AGENT_ID}"
   },
   "agent": "agent-{AGENT_ID}",
-  "kg": {
-    "automaticIngress": "disabled"
-  },
   "qmd": {
     "command": "qmd",
     "localIndex": true,

@@ -26,8 +26,6 @@ const DEFAULT_STATE = {
   lastChecks: { email: null, calendar: null, weather: null },
   heartbeatInProgress: false,
   heartbeatLockedAt: null,
-  subagentExtraction: false,
-  extractionModel: null, // populated from engram.json -> models.default at runtime
   lastExtraction: {},
   lastDomainScan: null,
   pendingObservations: 0,

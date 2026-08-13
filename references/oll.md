@@ -176,22 +176,15 @@ bun skills/engram/scripts/memory-tension.js \
 
 **Types:** `factual` (default), `temporal`, `priority`
 
-## Promoting or Archiving Observations
+## Archiving Observations
 
 ```bash
-# Promote obs → KG fact (with backlink)
-bun skills/engram/scripts/memory-promote.js \
-  --obs-id obs-0002 --entity "projects/engram" \
-  --fact "Extraction finds no facts in heartbeat-only daily notes" \
-  --category context --confidence 0.8 --abstraction pattern \
-  --tags "extraction,heartbeat" [--dry-run]
-
-# Archive (noise, status report, resolved friction)
 bun skills/engram/scripts/memory-promote.js --archive \
   --obs-id obs-0003 --reason "domain status report, not friction"
 ```
 
-**Backlink:** promoted KG fact gets `source: obs-id`; obs file gets `kgFactId`.
+Observation → KG promotion is retired. A durable assertion requires explicit
+typed KG v3 ingress from an authorized user turn.
 
 ## OLL Rethink Trigger (Heartbeat Phase 5 + Phase 5.5)
 

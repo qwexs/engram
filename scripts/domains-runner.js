@@ -8,7 +8,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { resolveAutomaticIngress } from "./config.js";
 
 const EXPECTED_FILES_BY_TYPE = {
   "dev-project": ["decisions.md", "workflow.md", "status.md", "changelog.md"],
@@ -566,18 +565,6 @@ function normalizeChangelogEntries(entries, runId) {
   });
 }
 
-function validatePromotions(promotions) {
-  if (promotions == null) return [];
-  if (!Array.isArray(promotions)) throw new Error("Promotions must be a JSON array");
-  return promotions.map((item, index) => {
-    if (!item || typeof item !== "object") throw new Error("Promotions entries must be objects");
-    for (const key of ["entity", "fact", "category", "confidence"]) {
-      if (item[key] == null || item[key] === "") throw new Error("Promotions[" + index + "] missing " + key);
-    }
-    return item;
-  });
-}
-
 function getPath(obj, dotted) {
   return dotted.split(".").reduce((cur, key) => cur && cur[key], obj);
 }
@@ -592,33 +579,12 @@ function setPath(obj, dotted, value) {
   cur[keys[keys.length - 1]] = value;
 }
 
-async function runPromotion(commandRunner, scriptsDir, workspace, item, source) {
-  const args = ["bun", join(scriptsDir, "memory-write.js"),
-    "--entity", String(item.entity),
-    "--fact", String(item.fact),
-    "--category", String(item.category),
-    "--confidence", String(item.confidence),
-    "--source", source,
-  ];
-  if (item.description) args.push("--description", String(item.description));
-  if (item.abstraction) args.push("--abstraction", String(item.abstraction));
-  if (item.tags) args.push("--tags", Array.isArray(item.tags) ? item.tags.join(",") : String(item.tags));
-  if (["preference", "decision", "correction"].includes(String(item.category))) args.push("--check-contradictions");
-  const res = await commandRunner(args, {
-    cwd: workspace,
-    env: { ...process.env, ENGRAM_WORKSPACE: workspace },
-  });
-  return Boolean(res?.ok);
-}
-
 export async function applyDomainWriteHandoff(handoff, {
   workspace,
   statePath,
   now = new Date().toISOString(),
   dryRun = false,
   selectedDomain = null,
-  commandRunner = null,
-  scriptsDir = dirname(new URL(import.meta.url).pathname),
 } = {}) {
   const root = resolve(workspace || process.env.ENGRAM_WORKSPACE || process.cwd());
   const domainsRoot = resolve(root, "memory", "domains");
@@ -811,7 +777,8 @@ export async function applyDomainWriteHandoff(handoff, {
   const entries = earlyEntries.length === 0
     ? normalizeChangelogEntries(parseJsonStrict(parseHandoffField(handoff.body, "Changelog-Entries") ?? "[]", "Changelog-Entries"), runId)
     : earlyEntries;
-  const promotions = validatePromotions(parseJsonStrict(parseHandoffField(handoff.body, "Promotions") ?? "[]", "Promotions"));
+  const promotions = parseJsonStrict(parseHandoffField(handoff.body, "Promotions") ?? "[]", "Promotions");
+  if (!Array.isArray(promotions)) throw new Error("Promotions must be a JSON array");
   const proposedDecisions = parseJsonStrict(parseHandoffField(handoff.body, "Proposed-Decisions") ?? "[]", "Proposed-Decisions");
   const proposedWorkflow = parseJsonStrict(parseHandoffField(handoff.body, "Proposed-Workflow") ?? "[]", "Proposed-Workflow");
 
@@ -823,14 +790,8 @@ export async function applyDomainWriteHandoff(handoff, {
   }).join("");
   if (Buffer.byteLength(appendText, "utf8") > MAX_CHANGELOG_APPEND_BYTES) throw new Error("Changelog append exceeds size limit");
 
-  let promotedFacts = 0;
-  const suppressPromotions = resolveAutomaticIngress(root) === "disabled";
-  const suppressedPromotions = suppressPromotions ? promotions.length : 0;
-  if (!dryRun && !suppressPromotions && promotions.length && commandRunner) {
-    for (const item of promotions) {
-      if (await runPromotion(commandRunner, scriptsDir, root, item, domain + ":" + runId)) promotedFacts++;
-    }
-  }
+  const promotedFacts = 0;
+  const suppressedPromotions = promotions.length;
 
   const hasRealWork = entries.length > 0 || statusContent != null;
   if (!dryRun) {

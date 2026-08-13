@@ -158,7 +158,7 @@ describe("init.js — fresh install happy path", () => {
     const config = JSON.parse(readFileSync(join(workspace, "engram.json"), "utf8"));
     expect(config.schemaVersion).toBe(1);
     expect(config.workspace).toEqual({ id: "main" });
-    expect(config.kg).toEqual({ automaticIngress: "disabled" });
+    expect(config.kg).toBeUndefined();
     expect(config.oll).toMatchObject({
       scheduleOwner: "nightly",
       nightly: { enabled: false },

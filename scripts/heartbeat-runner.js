@@ -32,7 +32,6 @@ const DEFAULT_STATE = {
   lastChecks: { email: null, calendar: null, weather: null },
   heartbeatInProgress: false,
   heartbeatLockedAt: null,
-  subagentExtraction: false,
   lastExtraction: {},
   lastSessionExtracted: {},
   lastDomainScan: null,
@@ -77,7 +76,6 @@ if (opts.help || opts.h) {
     "  --label-prefix <prefix>  Prefix for heartbeat subagent labels. Default: hb for main, <agent>-hb otherwise.",
     "  --date <YYYY-MM-DD>      Date override. Default: today in ENGRAM_TZ/TZ.",
     "  --no-embed               Skip qmd embed.",
-    "  --no-semantic-check      Skip QMD semantic dedup inside extract-runner.",
     "  --no-write-extraction    Dry-run extraction writes without advancing watermark.",
     "  --advance-watermark-on-no-write",
     "                           Allow dry-run extraction to advance watermark/session cursor.",
@@ -727,7 +725,6 @@ async function runExtraction(targetSession = session) {
   ];
   const lastSessionFile = state.lastSessionExtracted?.[targetSession];
   if (lastSessionFile) args.push("--last-session-extracted", lastSessionFile);
-  if (opts["no-semantic-check"]) args.push("--no-semantic-check");
   if (opts["no-write-extraction"]) args.push("--no-write");
   if (opts["advance-watermark-on-no-write"]) args.push("--advance-watermark-on-no-write");
 

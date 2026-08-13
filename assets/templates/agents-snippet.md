@@ -7,11 +7,18 @@
 Memory is isolated per session. Group chats **CANNOT** access `MEMORY.md` or `life/` (Knowledge Graph). Each session reads/writes only its own daily notes under `memory/agent-{id}/{session}/`.
 
 ### 2. Write Pipeline
-**NEVER** write `items.json` directly. Always use:
+**NEVER** write `items.json` directly. When KG v3 live ingress is enabled, use
+only `engram_memory_save` / `engram_memory_retract` for one explicit durable
+assertion from the current trusted turn. Do not fall back to the legacy writer
+after typed admission rejects an intent.
+
+For a workspace that has not yet entered the KG v3 rollout, the compatibility
+writer remains:
 ```bash
 bun scripts/memory-write.js --entity "..." --fact "..." --category ... --confidence ...
 ```
-Direct writes bypass dedup, validation, and hash registration, causing schema mismatches. No exceptions — heartbeats, inline extraction, entity creation all go through the pipeline.
+Direct file writes bypass validation and are never allowed. Automatic heartbeat
+or session promotion is retired in every workspace.
 
 ### 3. No-Deletion Rule
 Facts are **NEVER** deleted. To correct or replace a fact, set `status: "superseded"` and link via `supersededBy`. Old facts remain in `items.json` forever.
@@ -46,13 +53,14 @@ Extraction watermark is always the **last line** of the file (completion marker)
 Is this about the agent itself (identity, methodology)?
 ├── YES → **self**: MEMORY.md, SOUL.md, AGENTS.md
 └── NO → Is this durable domain knowledge?
-    ├── YES → **notes**: life/ (via memory-write.js)
+    ├── YES → **notes**: life/ (via typed KG v3 ingress when enabled)
     └── NO → **ops**: memory/ (daily notes, domains)
 
 Content flows: ops → notes/self. Never reverse.
 
 **Route via scripts, not guesswork:**
-- `bun scripts/memory-write.js` → writes to `life/` (notes)
+- `engram_memory_save` / `engram_memory_retract` → canonical typed KG v3 ingress
+- `bun scripts/memory-write.js` → compatibility only before workspace cutover
 - Daily note append → stays in `memory/` (ops)
 - MEMORY.md/SOUL.md edits → self space
 
@@ -61,16 +69,19 @@ Content flows: ops → notes/self. Never reverse.
 - Session logs as KG facts → archival ops data becomes "durable knowledge", QMD noise
 - Heartbeat status in `life/` → "extracted N facts" is NOT a durable fact
 
-### 9. Content Promotion
+### 9. Content Routing
 
-Content moves from ops → notes/self. Never the reverse.
+Durable content is admitted at its trusted source turn. Never promote stored
+ops/session material into KG automatically.
 
-- ops observation proves durable → promote to life/ via memory-write.js
+- explicit durable assertion in a KG v3-enabled source turn → typed ingress
+- unregistered assertion → daily/domain note; extend the registry separately
 - session insight is personally significant → update MEMORY.md
 - life/ fact is NEVER moved back to memory/ (ops)
 - MEMORY.md content is NEVER demoted to daily notes
 
-Direction: ops → life/ or ops → self. One-way only.
+Direction is source turn → typed KG, or source turn → ops/self. No automatic
+ops → KG replay.
 
 ### 10. Space Mixing — What Breaks
 
@@ -103,30 +114,17 @@ Before session closes:
 
 > `<!-- session:end -->` marker is written automatically by the `engram-session-end` hook on `/new` or `/reset`.
 
-### 12. Inline (Real-Time) Extraction
+### 12. Inline Typed Admission
 
 Extract HIGH-signal facts during conversation (don't wait for heartbeat):
-- **HIGH** (preference, decision, correction, milestone, identity, instruction) → `memory-write.js` immediately
+- **HIGH** (preference, decision, correction, milestone, identity, instruction) → typed KG v3 tool immediately when registered
 - **LOW** (context) → daily note only
 - **NONE** (casual) → skip
 
-```bash
-bun scripts/memory-write.js \
-  --entity "people/alice" \
-  --fact "Prefers Bun over Node.js" \
-  --description "Runtime preference affecting all new projects" \
-  --category preference \
-  --confidence 0.9 \
-  --abstraction pattern \
-  --tags "tools,runtime" \
-  --source "YYYY-MM-DD" \
-  --semantic-check \
-  --check-contradictions
-```
-
-**`--check-contradictions`**: add for categories `preference`, `decision`, `correction`. Auto-creates tensions when Jaccard ≥0.5 + ≥3 common keywords. Skip for `milestone`, `status` (time-bounded facts rarely contradict).
-
-Rules: main session only, don't over-extract, when unsure → `confidence: 0.5-0.7` or skip to daily note.
+Rules: main/direct authorized scope only; at most one KG mutation per source
+turn; never store operational progress, test output or a synthetic canary fact.
+If entity or predicate is not registered, keep the intent in daily/domain
+memory and change the registry through a reviewed release.
 
 ### 13. Session Recording (Daily Notes)
 

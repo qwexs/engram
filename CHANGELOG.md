@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **refactor(kg): retire automatic legacy producer branches.** Mechanical
+  session/daily extraction is permanently counts-only, domain and legacy OLL
+  promotions are terminally suppressed, and the old configuration switch can
+  no longer restore those writer calls. A static audit freezes this boundary.
+
+- **fix(kg): make live plugin digest verification path-stable.** The status and
+  rollout CLI now builds from the canonical repository working directory, so
+  identical source bytes produce the same digest regardless of caller cwd.
+
 - **feat(kg): add guarded OpenClaw live-turn ingress for KG v3.** A thin
   plugin binds typed save/retract calls to server-stamped inbound run,
   message, sender, account, and session metadata; each source turn has one
@@ -9,10 +18,10 @@
   installation dormant until explicit activation, with plan, byte read-back,
   readiness, status, and non-destructive rollback tooling.
 
-- **feat(kg): contain legacy automatic KG ingress fleet-wide.** A single
-  fail-closed `kg.automaticIngress` policy now suppresses session/daily
-  extraction, domain promotions and legacy OLL promotions while terminally
-  consuming their checkpoints. Explicit `memory-write.js` remains available.
+- **feat(kg): contain legacy automatic KG ingress fleet-wide.** Session/daily
+  extraction, domain promotions and legacy OLL promotions are suppressed while
+  terminally consuming their checkpoints. Explicit v2 writes remain gated
+  until typed v3 rollout reaches each workspace.
 
 - **feat(cron): add deterministic maintenance primitives.** Global QMD
   maintenance can now be provisioned as an OpenClaw command job rather than

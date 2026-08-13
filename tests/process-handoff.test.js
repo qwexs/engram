@@ -303,7 +303,7 @@ describe("process-handoff.js — automatic OLL promotion containment", () => {
     const observation = JSON.parse(readFileSync(join(OBS_DIR, "obs-0001.json"), "utf8"));
     expect(observation).toMatchObject({
       status: "archived",
-      archiveReason: "automatic KG promotion suppressed by kg.automaticIngress=disabled",
+      archiveReason: "automatic KG promotion retired after KG v3 cutover",
     });
     expect(existsSync(join(WORKSPACE_ROOT, "life"))).toBe(false);
   });

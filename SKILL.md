@@ -116,9 +116,14 @@ For full architecture: [references/architecture.md](references/architecture.md)
 
 ### Writing Memory
 
-**NEVER write `items.json` directly.** Always use `bun skills/engram/scripts/memory-write.js`. Direct writes bypass dedup, validation, and hash registration, causing schema mismatches. No exceptions.
+**NEVER write `items.json` directly.** In a KG v3-enabled workspace, use only
+`engram_memory_save` / `engram_memory_retract` inside the trusted source turn.
+The typed pipeline validates source-turn ownership, registry admission,
+replacement, projection and receipt before commit.
 
-**Pipeline:** content-hash dedup → optional contradiction/semantic check → write fact → validate KG → update QMD.
+`memory-write.js` is a compatibility entrypoint only for workspaces that have
+not entered the typed rollout. Once `memory-state/kg-v3/live-ingress.json` is
+enabled, it must fail closed and must never be used as a fallback.
 
 ```bash
 bun skills/engram/scripts/memory-write.js \
@@ -160,7 +165,8 @@ generate cards automatically, backfill ordinary notes, or add a cron for them.
 - **Entity creation**: when 2+ facts reference same entity, create KG entity
 - **No-Deletion Rule**: facts are NEVER deleted. Set `status: "superseded"` and link via `supersededBy`.
 - Fact Schema: [references/fact-schema.md](references/fact-schema.md)
-- **Domain-first (heartbeat extract):** KG writes only from `main` and `meta-domain` (e.g. General). Topic/project sessions promote via domain files (`hb-domains-write`), not `life/`. Override: `engram.json` → `extraction.kgPolicy` (`domain-first` | `all` | `main-only`).
+- Topic/project sessions remain domain-only. Automatic heartbeat promotion to
+  `life/` is retired and cannot be restored with configuration.
 
 ### Memory Decay
 
@@ -203,30 +209,30 @@ For QMD installation: [references/qmd-setup.md](references/qmd-setup.md)
 > the workspace has an enabled `memory-state/kg-v3/live-ingress.json`, that
 > typed tool is the sole inline KG writer. Use it at most once for an explicit
 > durable user assertion. Do not run `memory-signal.js`, `memory-write.js`, or
-> heartbeat extraction for the same KG intent. Operational/progress/test/status
+> mechanical extraction for the same KG intent. Operational/progress/test/status
 > material still goes to daily/domain stores. If the tool is absent or rejects
 > an unregistered entity/predicate, do not bypass it with the legacy writer.
 
-The legacy v2 inline path below applies only before a guarded KG v3 cutover.
-
-Instead of waiting for heartbeats (up to 30 min), extract high-signal facts **inline during conversations**.
+Automatic session/daily/domain/OLL → KG promotion is retired. High-signal
+facts enter canonical memory only through the typed tool inside the source turn.
 
 ```
-Message → Signal Scan (regex, <10ms) → Classify
-  ├── HIGH (preference, decision, correction, milestone, instruction, identity)
-  │     → Dedup (SHA-256) → Contradiction check → Write to KG → QMD update
-  ├── LOW (context, work) → Daily note → Heartbeat extracts later
-  └── NONE (casual) → Skip
+Message → explicit durable intent?
+  ├── YES + registered typed assertion → engram_memory_save/retract → KG v3
+  ├── YES but unregistered → daily/domain store; extend registry separately
+  └── operational/progress/test/status/casual → daily/domain store or skip
 ```
 
-### Signal Detection
+### Signal Detection (diagnostic only)
 
 ```bash
 bun skills/engram/scripts/memory-signal.js --text "Я предпочитаю TypeScript"
 # → { "signal": "high", "categories": ["preference"], "confidence": 0.88 }
 ```
 
-Supports **Russian and English**. Six categories: `correction`, `preference`, `decision`, `identity`, `instruction`, `milestone`.
+Supports **Russian and English**. Six categories: `correction`, `preference`,
+`decision`, `identity`, `instruction`, `milestone`. This classifier does not
+authorize or perform a KG write.
 
 ### Contradiction Detection
 
@@ -241,11 +247,11 @@ bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "p
 
 ### Rules for Inline Extraction
 
-- Only in **main session** (group chats don't touch KG)
-- HIGH signal → extract immediately via `memory-write.js`
-- LOW signal → daily note only (heartbeat extracts later)
-- Do NOT write extraction watermarks during inline extraction (heartbeat only)
-- Dedup is automatic — duplicates from inline + heartbeat silently skipped
+- Only an authorized primary/meta session receives the typed KG capability.
+- One source turn may perform at most one typed KG mutation.
+- Missing entity/predicate admission is not a reason to use a legacy writer.
+- Mechanical extraction only advances watermarks and reports suppressed counts.
+- Duplicate/replacement behavior belongs to the v3 writer and operation journal.
 
 ## Session Recording
 

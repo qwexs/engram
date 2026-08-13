@@ -1,141 +1,17 @@
-# hb-extract: KG Extraction Subagent
+# HB-EXTRACT — retired
 
-Read this document, then execute the extraction task below.
+The LLM extraction/promotion workflow was retired by the KG v3 cutover.
 
-## Runtime Context (injected by orchestrator)
+`scripts/extract-runner.js` now performs cursor maintenance only:
 
-Daily note: {{daily_note_path}}
-Watermark: {{watermark}}
-Session: {{session}}
-Session files dir: {{session_files_dir}}
-Last session extracted: {{last_session_extracted}}
+- it advances the daily-note watermark and the last processed session file;
+- it does not read conversation bodies for durable-fact classification;
+- it writes zero KG facts;
+- it cannot be re-enabled by `engram.json` flags;
+- it emits the historical `HB-EXTRACT` handoff shape only so existing
+  heartbeat state/report consumers remain compatible during fleet rollout.
 
-## Task
-
-### Phase 1 — Daily Note
-
-1. Read the daily note file at the path above
-2. Rescan high-signal sections in full: Events, Decisions, Learnings, Active Threads. Ignore `## Heartbeat Report` and `## Next`. The EOF `<!-- extracted:L… -->` marker is a completion stamp written by the orchestrator — do not treat it as a mid-file scan cursor (agent content is written above it via daily-note-append.js).
-3. For each durable fact found, write it via memory-write.js (see CLI Reference below). Dedup/skips are expected on re-scan.
-4. Count facts written and facts skipped (dedup)
-5. Note the last line number of the file for the orchestrator watermark
-
-### Phase 2 — Session Files
-
-6. List all `.md` files in `{{session_files_dir}}`. For each file, read line 1 to extract the session timestamp from the header `# Session: YYYY-MM-DD HH:MM:SS UTC`. Sort files by this parsed timestamp (ascending). If a file has no parseable header, fall back to file modification time.
-7. If `{{last_session_extracted}}` is `none` — process all files found
-8. Otherwise — read the header timestamp of `{{last_session_extracted}}` and process only files whose header timestamp is **strictly after** it. Do NOT compare filenames alphabetically — filenames are not guaranteed to sort chronologically.
-9. For each new session file:
-   - Read the file content
-   - Extract durable facts (same rules as Phase 1, same categories)
-   - Focus on HIGH-signal: preferences, decisions, corrections, milestones — skip small talk and transient requests
-   - Skip facts already captured from the daily note (use `--semantic-check` to detect)
-   - Write via memory-write.js
-10. Track the filename of the last processed session file as `last_session_file`
-11. Return the handoff block at the end — **THIS IS MANDATORY. Your response MUST end with the handoff block below. Do NOT output file contents, logs, or anything after the handoff block. If you output anything after `=== END ===`, the orchestrator will fail.**
-
-**Session files isolation:** only read files from `{{session_files_dir}}`. Never read session files from other sessions.
-
-## Domain-first scope
-
-Before extracting to the Knowledge Graph (`life/`), check the session kind:
-
-- **`main`** and **`meta-domain`** (General / director meta) → extract to KG as below.
-- **`topic-thread` and other project/chat domains** → **do not** write KG facts.
-  Those sessions promote via domain files (`hb-domains-write`: decisions/status/changelog).
-  Orchestrator `extract-runner` already skips KG for them and advances the watermark.
-
-If you are the legacy LLM subagent path and the session is a non-meta topic, return a
-handoff with `facts_written: 0` and note domain-first skip — do not invent `life/` facts.
-
-## What to Extract
-
-Durable facts -- things worth remembering across sessions (main / meta only):
-- **relationship** -- people, connections between entities
-- **milestone** -- project events, achievements, completions
-- **status** -- current state of a project/task/person
-- **preference** -- likes, dislikes, tool choices, workflow preferences
-- **context** -- important background information
-- **decision** -- explicit decisions made
-- **correction** -- updates to previous facts (write new fact with correct info)
-
-**Aggressiveness:** err on the side of capturing more. If unsure, extract with lower confidence (0.5-0.7).
-**Skip:** casual chat, transient requests ("show me X"), facts already captured by dedup.
-
-## Confidence Lookup Table
-
-| Signal | Confidence |
-|--------|-----------|
-| User stated directly ("I prefer X") | 1.0 |
-| Explicitly discussed, clear conclusion | 0.85 |
-| Inferred from actions/context | 0.7 |
-| Mentioned in passing | 0.5 |
-
-## Abstraction Levels
-
-- **episode** -- single event (default for most facts)
-- **pattern** -- recurring behavior or preference
-- **principle** -- enduring truth, core value
-
-## memory-write.js CLI Reference
-
-```bash
-bun skills/engram/scripts/memory-write.js \
-  --entity "people/alice" \
-  --fact "Predpochtitaet Bun vmesto Node.js" \
-  --description "Tool preference affecting project setup decisions" \
-  --category preference \
-  --confidence 0.9 \
-  --abstraction pattern \
-  --tags "tools,runtime" \
-  --source "2026-02-22" \
-  --entity-create \
-  --semantic-check \
-  --search-collections "life"
-```
-
-**Required flags:** --entity, --fact, --category, --confidence, --source
-**Optional flags:** --abstraction (default: episode), --tags, --entity-create (creates entity dir if missing)
-**--description:** Why this fact matters / how to find it later (max 150 chars). Enables richer BM25 search with vocabulary different from the fact itself. Use it — it's the discovery-first gate.
-**Valid --category values:** relationship, milestone, status, preference, context, decision, correction
-**--source:** use the daily note date (YYYY-MM-DD)
-**--check-contradictions:** Add this flag for contradiction-prone categories: `preference`, `decision`, `correction`, `tool`. Automatically creates tensions when Jaccard ≥0.5 AND ≥3 common keywords. Skip for `milestone`, `event`, `status` (time-bounded facts rarely contradict).
-
-**Entity routing:** determine the entity path from fact content:
-- People: `people/{name}`
-- Projects: `projects/{name}`
-- Tools/tech: `projects/{name}`
-- If entity doesn't exist, use `--entity-create`
-
-## Rules
-
-1. Extract ALL durable facts from high-signal daily-note sections (full rescan; dedup handles already-written facts)
-2. Use the exact --category values listed above (no variations)
-3. Use the confidence lookup table (no guessing)
-4. Always use `--semantic-check --search-collections "life"` when calling memory-write.js — this catches near-duplicates (same fact, different wording) that content-hash dedup misses. Critical on full re-scan after a prior extract.
-5. Do NOT write watermarks to the daily note -- the orchestrator handles this
-6. Do NOT update heartbeat-state.json -- the orchestrator handles this
-7. Do NOT read or write MEMORY.md, AGENTS.md, or any file outside the extraction task
-8. If no extractable facts found, still return the handoff block with facts_written: 0
-9. For contradiction-prone categories (`preference`, `decision`, `correction`), add `--check-contradictions` to the memory-write.js call. When memory-write.js returns `result.tensions[]` (auto-created tensions), include them in the handoff Tensions field. When memory-write.js reports contradictions in `result.warnings.contradictions` but tensions were not auto-created (similarity 0.3–0.5), you may still include a Tension manually if the contradiction is clear.
-
-## ⚠️ CRITICAL: Handoff Block (REQUIRED — your response MUST end here)
-
-**Do NOT output any file contents, progress logs, or summaries before or after this block.**
-**Do NOT include the daily note text in your response.**
-**Your ONLY output is this handoff block — nothing else.**
-
-Fill in the values:
-
-```
-=== HB-EXTRACT HANDOFF ===
-Status: {ok | error}
-Summary: {one line, e.g. "extracted 3 facts from 2026-02-22.md (L47->L89) + 1 from session files"}
-Stats: {"facts_written": N, "facts_skipped_dedup": N, "new_watermark": "L{last_line_processed}", "last_session_file": "{filename or null}"}
-Flags: {[] — default empty; only add "CANDIDATE_OBS: ..." for genuine extraction anomalies (watermark corruption, repeated dedup failures, schema errors). Do NOT flag: empty daily notes, low content, normal zero-fact extractions.}
-Tensions: {[] or [{"tension": "Contradicts existing fact", "fact1": "new-fact-id", "fact2": "existing-fact-id"}]}
-Alerts: {[] or ["alert text"]}
-=== END ===
-```
-
-
+Canonical durable writes happen only through `engram_memory_save` or
+`engram_memory_retract` inside an authorized trusted source turn. If typed
+admission is unavailable or rejects an unregistered entity/predicate, do not
+fall back to `memory-write.js`.

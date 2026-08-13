@@ -74,8 +74,12 @@ Curated personal wisdom distilled from daily notes during memory maintenance:
 Session Activity
     ↓ daily-note-append.js (during session, explicit recording)
 Daily Notes (raw input)
-    ↓ heartbeat extraction (watermark-based incremental parsing)
-Knowledge Graph (structured facts)
+    ↓ heartbeat mechanical scan (counts + watermark; no KG mutation)
+Daily/domain operational memory
+
+Explicit durable user intent
+    ↓ typed KG v3 ingress + deterministic admission
+Knowledge Graph v3 (canonical assertions)
     ↓ memory maintenance
 MEMORY.md (curated wisdom)
     ↓ weekly synthesis
@@ -86,35 +90,39 @@ summary.md (decay-aware summaries)
 
 **Extraction Watermark:** Heartbeat extraction appends `<!-- extracted:L{N}:{timestamp} -->` at the **end** of each daily note after a successful run. The marker means “extract completed for this note version”, not a mid-file scan cursor.
 
-`daily-note-append.js` writes Events / Decisions / Learnings into named sections near the **top** of the file; Heartbeat Report + watermark sit at the **bottom**. Therefore extract always rescans high-signal sections in full. Already-promoted bullets are skipped by `memory-write.js` hash/semantic dedup (same path as inline extraction). Heartbeat Report and `## Next` are never extraction candidates.
+`daily-note-append.js` writes Events / Decisions / Learnings into named sections
+near the **top** of the file; Heartbeat Report + watermark sit at the **bottom**.
+After KG v3 cutover the heartbeat does not classify those bodies. It only
+advances the completion marker and the last-session cursor; automatic KG
+promotion is retired.
 
-### Domain-first write policy
+### Typed write policy
 
-Consumer sessions do **not** all feed the Knowledge Graph:
+Consumer sessions do **not** automatically feed the Knowledge Graph:
 
-| Session | Primary durable memory | KG extract (`life/`) |
+| Session | Primary durable memory | Typed KG v3 capability |
 |---------|------------------------|----------------------|
-| `main` | daily + KG + MEMORY.md | **yes** |
-| `meta-domain` (e.g. General topic) | domain files + QMD search | **yes** (cross-cutting) |
-| `topic-thread` / project domains | **domain** `decisions` / `status` / `changelog` | **no** (default) |
-| unbound chat sessions | daily notes | **no** (default) |
+| `main` | daily + KG v3 | policy-controlled |
+| `meta-domain` (e.g. General topic) | domain files + QMD search | policy-controlled |
+| `topic-thread` / project domains | **domain** `decisions` / `status` / `changelog` | **no** |
+| unbound chat sessions | daily notes | **no** |
 
-Override: `engram.json` → `extraction.kgPolicy`: `domain-first` (default) | `all` | `main-only`.
-
-Topic signal is promoted by `hb-domains-write`, not by dumping every bullet into `life/`.
+Domain handoffs may still carry a legacy `Promotions` field for compatibility,
+but the applicator terminally suppresses it and never calls a v2 writer.
 
 ### Real-Time Extraction
 
-In addition to heartbeat extraction, high-signal facts are extracted **inline during conversations** (no 30-min delay):
+Explicit durable assertions are written **inline during conversations**:
 
 ```
-Message → Signal Scan (regex, <10ms) → HIGH/LOW/NONE
-  HIGH → Dedup → Write to KG → QMD update
-  LOW  → Daily note → Heartbeat extracts later
-  NONE → Skip
+Message → explicit durable intent?
+  YES + registered typed assertion → deterministic v3 writer
+  YES but unregistered → daily/domain store; registry change is separate
+  operational/casual → daily/domain store or skip
 ```
 
-Inline extraction does NOT write watermarks — heartbeat handles that. Dedup (`memory-write.js`) prevents duplicates from both paths.
+The typed v3 writer owns deduplication, replacements, provenance and replay.
+The mechanical heartbeat scan owns only watermarks and suppression metrics.
 
 ### Write Destinations
 

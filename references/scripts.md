@@ -176,13 +176,14 @@ bun skills/engram/scripts/migrate-v2.js [--dry-run]
 
 Adds missing v2 fields (confidence, abstractionLevel, tags) to all items.json files with sensible defaults.
 
-## memory-signal.js — Signal detection
+## memory-signal.js — Signal detection (diagnostic only)
 
 ```bash
 bun skills/engram/scripts/memory-signal.js --text "I prefer TypeScript"
 ```
 
-Classifies text as high/low/none signal. Regex-based, no LLM, <10ms. Returns categories, keywords, confidence.
+Classifies text as high/low/none signal. Regex-based, no LLM, <10ms. Returns
+categories, keywords, confidence. It does not authorize or perform a KG write.
 
 ## memory-write.js — Unified write pipeline
 
@@ -198,7 +199,11 @@ bun skills/engram/scripts/memory-write.js --entity <path> --fact <text> --catego
 bun skills/engram/scripts/memory-write.js --access --entity <path> --id <fact-id>
 ```
 
-Single entry point for all KG writes. Handles dedup, validation, QMD update, optional contradiction/semantic checks. Semantic dedup sanitizes and caps only the `qmd query` text and fails open after a 30-second query timeout; this limit does not apply to `qmd update` or `qmd embed`. Use `--entity-create` to create new entities on the fly. `--access` is an immediate operator repair mode; agents queue normal conversational use with `memory-access-buffer.js`.
+Compatibility write pipeline for workspaces that have not entered the KG v3
+typed rollout. In a workspace with enabled live ingress it fails closed and
+must not be used as a fallback. Typed writes use `engram_memory_save` /
+`engram_memory_retract`. `--access` remains an operator repair mode; agents
+queue normal conversational use with `memory-access-buffer.js`.
 
 ## memory-access-buffer.js — Lightweight conversational access queue
 
@@ -270,19 +275,14 @@ bun skills/engram/scripts/memory-tension-resolve.js --id tension-0001 --dissolve
 
 Marks tension as `resolved` (contradiction fixed) or `dissolved` (not actually contradictory). Idempotent if already closed.
 
-## memory-promote.js — Promote observation to KG or archive it
+## memory-promote.js — Archive an observation
 
 ```bash
-# Promote obs → KG fact (with backlink: obs.kgFactId ← fact.source = obs-id)
-bun skills/engram/scripts/memory-promote.js \
-  --obs-id obs-0002 --entity "projects/engram" --fact "text" \
-  --category context --confidence 0.8 [--abstraction pattern] [--tags "..."] [--dry-run]
-
-# Archive observation
 bun skills/engram/scripts/memory-promote.js --archive --obs-id obs-0003 --reason "noise"
 ```
 
-Updates `index.json stats` (total/pending/promoted/implemented/archived) after every status change.
+Automatic observation → KG promotion is retired and fails closed. Archiving
+updates `index.json` stats; explicit durable assertions use typed KG v3 ingress.
 
 ## daily-note-append.js — Record session activity to daily note
 
@@ -542,13 +542,15 @@ bun skills/engram/scripts/heartbeat-report.js --session main --date 2026-02-27 \
 
 Creates or updates `## Heartbeat Report` section in a daily note. Called by heartbeat orchestrator in Phase 6 and by `process-handoff.js`. Omit any flag to preserve its current value.
 
-## extract-runner.js — hb-extract spawn helper
+## extract-runner.js — retired extraction cursor maintenance
 
 ```bash
-bun skills/engram/scripts/extract-runner.js --session <id> --date <YYYY-MM-DD> [--watermark <line>]
+bun skills/engram/scripts/extract-runner.js --session <id> --date <YYYY-MM-DD>
 ```
 
-Spawn `hb-extract` subagent с templated prompt + watermark context. Используется heartbeat-runner Phase 1.
+Advances daily/session cursors without reading conversation bodies for durable
+fact classification and without KG writes. The historical handoff name remains
+only for state/report compatibility. No extraction subagent is spawned.
 
 ## domains-runner.js — hb-domains + hb-domains-write spawn helper
 
@@ -565,7 +567,10 @@ import { processHandoff } from "skills/engram/scripts/process-handoff-core.js";
 await processHandoff(handoffBlock, { session: "main", date: "2026-02-27" });
 ```
 
-Importable версия `process-handoff.js`: parse handoff block → update heartbeat-state → write watermark (HB-EXTRACT) → write report → handle observations/tensions → resolve tensions. Используется `heartbeat-runner.js` напрямую.
+Importable версия `process-handoff.js`: parse handoff block → update heartbeat
+state/report → handle domain/synthesis/OLL compatibility handoffs. For
+HB-EXTRACT it records cursor-maintenance results only; automatic KG promotion
+is retired.
 
 ## spawn-pump.js — Claim-based spawn token queue
 
@@ -623,4 +628,7 @@ printf '%s' "<handoff block>" | bun skills/engram/scripts/process-handoff.js --s
 # exit 0: ok | exit 1: error | exit 2: alerts present ([ALERT] lines in stdout)
 ```
 
-Processes `=== HB-* HANDOFF ===` blocks from subagent results. Handles HB-EXTRACT (watermark advance, lastExtraction, facts count), HB-DOMAINS (lastDomainScan), HB-SYNTHESIS (lastWeeklySynthesis). Updates heartbeat-state.json, advances watermark in daily note, and calls heartbeat-report.js automatically. Called by the heartbeat orchestrator Handoff Handler — do not call manually.
+Processes `=== HB-* HANDOFF ===` blocks. HB-EXTRACT is now a deterministic
+cursor-maintenance compatibility envelope; HB-DOMAINS and HB-SYNTHESIS retain
+their state/report roles. Called by the heartbeat orchestrator — do not call
+manually.

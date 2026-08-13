@@ -114,24 +114,16 @@ Run BEFORE extraction — rotation must happen first so extraction works on the 
 
 **Order matters:** Extract → Rotate → Index. Extracting from the stub would lose content.
 
-## Phase 1: Extraction
+## Phase 1: Cursor maintenance (automatic KG extraction retired)
 
-- **Watermark sanity check:** read daily note, count lines. If last watermark `L{N}` has N > total_lines + 5, reset watermark to `L1` (log "watermark reset: L{N} > {total_lines} lines"). The +5 buffer tolerates minor drift from heartbeat-report.js rewrites (±1-2 lines). Only reset on true corruption (watermark far past end of file).
-- Read `subagentExtraction` from state
-  - If `true`:
-    0. **Cleanup stale session**: before spawning, check if a session with label `hb-extract` already exists. Call `subagents(action="list")` and if any session has label `hb-extract`, kill it via `subagents(action="kill", target="hb-extract")`. This prevents `label already in use` errors from previous heartbeat runs.
-    1. Build task from `skills/engram/references/HB-EXTRACT.md`. Read the file content
-    2. Replace `{{daily_note_path}}` with the absolute path to today's daily note
-    3. Replace `{{watermark}}` with the validated watermark (e.g. `L7`)
-    4. Replace `{{session}}` with the current session key (e.g. `main`)
-    5. Replace `{{session_files_dir}}` with the absolute path to `memory/agent-main/<session>/sessions/`
-    6. Replace `{{last_session_extracted}}` with `heartbeat-state.json` → `lastSessionExtracted.<session>`, or `none` if missing
-    7. Call `sessions_spawn(task=<filled template>, label="hb-extract", model="haiku", cleanup="delete", runTimeoutSeconds=600)`
-    **Do not wait — result arrives via system message.**
-  - If `false`: run extraction inline
-    - Read daily note from validated watermark (or L1 if none)
-    - Extract facts via `bun skills/engram/scripts/memory-write.js`
-    - Append watermark to daily note; `--set lastExtraction.<session> <ISO>`, `--set subagentRuns.hb-extract.status ok`
+Run `scripts/extract-runner.js` deterministically. It advances the daily-note
+watermark and session cursor without classifying message bodies and without
+writing to KG. The historical `HB-EXTRACT` handoff name remains temporarily as
+a compatibility envelope for state and reporting.
+
+Do not spawn an extraction subagent. Do not call `memory-write.js` from a
+heartbeat. Durable KG v3 assertions are admitted only through the typed tool in
+their trusted source turn.
 
 ## Phase 1.5: Stub Summary (if rotation happened)
 

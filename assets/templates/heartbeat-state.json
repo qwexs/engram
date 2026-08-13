@@ -10,7 +10,6 @@
   },
   "heartbeatInProgress": false,
   "heartbeatLockedAt": null,
-  "subagentExtraction": false,
   "lastExtraction": {},
   "lastDomainScan": null,
   "pendingObservations": 0,

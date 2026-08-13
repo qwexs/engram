@@ -120,39 +120,6 @@ bun skills/engram/scripts/render-agents-section.js --domain <slug> [--kg-entity 
 
 Render `memory/domains/{slug}/agents.md` из `templates/spawn-prompts/_shared/agents-section.template.md` + per-domain context (QMD index, agentId, operator). Обязательная часть spawn pipeline — subagent без `{{agents}}` блока может дрифтить в cross-topic/cross-KG поиск.
 
-## memory-repair.js — Repair corrupted items.json
-
-```bash
-bun skills/engram/scripts/memory-repair.js --entity <path> --id <fact-id> \
-  [--confidence <0-1>] [--abstraction episode|pattern|principle] \
-  [--dry-run] [--validate] [--qmd-update]
-```
-
-Repair schema fields on an existing fact without changing its factual content.
-Supports confidence and abstractionLevel corrections. After a write, refreshes
-the derived facts projection and the repaired entity's decayed summary. Use
-`--validate` for a full workspace check and `--qmd-update` to refresh the index.
-Idempotent. Write mode is blocked once KG v3 authority is active; `--dry-run`
-remains available for historical archive diagnostics.
-
-## derive-facts.js — Build Derived Facts Layer
-
-```bash
-bun skills/engram/scripts/derive-facts.js [--dry-run]
-```
-
-Собрать все активные факты из `life/**/items.json` → `life/_derived/facts-active.md` для QMD индексации. ≈1 сек / 112 сущностей. Фильтрует superseded. Автоматически вызывается `memory-write.js` (шаг 8) и Phase 4 maintenance.
-
-## audit-superseded.js — Audit supersede chain integrity
-
-```bash
-bun skills/engram/scripts/audit-superseded.js [--fix] [--quiet]
-```
-
-Detect orphan `supersedeBy` (target не существует), broken chains (A→B→C где C не active), mismatched dates. `--fix` ремонтирует мягкие cases.
-Write mode is blocked after KG v3 authority activation; read-only audit remains
-available.
-
 ## validate.js — Check integrity
 
 ```bash
@@ -171,15 +138,6 @@ bun skills/engram/scripts/watchdog.js --all --workspaces-dir /path/to/workspaces
 
 Audits drift around an Engram workspace without fixing anything: `validate.js` exit status, runtime hook drift, QMD collection references, registry ↔ domain folders, heartbeat-state ↔ session dirs, KG v2 schema / likely test pollution, and missing `cron.expectedJobName`. Options: `--output`, `--no-core`, `--no-qmd`, `--no-hooks`, `--exit-zero-on-warn`. Report schema: `engram.watchdog.v1`. Full reference: [watchdog.md](watchdog.md).
 
-## migrate-v2.js — Migrate to v2 schema
-
-```bash
-bun skills/engram/scripts/migrate-v2.js [--dry-run]
-```
-
-Adds missing v2 fields (confidence, abstractionLevel, tags) to all items.json files with sensible defaults.
-Write mode is blocked by active KG v3 authority; `--dry-run` remains available.
-
 ## memory-signal.js — Signal detection (diagnostic only)
 
 ```bash
@@ -189,54 +147,17 @@ bun skills/engram/scripts/memory-signal.js --text "I prefer TypeScript"
 Classifies text as high/low/none signal. Regex-based, no LLM, <10ms. Returns
 categories, keywords, confidence. It does not authorize or perform a KG write.
 
-## memory-write.js — Unified write pipeline
+## KG v3 writer boundary
+
+`engram_memory_save` / `engram_memory_retract` are the only canonical current
+mutation tools and are exposed only inside a trusted, admitted source turn.
+Legacy v2 writer, access-buffer, repair, auto-fix, and migration entrypoints were
+physically removed after fleet acceptance. `items.json` remains available only
+through the explicit immutable historical reader.
 
 ```bash
-# Write a fact
-bun skills/engram/scripts/memory-write.js --entity <path> --fact <text> --category <cat> \
-  [--confidence 0.9] [--abstraction pattern] [--tags "a,b"] [--source "2026-02-16"] \
-  [--description "Why this fact matters (max 150 chars)"] \
-  [--entity-create] [--check-contradictions] [--cross-entity] \
-  [--semantic-check] [--search-collections "life,collection2"]
-
-# Immediate operator access repair (updates lastAccessed + accessCount for decay)
-bun skills/engram/scripts/memory-write.js --access --entity <path> --id <fact-id>
+bun skills/engram/scripts/kg-v3-zero-legacy-watchdog.ts
 ```
-
-Compatibility write pipeline for workspaces that have not entered the KG v3
-typed rollout. In a workspace with enabled live ingress it fails closed and
-must not be used as a fallback. Typed writes use `engram_memory_save` /
-`engram_memory_retract`. `--access` remains an operator repair mode; agents
-queue normal conversational use with `memory-access-buffer.js`.
-
-## memory-access-buffer.js — Lightweight conversational access queue
-
-```bash
-bun skills/engram/scripts/memory-access-buffer.js --entity people/alice --id alice-014
-# Exact text fallback when the fact ID was not returned by retrieval
-bun skills/engram/scripts/memory-access-buffer.js --entity people/alice --fact "Prefers concise reports"
-```
-
-Appends one validated access event to `workspace/memory-state/access-buffer.jsonl`.
-It does not read or rewrite KG, summaries, or QMD, so it is safe in a user-facing
-turn. IDs are never invented: use a retrieved fact ID, otherwise an exact fact
-text that resolves uniquely during the nightly flush. After KG v3 authority
-activation this command returns `retired` and does not queue a v2 mutation;
-native v3 access/decay tracking is outside this MVP.
-
-## flush-access-buffer.js — Apply queued access
-
-```bash
-bun skills/engram/scripts/flush-access-buffer.js --workspace /opt/openclaw/workspaces/elena --json
-```
-
-Before KG v3 cutover the daily coordinator invokes this first for each workspace. It atomically claims
-the queue, resolves active facts by ID or unique normalized exact text, updates
-access fields, rebuilds only affected summaries, marks QMD dirty, and writes an
-audit trail plus unresolved events under `workspace/ops/access-buffer/`. It does
-not run QMD maintenance. With active KG v3 authority it returns `retired`,
-preserves any pre-existing queue for operator inspection, and leaves v2
-`items.json` unchanged.
 
 ## memory-dedup.js — Deduplication index
 
@@ -272,7 +193,7 @@ bun skills/engram/scripts/memory-tension.js \
   [--type factual|temporal|priority] [--confidence 0.8] [--description "desc"] [--dry-run]
 ```
 
-Captures tensions between two KG facts. Validates both IDs exist in KG. Stores `fact1Text`/`fact2Text` from KG for hb-rethink review. Auto-created by `memory-write.js --check-contradictions` when Jaccard ≥0.5 + ≥3 common keywords. Novelty check (>0.7 → skip duplicate).
+Captures tensions between two KG facts by explicit operator action. Validates both IDs exist in KG. Stores `fact1Text`/`fact2Text` from KG for hb-rethink review. Novelty check (>0.7 → skip duplicate). The retired v2 writer no longer creates tensions automatically.
 
 ## memory-tension-resolve.js — Resolve or dissolve tensions
 
@@ -308,20 +229,6 @@ The daily note remains canonical; the card is only an opt-in retrieval aid for
 the same QMD memory collection. The flags must be used together. Never create
 cards automatically, for routine conversation, or through a scheduled job.
 
-## rebuild-summaries.js — Rebuild summary.md from items.json
-
-```bash
-bun skills/engram/scripts/rebuild-summaries.js [--dry-run] [--entity people/alice] [--apply-decay] [--max-cold-principles 12]
-```
-
-Deterministically regenerates `summary.md` for all entities in `life/` from their `items.json`. No LLM involved.
-
-**Without `--apply-decay`**: groups active facts by category, lists top 5 by confidence, shows counts per category and superseded stats.
-
-**With `--apply-decay`**: applies Memory Decay tiers (Hot/Warm/Cold) based on `lastAccessed`/`createdAt`/`source` date. Summary format: `## Current (Hot)`, `## Background (Warm)`, `## Enduring (Principles)`. Cold facts excluded from summary unless selected by semantic priority. Cold principles capped by `--max-cold-principles` (default 12).
-
-Decay algorithm: see [references/decay-rules.md](decay-rules.md). Rebuilt after fact writes, after a queued-access flush, by the daily coordinator, and by Monday heartbeat synthesis.
-
 ## daily-summary-coordinator.js — Sequential daily summary reconciliation
 
 ```bash
@@ -331,12 +238,9 @@ bun skills/engram/scripts/daily-summary-coordinator.js \
   --json
 ```
 
-Flushes queued access then runs `rebuild-summaries.js --apply-decay` sequentially for explicit workspaces.
-It never calls QMD or an LLM. Use one global scheduled job, not concurrent
-daily jobs per workspace. A lock directory prevents overlapping runs. The
-same fail-fast flush/rebuild sequence is exposed by
-`src/oll/reconciliation.ts` for the PR 5 nightly coordinator; the CLI and
-library share one implementation.
+Compatibility no-op that emits a deterministic retired report for explicit
+workspaces. It never mutates v2, calls QMD, or invokes an LLM. The matching OLL
+reconciliation path is also permanently non-mutating.
 
 ## rotate-notes.js — Three-Layer Rotation
 

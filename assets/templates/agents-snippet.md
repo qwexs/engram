@@ -12,13 +12,9 @@ only `engram_memory_save` / `engram_memory_retract` for one explicit durable
 assertion from the current trusted turn. Do not fall back to the legacy writer
 after typed admission rejects an intent.
 
-For a workspace that has not yet entered the KG v3 rollout, the compatibility
-writer remains:
-```bash
-bun scripts/memory-write.js --entity "..." --fact "..." --category ... --confidence ...
-```
-Direct file writes bypass validation and are never allowed. Automatic heartbeat
-or session promotion is retired in every workspace.
+The fleet rollout is complete. The compatibility writer is physically absent;
+do not recreate it or bypass typed admission with direct file writes. Automatic
+heartbeat or session promotion is retired in every workspace.
 
 ### 3. No-Deletion Rule
 Facts are **NEVER** deleted. To correct or replace a fact, set `status: "superseded"` and link via `supersededBy`. Old facts remain in `items.json` forever.
@@ -63,7 +59,6 @@ Content flows: ops → notes/self. Never reverse.
 
 **Route via scripts, not guesswork:**
 - `engram_memory_save` / `engram_memory_retract` → canonical typed KG v3 ingress
-- `bun scripts/memory-write.js` → compatibility only before workspace cutover
 - Daily note append → stays in `memory/` (ops)
 - MEMORY.md/SOUL.md edits → self space
 
@@ -146,39 +141,11 @@ bun scripts/daily-note-append.js --session {{SESSION_KEY}} --section decisions -
 
 Rules: brief entries (1-2 lines), facts not feelings, record as you go.
 
-### 14. Memory Decay & Access Tracking
+### 14. Legacy Archive Boundary
 
-This section applies only before workspace KG v3 authority activation. Legacy
-facts decay over time (Hot → Warm → Cold), and the sequential coordinator may
-update access counters and summaries. After cutover the v2 archive is immutable;
-native v3 access/decay tracking is a separate future contract.
-
-**Pre-cutover access tracking** — when you use a legacy fact in a reply, queue a recency event:
-```bash
-bun scripts/memory-access-buffer.js --entity "people/alice" --id <fact-id>
-```
-Before cutover the command is append-only and fast. The nightly sequential coordinator resolves
-the event, updates `lastAccessed` and `accessCount`, then rebuilds summaries.
-If no ID is available, use the exact fact text instead:
-```bash
-bun scripts/memory-access-buffer.js --entity "people/alice" --fact "Exact fact text"
-```
-
-**When to track access:**
-- You looked up a fact via QMD and used it in your reply
-- A fact was referenced in a decision or recommendation
-- NOT for bulk reads (e.g. rebuild-summaries, heartbeat extraction)
-
-After KG v3 cutover, do not queue legacy access events; the command returns
-`retired`. Before cutover, queue one event per actually used fact. Do not invent an
-ID: use the ID returned by KG/QMD, or the exact-text fallback. Merely loading a
-summary or search result is not use. `memory-write.js --access` remains an
-operator repair command, not the normal dialogue path.
-
-**Decay tiers** (full rules: `skills/engram/references/decay-rules.md`):
-- **Hot** (≤7 days) → prominent in summary
-- **Warm** (8-30 days) → secondary in summary
-- **Cold** (30+ days) → excluded from summary (principles always included)
+The v2 archive is immutable after the fleet cutover. No dialogue, heartbeat,
+coordinator, repair, decay, access-tracking, or summary path may mutate it.
+Native v3 access/decay tracking requires a separate reviewed contract.
 
 ### 15. OLL — Inline Observation Capture
 

@@ -169,10 +169,10 @@ describe("heartbeat-runner OLL spawn gates", () => {
     const before = readFileSync(nightlyPath, "utf8");
     const result = runRunnerAt("2026-05-18");
     expect(result.summary.phases.synthesis).toEqual({
-      status: "skipped",
-      reason: "nightly coordinator owns reconciliation",
+      status: "retired",
+      reason: "legacy v2 synthesis entrypoint removed",
     });
-    expect(result.summary.synthesis).toBe("skipped (owned by nightly coordinator)");
+    expect(result.summary.synthesis).toBe("retired (KG v3 fleet cutover)");
     expect(readFileSync(nightlyPath, "utf8")).toBe(before);
     const heartbeat = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
     expect(heartbeat.lastWeeklySynthesis).toBeUndefined();

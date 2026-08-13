@@ -121,16 +121,10 @@ For full architecture: [references/architecture.md](references/architecture.md)
 The typed pipeline validates source-turn ownership, registry admission,
 replacement, projection and receipt before commit.
 
-`memory-write.js` is a compatibility entrypoint only for workspaces that have
-not entered the typed rollout. Once `memory-state/kg-v3/live-ingress.json` is
-enabled, it must fail closed and must never be used as a fallback.
-
-```bash
-bun skills/engram/scripts/memory-write.js \
-  --entity "people/alice" --fact "Prefers Bun over Node.js" \
-  --category preference --confidence 0.9 --abstraction pattern \
-  --tags "tools,runtime" --source "2026-02-16"
-```
+Fleet rollout is complete. Legacy v2 mutation entrypoints were physically
+removed; `items.json` is an immutable historical archive. If typed ingress is
+unavailable or rejects an unregistered assertion, use daily/domain storage and
+extend the registry separately. Never recreate or bypass the typed writer.
 
 ### Daily Notes (Three-Layer Rotation)
 
@@ -208,10 +202,11 @@ For QMD installation: [references/qmd-setup.md](references/qmd-setup.md)
 > **KG v3 cutover note:** when the runtime exposes `engram_memory_save` and
 > the workspace has an enabled `memory-state/kg-v3/live-ingress.json`, that
 > typed tool is the sole inline KG writer. Use it at most once for an explicit
-> durable user assertion. Do not run `memory-signal.js`, `memory-write.js`, or
-> mechanical extraction for the same KG intent. Operational/progress/test/status
+> durable user assertion. Do not run `memory-signal.js` or mechanical extraction
+> for the same KG intent. The legacy writer is physically absent and must not be
+> recreated. Operational/progress/test/status
 > material still goes to daily/domain stores. If the tool is absent or rejects
-> an unregistered entity/predicate, do not bypass it with the legacy writer.
+> an unregistered entity/predicate, route the intent to daily/domain memory.
 
 Automatic session/daily/domain/OLL → KG promotion is retired. High-signal
 facts enter canonical memory only through the typed tool inside the source turn.
@@ -396,7 +391,6 @@ For hook installation, race-condition guard, side-effect-delivered pattern: [ref
 
 **Most-used by agent:**
 - `engram_memory_save` / `engram_memory_retract` — canonical KG v3 write tools
-- `memory-write.js` — pre-cutover compatibility only; blocked by KG v3 authority
 - `daily-note-append.js` — record session activity
 - `memory-signal.js` — classify text signal (high/low/none)
 - `memory-observe.js` — capture OLL observation
@@ -407,7 +401,7 @@ For hook installation, race-condition guard, side-effect-delivered pattern: [ref
 - `init.js`, `install-hooks.js`, `install-deterministic-heartbeat-cron.js`, `install-qmd.js` — clean-install setup
 - `install-cron.js` — pre-cutover compatibility only
 - `add-domain.js`, `add-session.js` — provisioning
-- `validate.js`, `derive-facts.js` — read/projection maintenance
-- `memory-repair.js` — pre-cutover compatibility; write mode blocked by KG v3 authority
+- `validate.js` — read-only historical/archive validation after fleet cutover
+- `kg-v3-zero-legacy-watchdog.ts` — static watchdog for removed v2 mutation paths
 
 Full script reference: [references/scripts.md](references/scripts.md)

@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
-// Sequential fleet-wide reconciliation of Engram summary.md projections.
-// It first flushes queued access events. It intentionally does not run QMD
-// maintenance or invoke an LLM.
+// Fleet-cutover compatibility coordinator. Legacy v2 summary/access mutation
+// is permanently retired; the scheduled command now records deterministic skips.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -27,8 +26,8 @@ const opts = parseArgs(process.argv);
 if (opts.help || opts.h) {
   console.log(`daily-summary-coordinator.js
 
-Sequentially flushes buffered fact access, then rebuilds decay-aware summary.md
-files for explicit Engram workspaces.
+Sequentially reports the permanent retirement of legacy v2 reconciliation for
+explicit Engram workspaces. It never mutates items.json or summary.md.
 
 Usage:
   bun skills/engram/scripts/daily-summary-coordinator.js \\
@@ -41,7 +40,7 @@ Options:
                            Read ordered workspaces from a scheduler declaration.
   --timeout-ms <n>         Per-workspace timeout (default: 120000).
   --lock-dir <path>        Coordinator lock directory (default: <first>/ops/daily-summary.lock).
-  --dry-run                Calculate/report changes without writing access or summaries.
+  --dry-run                Report the same retired state without mutation.
   --json                   Emit one JSON report.
 `);
   process.exit(0);

@@ -1,6 +1,7 @@
-# hb-synthesis: Weekly Synthesis Subagent
+# hb-synthesis: retired v2 workflow
 
-Read this document, then execute the synthesis task below.
+The v2 summary synthesis workflow is retired after KG v3 fleet cutover. The v2
+archive and `summary.md` projections are immutable; no synthesis command exists.
 
 ## Runtime Context (injected by orchestrator)
 
@@ -12,16 +13,10 @@ Session: {{session}}
 
 Run memory synthesis with decay applied using the deterministic script.
 
-### Step 1 — Rebuild summaries with decay
+### Step 1 — Verify the archive boundary
 
-```bash
-bun skills/engram/scripts/rebuild-summaries.js --apply-decay
-```
-
-The script reads all `items.json` in `life/`, applies Hot/Warm/Cold decay classification,
-and rewrites `summary.md` for each entity using the decay format.
-
-Output is JSON: `{ updated, skipped, errors, hot, warm, coldExcluded }`.
+Run `bun skills/engram/scripts/kg-v3-zero-legacy-watchdog.ts`. Do not rebuild or
+rewrite v2 projections.
 
 ### Step 2 — Re-index Knowledge Graph
 
@@ -37,7 +32,7 @@ Read the JSON output from Step 1 and fill in the Handoff block below.
 
 ## Rules
 
-1. Run both commands in sequence — do NOT skip `qmd update`
+1. Do not run v2 synthesis or summary rebuild commands
 2. Do NOT modify `items.json` — script is read-only on facts
 3. Do NOT update `lastAccessed` or `accessCount`
 4. Do NOT update `heartbeat-state.json` — the orchestrator handles this
@@ -57,5 +52,4 @@ Observations: []
 Alerts: {[] or ["alert text"]}
 === END ===
 ```
-
 

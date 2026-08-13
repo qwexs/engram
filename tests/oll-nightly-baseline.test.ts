@@ -24,8 +24,9 @@ describe("OLL nightly pre-cutover baseline", () => {
     });
     expect(coordinator).toContain("At least one --workspace is required");
     expect(coordinator).toContain("reconcileWorkspaceMemory");
-    expect(reconciliation).toContain("flush-access-buffer.js");
-    expect(reconciliation).toContain("rebuild-summaries.js");
+    expect(reconciliation).toContain("legacy-v2-reconciliation-retired");
+    expect(reconciliation).not.toContain("flush-access-buffer.js");
+    expect(reconciliation).not.toContain("rebuild-summaries.js");
     expect(coordinator).not.toContain("sessions_spawn");
   });
 

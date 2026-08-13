@@ -163,7 +163,8 @@ bun skills/engram/scripts/memory-observe.js --observation "..." --category surpr
 
 ## Capturing Tensions
 
-Tensions are auto-created when `memory-write.js --check-contradictions` finds Jaccard ≥0.5 + ≥3 common keywords. Manual creation:
+Tensions are created only by an explicit operator action. The retired v2 writer
+no longer performs automatic contradiction creation:
 
 ```bash
 bun skills/engram/scripts/memory-tension.js \

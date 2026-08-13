@@ -1194,9 +1194,7 @@ function checkKg(workspace, findings) {
             details: {
               reason: isHbRunId ? "heartbeat-run-id" : (isHbPhrase ? "heartbeat-phrase" : "heartbeat-tags"),
               text: text.slice(0, 120),
-              fix: legacyKgMutationState(workspace).allowed
-                ? 'Before KG v3 cutover, create a reviewed replacement through the compatibility writer with --supersedes ' + fact?.id + '; do not mutate the orphan directly.'
-                : "Historical v2 archive is immutable after KG v3 cutover; record remediation separately.",
+              fix: "Historical v2 archive is immutable after KG v3 fleet cutover; record remediation separately.",
             },
           }));
         }

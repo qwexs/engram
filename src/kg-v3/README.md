@@ -64,21 +64,28 @@ payload returns `OPERATION_CONFLICT`.
 `historicalV2(entityId)` is a separate explicit adapter and never contributes
 to current/default projection.
 
-At a valid `canary` or `enabled` marker, `scripts/memory-write.js` blocks legacy
-fact mutation. The typed API still requires both trusted caller capability and
-the same capability enabled for that exact session in the marker.
+After fleet acceptance, legacy fact mutation entrypoints are physically absent.
+The typed API still requires both trusted caller capability and the same
+capability enabled for that exact session in the marker.
 
 Automatic session/daily extraction, domain Promotions, and legacy OLL
 promotion are permanently non-mutating in canonical code; no configuration
-value can restore those v2 writer calls. The remaining direct
-`scripts/memory-write.js` entrypoint exists only for workspaces that have not
-completed typed fleet rollout and must be physically retired after their gate.
+value can restore those v2 writer calls.
 
-The same authority boundary freezes v2 access counters and repair/audit write
-modes. `memory-access-buffer.js`, `flush-access-buffer.js`,
-`memory-repair.js --write`, and `audit-superseded.js --auto-fix` cannot mutate
-the historical archive after canary/enabled. Native v3 access/decay tracking is
-deliberately deferred; no v2 mutation is used as a substitute.
+The v2 archive is immutable. Access-counter, repair, auto-fix, migration,
+derived-facts, and summary-rebuild entrypoints are physically absent. Native v3
+access/decay tracking is deliberately deferred; no v2 mutation is used as a
+substitute. `scripts/kg-v3-zero-legacy-watchdog.ts` enforces this boundary.
+
+## Fleet acceptance
+
+Fleet acceptance requires every workspace authority and read-back report to
+refer to the same semantic release digest. Authorized direct workspaces expose
+live typed ingress only for their exact direct-session grant; domain-first
+workspaces remain KG-write incapable and retain durable context in domains.
+Each fleet workspace performs begin, finalize, rollback, re-begin, and final
+read-back before acceptance. Seed capability is removed from fleet authority
+at finalize, and live assertions are never manufactured as replay traffic.
 
 `scripts/kg-v3-tool.ts --context` is an operator/test harness, not a trusted
 agent boundary. Production ingress must construct `TrustedKgCallerContext` in

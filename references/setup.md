@@ -70,7 +70,7 @@ runner phases. It is not the production cron entrypoint.
 
 - heartbeat lock and stale-lock reset
 - canonical daily note creation and extraction watermark update
-- weekly summary rebuild on Mondays via `rebuild-summaries.js --apply-decay`
+- immutable v2 archive checks; weekly summary rebuild is retired
 - heartbeat report updates
 - `validate.js --fix`, `qmd update`, and `qmd embed`
 

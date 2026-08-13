@@ -121,8 +121,9 @@ watermark and session cursor without classifying message bodies and without
 writing to KG. The historical `HB-EXTRACT` handoff name remains temporarily as
 a compatibility envelope for state and reporting.
 
-Do not spawn an extraction subagent. Do not call `memory-write.js` from a
-heartbeat. Durable KG v3 assertions are admitted only through the typed tool in
+Do not spawn an extraction subagent. The legacy writer is physically absent;
+heartbeat turns never write canonical KG assertions. Durable KG v3 assertions
+are admitted only through the typed tool in
 their trusted source turn.
 
 ## Phase 1.5: Stub Summary (if rotation happened)

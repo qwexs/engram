@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
@@ -33,17 +33,17 @@ describe("KG v3 automatic legacy producer retirement", () => {
     expect(source("assets/templates/engram.json")).not.toContain("automaticIngress");
   });
 
-  test("remaining v2 maintenance mutators share the KG v3 authority guard", () => {
-    for (const path of [
-      "scripts/memory-access-buffer.js",
-      "scripts/flush-access-buffer.js",
-      "scripts/memory-repair.js",
-      "scripts/audit-superseded.js",
-      "scripts/validate.js",
-      "scripts/migrate-v2.js",
-    ]) {
-      expect(source(path)).toContain("legacyKgMutationState");
+  test("legacy v2 mutation entrypoints are physically absent after fleet acceptance", () => {
+    for (const path of ["scripts/memory-write.js", "scripts/memory-access-buffer.js", "scripts/flush-access-buffer.js", "scripts/memory-repair.js", "scripts/audit-superseded.js", "scripts/migrate-v2.js", "scripts/derive-facts.js", "scripts/rebuild-summaries.js"]) {
+      expect(existsSync(join(root, path))).toBe(false);
     }
+  });
+
+  test("static watchdog fails closed on any restored legacy writer path", () => {
+    const watchdog = source("scripts/kg-v3-zero-legacy-watchdog.ts");
+    expect(watchdog).toContain("memory-write.js");
+    expect(watchdog).toContain("writeFileSync(entry.itemsPath");
+    expect(watchdog).toContain("status: violations.length ? \"failed\" : \"passed\"");
   });
 
 });

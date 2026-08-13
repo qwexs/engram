@@ -14,4 +14,4 @@ The LLM extraction/promotion workflow was retired by the KG v3 cutover.
 Canonical durable writes happen only through `engram_memory_save` or
 `engram_memory_retract` inside an authorized trusted source turn. If typed
 admission is unavailable or rejects an unregistered entity/predicate, do not
-fall back to `memory-write.js`.
+recreate a legacy writer; route the intent to daily/domain memory instead.

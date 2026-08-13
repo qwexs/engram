@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 describe("daily-summary-coordinator", () => {
-  test("rebuilds explicit workspaces sequentially", () => {
+  test("reports permanent retirement for explicit workspaces sequentially", () => {
     root = mkdtempSync(join(tmpdir(), "engram-summary-coordinator-"));
     const first = workspace("first");
     const second = workspace("second");
@@ -44,8 +44,9 @@ describe("daily-summary-coordinator", () => {
     expect(report.sequential).toBe(true);
     expect(report.errors).toBe(0);
     expect(report.workspaces.map((item) => item.workspace)).toEqual([first, second]);
-    expect(readFileSync(join(first, "life", "people", "first", "summary.md"), "utf8")).toContain("first prefers concise summaries");
-    expect(readFileSync(join(second, "life", "people", "second", "summary.md"), "utf8")).toContain("second prefers concise summaries");
+    expect(report.workspaces.every((item) => item.skipped === "legacy-v2-reconciliation-retired")).toBe(true);
+    expect(existsSync(join(first, "life", "people", "first", "summary.md"))).toBe(false);
+    expect(existsSync(join(second, "life", "people", "second", "summary.md"))).toBe(false);
   });
 
   test("accepts a transport-safe encoded workspace list without repeated path arguments", () => {
@@ -85,7 +86,7 @@ describe("daily-summary-coordinator", () => {
     expect(JSON.parse(stdout).workspaces.map((item) => item.workspace)).toEqual([first, second]);
   });
 
-  test("flushes queued access before rebuilding summaries", () => {
+  test("never consumes or applies a legacy access buffer", () => {
     root = mkdtempSync(join(tmpdir(), "engram-summary-coordinator-"));
     const first = workspace("first");
     mkdirSync(join(first, "workspace", "memory-state"), { recursive: true });
@@ -100,8 +101,9 @@ describe("daily-summary-coordinator", () => {
     });
     expect(proc.exitCode, proc.stderr.toString()).toBe(0);
     const report = JSON.parse(proc.stdout.toString());
-    expect(report.workspaces[0].accessFlush.applied).toBe(1);
+    expect(report.workspaces[0].skipped).toBe("legacy-v2-reconciliation-retired");
     const data = JSON.parse(readFileSync(join(first, "life", "people", "first", "items.json"), "utf8"));
-    expect(data.facts[0].accessCount).toBe(2);
+    expect(data.facts[0].accessCount).toBe(1);
+    expect(existsSync(join(first, "workspace", "memory-state", "access-buffer.jsonl"))).toBe(true);
   });
 });

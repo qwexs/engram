@@ -32,42 +32,11 @@ afterEach(() => {
 });
 
 describe("PR 5 reusable deterministic reconciliation", () => {
-  test("preserves flush-before-rebuild ordering and arguments", async () => {
+  test("is permanently retired after KG v3 fleet cutover", async () => {
     const workspace = setup();
-    const runtime = new FakeRuntime([
-      { exitCode: 0, stdout: '{"flushed":2}', stderr: "", timedOut: false },
-      { exitCode: 0, stdout: '{"rebuilt":3}', stderr: "", timedOut: false },
-    ]);
-    const result = await reconcileWorkspaceMemory({ workspace, scriptsDir: "/canonical/scripts", runtime, dryRun: true });
-    expect(result).toMatchObject({ status: "ok", accessFlush: { flushed: 2 }, stats: { rebuilt: 3 } });
-    expect(runtime.commands).toEqual([
-      ["bun", "/canonical/scripts/flush-access-buffer.js", "--workspace", workspace, "--json", "--dry-run"],
-      ["bun", "/canonical/scripts/rebuild-summaries.js", "--apply-decay", "--json", "--dry-run"],
-    ]);
-  });
-
-  test("stops before rebuild when access flush fails or times out", async () => {
-    const workspace = setup();
-    const runtime = new FakeRuntime([{ exitCode: 1, stdout: "", stderr: "broken", timedOut: false }]);
-    await expect(reconcileWorkspaceMemory({ workspace, scriptsDir: "/canonical/scripts", runtime })).resolves.toMatchObject({
-      status: "error",
-      error: "access flush: broken",
-    });
-    expect(runtime.commands).toHaveLength(1);
-  });
-
-  test("skips legacy v2 reconciliation after KG v3 authority activation", async () => {
-    const workspace = setup();
-    mkdirSync(join(workspace, "memory-state", "kg-v3"), { recursive: true });
-    writeFileSync(join(workspace, "memory-state", "kg-v3", "authority.json"), JSON.stringify({
-      schema: "engram.kg-v3-authority.v1",
-      mode: "canary",
-    }));
     const runtime = new FakeRuntime([]);
-    await expect(reconcileWorkspaceMemory({ workspace, scriptsDir: "/canonical/scripts", runtime })).resolves.toMatchObject({
-      status: "ok",
-      skipped: "legacy-v2-reconciliation-retired",
-    });
+    const result = await reconcileWorkspaceMemory({ workspace, scriptsDir: "/canonical/scripts", runtime, dryRun: true });
+    expect(result).toMatchObject({ status: "ok", skipped: "legacy-v2-reconciliation-retired" });
     expect(runtime.commands).toHaveLength(0);
   });
 });

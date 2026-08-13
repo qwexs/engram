@@ -67,7 +67,7 @@ export async function checkDedup(fact, entity) {
 }
 
 // ============================================================================
-// Jaccard-based similarity helpers (shared by memory-write skip + extract-runner
+// Jaccard-based similarity helpers (historically shared by the retired v2 writer and extract-runner
 // auto-supersede). Pure functions — no I/O side effects, no early exit.
 // ============================================================================
 
@@ -94,7 +94,7 @@ export function jaccardSimilarity(words1, words2) {
 // Возвращает [{ id, fact, sim, category }], отсортировано по sim DESC.
 // Read-only: не пишет в items.json, не вызывает exit.
 // Используется:
-//   - memory-write.js для in-entity skip (threshold=0.65)
+//   - retired v2 writer used this for in-entity skip (threshold=0.65)
 //   - extract-runner.js для auto-supersede (threshold=0.75)
 export async function findSimilarFacts({ workspace, entity, factText, threshold = 0.65 }) {
   const itemsPath = join(workspace, "life", entity, "items.json");

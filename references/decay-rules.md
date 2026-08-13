@@ -8,10 +8,9 @@
 | **Warm** | Accessed 8-30 days ago | Yes (lower priority) | Available but secondary |
 | **Cold** | Not accessed in 30+ days | No (omitted) | Still in items.json, searchable via QMD |
 
-Conversation access is queued append-only during a reply. The daily sequential
-summary coordinator flushes that queue before calculating tiers, so an access
-recorded today affects the next nightly projection without adding QMD or summary
-work to the user-facing turn.
+These rules describe the frozen v2 projection model. After fleet cutover the v2
+archive, access counters, tiers, and summaries are immutable. Native v3 decay
+requires a separate reviewed contract.
 
 ## Modifiers
 
@@ -28,11 +27,10 @@ Facts with `accessCount >= 10` bump from Cold to Warm, regardless of recency.
 
 ## Summary Refresh Algorithm
 
-Summary is a materialized view of active facts. It is refreshed after each
-successful `memory-write.js`, by one global sequential daily coordinator, and
-during Monday heartbeat synthesis as a reconciliation/reporting path.
+`summary.md` is the frozen materialized view of the v2 archive. No active
+runtime path refreshes it after fleet cutover.
 
-Every refresh uses the same algorithm:
+The historical refresh algorithm was:
 
 1. For each entity in `life/`:
    - Load all facts with `status: "active"` from `items.json`

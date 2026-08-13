@@ -391,36 +391,4 @@ describe("KG v3 fail-closed boundaries", () => {
     expect(reader.historicalV2("systems/engram")).toEqual([{ archive: "v2", entityId: "systems/engram", id: "engram-001", fact: "legacy", category: "decision", status: "active", source: "2025" }]);
   });
 
-  for (const mode of ["canary", "enabled"] as const) {
-    test(`${mode} cutover marker blocks the direct legacy writer`, async () => {
-      const { root } = fixture(mode);
-      const script = join(import.meta.dir, "..", "..", "scripts", "memory-write.js");
-      const process = Bun.spawn(
-        ["bun", script, "--entity", "systems/engram", "--fact", "must not write", "--category", "decision"],
-        { cwd: root, env: { ...globalThis.process.env, ENGRAM_WORKSPACE: root }, stdout: "pipe", stderr: "pipe" },
-      );
-      const stderr = await new Response(process.stderr).text();
-      await process.exited;
-      expect(process.exitCode).toBe(1);
-      expect(JSON.parse(stderr)).toMatchObject({ status: "rejected", reason: "LEGACY_WRITER_DISABLED" });
-      expect(existsSync(join(root, "life", "v3"))).toBe(false);
-    });
-
-    test(`${mode} cutover marker blocks legacy access mutation byte-for-byte`, async () => {
-      const { root } = fixture(mode);
-      const itemsPath = join(root, "life", "systems", "engram", "items.json");
-      writeJson(itemsPath, { entityId: "systems/engram", entityType: "system", facts: [{ id: "engram-001", fact: "legacy", status: "active", accessCount: 1, lastAccessed: "2026-01-01" }] });
-      const before = readFileSync(itemsPath);
-      const script = join(import.meta.dir, "..", "..", "scripts", "memory-write.js");
-      const process = Bun.spawn(
-        ["bun", script, "--access", "--entity", "systems/engram", "--id", "engram-001"],
-        { cwd: root, env: { ...globalThis.process.env, ENGRAM_WORKSPACE: root }, stdout: "pipe", stderr: "pipe" },
-      );
-      const stderr = await new Response(process.stderr).text();
-      await process.exited;
-      expect(process.exitCode).toBe(1);
-      expect(JSON.parse(stderr)).toMatchObject({ status: "rejected", reason: "LEGACY_WRITER_DISABLED" });
-      expect(readFileSync(itemsPath)).toEqual(before);
-    });
-  }
 });

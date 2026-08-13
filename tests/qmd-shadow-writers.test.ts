@@ -186,25 +186,4 @@ describe("shadow dirty marks from real writers", () => {
     expect(readState(workspace, stateDir).generation).toBe(1);
   });
 
-  test("duplicate KG write is skipped without a second dirty generation", async () => {
-    const { workspace, stateDir } = makeWorkspace();
-    const args = [
-      "--entity", "areas/test",
-      "--fact", "The global coordinator owns maintenance for this physical index",
-      "--category", "decision",
-    ];
-    const first = await spawnScript("memory-write.js", args, workspace, stateDir);
-    const second = await spawnScript("memory-write.js", args, workspace, stateDir);
-
-    expect(first.exitCode).toBe(0);
-    expect(JSON.parse(first.stdout).status).toBe("created");
-    expect(second.exitCode).toBe(0);
-    expect(JSON.parse(second.stdout).status).toBe("skipped");
-    expect(readState(workspace, stateDir)).toMatchObject({
-      generation: 1,
-      dirty: { collections: ["life"] },
-    });
-    expect(JSON.parse(readFileSync(join(workspace, "life", "areas", "test", "items.json"), "utf8")).facts)
-      .toHaveLength(1);
-  });
 });

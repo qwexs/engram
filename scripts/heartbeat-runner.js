@@ -297,22 +297,6 @@ function describeQmdEmbedOutcome(result, embedResult, skipped = false) {
   };
 }
 
-function formatSynthesisStats(stats) {
-  if (!stats) return "ok (runner apply-decay)";
-  const parts = [
-    `${stats.updated ?? 0} updated`,
-    `${stats.unchanged ?? 0} unchanged`,
-    `${stats.skipped ?? 0} skipped`,
-    `${stats.errors ?? 0} errors`,
-  ];
-  if (stats.hot != null || stats.warm != null || stats.coldExcluded != null) {
-    parts.push(`hot ${stats.hot ?? 0}`);
-    parts.push(`warm ${stats.warm ?? 0}`);
-    parts.push(`coldExcluded ${stats.coldExcluded ?? 0}`);
-  }
-  return `ok (${parts.join(", ")})`;
-}
-
 function daysSince(iso, fallback = 999) {
   if (!iso) return fallback;
   const ms = new Date(iso).getTime();
@@ -765,58 +749,9 @@ async function runExtraction(targetSession = session) {
   return text;
 }
 
-function mondayFor(dateString) {
-  const date = new Date(dateString + "T12:00:00");
-  const day = date.getDay() || 7;
-  date.setDate(date.getDate() - day + 1);
-  return date.toLocaleDateString("sv-SE");
-}
-
 async function runSynthesis() {
-  if (!isLegacyOllAdmissionEnabled(workspace)) {
-    summary.synthesis = "skipped (owned by nightly coordinator)";
-    summary.phases.synthesis = { status: "skipped", reason: "nightly coordinator owns reconciliation" };
-    return;
-  }
-  const monday = mondayFor(today);
-  if (today !== monday) {
-    summary.synthesis = "skipped (not Monday)";
-    summary.phases.synthesis = { status: "skipped", reason: "not Monday" };
-    return;
-  }
-  const state = await readJson(statePath, DEFAULT_STATE);
-  const lastWeeklyWindow = state.lastWeeklySynthesis;
-  if (lastWeeklyWindow === monday) {
-    summary.synthesis = "skipped (already ran this week)";
-    summary.phases.synthesis = { status: "skipped", reason: "already ran this week", week: monday };
-    return;
-  }
-  const result = run("bun", [scriptPath("rebuild-summaries.js"), "--apply-decay", "--json"]);
-  const stats = parseLastJsonLine(result.stdout);
-  summary.phases.synthesis = { command: summarizeCommand(result), week: monday, stats };
-  if (result.status === 0) {
-    const synthesisRun = {
-        status: "ok",
-        label: labelPrefix + "-synthesis",
-        entitiesScanned: stats?.entitiesScanned ?? null,
-        updated: stats?.updated ?? null,
-        unchanged: stats?.unchanged ?? null,
-        skipped: stats?.skipped ?? null,
-        errors: stats?.errors ?? null,
-        hot: stats?.hot ?? null,
-        warm: stats?.warm ?? null,
-        coldIncluded: stats?.coldIncluded ?? null,
-        coldExcluded: stats?.coldExcluded ?? null,
-    };
-    await patchState({
-      lastWeeklySynthesis: monday,
-      "subagentRuns.hb-synthesis": synthesisRun,
-    });
-    summary.synthesis = formatSynthesisStats(stats);
-  } else {
-    summary.synthesis = "error (rebuild-summaries failed)";
-    summary.warnings.push(result.stderr || result.stdout || result.error || "rebuild-summaries failed");
-  }
+  summary.synthesis = "retired (KG v3 fleet cutover)";
+  summary.phases.synthesis = { status: "retired", reason: "legacy v2 synthesis entrypoint removed" };
 }
 
 // applyDomainHandoffs: scan workspace/ops/heartbeat-spawns/handoff/*.md for handoff
@@ -1477,12 +1412,6 @@ async function runMaintenance() {
     await maybeAutoSeedFromValidate(validate);
   }
 
-  // Regenerate derived facts-active.md (BEFORE qmd update, so qmd picks it up).
-  // Закрывает backburner "QMD индексирует *.md, а не items.json" (см. v3.3 §3.5).
-  const deriveFacts = legacyMutation.allowed
-    ? run("node", [scriptPath("derive-facts.js")])
-    : { status: 0, command: "derive-facts retired under KG v3 authority", stdout: "", stderr: "" };
-
   const qmdMaintenance = await runWorkspaceQmdMaintenance({
     workspace,
     skipEmbed: Boolean(opts["no-embed"]),
@@ -1501,7 +1430,6 @@ async function runMaintenance() {
 
   summary.phases.maintenance = {
     validate: summarizeCommand(validate),
-    deriveFacts: summarizeCommand(deriveFacts),
     adapter: { mode: qmdMaintenance.mode, status: qmdMaintenance.status },
     qmdUpdate: qmdUpdate ? summarizeTypedQmdResult(qmdUpdate) : null,
     qmdEmbed: qmdEmbed ? {
@@ -1512,16 +1440,14 @@ async function runMaintenance() {
 
   summary.maintenance = [
     validate.status === 0 ? "validate ok" : "validate error",
-    legacyMutation.allowed
-      ? (deriveFacts.status === 0 ? "derive-facts ok" : "derive-facts error")
-      : "legacy projection retired",
+    "legacy projection retired",
     qmdMaintenance.status === "delegated"
       ? "qmd scheduler owns index"
       : (qmdUpdate?.ok ? "qmd update ok" : "qmd update error"),
     qmdEmbedOutcome.label,
   ].join("; ");
 
-  for (const result of [validate, deriveFacts]) {
+  for (const result of [validate]) {
     if (result.status !== 0) summary.warnings.push(result.stderr || result.stdout || result.error || result.command + " failed");
   }
   if (qmdMaintenance.error) summary.warnings.push(qmdMaintenance.error.message);

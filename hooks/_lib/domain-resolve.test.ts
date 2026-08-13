@@ -222,6 +222,36 @@ describe("chatId/topicId extraction (3 fallback layers)", () => {
 });
 
 // =========================================================================
+//                       BOOTSTRAP SESSION-KEY SHAPES
+// =========================================================================
+
+describe("bootstrap session-key normalization", () => {
+  const REG = {
+    "engram": {
+      type: "topic-thread",
+      topic: { chatId: CHAT_GROUP_NEG, topicId: TOPIC },
+    },
+  };
+
+  test("full colon-delimited OpenClaw key resolves the bound topic", () => {
+    const { testDir } = setupWorkspace(REG);
+    const event = makeEvent({
+      testDir,
+      type: "agent",
+      action: "bootstrap",
+      sessionKey: SESSION_KEY_TELE,
+    });
+
+    const resolved = resolveDomainFromEvent(event, { kinds: ["topic-thread"] });
+    expect(resolved).not.toBeNull();
+    expect(resolved!.domainName).toBe("engram");
+    expect(resolved!.sessionSegment).toBe(
+      `telegram-group--${CHAT_GROUP}-topic-${TOPIC}`,
+    );
+  });
+});
+
+// =========================================================================
 //                          SESSION-KIND RESOLUTION
 // =========================================================================
 

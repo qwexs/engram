@@ -1,6 +1,6 @@
 import { existsSync, appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
+import { normalizeSessionSegment, splitAgentAndSession } from "../_lib/parse-agent-id.js";
 import { markWorkspaceQmdDirty } from "../../src/qmd/maintenance-integration.ts";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -45,9 +45,7 @@ const handler = async (event: any) => {
     "main";
   const split = splitAgentAndSession(rawKey);
   const agentId = split?.agentId || event.context?.agentId || "main";
-  const sessionKey =
-    split?.sessionKey ||
-    (rawKey.includes(":") ? rawKey.split(":").slice(2).join("-") || "main" : rawKey);
+  const sessionKey = split?.sessionKey || normalizeSessionSegment(rawKey) || "main";
 
   // Skip ephemeral runtime sessions.
   if (sessionKey.startsWith("subagent-")) return;

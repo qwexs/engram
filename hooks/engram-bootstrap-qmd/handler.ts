@@ -1,9 +1,9 @@
-import { splitAgentAndSession } from "../_lib/parse-agent-id.js";
+import { normalizeSessionSegment, splitAgentAndSession } from "../_lib/parse-agent-id.js";
 
 export function bootstrapQmdSkipReason(event: any): "cron" | "heartbeat" | "ephemeral" | null {
   const rawKey = String(event?.context?.sessionKey || event?.sessionKey || "").trim();
   const parsed = splitAgentAndSession(rawKey);
-  const sessionSegment = String(parsed?.sessionKey || rawKey.replace(/^agent:[^:]+:/, "").replace(/:/g, "-")).toLowerCase();
+  const sessionSegment = String(parsed?.sessionKey || normalizeSessionSegment(rawKey) || "").toLowerCase();
 
   if (/^cron(?:-|$)/.test(sessionSegment)) return "cron";
   if (/^heartbeat(?:-|$)/.test(sessionSegment)) return "heartbeat";

@@ -8,6 +8,7 @@ import { join, dirname } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { loadEngramConfig } from "./config.js";
 import { markWorkspaceQmdDirty } from "../src/qmd/maintenance-integration.ts";
+import { normalizeSessionSegment, splitCanonicalSessionKey } from "../src/session-key.ts";
 
 // Т.к. скрипт в skills/engram/scripts/, workspace на 3 уровня выше
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
@@ -63,8 +64,13 @@ if (!SECTION_MAP[sectionKey]) {
 }
 
 const config = loadEngramConfig(workspace);
-const agentId = opts["agent-id"] || config.agent.replace(/^agent-/, "") || "main";
-const session = opts.session;
+const splitSession = splitCanonicalSessionKey(opts.session);
+const agentId = opts["agent-id"] || splitSession?.agentId || config.agent.replace(/^agent-/, "") || "main";
+const session = splitSession?.sessionKey || normalizeSessionSegment(opts.session);
+if (!session) {
+  console.error(`❌ Небезопасный или пустой --session: "${opts.session}"`);
+  process.exit(1);
+}
 const sectionTitle = SECTION_MAP[sectionKey];
 const text = opts.text.trim();
 const retrievalId = typeof opts["retrieval-id"] === "string" ? opts["retrieval-id"].trim() : "";

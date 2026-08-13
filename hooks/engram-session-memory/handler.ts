@@ -12,7 +12,11 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { parseAgentIdFromSessionKey, splitAgentAndSession } from "../_lib/parse-agent-id.js";
+import {
+  normalizeSessionSegment,
+  parseAgentIdFromSessionKey,
+  splitAgentAndSession,
+} from "../_lib/parse-agent-id.js";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 const DEFAULT_MESSAGE_COUNT = 40;
@@ -159,9 +163,7 @@ const handler = async (event: any) => {
     parseAgentIdFromSessionKey(rawKey) ||
     (context.agentId as string | undefined) ||
     "main";
-  const sessionKey =
-    keyParts?.sessionKey ||
-    (rawKey.includes(":") ? rawKey.split(":").slice(2).join("-") || "main" : rawKey);
+  const sessionKey = keyParts?.sessionKey || normalizeSessionSegment(rawKey) || "main";
 
   console.log(`[engram-session-memory] rawKey=${rawKey} sessionKey=${sessionKey} agentId=${agentId}`);
 

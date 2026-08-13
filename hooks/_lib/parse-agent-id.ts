@@ -1,3 +1,9 @@
+import {
+  splitCanonicalSessionKey,
+} from "../../src/session-key.js";
+
+export { normalizeSessionSegment } from "../../src/session-key.js";
+
 /**
  * Extract the agentId from an OpenClaw sessionKey of the form
  * `agent:<id>:<channel>:<rest>`. Returns null if sessionKey is empty or does
@@ -20,20 +26,13 @@ export function parseAgentIdFromSessionKey(sessionKey: string | undefined | null
 
 /**
  * Convenience: derive the on-disk session segment from an OpenClaw sessionKey.
- * Format: `agent:<id>:<channel>:<rest>` → `agent-${id}/${rest-with-:→-}`.
- *
- * For Telegram topics the rest already looks like `telegram-group--100xxx-topic-1`,
- * so the split-and-join transformation matches what each hook needs.
+ * Format: `agent:<id>:<channel>:<rest>` → a canonical, path-safe session
+ * segment. Telegram topic variants all resolve to
+ * `telegram-group--<absChatId>-topic-<topicId>`.
  *
  * @returns object with `agentId` and `sessionKey` (path-safe segment), or null
  *          if the sessionKey cannot be parsed.
  */
 export function splitAgentAndSession(sessionKey: string | undefined | null): { agentId: string; sessionKey: string } | null {
-  if (!sessionKey) return null;
-  const m = sessionKey.match(/^agent:([^:]+):(.+)$/);
-  if (!m) return null;
-  const agentId = m[1];
-  // Keep colons in the rest by replacing them with `-` for filesystem safety.
-  const sessionKeySeg = m[2].replace(/:/g, "-") || "main";
-  return { agentId, sessionKey: sessionKeySeg };
+  return splitCanonicalSessionKey(sessionKey);
 }

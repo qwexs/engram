@@ -103,6 +103,45 @@ describe("shadow dirty marks from real writers", () => {
     });
   });
 
+  test("daily-note append canonicalizes every Telegram topic session form", async () => {
+    const variants = [
+      "telegram-group--1001-topic-4",
+      "telegram--1001-topic-4",
+      "telegram:-1001:topic:4",
+      "telegram:group:-1001:topic:4",
+      "agent:main:telegram:group:-1001:topic:4",
+      "telegram-1001-thread-4",
+      "telegram--1001-4",
+    ];
+
+    for (const session of variants) {
+      const { workspace, stateDir } = makeWorkspace();
+      const result = await spawnScript("daily-note-append.js", [
+        "--session", session,
+        "--section", "events",
+        "--text", `event from ${session}`,
+      ], workspace, stateDir);
+
+      expect(result.exitCode).toBe(0);
+      const output = JSON.parse(result.stdout);
+      expect(output.file).toContain(
+        "/memory/agent-main/telegram-group--1001-topic-4/",
+      );
+    }
+  });
+
+  test("daily-note append rejects path traversal in session", async () => {
+    const { workspace, stateDir } = makeWorkspace();
+    const result = await spawnScript("daily-note-append.js", [
+      "--session", "../outside",
+      "--section", "events",
+      "--text", "must not be written",
+    ], workspace, stateDir);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Небезопасный или пустой --session");
+  });
+
   test("daily-note append writes an explicit retrieval card without a new collection", async () => {
     const { workspace, stateDir } = makeWorkspace();
     const result = await spawnScript("daily-note-append.js", [
@@ -145,6 +184,41 @@ describe("shadow dirty marks from real writers", () => {
     }
 
     expect(readState(workspace, stateDir).generation).toBe(1);
+  });
+
+  test("session-start writes raw Telegram topic keys only to the canonical directory", async () => {
+    const { workspace, stateDir } = makeWorkspace();
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const previousCacheHome = process.env.XDG_CACHE_HOME;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    process.env.XDG_CACHE_HOME = join(stateDir, "cache");
+    try {
+      await sessionStartHandler({
+        type: "agent",
+        action: "bootstrap",
+        context: {
+          workspaceDir: workspace,
+          agentId: "main",
+          sessionKey: "telegram:-1001:topic:4",
+        },
+      });
+    } finally {
+      if (previousStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
+      else process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      if (previousCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = previousCacheHome;
+    }
+
+    const date = new Date().toLocaleDateString("sv-SE", {
+      timeZone: process.env.ENGRAM_TZ || process.env.TZ || "UTC",
+    });
+    expect(readFileSync(join(
+      workspace,
+      "memory",
+      "agent-main",
+      "telegram-group--1001-topic-4",
+      `${date}.md`,
+    ), "utf8")).toContain("session:start");
   });
 
   test("duplicate session-end does not create a second generation", async () => {

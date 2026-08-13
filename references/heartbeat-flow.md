@@ -1,6 +1,6 @@
 # Heartbeat Flow
 
-> v3.5. 10-фазный оркестратор. LLM-фазы (1, 2, 3, 3.5) spawn'ят subagent'ов; механические фазы выполняются inline в `heartbeat-runner.js`.
+> v3.5. 10-фазный оркестратор. LLM-фазы (2, 3, 3.5) spawn'ят subagent'ов; механические фазы выполняются inline в `heartbeat-runner.js`.
 
 PR 2 introduces a dual-read migration boundary. Legacy workspaces may still
 execute the compatibility OLL phases. A workspace with
@@ -14,7 +14,7 @@ dispatch and application. Nightly execution is not enabled by this boundary.
 |-------|------|-----------|-----|
 | 0 | inline | Fast Init: read state, lock, check what to run | `heartbeat-runner.js` |
 | 0.5 | inline | Rotation Check: daily notes >1000 lines → rotate | `rotate-notes.js` |
-| 1 | subagent | Extraction: hb-extract (daily note → KG) | `extract-runner.js` |
+| 1 | inline | Cursor maintenance; no message classification or KG write | `extract-runner.js` |
 | 1.5 | inline | Stub Summary: summarize rotated archive into stub | `heartbeat-runner.js` |
 | 2 | legacy-only subagent | Synthesis: hb-synthesis (weekly summary, Mon only) | spawn `hb-synthesis` |
 | 3 | subagent | Domains Status: hb-domains (check status of all domains) | spawn `hb-domains` |
@@ -29,7 +29,7 @@ dispatch and application. Nightly execution is not enabled by this boundary.
 ```
 0. Fast Init (state, lock, what to run) — heartbeat-runner.js
 0.5. Three-Layer Rotation check (daily note >1000 lines) — rotate-notes.js
-1. Knowledge Graph Extraction (if notes changed) — hb-extract subagent
+1. Cursor maintenance — deterministic, no KG extraction
 1.5. Stub Summary (rotated archives) — inline
 2. Legacy-only: Monday? → Weekly Synthesis — hb-synthesis (Mon only)
 3. Domain Status check — hb-domains (if domains exist)
@@ -120,7 +120,8 @@ The heartbeat phases are model-agnostic. Model selection uses the canonical sema
 5. `engram.json → models.subagents_default` — legacy grinding-phase alias
 6. `OSS_FALLBACK_MODEL = "sonnet-4-6"` — grinding phases only
 
-**Known phases** (`HB_SUBAGENT_PHASES` in `config.js`): hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch.
+**Known phases** (`HB_SUBAGENT_PHASES` in `config.js`): hb-synthesis,
+hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch.
 
 **Full-reasoning phases** require an exact valid mapping and fail before dispatch rather than falling back to a cheap default.
 
@@ -137,7 +138,6 @@ Example `engram.json` override:
     "heartbeat": {
       "orchestrator": "<your-cron-orchestrator-model>",
       "subagents": {
-        "hb-extract": "<cheap-model>",
         "hb-synthesis": "<capable-model>"
       }
     }

@@ -27,14 +27,15 @@ Read this document top to bottom and execute each phase sequentially.
 
 Each `sessions_spawn` call below says `model=<resolved via engram.json>`. The actual model is picked at spawn time by `scripts/config.js → resolveSubagentModel(workspace, phase)`, in this order:
 
-1. `process.env.ENGRAM_MODEL_<PHASE_UPPER>` (e.g. `ENGRAM_MODEL_HB_EXTRACT`) — explicit env override
+1. `process.env.ENGRAM_MODEL_<PHASE_UPPER>` — explicit env override
 2. `engram.json → models.heartbeat.subagents[phase]` — exact workspace phase mapping
 3. selected deployment overlay → exact phase mapping
 4. `engram.json → models.default` — grinding phases only
 5. `engram.json → models.subagents_default` — legacy grinding-phase alias
 6. `OSS_FALLBACK_MODEL = "sonnet-4-6"` — grinding phases only
 
-**Known phases** (`HB_SUBAGENT_PHASES` in `config.js`): hb-extract, hb-synthesis, hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch.
+**Known phases** (`HB_SUBAGENT_PHASES` in `config.js`): hb-synthesis,
+hb-domains, hb-domains-write, hb-rethink, hb-rethink2, hb-autoresearch.
 
 **Full-reasoning phases**: hb-synthesis, hb-rethink, hb-rethink2. They require an exact valid mapping and fail before dispatch instead of falling back to a cheap default.
 
@@ -51,7 +52,6 @@ Example `engram.json` override:
     "heartbeat": {
       "orchestrator": "<your-cron-orchestrator-model>",
       "subagents": {
-        "hb-extract": "<cheap-model>",
         "hb-synthesis": "<capable-model>"
       }
     }
@@ -87,7 +87,7 @@ The cron agent turn is configured independently from the subagents it spawns:
    - `--set lastDailyNoteCreated.<session> <today>`
 5. Determine what to run:
    - Rotation: always check (script determines if needed)
-   - Extraction: always (watermark handles incremental)
+   - Cursor maintenance: always (no content classification or KG mutation)
    - Synthesis: if Monday and the current owner's weekly reconciliation
      watermark is not this week Monday (`heartbeat-state` before cutover,
      `memory-state/oll/state.json` after cutover)

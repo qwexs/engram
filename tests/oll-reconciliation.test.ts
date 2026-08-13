@@ -55,4 +55,19 @@ describe("PR 5 reusable deterministic reconciliation", () => {
     });
     expect(runtime.commands).toHaveLength(1);
   });
+
+  test("skips legacy v2 reconciliation after KG v3 authority activation", async () => {
+    const workspace = setup();
+    mkdirSync(join(workspace, "memory-state", "kg-v3"), { recursive: true });
+    writeFileSync(join(workspace, "memory-state", "kg-v3", "authority.json"), JSON.stringify({
+      schema: "engram.kg-v3-authority.v1",
+      mode: "canary",
+    }));
+    const runtime = new FakeRuntime([]);
+    await expect(reconcileWorkspaceMemory({ workspace, scriptsDir: "/canonical/scripts", runtime })).resolves.toMatchObject({
+      status: "ok",
+      skipped: "legacy-v2-reconciliation-retired",
+    });
+    expect(runtime.commands).toHaveLength(0);
+  });
 });

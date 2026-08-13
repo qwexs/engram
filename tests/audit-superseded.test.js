@@ -30,6 +30,22 @@ function runAudit(args, cwd) {
 }
 
 describe("audit-superseded", () => {
+  test("rejects auto-fix after KG v3 authority activation", () => {
+    const root = makeWorkspace();
+    try {
+      mkdirSync(join(root, "memory-state", "kg-v3"), { recursive: true });
+      writeFileSync(join(root, "memory-state", "kg-v3", "authority.json"), JSON.stringify({
+        schema: "engram.kg-v3-authority.v1",
+        mode: "canary",
+      }));
+      const proc = runAudit(["--workspace", root, "--auto-fix"]);
+      expect(proc.status).toBe(1);
+      expect(proc.stderr).toContain("LEGACY_MUTATOR_DISABLED");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("dry-run reports orphans but does not write to disk", async () => {
     const root = makeWorkspace();
     try {

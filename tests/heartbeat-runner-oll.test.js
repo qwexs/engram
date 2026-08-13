@@ -231,8 +231,8 @@ describe("heartbeat-runner OLL spawn gates", () => {
     const state = JSON.parse(readFileSync(join(root, "memory", "heartbeat-state.json"), "utf8"));
     expect(state.lastExtraction.main).toBeTruthy();
     expect(state.lastExtraction["telegram-group--1"]).toBeTruthy();
-    expect(state.subagentRuns["hb-extract-main"].status).toBe("ok");
-    expect(state.subagentRuns["hb-extract-telegram-group--1"].status).toBe("ok");
+    expect(state.subagentRuns["hb-extract-main"]).toBeUndefined();
+    expect(state.subagentRuns["hb-extract-telegram-group--1"]).toBeUndefined();
 
     const mainNote = readFileSync(join(root, "memory", "agent-main", "main", DATE + ".md"), "utf8");
     const groupNote = readFileSync(join(root, "memory", "agent-main", "telegram-group--1", DATE + ".md"), "utf8");

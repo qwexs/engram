@@ -4,6 +4,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { markWorkspaceQmdDirty } from "../src/qmd/maintenance-integration.ts";
+import { legacyKgMutationState } from "./_lib/kg-v3-authority.ts";
 
 function parseArgs(argv) {
   const opts = {};
@@ -46,6 +47,14 @@ const report = {
 function output(code = 0) {
   console.log(opts.json ? JSON.stringify(report) : JSON.stringify(report, null, 2));
   process.exit(code);
+}
+
+const authority = legacyKgMutationState(workspace);
+if (!dryRun && !authority.allowed) {
+  report.mode = "retired";
+  report.reason = "KG_V3_AUTHORITY_ACTIVE";
+  report.authorityMode = authority.mode;
+  output();
 }
 
 if (!existsSync(bufferPath)) output();

@@ -11,7 +11,7 @@
  *      (npm shebang-wrappers install as `qmd.cmd` on Windows;
  *      `bun`/`Bun.spawn` cannot exec the wrapper without the extension)
  *
- * Resolution order for subagent models (e.g. `hb-extract`, `hb-rethink`):
+ * Resolution order for subagent models (e.g. `hb-domains`, `hb-rethink`):
  *   1. process.env.ENGRAM_MODEL_<PHASE_UPPER>  (explicit override)
  *   2. engram.json -> models.heartbeat.subagents[phase]
  *   3. deployment profile overlay -> models.heartbeat.subagents[phase]
@@ -80,7 +80,6 @@ export function resolveQmdCommand(workspace) {
  * The actual model ids are NOT hardcoded here — they come from engram.json.
  */
 const HB_SUBAGENT_PHASES = [
-  "hb-extract",
   "hb-synthesis",
   "hb-domains",
   "hb-domains-write",

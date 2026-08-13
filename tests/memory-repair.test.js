@@ -67,4 +67,17 @@ describe("memory-repair", () => {
     expect(fact.confidence).toBe(0.9);
     expect(fact.abstractionLevel).toBe("context");
   });
+
+  test("rejects v2 mutation after KG v3 authority activation", async () => {
+    mkdirSync(join(workspace, "memory-state", "kg-v3"), { recursive: true });
+    writeFileSync(join(workspace, "memory-state", "kg-v3", "authority.json"), JSON.stringify({
+      schema: "engram.kg-v3-authority.v1",
+      mode: "canary",
+    }));
+    const before = readFileSync(itemsPath, "utf8");
+    const result = await run("--confidence", "0.9");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("LEGACY_MUTATOR_DISABLED");
+    expect(readFileSync(itemsPath, "utf8")).toBe(before);
+  });
 });

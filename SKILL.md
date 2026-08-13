@@ -292,7 +292,7 @@ weekly synthesis и OLL ownership переходят единому nightly coor
 |-------|------|-----------|
 | 0 | inline | Fast Init: state, lock, check |
 | 0.5 | inline | Rotation: daily notes >1000 lines |
-| 1 | subagent | Extraction: hb-extract (KG only for main/meta; topics → domain-first skip) |
+| 1 | inline | Cursor maintenance only; no content classification or KG writes |
 | 1.5 | inline | Stub Summary |
 | 2 | legacy-only subagent | Synthesis: hb-synthesis (Mon only) |
 | 3 | subagent | Domains Status: hb-domains |
@@ -395,7 +395,8 @@ For hook installation, race-condition guard, side-effect-delivered pattern: [ref
 ~55 scripts in `skills/engram/scripts/`. Run via `bun skills/engram/scripts/<name>.js [args]`.
 
 **Most-used by agent:**
-- `memory-write.js` — unified KG write pipeline (dedup, validate, QMD update)
+- `engram_memory_save` / `engram_memory_retract` — canonical KG v3 write tools
+- `memory-write.js` — pre-cutover compatibility only; blocked by KG v3 authority
 - `daily-note-append.js` — record session activity
 - `memory-signal.js` — classify text signal (high/low/none)
 - `memory-observe.js` — capture OLL observation
@@ -406,6 +407,7 @@ For hook installation, race-condition guard, side-effect-delivered pattern: [ref
 - `init.js`, `install-hooks.js`, `install-deterministic-heartbeat-cron.js`, `install-qmd.js` — clean-install setup
 - `install-cron.js` — pre-cutover compatibility only
 - `add-domain.js`, `add-session.js` — provisioning
-- `validate.js`, `memory-repair.js`, `derive-facts.js` — maintenance
+- `validate.js`, `derive-facts.js` — read/projection maintenance
+- `memory-repair.js` — pre-cutover compatibility; write mode blocked by KG v3 authority
 
 Full script reference: [references/scripts.md](references/scripts.md)

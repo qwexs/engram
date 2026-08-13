@@ -26,6 +26,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { findSimilarFacts } from "./memory-dedup.js";
+import { legacyKgMutationState } from "./_lib/kg-v3-authority.ts";
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -80,6 +81,16 @@ const DRY_RUN = !opts["auto-fix"] || Boolean(opts["dry-run"]);
 const MARK_PENDING = opts["no-mark-pending"] ? false : true; // default ON
 const JACCARD_THRESHOLD = parseFloat(opts["jaccard-threshold"] || "0.8");
 const SINGLE_ENTITY = opts.entity;
+
+const authority = legacyKgMutationState(WORKSPACE);
+if (!DRY_RUN && !authority.allowed) {
+  console.error(JSON.stringify({
+    status: "rejected",
+    reason: "LEGACY_MUTATOR_DISABLED",
+    authorityMode: authority.mode,
+  }));
+  process.exit(1);
+}
 
 // Собрать список items.json файлов
 function collectItemsPaths() {

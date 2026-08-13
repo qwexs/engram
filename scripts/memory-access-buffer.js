@@ -4,6 +4,7 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { legacyKgMutationState } from "./_lib/kg-v3-authority.ts";
 
 function parseArgs(argv) {
   const opts = {};
@@ -45,6 +46,16 @@ if (!entity || entity.split("/").includes("..") || (!id && !fact) || (id && fact
 if (fact && fact.length > 12000) {
   console.error("❌ --fact слишком длинный (максимум 12000 символов)");
   process.exit(2);
+}
+
+const authority = legacyKgMutationState(workspace);
+if (!authority.allowed) {
+  console.log(JSON.stringify({
+    status: "retired",
+    reason: "KG_V3_ACCESS_TRACKING_NOT_ADMITTED",
+    authorityMode: authority.mode,
+  }));
+  process.exit(0);
 }
 
 const dir = join(workspace, "workspace", "memory-state");

@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { legacyKgMutationState } from "../../scripts/_lib/kg-v3-authority.ts";
 
 export interface ReconciliationCommandResult {
   exitCode: number;
@@ -20,6 +21,7 @@ export interface WorkspaceReconciliationResult {
   stats?: unknown;
   stdout?: string;
   error?: string;
+  skipped?: string;
 }
 
 export class BunReconciliationRuntime implements ReconciliationRuntime {
@@ -63,6 +65,10 @@ export async function reconcileWorkspaceMemory(options: {
   const runtime = options.runtime || new BunReconciliationRuntime();
   const result: WorkspaceReconciliationResult = { workspace, status: "ok" };
   if (!existsSync(join(workspace, "engram.json"))) return { ...result, status: "error", error: "engram.json is missing" };
+  const authority = legacyKgMutationState(workspace);
+  if (!options.dryRun && !authority.allowed) {
+    return { ...result, skipped: "legacy-v2-reconciliation-retired" };
+  }
   const env = { ...process.env, ENGRAM_WORKSPACE: workspace };
 
   const flushArgs = ["bun", join(options.scriptsDir, "flush-access-buffer.js"), "--workspace", workspace, "--json"];

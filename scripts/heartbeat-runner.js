@@ -701,10 +701,6 @@ function sanitizeLabelPart(value) {
   return String(value || "main").replace(/[^a-zA-Z0-9_-]+/g, "-");
 }
 
-function extractionRunKey(targetSession = session) {
-  return allActiveSessions ? "hb-extract-" + sanitizeLabelPart(targetSession) : "hb-extract";
-}
-
 function setExtractionPhase(targetSession, value) {
   if (allActiveSessions) {
     if (!summary.phases.extractions) summary.phases.extractions = {};
@@ -742,15 +738,11 @@ async function runExtraction(targetSession = session) {
     };
   }
   setExtractionPhase(targetSession, phase);
-  const runKey = extractionRunKey(targetSession);
   if (result.status !== 0 || !handoff.ok || !handoff.isOk) {
     const reason = handoff.ok ? handoff.summary : (result.stderr || result.stdout || result.error || "extract-runner failed");
     const text = "error (" + String(reason).slice(0, 160) + ")";
     if (!allActiveSessions) summary.extraction = text;
     summary.warnings.push(result.stderr || result.stdout || result.error || "extract-runner failed");
-    await patchState({
-      ["subagentRuns." + runKey]: { status: "failed", label: labelPrefix + "-extract-" + sanitizeLabelPart(targetSession), session: targetSession, reason },
-    });
     return text;
   }
 
@@ -758,30 +750,16 @@ async function runExtraction(targetSession = session) {
   const iso = localIso();
   const patches = {
     ["lastExtraction." + targetSession]: iso,
-    ["subagentRuns." + runKey]: {
-      status: "ok",
-      label: labelPrefix + "-extract-" + sanitizeLabelPart(targetSession),
-      session: targetSession,
-      facts: stats.facts_written ?? 0,
-      skipped: stats.facts_skipped_dedup ?? 0,
-      sessions: stats.sessions_processed ?? 0,
-      watermark: stats.new_watermark ?? null,
-      dryRun: Boolean(stats.dry_run),
-      watermarkAdvanced: stats.watermark_advanced ?? true,
-    },
   };
   if (stats.last_session_file) patches["lastSessionExtracted." + targetSession] = stats.last_session_file;
   await patchState(patches);
 
   const prev = stats.previous_watermark ?? "?";
   const next = stats.new_watermark ?? "?";
-  const facts = stats.facts_written ?? 0;
-  const planned = stats.facts_planned ?? 0;
-  const skipped = stats.facts_skipped_dedup ?? 0;
   const sessions = stats.sessions_processed ?? 0;
   const text = stats.dry_run
-    ? `dry-run (${planned} planned, ${skipped} skipped, ${sessions} sessions, ${prev}->${next}${stats.watermark_advanced ? "" : ", watermark not advanced"})`
-    : `ok (${facts} facts, ${skipped} skipped, ${sessions} sessions, ${prev}->${next})`;
+    ? `cursor dry-run (${sessions} sessions, ${prev}->${next}${stats.watermark_advanced ? "" : ", watermark not advanced"})`
+    : `cursor ok (${sessions} sessions, ${prev}->${next})`;
   if (!allActiveSessions) summary.extraction = text;
   return text;
 }

@@ -23,12 +23,12 @@ async function runExtract(root, extra = []) {
 }
 
 describe("retired automatic KG extraction", () => {
-  test("tracks only new non-service session files without reading their content", () => {
+  test("orders cursor files from names without trusting transcript headers", () => {
     const root = makeWorkspace();
     try {
       const dir = join(root, "memory", "agent-main", "main", "sessions");
-      writeFileSync(join(dir, "2026-05-21-010000-first.md"), "# Session: 2026-05-21 01:00:00 UTC\nuser: secret body is irrelevant\n");
-      writeFileSync(join(dir, "2026-05-21-020000-second.md"), "# Session: 2026-05-21 02:00:00 UTC\n");
+      writeFileSync(join(dir, "2026-05-21-010000-first.md"), "# Session: 2099-12-31 23:59:59 UTC\nuser: body must not control ordering\n");
+      writeFileSync(join(dir, "2026-05-21-020000-second.md"), "# Session: 2000-01-01 00:00:00 UTC\n");
       writeFileSync(join(dir, "cron-noise.md"), "# Session: 2026-05-21 03:00:00 UTC\n");
       const files = collectSessionFiles({
         workspace: root,

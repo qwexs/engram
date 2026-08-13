@@ -3,7 +3,8 @@
 ## Unreleased
 
 - **refactor(kg): retire automatic legacy producer branches.** Mechanical
-  session/daily extraction is permanently counts-only, domain and legacy OLL
+  session/daily extraction is permanently cursor-only without reading message
+  bodies, domain and legacy OLL
   promotions are terminally suppressed, and the old configuration switch can
   no longer restore those writer calls. A static audit freezes this boundary.
 
@@ -13,7 +14,7 @@
 
 - **feat(kg): add guarded OpenClaw live-turn ingress for KG v3.** A thin
   plugin binds typed save/retract calls to server-stamped inbound run,
-  message, sender, account, and session metadata; each source turn has one
+  message, sender, and session metadata; each source turn has one
   expiring mutation authority. Per-workspace release/plugin projections keep
   installation dormant until explicit activation, with plan, byte read-back,
   readiness, status, and non-destructive rollback tooling.

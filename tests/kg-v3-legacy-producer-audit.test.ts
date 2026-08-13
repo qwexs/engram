@@ -33,4 +33,15 @@ describe("KG v3 automatic legacy producer retirement", () => {
     expect(source("assets/templates/engram.json")).not.toContain("automaticIngress");
   });
 
+  test("remaining v2 maintenance mutators share the KG v3 authority guard", () => {
+    for (const path of [
+      "scripts/memory-access-buffer.js",
+      "scripts/flush-access-buffer.js",
+      "scripts/memory-repair.js",
+      "scripts/audit-superseded.js",
+    ]) {
+      expect(source(path)).toContain("legacyKgMutationState");
+    }
+  });
+
 });

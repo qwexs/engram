@@ -39,14 +39,17 @@ Handled automatically by hooks:
 Paths: Main `memory/agent-{{AGENT_ID}}/main/YYYY-MM-DD.md`, Group `memory/agent-{{AGENT_ID}}/{platform}-{groupId}/YYYY-MM-DD.md`.
 
 ### 6. Heartbeat Order
-During heartbeats: extract → rotate → embed. Rotating first loses unextracted facts.
+During heartbeats: rotate/maintain cursors → index maintenance. Heartbeat does
+not extract or promote KG facts after the KG v3 cutover.
 
 ### 7. Watermark Namespacing
 Two watermark types coexist in daily notes — **use distinct prefixes to avoid conflicts**:
 - `<!-- extracted:L{N}:{ISO} -->` — written by heartbeat orchestrator only (marks extraction point)
 - `<!-- session:start:{ISO} -->` / `<!-- session:end:{ISO} -->` — written by agent at session boundaries
 
-Extraction watermark is always the **last line** of the file (completion marker). Session boundaries are **inline** in text. High-signal sections above the watermark are rescanned each extract; dedup skips already-written facts.
+The historical extraction watermark remains the **last line** of the file as a
+cursor-maintenance marker. Session boundaries are **inline** in text. The
+heartbeat does not rescan message bodies or deduplicate facts.
 
 ### 8. Three-Space Routing
 

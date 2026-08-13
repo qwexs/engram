@@ -19,6 +19,7 @@ import { Database } from "bun:sqlite";
 import { legacyOllAdmissionState, loadEngramConfig } from "../config.js";
 import { DEPRECATED_HEARTBEAT_KEYS, LEGACY_OLL_PHASES } from "../../src/oll/legacy-migration.ts";
 import { listQmdCollections, readQmdCapabilities } from "./qmd-provision.js";
+import { legacyKgMutationState } from "./kg-v3-authority.ts";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_DIR = resolve(MODULE_DIR, "..");
@@ -1193,7 +1194,9 @@ function checkKg(workspace, findings) {
             details: {
               reason: isHbRunId ? "heartbeat-run-id" : (isHbPhrase ? "heartbeat-phrase" : "heartbeat-tags"),
               text: text.slice(0, 120),
-              fix: 'Supersede via: bun skills/engram/scripts/memory-write.js --entity "' + (data.entityId || 'unknown') + '" --supersede ' + fact?.id,
+              fix: legacyKgMutationState(workspace).allowed
+                ? 'Supersede via compatibility writer before KG v3 cutover: bun skills/engram/scripts/memory-write.js --entity "' + (data.entityId || 'unknown') + '" --supersede ' + fact?.id
+                : "Historical v2 archive is immutable after KG v3 cutover; record remediation separately.",
             },
           }));
         }

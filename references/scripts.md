@@ -132,7 +132,8 @@ Repair schema fields on an existing fact without changing its factual content.
 Supports confidence and abstractionLevel corrections. After a write, refreshes
 the derived facts projection and the repaired entity's decayed summary. Use
 `--validate` for a full workspace check and `--qmd-update` to refresh the index.
-Idempotent.
+Idempotent. Write mode is blocked once KG v3 authority is active; `--dry-run`
+remains available for historical archive diagnostics.
 
 ## derive-facts.js — Build Derived Facts Layer
 
@@ -149,6 +150,8 @@ bun skills/engram/scripts/audit-superseded.js [--fix] [--quiet]
 ```
 
 Detect orphan `supersedeBy` (target не существует), broken chains (A→B→C где C не active), mismatched dates. `--fix` ремонтирует мягкие cases.
+Write mode is blocked after KG v3 authority activation; read-only audit remains
+available.
 
 ## validate.js — Check integrity
 
@@ -216,7 +219,9 @@ bun skills/engram/scripts/memory-access-buffer.js --entity people/alice --fact "
 Appends one validated access event to `workspace/memory-state/access-buffer.jsonl`.
 It does not read or rewrite KG, summaries, or QMD, so it is safe in a user-facing
 turn. IDs are never invented: use a retrieved fact ID, otherwise an exact fact
-text that resolves uniquely during the nightly flush.
+text that resolves uniquely during the nightly flush. After KG v3 authority
+activation this command returns `retired` and does not queue a v2 mutation;
+native v3 access/decay tracking is outside this MVP.
 
 ## flush-access-buffer.js — Apply queued access
 
@@ -224,11 +229,13 @@ text that resolves uniquely during the nightly flush.
 bun skills/engram/scripts/flush-access-buffer.js --workspace /opt/openclaw/workspaces/elena --json
 ```
 
-The daily coordinator invokes this first for each workspace. It atomically claims
+Before KG v3 cutover the daily coordinator invokes this first for each workspace. It atomically claims
 the queue, resolves active facts by ID or unique normalized exact text, updates
 access fields, rebuilds only affected summaries, marks QMD dirty, and writes an
 audit trail plus unresolved events under `workspace/ops/access-buffer/`. It does
-not run QMD maintenance.
+not run QMD maintenance. With active KG v3 authority it returns `retired`,
+preserves any pre-existing queue for operator inspection, and leaves v2
+`items.json` unchanged.
 
 ## memory-dedup.js — Deduplication index
 

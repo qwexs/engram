@@ -70,4 +70,31 @@ describe("buffered fact access", () => {
     const after = JSON.parse(readFileSync(itemsPath, "utf8"));
     expect(after.facts.map((fact) => fact.accessCount)).toEqual([1, 1]);
   });
+
+  test("does not queue or apply v2 access mutations after KG v3 cutover", () => {
+    const workspace = makeWorkspace();
+    mkdirSync(join(workspace, "memory-state", "kg-v3"), { recursive: true });
+    writeFileSync(join(workspace, "memory-state", "kg-v3", "authority.json"), JSON.stringify({
+      schema: "engram.kg-v3-authority.v1",
+      mode: "canary",
+    }));
+    const itemsPath = join(workspace, "life", "people", "alice", "items.json");
+    const before = readFileSync(itemsPath, "utf8");
+    const queued = run([BUFFER, "--workspace", workspace, "--entity", "people/alice", "--id", "alice-001"]);
+    expect(queued.exitCode).toBe(0);
+    expect(JSON.parse(queued.stdout.toString())).toMatchObject({
+      status: "retired",
+      reason: "KG_V3_ACCESS_TRACKING_NOT_ADMITTED",
+    });
+
+    const flushed = run([FLUSH, "--workspace", workspace, "--json"]);
+    expect(flushed.exitCode, flushed.stderr.toString()).toBe(0);
+    expect(JSON.parse(flushed.stdout.toString())).toMatchObject({
+      mode: "retired",
+      reason: "KG_V3_AUTHORITY_ACTIVE",
+      applied: 0,
+    });
+    expect(readFileSync(itemsPath, "utf8")).toBe(before);
+    expect(existsSync(join(workspace, "workspace", "memory-state", "access-buffer.jsonl"))).toBe(false);
+  });
 });

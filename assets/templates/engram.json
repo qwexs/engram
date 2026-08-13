@@ -59,7 +59,6 @@
       "_comment": "The cron orchestrator model is independent. Keys are canonical phases, never workspace-prefixed labels. Grinding phases may fall back to models.default; full-reasoning phases require an exact mapping.",
       "orchestrator": "{MODEL_ID}",
       "subagents": {
-        "hb-extract": "{MODEL_ID}",
         "hb-synthesis": "{MODEL_ID}",
         "hb-domains": "{MODEL_ID}",
         "hb-domains-write": "{MODEL_ID}",

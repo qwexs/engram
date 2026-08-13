@@ -74,6 +74,12 @@ value can restore those v2 writer calls. The remaining direct
 `scripts/memory-write.js` entrypoint exists only for workspaces that have not
 completed typed fleet rollout and must be physically retired after their gate.
 
+The same authority boundary freezes v2 access counters and repair/audit write
+modes. `memory-access-buffer.js`, `flush-access-buffer.js`,
+`memory-repair.js --write`, and `audit-superseded.js --auto-fix` cannot mutate
+the historical archive after canary/enabled. Native v3 access/decay tracking is
+deliberately deferred; no v2 mutation is used as a substitute.
+
 `scripts/kg-v3-tool.ts --context` is an operator/test harness, not a trusted
 agent boundary. Production ingress must construct `TrustedKgCallerContext` in
 the runtime adapter from verified inbound metadata and call the typed core API.

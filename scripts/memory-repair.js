@@ -16,6 +16,7 @@
 
 import { join } from "path";
 import { markWorkspaceQmdDirty } from "../src/qmd/maintenance-integration.ts";
+import { legacyKgMutationState } from "./_lib/kg-v3-authority.ts";
 
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 
@@ -71,6 +72,16 @@ if (opts.help || opts.h) {
 
 if (!entity || !factId || (newConfidenceRaw === undefined && newAbstraction === undefined)) {
   console.error("❌ Требуются --entity, --id и хотя бы одно из --confidence/--abstraction");
+  process.exit(1);
+}
+
+const authority = legacyKgMutationState(WORKSPACE);
+if (!dryRun && !authority.allowed) {
+  console.error(JSON.stringify({
+    status: "rejected",
+    reason: "LEGACY_MUTATOR_DISABLED",
+    authorityMode: authority.mode,
+  }));
   process.exit(1);
 }
 

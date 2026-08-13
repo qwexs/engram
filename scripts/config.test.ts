@@ -118,9 +118,9 @@ describe("phase-based subagent model resolution", () => {
     expect(() => resolveSubagentModel(root, "hb-typo")).toThrow("unknown canonical phase");
   });
 
-  test("grinding phases retain the model-agnostic OSS fallback", () => {
+  test("remaining grinding phases retain the model-agnostic OSS fallback", () => {
     const root = workspace({ workspace: { id: "main" } });
-    expect(resolveSubagentModel(root, "hb-extract")).toBe("sonnet-4-6");
+    expect(resolveSubagentModel(root, "hb-domains")).toBe("sonnet-4-6");
   });
 });
 

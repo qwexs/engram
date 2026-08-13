@@ -8,7 +8,7 @@
  * never mutates the Knowledge Graph.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { loadEngramConfig } from "./config.js";
@@ -89,9 +89,8 @@ function removeWatermarks(content) {
 
 function parseSessionTimestamp(path) {
   try {
-    const firstLine = readFileSync(path, "utf8").split(/\r?\n/, 1)[0] || "";
-    const match = firstLine.match(/^#\s*Session:\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+UTC/i);
-    if (match) return Date.parse(match[1] + "T" + match[2] + "Z");
+    const match = basename(path).match(/^(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})(\d{2})(?:-|\.)/);
+    if (match) return Date.parse(`${match[1]}T${match[2]}:${match[3]}:${match[4]}Z`);
     return statSync(path).mtimeMs;
   } catch {
     return 0;

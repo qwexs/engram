@@ -11,8 +11,10 @@ import {
   createKgLiveRetractionRequest,
   createKgLiveWriteRequest,
   readKgLiveRegistry,
+  resolveKgLiveAgentRunHookIdentity,
   resolveKgLiveInboundHookIdentity,
   resolveKgLiveIngressProjection,
+  resolveKgLiveMessageReceivedHookIdentity,
   resolveKgLiveReplyDispatchHookIdentity,
   type KgLiveRetractInput,
   type KgLiveWriteInput,
@@ -38,6 +40,14 @@ function readJson<T>(path: string): T {
 function agentIdFromSessionKey(sessionKey?: string): string | null {
   const match = sessionKey?.match(/^agent:([^:]+):/);
   return match?.[1] || null;
+}
+
+function contextKindFromSessionKey(sessionKey: string, threadId?: unknown): "direct" | "group" | "topic" | null {
+  if (threadId !== undefined && threadId !== null) return "topic";
+  const parts = sessionKey.split(":");
+  if (parts.includes("direct")) return "direct";
+  if (parts.includes("group")) return "group";
+  return null;
 }
 
 function resolveAgentWorkspace(config: any, agentId: string): string | null {
@@ -172,6 +182,56 @@ export default definePluginEntry({
   name: "Engram KG v3 live ingress",
   description: "Trusted, typed, explicit-only KG v3 tools with per-workspace authority markers.",
   register(api: any) {
+    api.on("message_received", (event: any, ctx: any) => {
+      try {
+        const identity = resolveKgLiveMessageReceivedHookIdentity(event || {}, ctx || {});
+        const agentId = agentIdFromSessionKey(identity.runtimeSessionKey);
+        const config = api.runtime.config?.current?.() ?? api.config;
+        if (!agentId || !config) return;
+        const workspace = resolveAgentWorkspace(config, agentId);
+        const id = workspace ? workspaceId(workspace) : null;
+        if (!workspace || !id) return;
+        const projection = resolveKgLiveIngressProjection({ workspace, workspaceId: id, expectedPluginDigest: installedPluginDigest });
+        const contextKind = contextKindFromSessionKey(identity.runtimeSessionKey, event.threadId);
+        if (!contextKind || !projection.allowedContextKinds.includes(contextKind)) return;
+        const transport = ctx.channelId === "telegram" ? "telegram" : ctx.channelId === "openclaw" ? "openclaw" : null;
+        if (!transport) return;
+        authority.capturePending({
+          runtimeSessionKey: identity.runtimeSessionKey,
+          workspace,
+          workspaceId: id,
+          grantSessionKey: projection.grantSessionKey,
+          transport,
+          accountId: identity.accountId,
+          actorId: identity.actorId,
+          messageId: identity.messageId,
+          contextKind,
+          observedAt: timestamp(event.timestamp),
+          requireOwner: projection.requireOwner,
+          content: event.content,
+        });
+      } catch (error) {
+        api.logger.debug?.(`engram-kg-v3: ordinary inbound not eligible: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+
+    api.on("before_agent_run", (event: any, ctx: any) => {
+      if (ctx.trigger !== "user") return;
+      try {
+        const identity = resolveKgLiveAgentRunHookIdentity(event || {}, ctx || {});
+        authority.attachPendingRun({
+          runId: identity.runId,
+          runtimeSessionKey: identity.runtimeSessionKey,
+          accountId: identity.accountId,
+          actorId: identity.actorId,
+          content: identity.content,
+          senderIsOwner: identity.senderIsOwner,
+        });
+      } catch (error) {
+        api.logger.debug?.(`engram-kg-v3: agent run has no ordinary inbound authority: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+
     api.on("reply_dispatch", (event: any) => {
       try {
         const finalized = event?.ctx;

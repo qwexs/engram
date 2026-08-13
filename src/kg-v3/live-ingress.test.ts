@@ -9,8 +9,10 @@ import {
   KgLiveTurnAuthority,
   createKgLiveRetractionRequest,
   createKgLiveWriteRequest,
+  resolveKgLiveAgentRunHookIdentity,
   resolveKgLiveInboundHookIdentity,
   resolveKgLiveIngressProjection,
+  resolveKgLiveMessageReceivedHookIdentity,
   resolveKgLiveReplyDispatchHookIdentity,
 } from "./live-ingress.ts";
 import { TrustedKgRuntime } from "./trusted-runtime.ts";
@@ -90,6 +92,11 @@ function turn(root: string) {
   };
 }
 
+function pendingTurn(root: string) {
+  const { runId: _runId, senderIsOwner: _senderIsOwner, ...pending } = turn(root);
+  return { ...pending, content: "remember this" };
+}
+
 describe("KG v3 live ingress projection", () => {
   test("requires a release-bound local projection and authority", () => {
     const root = workspace();
@@ -112,6 +119,44 @@ describe("KG v3 live ingress projection", () => {
 });
 
 describe("KG v3 single-use live turn authority", () => {
+  test("attaches one ordinary pending inbound message to its allocated agent run", () => {
+    const root = workspace();
+    const authority = new KgLiveTurnAuthority();
+    authority.capturePending(pendingTurn(root));
+    authority.attachPendingRun({
+      runId: "run-ordinary",
+      runtimeSessionKey: turn(root).runtimeSessionKey,
+      accountId: "default",
+      actorId: "actor-001",
+      content: "remember this",
+      senderIsOwner: true,
+    });
+    expect(authority.hasRun("run-ordinary", turn(root).runtimeSessionKey)).toBe(true);
+  });
+
+  test("pending attachment fails closed on identity mismatch or ambiguity", () => {
+    const root = workspace();
+    const authority = new KgLiveTurnAuthority();
+    authority.capturePending(pendingTurn(root));
+    expect(() => authority.attachPendingRun({
+      runId: "run-bad",
+      runtimeSessionKey: turn(root).runtimeSessionKey,
+      accountId: "default",
+      actorId: "attacker",
+      content: "remember this",
+      senderIsOwner: true,
+    })).toThrow("does not match");
+    authority.capturePending({ ...pendingTurn(root), messageId: "8261" });
+    expect(() => authority.attachPendingRun({
+      runId: "run-ambiguous",
+      runtimeSessionKey: turn(root).runtimeSessionKey,
+      accountId: "default",
+      actorId: "actor-001",
+      content: "remember this",
+      senderIsOwner: true,
+    })).toThrow("multiple pending");
+  });
+
   test("binds trusted requester metadata and permits only one tool call", () => {
     const root = workspace();
     const authority = new KgLiveTurnAuthority();
@@ -199,6 +244,40 @@ describe("KG v3 single-use live turn authority", () => {
 });
 
 describe("KG v3 inbound hook identity normalization", () => {
+  test("normalizes ordinary message receipt and rejects metadata disagreement", () => {
+    const event = {
+      sessionKey: "agent:main:telegram:direct:actor-001",
+      messageId: "8279",
+      senderId: "actor-001",
+      metadata: { messageId: "8279", senderId: "actor-001" },
+    };
+    expect(resolveKgLiveMessageReceivedHookIdentity(event, { accountId: "default" })).toEqual({
+      runtimeSessionKey: "agent:main:telegram:direct:actor-001",
+      messageId: "8279",
+      actorId: "actor-001",
+      accountId: "default",
+    });
+    expect(() => resolveKgLiveMessageReceivedHookIdentity(
+      { ...event, metadata: { ...event.metadata, messageId: "8280" } },
+      { accountId: "default" },
+    )).toThrow("messageId differs");
+  });
+
+  test("normalizes agent-run identity and rejects disagreement or missing owner proof", () => {
+    const event = { prompt: "remember this", senderId: "actor-001", accountId: "default", senderIsOwner: true };
+    const context = { runId: "run-ordinary", sessionKey: "agent:main:telegram:direct:actor-001", senderId: "actor-001", accountId: "default" };
+    expect(resolveKgLiveAgentRunHookIdentity(event, context)).toEqual({
+      runId: "run-ordinary",
+      runtimeSessionKey: "agent:main:telegram:direct:actor-001",
+      actorId: "actor-001",
+      accountId: "default",
+      content: "remember this",
+      senderIsOwner: true,
+    });
+    expect(() => resolveKgLiveAgentRunHookIdentity({ ...event, senderId: "other" }, context)).toThrow("senderId differs");
+    expect(() => resolveKgLiveAgentRunHookIdentity({ ...event, senderIsOwner: undefined }, context)).toThrow("senderIsOwner is missing");
+  });
+
   test("accepts canonical identity supplied only by inbound context", () => {
     expect(resolveKgLiveInboundHookIdentity(
       {},

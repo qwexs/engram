@@ -44,6 +44,10 @@ export interface KgLiveInboundTurn {
   senderIsOwner: boolean;
 }
 
+export interface KgLivePendingInboundTurn extends Omit<KgLiveInboundTurn, "runId" | "senderIsOwner"> {
+  content: string;
+}
+
 export interface KgLiveToolRequester {
   channel?: string;
   accountId?: string;
@@ -57,6 +61,15 @@ export interface KgLiveInboundHookIdentity {
   messageId: string;
   actorId: string;
   accountId: string;
+}
+
+export interface KgLiveAgentRunHookIdentity {
+  runId: string;
+  runtimeSessionKey: string;
+  actorId: string;
+  accountId: string;
+  content: string;
+  senderIsOwner: boolean;
 }
 
 export interface KgLiveWriteInput {
@@ -121,6 +134,42 @@ export function resolveKgLiveInboundHookIdentity(event: Record<string, unknown>,
     messageId: sharedHookToken("messageId", event.messageId, context.messageId),
     actorId: sharedHookToken("senderId", event.senderId, context.senderId),
     accountId: sharedHookToken("accountId", event.accountId, context.accountId),
+  };
+}
+
+/** Normalize the server-owned identity exposed by ordinary `message_received`. */
+export function resolveKgLiveMessageReceivedHookIdentity(event: Record<string, unknown>, context: Record<string, unknown>): Omit<KgLiveInboundHookIdentity, "runId"> {
+  const metadata = event.metadata && typeof event.metadata === "object" && !Array.isArray(event.metadata)
+    ? event.metadata as Record<string, unknown>
+    : {};
+  const messageId = sharedHookToken("messageId", event.messageId, context.messageId);
+  const actorId = sharedHookToken("senderId", event.senderId, context.senderId);
+  if (metadata.messageId !== undefined && requiredHookToken("metadata.messageId", metadata.messageId) !== messageId) {
+    throw new KgLiveIngressError("INVALID_TURN", "messageId differs from message metadata");
+  }
+  if (metadata.senderId !== undefined && requiredHookToken("metadata.senderId", metadata.senderId) !== actorId) {
+    throw new KgLiveIngressError("INVALID_TURN", "senderId differs from message metadata");
+  }
+  return {
+    runtimeSessionKey: sharedHookToken("sessionKey", event.sessionKey, context.sessionKey),
+    messageId,
+    actorId,
+    accountId: sharedHookToken("accountId", event.accountId, context.accountId),
+  };
+}
+
+/** Attach an ordinary pending inbound message to the run allocated by OpenClaw. */
+export function resolveKgLiveAgentRunHookIdentity(event: Record<string, unknown>, context: Record<string, unknown>): KgLiveAgentRunHookIdentity {
+  if (typeof event.senderIsOwner !== "boolean") {
+    throw new KgLiveIngressError("INVALID_TURN", "senderIsOwner is missing from agent run");
+  }
+  return {
+    runId: sharedHookToken("runId", event.runId, context.runId),
+    runtimeSessionKey: sharedHookToken("sessionKey", event.sessionKey, context.sessionKey),
+    actorId: sharedHookToken("senderId", event.senderId, context.senderId),
+    accountId: sharedHookToken("accountId", event.accountId, context.accountId),
+    content: requiredHookToken("prompt", event.prompt),
+    senderIsOwner: event.senderIsOwner,
   };
 }
 
@@ -227,9 +276,52 @@ type BoundToolCall = { turn: KgLiveInboundTurn; verifier: TrustedInboundVerifier
  */
 export class KgLiveTurnAuthority {
   readonly #turns = new Map<string, { turn: KgLiveInboundTurn; used: boolean; expiresAt: number }>();
+  readonly #pending = new Map<string, { turn: KgLivePendingInboundTurn; expiresAt: number }>();
   readonly #toolCalls = new Map<string, BoundToolCall>();
 
   constructor(readonly options: { now?: () => number; ttlMs?: number } = {}) {}
+
+  capturePending(turn: KgLivePendingInboundTurn): void {
+    const now = this.options.now?.() ?? Date.now();
+    this.prune(now);
+    if (!token(turn.content, 1_000_000) || !token(turn.runtimeSessionKey) || !token(turn.workspace)
+      || !token(turn.workspaceId) || !token(turn.grantSessionKey) || !token(turn.accountId)
+      || !token(turn.actorId) || !token(turn.messageId) || !iso(turn.observedAt)
+      || typeof turn.requireOwner !== "boolean"
+      || !["telegram", "openclaw"].includes(turn.transport)
+      || !["direct", "group", "topic"].includes(turn.contextKind)) {
+      throw new KgLiveIngressError("INVALID_TURN", "pending live inbound turn is incomplete");
+    }
+    const key = `${turn.runtimeSessionKey}\u0000${turn.messageId}`;
+    const frozen = Object.freeze({ ...turn });
+    const existing = this.#pending.get(key);
+    if (existing && JSON.stringify(existing.turn) !== JSON.stringify(frozen)) {
+      this.#pending.delete(key);
+      throw new KgLiveIngressError("INVALID_TURN", "conflicting pending captures share one messageId");
+    }
+    this.#pending.set(key, { turn: frozen, expiresAt: now + (this.options.ttlMs ?? 10 * 60_000) });
+  }
+
+  attachPendingRun(input: { runId?: string; runtimeSessionKey?: string; accountId?: string; actorId?: string; content?: string; senderIsOwner?: boolean }): void {
+    const now = this.options.now?.() ?? Date.now();
+    this.prune(now);
+    if (!token(input.runId) || !token(input.runtimeSessionKey) || !token(input.accountId)
+      || !token(input.actorId) || !token(input.content, 1_000_000) || typeof input.senderIsOwner !== "boolean") {
+      throw new KgLiveIngressError("TURN_NOT_FOUND", "agent run has no trusted pending-turn identity");
+    }
+    const matches = [...this.#pending.entries()].filter(([, state]) => state.turn.runtimeSessionKey === input.runtimeSessionKey
+      && state.turn.accountId === input.accountId
+      && state.turn.actorId === input.actorId
+      && state.turn.content === input.content);
+    if (matches.length !== 1) {
+      throw new KgLiveIngressError("TURN_NOT_FOUND", matches.length === 0
+        ? "agent run does not match a pending inbound turn"
+        : "agent run matches multiple pending inbound turns");
+    }
+    const [key, state] = matches[0]!;
+    this.#pending.delete(key);
+    this.capture({ ...state.turn, runId: input.runId, senderIsOwner: input.senderIsOwner });
+  }
 
   capture(turn: KgLiveInboundTurn): void {
     const now = this.options.now?.() ?? Date.now();
@@ -321,6 +413,7 @@ export class KgLiveTurnAuthority {
   }
 
   private prune(now: number): void {
+    for (const [key, state] of this.#pending) if (state.expiresAt <= now) this.#pending.delete(key);
     for (const [runId, state] of this.#turns) if (state.expiresAt <= now) this.dropRun(runId);
   }
 }

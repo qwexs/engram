@@ -9,6 +9,8 @@ const rolloutSource = readFileSync(
 
 describe("KG v3 live plugin digest stability", () => {
   test("builds from the canonical repository cwd", () => {
+    expect(rolloutSource).toContain("fileURLToPath(import.meta.url)");
+    expect(rolloutSource).not.toContain("new URL(import.meta.url).pathname");
     expect(rolloutSource).toContain("process.chdir(repository)");
     expect(rolloutSource).toContain(
       'entrypoints: ["./integrations/openclaw-kg-v3/index.ts"]',

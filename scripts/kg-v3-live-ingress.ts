@@ -2,14 +2,16 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
   activateKgLiveIngress,
   planKgLiveIngress,
   rollbackKgLiveIngress,
 } from "../src/kg-v3/live-rollout.ts";
+import { repositoryFromScriptPath } from "../src/kg-v3/repository-path.ts";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -49,7 +51,9 @@ Common options:
 }
 
 const command = positionals[0];
-const repository = resolve(values.repository || dirname(dirname(new URL(import.meta.url).pathname)));
+const repository = values.repository
+  ? resolve(values.repository)
+  : repositoryFromScriptPath(fileURLToPath(import.meta.url));
 const workspace = resolve(values.workspace || "/opt/openclaw/workspace");
 const workspaceConfig = JSON.parse(readFileSync(join(workspace, "engram.json"), "utf8"));
 const workspaceId = values["workspace-id"] || workspaceConfig?.workspace?.id;

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import sessionStartHandler from "../hooks/engram-session-start/handler.ts";
 import sessionEndHandler from "../hooks/engram-session-end/handler.ts";
 import { resolveQmdContext } from "../src/qmd/context.ts";
@@ -124,9 +124,12 @@ describe("shadow dirty marks from real writers", () => {
 
       expect(result.exitCode).toBe(0);
       const output = JSON.parse(result.stdout);
-      expect(output.file).toContain(
-        "/memory/agent-main/telegram-group--1001-topic-4/",
-      );
+      expect(relative(workspace, output.file)).toBe(join(
+        "memory",
+        "agent-main",
+        "telegram-group--1001-topic-4",
+        "2026-08-14.md",
+      ));
     }
   });
 
@@ -180,7 +183,13 @@ describe("shadow dirty marks from real writers", () => {
 
     expect(result.exitCode).toBe(0);
     const output = JSON.parse(result.stdout);
-    expect(output.retrievalCard).toMatch(/retrieval\/\d{4}-\d{2}-\d{2}-heartbeat-stale-lock\.md$/);
+    expect(relative(workspace, output.retrievalCard)).toBe(join(
+      "memory",
+      "agent-main",
+      "main",
+      "retrieval",
+      "2026-08-14-heartbeat-stale-lock.md",
+    ));
     expect(readFileSync(output.retrievalCard, "utf8")).toContain("# Heartbeat stale-lock repair");
     expect(readState(workspace, stateDir)).toMatchObject({
       generation: 1,

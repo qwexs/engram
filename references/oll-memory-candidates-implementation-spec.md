@@ -8,9 +8,9 @@
 > 2026-08-14 admitted four canonical daily candidates (one decision and three
 > learnings), while producing zero actual dispatch, review, or action effects.
 > The earlier zero-candidate cycle exposed a producer/parser/policy mismatch
-> and does not count toward the observation window. Completion of the
-> seven-daily-plus-one-weekly observation window and any later materialize
-> activation remain separately gated.
+> and remains invalid diagnostic evidence. `materialize` has no time-based
+> observation gate; it remains a separate exact-policy transition requiring
+> explicit acknowledgement.
 > **Baseline:** Engram `c134c7f8b45c56fd753541ca2acf2aba0c2c615c` plus the local, uncommitted OLL candidate-compiler worktree reviewed on 2026-08-14.
 > **Decision boundary:** Phase 1 through Phase 5 tooling was explicitly
 > authorized on 2026-08-14. Tooling completion does not itself authorize a
@@ -805,14 +805,14 @@ are evidence of compatibility, not evidence that new contracts are complete.
 
 ### Materialize entry
 
-- at least seven daily and one weekly shadow cycles;
-- zero scope/privacy escapes, replay drift, payload conflicts, or unexpected
-  model/review effects;
-- deterministic report replay for every sampled cycle;
-- bounded projected candidate, model-spawn, and review backlog;
-- no material source starvation and no cross-layer duplicate inflation;
-- crash/recovery and rollback drills passed;
+- matching active `shadow` config and rollout projection for the workspace;
+- exact policy, scope-registry, and evidence-byte digests;
+- the common Phase 4 test, typecheck, privacy, and open-finding evidence gate;
 - separate explicit operator approval.
+
+Shadow cycle counts, projected load, replay/health metrics, and recovery drill
+results remain recorded diagnostic evidence. They do not block the explicit
+`materialize` transition.
 
 ### Stop conditions
 
@@ -878,7 +878,7 @@ The accurate status is: **Phase 5 guarded rollout/rollback tooling implemented;
 synthetic per-phase barrier drill passed; the repaired exact-policy,
 exact-scope `main` shadow canary is active and its first valid daily-mode cycle
 admitted four canonical candidates with zero actual downstream effects.** The
-earlier zero-candidate cycle is invalid rollout evidence and does not count
-toward the observation window. `materialize` remains blocked until at least
-seven daily and one weekly clean shadow cycles plus separate approval. Active
-adaptation remains out of scope.
+earlier zero-candidate cycle remains invalid diagnostic evidence.
+`materialize` has no observation-window threshold; it remains a separate
+exact-policy transition with explicit acknowledgement. Active adaptation
+remains out of scope.

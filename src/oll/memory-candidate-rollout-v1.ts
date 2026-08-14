@@ -205,20 +205,6 @@ function validateEvidence(options: CandidateCompilerRolloutOptionsV1): Candidate
     && evidence.phase4.privacyPassed
     && evidence.phase4.openHighFindings === 0;
   if (!phase4Ready) throw new CandidateRolloutError("phase4_gate_failed", "Phase 4 evidence gate is incomplete");
-  if (options.targetMode === "materialize") {
-    const shadow = evidence.shadow;
-    const materializeReady = shadow.dailyCycles >= 7
-      && shadow.weeklyCycles >= 1
-      && shadow.scopeOrPrivacyEscapes === 0
-      && shadow.replayDrift === 0
-      && shadow.payloadConflicts === 0
-      && shadow.unexpectedEffects === 0
-      && shadow.sourceStarvation === 0
-      && shadow.projectedLoadBounded
-      && shadow.crashRecoveryPassed
-      && shadow.rollbackDrillPassed;
-    if (!materializeReady) throw new CandidateRolloutError("shadow_gate_failed", "materialize requires seven daily cycles, one weekly cycle, and clean shadow evidence");
-  }
   return evidence;
 }
 

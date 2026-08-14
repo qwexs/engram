@@ -383,9 +383,10 @@ bun skills/engram/scripts/oll-memory-candidate-rollout.ts rollback \
 The rollout request binds one exact workspace, policy, scope registry, release
 ID, evidence path and evidence byte digest. Apply writes a backup before the
 local projection and publishes the config activation bit only inside that
-guarded transition, then hashes bytes read back from disk. `materialize`
-requires seven daily and one weekly clean shadow cycles. Rollback disables new
-batches, releases only pre-effect reservations, quarantines partial effects,
+guarded transition, then hashes bytes read back from disk. `materialize` is a
+separate explicit transition from a matching `shadow` projection; recorded
+shadow cycle and health metrics are diagnostic, not blocking. Rollback disables
+new batches, releases only pre-effect reservations, quarantines partial effects,
 retains pending reviews and reports whether a binary rollback is safe. The CLI
 does not select or activate a live canary by itself.
 

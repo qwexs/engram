@@ -7,10 +7,10 @@
 > shadow canary is active. Its post-repair daily-mode execution on 2026-08-14
 > admitted four canonical daily candidates (one decision and three learnings),
 > while producing zero actual dispatch, review, or action effects. The earlier
-> zero-candidate cycle exposed a producer/parser/policy mismatch and does not
-> count toward the observation window. The remaining observation window and
-> later materialize gate remain pending. The clean-install default is
-> `disabled`.
+> zero-candidate cycle exposed a producer/parser/policy mismatch and remains
+> invalid diagnostic evidence. `materialize` has no time-based observation
+> gate; it remains a separate exact-policy transition requiring explicit
+> acknowledgement. The clean-install default is `disabled`.
 
 ## Purpose
 
@@ -119,8 +119,9 @@ the required real shadow cycles.
 3. After separate rollout approval for an exact workspace/policy/scope/evidence
    request, enable `shadow` for one canary. Shadow persists only the immutable
    batch report and does not make candidates actionable.
-4. After replay/crash tests and at least seven daily cycles plus one weekly
-   cycle, explicitly approve `materialize` for the canary.
+4. When the operator chooses to advance, submit a separate exact-policy,
+   exact-scope `materialize` request and explicitly acknowledge it. Shadow
+   cycle counts and health metrics remain diagnostic rather than blocking.
 5. Active adaptation remains a separate decision. Candidate-derived proposals
    stay review-only even when adaptation is active.
 

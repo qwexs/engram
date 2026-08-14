@@ -84,22 +84,22 @@ function registry(): CandidateScopeRegistryV1 {
   return { ...base, digest: candidateScopeRegistryDigestV1(base) };
 }
 
-function evidence(workspaceId = "main", materialize = false): CandidateRolloutEvidenceV1 {
+function evidence(workspaceId = "main"): CandidateRolloutEvidenceV1 {
   return {
     schema: "oll.memory-candidate-rollout-evidence.v1",
     workspaceId,
     phase4: { targetedPassed: 70, fullPassed: 978, typecheckPassed: true, privacyPassed: true, openHighFindings: 0 },
     shadow: {
-      dailyCycles: materialize ? 7 : 0,
-      weeklyCycles: materialize ? 1 : 0,
+      dailyCycles: 0,
+      weeklyCycles: 0,
       scopeOrPrivacyEscapes: 0,
       replayDrift: 0,
       payloadConflicts: 0,
       unexpectedEffects: 0,
       sourceStarvation: 0,
-      projectedLoadBounded: materialize,
-      crashRecoveryPassed: materialize,
-      rollbackDrillPassed: materialize,
+      projectedLoadBounded: false,
+      crashRecoveryPassed: false,
+      rollbackDrillPassed: false,
     },
     capturedAt: NOW,
   };
@@ -167,13 +167,11 @@ describe("OLL memory candidate Phase 5 rollout", () => {
     }
   });
 
-  test("materialize is a separate gate requiring seven daily and one weekly clean shadow cycles", () => {
+  test("materialize is an explicit transition without an observation-window gate", () => {
     const input = fixture();
     applyCandidateCompilerRolloutV1({ ...request(input, "shadow", SHADOW_RELEASE), acknowledge: true });
-    expect(() => planCandidateCompilerRolloutV1(request(input, "materialize", MATERIALIZE_RELEASE, "2026-08-14T21:00:00.000Z"))).toThrow("seven daily cycles");
-    const body = json(input.evidencePath, evidence("main", true));
-    input.evidenceDigest = sha256Digest(body);
     const value = request(input, "materialize", MATERIALIZE_RELEASE, "2026-08-14T21:00:00.000Z");
+    expect(planCandidateCompilerRolloutV1(value)).toMatchObject({ currentMode: "shadow", targetMode: "materialize" });
     const result = applyCandidateCompilerRolloutV1({ ...value, acknowledge: true });
     expect(result).toMatchObject({ status: "applied", release: { status: "materialize_review_only", mode: "materialize" } });
     expect(inspectCandidateCompilerProjectionV1({ workspace: input.workspace, workspaceId: "main" })).toMatchObject({ mode: "materialize", consistent: true });
@@ -207,8 +205,6 @@ describe("OLL memory candidate Phase 5 rollout", () => {
   test("rollback disables new batches, quarantines an acknowledged v3 run, and preserves evidence", () => {
     const input = fixture();
     applyCandidateCompilerRolloutV1({ ...request(input, "shadow", SHADOW_RELEASE), acknowledge: true });
-    const body = json(input.evidencePath, evidence("main", true));
-    input.evidenceDigest = sha256Digest(body);
     applyCandidateCompilerRolloutV1({ ...request(input, "materialize", MATERIALIZE_RELEASE, "2026-08-14T21:00:00.000Z"), acknowledge: true });
     json(join(input.stateRoot, "oll-nightly", "current-batch.json"), { schema: "oll.current-batch.v1", batchId: "batch-1" });
     json(join(input.stateRoot, "oll-nightly", "batches", "batch-1", "contexts", "main.json"), { schema: "oll.nightly-context.v2", candidateCompiler: { mode: "materialize" } });

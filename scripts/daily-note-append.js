@@ -4,7 +4,7 @@
 //   --session main --agent-id main --section events --text "текст записи"
 //   --retrieval-id heartbeat-lock --retrieval-title "Heartbeat stale-lock repair"
 
-import { join, dirname } from "path";
+import { join, dirname, isAbsolute, resolve } from "path";
 import { existsSync, mkdirSync } from "fs";
 import { loadEngramConfig } from "./config.js";
 import { markWorkspaceQmdDirty } from "../src/qmd/maintenance-integration.ts";
@@ -39,7 +39,11 @@ function parseArgs(argv) {
 const opts = parseArgs(process.argv);
 
 // --- Workspace override ---
-const workspace = opts.workspace || WORKSPACE;
+if (opts.workspace && !isAbsolute(opts.workspace)) {
+  console.error(`❌ --workspace должен быть абсолютным путём: "${opts.workspace}"`);
+  process.exit(1);
+}
+const workspace = resolve(opts.workspace || WORKSPACE);
 
 // --- Валидация ---
 if (!opts.session) {
@@ -67,6 +71,11 @@ const config = loadEngramConfig(workspace);
 const splitSession = splitCanonicalSessionKey(opts.session);
 const agentId = opts["agent-id"] || splitSession?.agentId || config.agent.replace(/^agent-/, "") || "main";
 const session = splitSession?.sessionKey || normalizeSessionSegment(opts.session);
+const RUNTIME_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+if (session && RUNTIME_UUID_RE.test(session)) {
+  console.error(`❌ --session не может быть runtime/turn UUID: "${opts.session}". Передайте стабильный canonical session key.`);
+  process.exit(1);
+}
 if (!session) {
   console.error(`❌ Небезопасный или пустой --session: "${opts.session}"`);
   process.exit(1);

@@ -131,6 +131,8 @@ extend the registry separately. Never recreate or bypass the typed writer.
 - Daily notes capture session activity in sections: `events`, `decisions`, `learnings`, `threads`, `next`
 - **Three-Layer Rotation**: when daily note >1000 lines → Archive (QMD-indexed) → Stub (10-20 lines) → QMD reindex
 - Write via `daily-note-append.js` — never edit daily notes directly
+- `--workspace`, when supplied, must be an absolute workspace path.
+- `--session` must be a stable canonical contour (`main`, `telegram-direct-…`, `telegram-group-…`, or a full canonical agent key). Never pass a runtime/turn UUID; the writer rejects bare UUID session segments.
 - Record as you go, not at session end
 
 ```bash

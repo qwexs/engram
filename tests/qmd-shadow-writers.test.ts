@@ -142,6 +142,32 @@ describe("shadow dirty marks from real writers", () => {
     expect(result.stderr).toContain("Небезопасный или пустой --session");
   });
 
+  test("daily-note append rejects a relative workspace override", async () => {
+    const { workspace, stateDir } = makeWorkspace();
+    const result = await spawnScript("daily-note-append.js", [
+      "--workspace", "relative/workspace",
+      "--session", "main",
+      "--section", "events",
+      "--text", "must not be written",
+    ], workspace, stateDir);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--workspace должен быть абсолютным путём");
+  });
+
+  test("daily-note append rejects a bare runtime UUID session", async () => {
+    const { workspace, stateDir } = makeWorkspace();
+    const result = await spawnScript("daily-note-append.js", [
+      "--workspace", workspace,
+      "--session", "11111111-1111-4111-8111-111111111111",
+      "--section", "events",
+      "--text", "must not be written",
+    ], workspace, stateDir);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--session не может быть runtime/turn UUID");
+  });
+
   test("daily-note append writes an explicit retrieval card without a new collection", async () => {
     const { workspace, stateDir } = makeWorkspace();
     const result = await spawnScript("daily-note-append.js", [

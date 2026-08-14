@@ -50,6 +50,31 @@ describe("Engram hook heartbeat-state updates", () => {
     }
   });
 
+  test("session-start ignores a labeled subagent runtime", async () => {
+    const workspace = makeWorkspace();
+    try {
+      const date = today();
+      const session = "skill-workshop-review-incognito-run-id";
+
+      await sessionStartHandler({
+        type: "agent",
+        action: "bootstrap",
+        context: {
+          workspaceDir: workspace,
+          sessionKey: `agent:main:${session}`,
+          sessionType: "subagent",
+        },
+      });
+
+      expect(() => readFileSync(join(workspace, "memory", "agent-main", session, `${date}.md`), "utf8")).toThrow();
+      const state = readState(workspace);
+      expect(state.lastDailyNoteCreated[session]).toBeUndefined();
+      expect(state.activeSessions).not.toContain(session);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("daily-note startup syncs lastDailyNoteCreated for existing notes", async () => {
     const workspace = makeWorkspace();
     try {
@@ -89,6 +114,30 @@ describe("Engram hook heartbeat-state updates", () => {
       expect(() => readFileSync(join(sessionDir, `${date}.md`), "utf8")).toThrow();
       const state = readState(workspace);
       expect(state.lastDailyNoteCreated["historical-session"]).toBeUndefined();
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("daily-note startup does not track historical or test contours", async () => {
+    const workspace = makeWorkspace();
+    try {
+      const date = today();
+      for (const session of ["_archive-openai-sessions", "websearch-native-test", "telegram-42"]) {
+        const sessionDir = join(workspace, "memory", "agent-main", session);
+        mkdirSync(sessionDir, { recursive: true });
+        writeFileSync(join(sessionDir, `${date}.md`), `# ${date}\n`);
+      }
+
+      await dailyNoteHandler({
+        type: "gateway",
+        action: "startup",
+        context: { workspaceDir: workspace },
+        messages: [],
+      });
+
+      const state = readState(workspace);
+      expect(state.lastDailyNoteCreated).toEqual({});
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

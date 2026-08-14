@@ -973,8 +973,15 @@ function checkHeartbeatState(workspace, registry, findings) {
   // in heartbeat-state. Hooks (engram-daily-note, engram-session-start)
   // and heartbeat-runner all skip these, so watchdog should too.
   const EPHEMERAL_SESSION_PATTERNS = [
-    /^cron-.+-run-/, // isolated cron run sessions
-    /^subagent-/,    // spawned subagent sessions
+    /^cron(?:-|$)/,      // isolated cron run sessions
+    /^heartbeat(?:-|$)/, // heartbeat runtime sessions
+    /^subagent(?:-|$)/,  // spawned subagent sessions
+    /^ephemeral(?:-|$)/, // other explicitly ephemeral sessions
+    /^_/,                // archival/system contours
+    /-test$/,            // explicit test contours
+    /^skill-workshop-review-incognito-/,
+    /^telegram-\d+$/,    // historical pre-canonical Telegram alias
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   ];
   function isEphemeralSession(name) {
     return EPHEMERAL_SESSION_PATTERNS.some((p) => p.test(name));

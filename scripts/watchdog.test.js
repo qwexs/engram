@@ -497,9 +497,13 @@ models:
     expect(codes(report)).toContain("WD-SESSION-002");
   });
 
-  test("ephemeral session dirs (cron-*-run-*, subagent-*) are not flagged", () => {
+  test("ephemeral, historical, archive, and test session dirs are not flagged", () => {
     mkdirSync(join(workspace, "memory", "agent-main", "cron-abc-123-run-def"), { recursive: true });
     mkdirSync(join(workspace, "memory", "agent-main", "subagent-xyz"), { recursive: true });
+    mkdirSync(join(workspace, "memory", "agent-main", "_archive-openai-sessions"), { recursive: true });
+    mkdirSync(join(workspace, "memory", "agent-main", "websearch-native-test"), { recursive: true });
+    mkdirSync(join(workspace, "memory", "agent-main", "telegram-42"), { recursive: true });
+    mkdirSync(join(workspace, "memory", "agent-main", "fc6e7e0b-4a74-4147-b45e-c3d9be5025bb"), { recursive: true });
     const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(codes(report)).not.toContain("WD-SESSION-001");
   });

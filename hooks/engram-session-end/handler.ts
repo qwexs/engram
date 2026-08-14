@@ -1,6 +1,7 @@
 import { existsSync, appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { normalizeSessionSegment, splitAgentAndSession } from "../_lib/parse-agent-id.js";
+import { runtimeSessionSkipReason } from "../_lib/runtime-session.js";
 import { markWorkspaceQmdDirty } from "../../src/qmd/maintenance-integration.ts";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -47,9 +48,7 @@ const handler = async (event: any) => {
   const agentId = split?.agentId || event.context?.agentId || "main";
   const sessionKey = split?.sessionKey || normalizeSessionSegment(rawKey) || "main";
 
-  // Skip ephemeral runtime sessions.
-  if (sessionKey.startsWith("subagent-")) return;
-  if (/^cron-.+-run-/.test(sessionKey)) return;
+  if (runtimeSessionSkipReason(event, sessionKey)) return;
 
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
   const notePath = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey, `${today}.md`);

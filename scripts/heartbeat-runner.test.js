@@ -32,7 +32,7 @@ import {
 // imported as a non-entry-point module. This avoids re-running main()'s
 // side effects (cron state mutations, qmd discovery, etc.).
 import "../scripts/heartbeat-runner.js";
-const { shouldApplyDomainHandoffs, isWorkerRunning, staleWorker, buildOllTask, planSessionReconciliation, describeQmdEmbedOutcome } = globalThis.__engramHeartbeatRunnerExports;
+const { shouldApplyDomainHandoffs, isWorkerRunning, staleWorker, buildOllTask, planSessionReconciliation, describeQmdEmbedOutcome, isHeartbeatIneligibleSessionName } = globalThis.__engramHeartbeatRunnerExports;
 
 describe("QMD maintenance reporting", () => {
   test("surfaces a partial structured result as a maintenance warning", () => {
@@ -91,6 +91,18 @@ describe("ISS-14: shouldApplyDomainHandoffs — drain-queue gate regression", ()
 });
 
 describe("session auto-discovery reconciliation", () => {
+  test("excludes ephemeral, historical, test, archive, and unstable contours", () => {
+    for (const name of [
+      "subagent-run-id",
+      "skill-workshop-review-incognito-run-id",
+      "_archive-openai-sessions",
+      "websearch-native-test",
+      "telegram-42",
+      "fc6e7e0b-4a74-4147-b45e-c3d9be5025bb",
+    ]) expect(isHeartbeatIneligibleSessionName(name)).toBeTrue();
+    expect(isHeartbeatIneligibleSessionName("telegram-direct-42")).toBeFalse();
+  });
+
   test("adds on-disk sessions to activeSessions even when already tracked in lastDailyNoteCreated", () => {
     const plan = planSessionReconciliation({
       activeSessions: [],

@@ -1,24 +1,7 @@
-import { normalizeSessionSegment, splitAgentAndSession } from "../_lib/parse-agent-id.js";
+import { runtimeSessionSkipReason } from "../_lib/runtime-session.js";
 
 export function bootstrapQmdSkipReason(event: any): "cron" | "heartbeat" | "ephemeral" | null {
-  const rawKey = String(event?.context?.sessionKey || event?.sessionKey || "").trim();
-  const parsed = splitAgentAndSession(rawKey);
-  const sessionSegment = String(parsed?.sessionKey || normalizeSessionSegment(rawKey) || "").toLowerCase();
-
-  if (/^cron(?:-|$)/.test(sessionSegment)) return "cron";
-  if (/^heartbeat(?:-|$)/.test(sessionSegment)) return "heartbeat";
-  if (/^(?:subagent|ephemeral)(?:-|$)/.test(sessionSegment)) return "ephemeral";
-
-  const runtimeHint = String(
-    event?.context?.runKind ||
-    event?.context?.sessionType ||
-    event?.context?.triggerKind ||
-    "",
-  ).toLowerCase();
-  if (runtimeHint === "cron") return "cron";
-  if (runtimeHint === "heartbeat") return "heartbeat";
-  if (runtimeHint === "subagent" || runtimeHint === "ephemeral") return "ephemeral";
-  return null;
+  return runtimeSessionSkipReason(event);
 }
 
 const handler = async (event: any) => {

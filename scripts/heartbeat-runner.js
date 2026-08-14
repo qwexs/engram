@@ -1548,13 +1548,26 @@ function normalizeActiveSession(value) {
   return raw;
 }
 
+function isHeartbeatIneligibleSessionName(name) {
+  return [
+    /^subagent(?:-|$)/,
+    /^ephemeral(?:-|$)/,
+    /^cron(?:-|$)/,
+    /^heartbeat(?:-|$)/,
+    /^_/,
+    /-test$/,
+    /^skill-workshop-review-incognito-/,
+    /^telegram-\d+$/,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  ].some((pattern) => pattern.test(name));
+}
+
 function discoverSessionDirs() {
   // Scan memory/agent-{id}/ for session directories that exist on disk
   // but are not yet tracked in heartbeat-state.activeSessions.
-  // Skips subagent-* and cron-*-run-* (ephemeral, not tracked by design).
+  // Skips named ephemeral runtime sessions (not tracked by design).
   const agentRoot = join(workspace, "memory", agentDir);
   if (!existsSync(agentRoot)) return [];
-  const skipPatterns = [/^subagent-/, /^cron-.+-run-/];
   const discovered = [];
   let entries;
   try {
@@ -1564,7 +1577,7 @@ function discoverSessionDirs() {
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    if (skipPatterns.some((p) => p.test(entry.name))) continue;
+    if (isHeartbeatIneligibleSessionName(entry.name)) continue;
     discovered.push(entry.name);
   }
   return discovered;
@@ -1941,5 +1954,6 @@ if (!import.meta.main) {
     runtimeSpawnLabel,
     transitionSpawnRecord,
     planSessionReconciliation,
+    isHeartbeatIneligibleSessionName,
   };
 }

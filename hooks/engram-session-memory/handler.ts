@@ -17,6 +17,7 @@ import {
   parseAgentIdFromSessionKey,
   splitAgentAndSession,
 } from "../_lib/parse-agent-id.js";
+import { runtimeSessionSkipReason } from "../_lib/runtime-session.js";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 const DEFAULT_MESSAGE_COUNT = 40;
@@ -167,9 +168,7 @@ const handler = async (event: any) => {
 
   console.log(`[engram-session-memory] rawKey=${rawKey} sessionKey=${sessionKey} agentId=${agentId}`);
 
-  // Skip subagent and cron sessions
-  if (sessionKey.startsWith("subagent-")) return;
-  if (sessionKey.startsWith("cron-")) return;
+  if (runtimeSessionSkipReason(event, sessionKey)) return;
 
   // Message count from hook config
   const hookCfg = context.cfg?.hooks?.internal?.entries?.["engram-session-memory"] ?? {};

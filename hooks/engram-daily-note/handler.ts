@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { isHeartbeatIneligibleSession } from "../_lib/runtime-session.js";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
 
@@ -25,8 +26,7 @@ const handler = async (event: any) => {
 
     for (const session of sessions) {
       if (!session.isDirectory()) continue;
-      if (session.name.startsWith("subagent-")) continue;
-      if (/^cron-.+-run-/.test(session.name)) continue;
+      if (isHeartbeatIneligibleSession(session.name)) continue;
 
       const notePath = join(agentDir, session.name, `${today}.md`);
       // Gateway startup must not materialize a note for every historical

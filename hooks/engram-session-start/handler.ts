@@ -2,6 +2,7 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, rea
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { normalizeSessionSegment, splitAgentAndSession } from "../_lib/parse-agent-id.js";
+import { runtimeSessionSkipReason } from "../_lib/runtime-session.js";
 import { markWorkspaceQmdDirty } from "../../src/qmd/maintenance-integration.ts";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -59,9 +60,9 @@ const handler = async (event: any) => {
   const agentId = split?.agentId || event.context?.agentId || "main";
   const sessionKey = split?.sessionKey || normalizeSessionSegment(rawKey) || "main";
 
-  // Skip ephemeral runtime sessions — they don't need daily notes.
-  if (sessionKey.startsWith("subagent-")) return;
-  if (/^cron-.+-run-/.test(sessionKey)) return;
+  // Runtime type is authoritative: spawned one-shot workers can have a
+  // human-readable label that does not begin with "subagent-".
+  if (runtimeSessionSkipReason(event, sessionKey)) return;
 
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
   const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey);

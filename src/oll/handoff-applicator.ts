@@ -28,6 +28,13 @@ import {
   RethinkHandoffV2,
   sha256Digest,
 } from "./handoff-v2";
+import {
+  type ExpectedHandoffV3,
+  parseRethinkHandoffV3,
+  type RethinkActionV3,
+  type RethinkHandoffV3,
+} from "./handoff-v3";
+import { transitionMemoryCandidate } from "./memory-candidates";
 import { preflightRuleActivation } from "./rule-context";
 
 type JsonObject = Record<string, any>;
@@ -39,6 +46,7 @@ type JournalTransition =
   | "verified"
   | "review_pending"
   | "policy_rejected"
+  | "candidate_dispositions_committed"
   | "terminal";
 
 interface JournalEvent {
@@ -79,10 +87,17 @@ interface OperationRecord {
 export interface ApplicatorOptions {
   workspace: string;
   stateRoot: string;
-  expected: ExpectedHandoffV2;
+  expected: ExpectedHandoffV2 | ExpectedHandoffV3;
   trustedActorContexts?: Readonly<Record<string, TrustedActorContext>>;
   now?: string;
   faultInjector?: (transition: JournalTransition) => void;
+}
+
+type AnyHandoff = RethinkHandoffV2 | RethinkHandoffV3;
+type AnyAction = RethinkActionV2 | RethinkActionV3;
+
+function actionCandidateIds(action: AnyAction): Digest[] {
+  return "sourceCandidates" in action.payload ? action.payload.sourceCandidates : [];
 }
 
 export interface ApplicatorResult {
@@ -241,7 +256,7 @@ function findActionReview(workspace: string, companyRoot: string, actionId: Dige
   return null;
 }
 
-function validateSources(options: ApplicatorOptions, handoff: RethinkHandoffV2, action: RethinkActionV2): JsonObject[] {
+function validateSources(options: ApplicatorOptions, handoff: AnyHandoff, action: AnyAction): JsonObject[] {
   const signalRoot = join(resolve(options.workspace), "memory-state", "oll", "signals");
   return action.payload.sourceSignals.map((signalId) => {
     const expectedRevision = options.expected.signalRevisions[signalId];
@@ -258,7 +273,30 @@ function validateSources(options: ApplicatorOptions, handoff: RethinkHandoffV2, 
   });
 }
 
-function actorForAction(options: ApplicatorOptions, action: RethinkActionV2, signals: JsonObject[]): TrustedActorContext | null {
+function validateCandidateSources(options: ApplicatorOptions, handoff: AnyHandoff, action: AnyAction): JsonObject[] {
+  const candidateIds = actionCandidateIds(action);
+  if (!candidateIds.length) return [];
+  if (!("candidateRevisions" in options.expected)) throw new HandoffValidationError("policy_rejected", "candidate evidence requires handoff v3");
+  const expected = options.expected;
+  const root = join(resolve(options.workspace), "memory-state", "oll", "candidates");
+  return candidateIds.map((candidateId) => {
+    const expectedRevision = expected.candidateRevisions[candidateId];
+    if (!Number.isInteger(expectedRevision)) throw new HandoffValidationError("policy_rejected", `candidate ${candidateId} is outside the immutable context snapshot`);
+    const path = join(root, `${candidateId.slice("sha256:".length)}.json`);
+    if (!existsSync(path)) throw new HandoffValidationError("policy_rejected", `source candidate not found: ${candidateId}`);
+    const candidate = readJson(path);
+    if (candidate.workspaceId !== handoff.workspaceId) throw new HandoffValidationError("authorization_failed", "source candidate belongs to another workspace");
+    if (candidate.lifecycle?.revision !== expectedRevision || candidate.lifecycle?.status !== "pending") {
+      throw new HandoffValidationError("policy_rejected", `source candidate revision changed: ${candidateId}`);
+    }
+    if (candidate.scopeCeiling?.level !== action.payload.scope.level || candidate.scopeCeiling?.subject !== action.payload.scope.subject) {
+      throw new HandoffValidationError("policy_rejected", "action scope must exactly match its memory candidate scope ceiling");
+    }
+    return candidate;
+  });
+}
+
+function actorForAction(options: ApplicatorOptions, action: AnyAction, signals: JsonObject[]): TrustedActorContext | null {
   const declared = action.payload.authorizationResult;
   const principalId = declared.principalId;
   for (const signal of signals) {
@@ -304,8 +342,8 @@ function operationPath(workspace: string, operationId: Digest): string {
 
 function loadOrCreateOperation(
   workspace: string,
-  handoff: RethinkHandoffV2,
-  action: RethinkActionV2,
+  handoff: AnyHandoff,
+  action: AnyAction,
   operationId: Digest,
   payloadDigest: Digest,
   intendedArtifactRef: string | null,
@@ -352,8 +390,8 @@ function updateOperation(workspace: string, current: OperationRecord, patch: Par
 function rejectionDisposition(
   options: ApplicatorOptions,
   eventsDir: string,
-  handoff: RethinkHandoffV2,
-  action: RethinkActionV2,
+  handoff: AnyHandoff,
+  action: AnyAction,
   operation: OperationRecord,
   payloadDigest: Digest,
   reason: string,
@@ -379,8 +417,8 @@ function applyAction(
   options: ApplicatorOptions,
   config: ReturnType<typeof workspaceConfig>,
   eventsDir: string,
-  handoff: RethinkHandoffV2,
-  action: RethinkActionV2,
+  handoff: AnyHandoff,
+  action: AnyAction,
   now: string,
 ): { event: JournalEvent; operation: OperationRecord } {
   const payloadDigest = sha256Digest(canonicalizeJcs(action.payload));
@@ -452,6 +490,7 @@ function applyAction(
   }
 
   const signals = validateSources(options, handoff, action);
+  const candidates = validateCandidateSources(options, handoff, action);
   const actorContext = actorForAction(options, action, signals);
   const proposalText = action.payload.rule || (existsSync(targetPath) ? String(readJson(targetPath).rule || "") : "");
   const classified = classifyAdaptationRisk({ scope: action.payload.scope, statement: proposalText, expectedBehavior: action.payload.expectedImprovement });
@@ -460,6 +499,7 @@ function applyAction(
   }
 
   const policyNeedsReview = classified.reviewRequired
+    || candidates.length > 0
     || action.payload.reviewDisposition === "review_required"
     || action.payload.authorizationResult.status !== "authorized"
     || !actorContext;
@@ -518,6 +558,7 @@ function applyAction(
       scope: action.payload.scope,
       rule: String(action.payload.rule),
       sourceSignals: action.payload.sourceSignals,
+      sourceCandidates: actionCandidateIds(action),
       expectedImprovement: action.payload.expectedImprovement,
       costOfInaction: action.payload.costOfInaction,
       rollbackRef: action.payload.rollbackRef,
@@ -559,6 +600,7 @@ function applyAction(
     const replacement = proposeAdaptationRule({
       workspace: options.workspace, stateRoot: options.stateRoot, scope: action.payload.scope,
       rule: String(action.payload.rule), sourceSignals: action.payload.sourceSignals,
+      sourceCandidates: actionCandidateIds(action),
       expectedImprovement: action.payload.expectedImprovement, costOfInaction: action.payload.costOfInaction,
       rollbackRef: action.payload.rollbackRef, runId: handoff.runId, actionId: action.actionId,
       operationId, ruleId: replacementId, rolloutBatchId: handoff.batchId, reason: action.payload.rationale,
@@ -715,9 +757,11 @@ export function applyRethinkHandoffFile(options: ApplicatorOptions): ApplicatorR
       actionId: null, operationId: null, payloadDigest: null, artifactRef: artifactRef(workspace, expectedPath),
       artifactDigest: fileDigest(expectedPath), projectionDigest: null, createdAt: now,
     }, options.faultInjector);
-    let handoff: RethinkHandoffV2;
+    let handoff: AnyHandoff;
     try {
-      handoff = parseRethinkHandoffV2(readFileSync(expectedPath), options.expected, expectedPath);
+      handoff = "candidateRevisions" in options.expected
+        ? parseRethinkHandoffV3(readFileSync(expectedPath), options.expected, expectedPath)
+        : parseRethinkHandoffV2(readFileSync(expectedPath), options.expected, expectedPath);
     } catch (error) {
       if (error instanceof HandoffValidationError) return quarantine(options, error.message, error.code);
       return quarantine(options, String(error), "schema_invalid");
@@ -745,7 +789,46 @@ export function applyRethinkHandoffFile(options: ApplicatorOptions): ApplicatorR
         return { actionId: action.actionId, operationId, disposition: rejected.event.transition, artifactRef: null };
       }
     });
-    const projectionDigest = sha256Digest(canonicalizeJcs(dispositions));
+    const candidateDispositions = handoff.schema === "oll.rethink-handoff.v3"
+      ? handoff.candidateDispositions.map((item) => {
+          const citedActions = handoff.actions.filter((action) => action.payload.sourceCandidates.includes(item.candidateId));
+          const accepted = citedActions.some((action) => dispositions.some((result) => (
+            result.actionId === action.actionId && ["verified", "review_pending"].includes(result.disposition)
+          )));
+          const disposition = item.disposition === "consumed" && !accepted ? "deferred" : item.disposition;
+          return transitionMemoryCandidate({
+            workspace,
+            workspaceId: handoff.workspaceId,
+            candidateId: item.candidateId,
+            expectedRevision: item.expectedRevision,
+            disposition,
+            now,
+          });
+        })
+      : [];
+    const projectionDigest = handoff.schema === "oll.rethink-handoff.v3"
+      ? sha256Digest(canonicalizeJcs({
+          actions: dispositions,
+          candidates: candidateDispositions.map((candidate) => ({
+            candidateId: candidate.candidateId,
+            revision: candidate.lifecycle.revision,
+            status: candidate.lifecycle.status,
+            disposition: candidate.lifecycle.disposition,
+          })),
+        }))
+      : sha256Digest(canonicalizeJcs(dispositions));
+    if (handoff.schema === "oll.rethink-handoff.v3") appendJournal(eventsDir, {
+      workspaceId: handoff.workspaceId,
+      runId: handoff.runId,
+      transition: "candidate_dispositions_committed",
+      actionId: null,
+      operationId: null,
+      payloadDigest: null,
+      artifactRef: null,
+      artifactDigest: null,
+      projectionDigest,
+      createdAt: now,
+    }, options.faultInjector);
     appendJournal(eventsDir, {
       workspaceId: handoff.workspaceId, runId: handoff.runId, transition: "terminal",
       actionId: null, operationId: null, payloadDigest: null, artifactRef: null,

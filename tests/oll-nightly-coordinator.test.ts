@@ -1,10 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { NightlySpawnRequestV1, RegistrySnapshotV1, WorkspaceRegistryAdapter } from "../src/oll/contracts";
-import { computeHandoffDigest, sha256Digest } from "../src/oll/handoff-v2";
+import { canonicalizeJcs, computeHandoffDigest, sha256Digest } from "../src/oll/handoff-v2";
 import { runNightlyCoordinator } from "../src/oll/nightly-coordinator";
+import {
+  MEMORY_CANDIDATE_POLICY_V2_SCHEMA,
+  MEMORY_CANDIDATE_RANKING_POLICY_V1_SCHEMA,
+  MEMORY_CANDIDATE_SCOPE_REGISTRY_V1_SCHEMA,
+  candidateScopeRegistryDigestV1,
+  type CandidateScopeRegistryV1,
+} from "../src/oll/memory-candidate-contracts-v2";
 import { FakeNightlyRuntime } from "./fixtures/oll-nightly/fake-runtime";
 
 const roots: string[] = [];
@@ -80,6 +87,89 @@ function registryEntry(id: string, workspacePath: string) {
   return { workspaceId: id, workspacePath, registryRevision: 1, registryDigest: sha256Digest("registry"), configDigest: sha256Digest("ignored") } as const;
 }
 
+function configureCandidateCompiler(workspacePath: string, workspaceId: string, mode: "disabled" | "shadow", options: { missingRegistry?: boolean; evidence?: boolean } = {}): void {
+  const configPath = join(workspacePath, "engram.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  if (mode === "disabled") {
+    config.oll.candidateCompiler = { mode: "disabled" };
+    write(configPath, config);
+    return;
+  }
+  config.oll.candidateCompiler = {
+    schema: MEMORY_CANDIDATE_POLICY_V2_SCHEMA,
+    mode: "shadow",
+    forwardOnlySince: "2026-08-10T00:00:00Z",
+    workspaceTimezone: "UTC",
+    legacyTimestampParser: { version: "legacy-local-v1", daylightSavingAmbiguity: "reject" },
+    daily: [{ session: "main", sections: ["decisions"], scopeCeiling: { level: "workspace", subject: workspaceId } }],
+    domains: [],
+    kg: [],
+    limits: {
+      maxCandidatesPerRun: 20,
+      maxContextBytes: 65_536,
+      maxOccurrencesPerCluster: 8,
+      sourceQuotas: {
+        "daily-decision": 8, "daily-learning": 0, "retrieval-card": 0,
+        "domain-decision": 0, "domain-proposal": 0, "kg-assertion": 0,
+      },
+    },
+    decayPolicy: {
+      schema: "oll.memory-candidate-decay-policy.v1", hotDays: 7, warmDays: 30,
+      accessCountCap: 10, warmScorePenalty: 12, coldKgContribution: "provenance-only",
+      trustedAccessEventSchema: "engram.kg-v3-access-event.v1",
+    },
+    rankingPolicy: {
+      schema: MEMORY_CANDIDATE_RANKING_POLICY_V1_SCHEMA,
+      eligibilityThreshold: 55,
+      baseScores: { decision: 70, learning: 55, preference: 78, constraint: 74, proposal: 68 },
+      recencyBoostMax: 10, recencyBoostPerDay: 2, distinctRootBoostPerRoot: 3, distinctRootBoostMax: 12,
+    },
+    sensitiveTextPolicyVersion: "privacy-v1",
+  };
+  if (!options.missingRegistry) {
+    const base: Omit<CandidateScopeRegistryV1, "digest"> = {
+      schema: MEMORY_CANDIDATE_SCOPE_REGISTRY_V1_SCHEMA,
+      workspaceId,
+      revision: 1,
+      selfToDomain: {},
+      domainToWorkspace: {},
+      sourceAuthorities: {
+        daily: { main: { level: "workspace", subject: workspaceId } },
+        domains: {},
+        kgScopes: {},
+      },
+    };
+    config.oll.candidateScopeRegistry = { ...base, digest: candidateScopeRegistryDigestV1(base) };
+  }
+  write(configPath, config);
+  if (!options.missingRegistry) {
+    write(join(workspacePath, "memory-state", "oll", "candidate-rollout.json"), {
+      schema: "oll.memory-candidate-rollout-projection.v1",
+      workspaceId,
+      releaseId: "11111111-1111-4111-8111-111111111111",
+      planId: sha256Digest(`shadow-plan:${workspaceId}`),
+      mode: "shadow",
+      status: "shadow_canary",
+      policyDigest: sha256Digest(canonicalizeJcs(config.oll.candidateCompiler)),
+      scopeRegistryDigest: config.oll.candidateScopeRegistry.digest,
+      evidenceDigest: sha256Digest("phase4-evidence"),
+      approvedBy: "test-operator",
+      revision: 2,
+      updatedAt: NOW,
+    });
+  }
+  mkdirSync(join(workspacePath, "memory", `agent-${workspaceId}`, "main"), { recursive: true });
+  if (options.evidence !== false) {
+    write(join(workspacePath, "memory", `agent-${workspaceId}`, "main", "2026-08-11.md"), [
+      "# 2026-08-11", "", "## Decisions", "", "### 2026-08-11T00:35:00Z — decision", "", "- Candidate-only shadow statement.", "",
+    ].join("\n"));
+  }
+}
+
+function batchArtifact(stateRoot: string, batchId: string, ...parts: string[]): string {
+  return join(stateRoot, "oll-nightly", "batches", batchId, ...parts);
+}
+
 function validEmptyHandoff(request: NightlySpawnRequestV1) {
   const withoutDigest = {
     schema: "oll.rethink-handoff.v2" as const,
@@ -153,6 +243,116 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
     expect(runtime.events).toEqual([]);
   });
 
+  test("missing and explicit disabled candidate config preserve the legacy context and v2 handoff path", async () => {
+    const missing = environment([{ id: "alpha" }]);
+    let missingRequest: NightlySpawnRequestV1 | null = null;
+    const missingRuntime = new FakeNightlyRuntime((request, runtime) => {
+      missingRequest = request;
+      write(request.expectedHandoffPath, validEmptyHandoff(request));
+      runtime.queueHandoff(request.expectedHandoffPath);
+    });
+    const missingReport = await runNightlyCoordinator(coordinatorOptions(missing, missingRuntime));
+
+    const disabled = environment([{ id: "alpha" }]);
+    configureCandidateCompiler(disabled.workspaces.alpha, "alpha", "disabled");
+    let disabledRequest: NightlySpawnRequestV1 | null = null;
+    const disabledRuntime = new FakeNightlyRuntime((request, runtime) => {
+      disabledRequest = request;
+      write(request.expectedHandoffPath, validEmptyHandoff(request));
+      runtime.queueHandoff(request.expectedHandoffPath);
+    });
+    const disabledReport = await runNightlyCoordinator(coordinatorOptions(disabled, disabledRuntime));
+
+    const missingContext = readFileSync(batchArtifact(missing.stateRoot, missingReport.batchId, "contexts", "alpha.json"), "utf8");
+    const disabledContext = readFileSync(batchArtifact(disabled.stateRoot, disabledReport.batchId, "contexts", "alpha.json"), "utf8");
+    expect(disabledContext).toBe(missingContext);
+    expect(JSON.parse(missingContext).schema).toBe("oll.nightly-context.v1");
+    expect(missingRequest).not.toBeNull();
+    expect(disabledRequest).not.toBeNull();
+    expect((missingRequest as NightlySpawnRequestV1).prompt).toContain("oll.rethink-handoff.v2");
+    expect((disabledRequest as NightlySpawnRequestV1).prompt).toContain("oll.rethink-handoff.v2");
+    expect((missingRequest as NightlySpawnRequestV1).prompt).not.toContain("oll.rethink-handoff.v3");
+    expect((disabledRequest as NightlySpawnRequestV1).prompt).not.toContain("oll.rethink-handoff.v3");
+    expect(missingReport.candidateShadow).toBeUndefined();
+    expect(disabledReport.candidateShadow).toBeUndefined();
+    expect(existsSync(batchArtifact(missing.stateRoot, missingReport.batchId, "candidate-reports"))).toBe(false);
+    expect(existsSync(batchArtifact(disabled.stateRoot, disabledReport.batchId, "candidate-reports"))).toBe(false);
+  });
+
+  test("shadow report stays outside model context and does not add a spawn, transition, review, or action", async () => {
+    const env = environment([{ id: "alpha" }]);
+    configureCandidateCompiler(env.workspaces.alpha, "alpha", "shadow");
+    let request: NightlySpawnRequestV1 | null = null;
+    const runtime = new FakeNightlyRuntime((spawnRequest, current) => {
+      request = spawnRequest;
+      write(spawnRequest.expectedHandoffPath, validEmptyHandoff(spawnRequest));
+      current.queueHandoff(spawnRequest.expectedHandoffPath);
+    });
+    const report = await runNightlyCoordinator(coordinatorOptions(env, runtime));
+    expect(report).toMatchObject({ status: "completed", spawned: 1, candidateShadow: { attempted: 1, succeeded: 1, failed: 0 } });
+    const contextText = readFileSync(batchArtifact(env.stateRoot, report.batchId, "contexts", "alpha.json"), "utf8");
+    const context = JSON.parse(contextText);
+    expect(context.schema).toBe("oll.nightly-context.v1");
+    expect(context).not.toHaveProperty("memoryCandidates");
+    expect(context).not.toHaveProperty("candidateRevisions");
+    expect(contextText).not.toContain("Candidate-only shadow statement");
+    expect((request as unknown as NightlySpawnRequestV1).prompt).not.toContain("Candidate-only shadow statement");
+    expect((request as unknown as NightlySpawnRequestV1).prompt).toContain("oll.rethink-handoff.v2");
+    const candidateReport = JSON.parse(readFileSync(batchArtifact(env.stateRoot, report.batchId, "candidate-reports", "alpha.json"), "utf8"));
+    expect(candidateReport).toMatchObject({ schema: "oll.memory-candidate-report.v2", executionMode: "shadow", selected: 1, projectedModelSpawns: 1, projectedReviews: 1 });
+    const candidateRoot = join(env.workspaces.alpha, "memory-state", "oll", "candidates");
+    expect(existsSync(candidateRoot)).toBe(false);
+    expect(readdirSync(join(env.workspaces.alpha, "memory-state", "oll", "reviews"))).toEqual([]);
+    expect(runtime.events.filter((event) => event.type === "spawn")).toHaveLength(1);
+  });
+
+  test("shadow candidates alone persist metrics but cannot trigger a model spawn", async () => {
+    const env = environment([{ id: "alpha", actionable: false }]);
+    configureCandidateCompiler(env.workspaces.alpha, "alpha", "shadow");
+    const runtime = successRuntime();
+    const report = await runNightlyCoordinator(coordinatorOptions(env, runtime));
+    expect(report).toMatchObject({ status: "completed", skipped: ["alpha"], spawned: 0, candidateShadow: { attempted: 1, succeeded: 1, failed: 0 } });
+    const candidateReport = JSON.parse(readFileSync(batchArtifact(env.stateRoot, report.batchId, "candidate-reports", "alpha.json"), "utf8"));
+    expect(candidateReport.selected).toBe(1);
+    expect(runtime.events).toEqual([]);
+  });
+
+  test("shadow compiler failure is content-free and cannot block an ordinary behavioral rethink", async () => {
+    const env = environment([{ id: "alpha" }]);
+    configureCandidateCompiler(env.workspaces.alpha, "alpha", "shadow", { missingRegistry: true });
+    let request: NightlySpawnRequestV1 | null = null;
+    const runtime = new FakeNightlyRuntime((spawnRequest, current) => {
+      request = spawnRequest;
+      write(spawnRequest.expectedHandoffPath, validEmptyHandoff(spawnRequest));
+      current.queueHandoff(spawnRequest.expectedHandoffPath);
+    });
+    const report = await runNightlyCoordinator(coordinatorOptions(env, runtime));
+    expect(report).toMatchObject({ status: "completed", completed: ["alpha"], failed: [], spawned: 1, candidateShadow: { attempted: 1, succeeded: 0, failed: 1 } });
+    expect((request as unknown as NightlySpawnRequestV1).prompt).toContain("oll.rethink-handoff.v2");
+    const terminalText = readFileSync(batchArtifact(env.stateRoot, report.batchId, "candidate-compilation-attempts", "alpha.terminal.json"), "utf8");
+    expect(JSON.parse(terminalText)).toMatchObject({ status: "failed", errorClass: "scope_registry_invalid" });
+    expect(terminalText).not.toContain(env.workspaces.alpha);
+    expect(terminalText).not.toContain("Candidate-only shadow statement");
+  });
+
+  test("shadow report publication conflict is isolated from the legacy model path", async () => {
+    const env = environment([{ id: "alpha" }]);
+    configureCandidateCompiler(env.workspaces.alpha, "alpha", "shadow");
+    const batchId = `nightly-${NOW}`;
+    write(batchArtifact(env.stateRoot, batchId, "candidate-reports", "alpha.json"), { conflict: true });
+    let request: NightlySpawnRequestV1 | null = null;
+    const runtime = new FakeNightlyRuntime((spawnRequest, current) => {
+      request = spawnRequest;
+      write(spawnRequest.expectedHandoffPath, validEmptyHandoff(spawnRequest));
+      current.queueHandoff(spawnRequest.expectedHandoffPath);
+    });
+    const report = await runNightlyCoordinator(coordinatorOptions(env, runtime));
+    expect(report).toMatchObject({ status: "completed", spawned: 1, candidateShadow: { attempted: 1, succeeded: 0, failed: 1 } });
+    expect((request as unknown as NightlySpawnRequestV1).prompt).toContain("oll.rethink-handoff.v2");
+    const terminal = JSON.parse(readFileSync(batchArtifact(env.stateRoot, batchId, "candidate-compilation-attempts", "alpha.terminal.json"), "utf8"));
+    expect(terminal).toMatchObject({ status: "failed", errorClass: "artifact_failed" });
+  });
+
   test("accepts fleet reconciliation evidence from the deployment wrapper without reconciling the canary twice", async () => {
     const env = environment([{ id: "alpha", actionable: false }]);
     const runtime = successRuntime();
@@ -207,7 +407,7 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
   });
 
   for (const transition of [
-    "reconciling", "preflight", "dispatching", "spawn_acknowledged", "awaiting_handoff",
+    "reconciling", "compiling", "preflight", "dispatching", "spawn_acknowledged", "awaiting_handoff",
     "handoff_received", "validating", "applying", "completed",
   ] as const) {
     test(`resumes the same batch after interruption at ${transition} without overlap`, async () => {

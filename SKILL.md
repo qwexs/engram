@@ -1,6 +1,6 @@
 ---
-name: engram
-description: Etalon memory architecture with Knowledge Graph, session isolation, memory decay, and QMD hybrid search (Local/Jina)
+name: "engram"
+description: "Engram daily-note writer: reject unstable session/workspace coordinates."
 ---
 
 # Engram Memory System
@@ -337,6 +337,14 @@ deterministic reconciliation command and `target` to `nightly.enabled=false`.
 Production rule injection remains disabled until a separate active-mode gate.
 
 For current OLL runtime details (legacy compatibility plus PR 2–7 managed path/tooling): [references/oll.md](references/oll.md). PR 2 disables heartbeat-owned rethink admission/application and moves scheduling state into `oll-nightly-state.v1`; PR 3 adds trusted capture/authorization/review; PR 4 validates and applies typed handoffs idempotently; PR 5 provides durable discovery, orchestration, recovery, and strict FIFO; PR 6 resolves scoped active rules and injects them only at matching bootstrap when adaptation is explicitly active; PR 7 provides guarded rollout/rollback tooling plus synthetic and live observe-only evidence. Active-mode production rollout remains pending: [references/oll-nightly-adaptation.md](references/oll-nightly-adaptation.md).
+
+Memory-derived rethink evidence is a separate, default-disabled compiler and
+rollout surface. Phase 5 plan/apply/read-back/rollback tooling and the synthetic
+per-phase rollback barrier are implemented, but no real workspace canary is
+implied by that status. Use [references/oll-memory-candidates.md](references/oll-memory-candidates.md)
+for its positive source registry, scope ceiling, handoff v3, report-only audit,
+and canary gates. Never reinterpret memory candidates as authorized adaptation
+signals or enable materialization as part of an unrelated nightly cutover.
 
 ## Subagent Memory
 

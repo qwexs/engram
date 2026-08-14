@@ -35,6 +35,7 @@ export interface NightlyBatchStateV1 {
   lease: Omit<NightlyLeaseV1, "schema">;
   workspaceQueue: string[];
   activeWorkspace: string | null;
+  activeSnapshotAt?: string | null;
   activeRunId: string | null;
   activeEvaluationId: string | null;
   activeAttempt: number | null;

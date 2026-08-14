@@ -1,0 +1,8 @@
+[
+  { "sourceClass": "daily-decision", "parserVersion": "daily-note-v2", "timestamp": "2026-08-14T10:15:00+03:00", "statement": "Использовать только подтверждённый источник." },
+  { "sourceClass": "daily-learning", "parserVersion": "daily-note-v2", "timestamp": "2026-08-14T10:16:00+03:00", "statement": "Проверять digest перед восстановлением." },
+  { "sourceClass": "retrieval-card", "parserVersion": "retrieval-card-v1", "timestamp": "2026-08-14", "statement": "Проверять digest перед восстановлением." },
+  { "sourceClass": "domain-decision", "parserVersion": "canonical-decisions-v1", "timestamp": "2026-08-14", "statement": "восстанавливать только из проверенного report" },
+  { "sourceClass": "domain-proposal", "parserVersion": "canonical-proposals-v1", "timestamp": "2026-08-14 14:30", "statement": "require report digest verification before recovery" },
+  { "sourceClass": "kg-assertion", "parserVersion": "kg-assertion-v3", "timestamp": "2026-08-14T10:20:00+03:00", "statement": "сохранять проверяемую историю восстановления" }
+]

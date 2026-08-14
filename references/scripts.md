@@ -362,6 +362,33 @@ rethink, and never restores the legacy heartbeat owner. The CLI does not edit
 the OpenClaw scheduler; that live deployment action remains external and
 approval-gated.
 
+## oll-memory-candidate-rollout.ts — candidate compiler Phase 5 boundary
+
+```bash
+# read-only plan/status/barrier
+bun skills/engram/scripts/oll-memory-candidate-rollout.ts plan \
+  --request-file /trusted/candidate-shadow.json
+bun skills/engram/scripts/oll-memory-candidate-rollout.ts status \
+  --request-file /trusted/candidate-status.json
+bun skills/engram/scripts/oll-memory-candidate-rollout.ts barrier \
+  --request-file /trusted/candidate-rollback.json
+
+# explicit config/projection mutations
+bun skills/engram/scripts/oll-memory-candidate-rollout.ts apply \
+  --request-file /trusted/candidate-shadow.json --ack-rollout
+bun skills/engram/scripts/oll-memory-candidate-rollout.ts rollback \
+  --request-file /trusted/candidate-rollback.json --ack-rollback
+```
+
+The rollout request binds one exact workspace, policy, scope registry, release
+ID, evidence path and evidence byte digest. Apply writes a backup before the
+local projection and publishes the config activation bit only inside that
+guarded transition, then hashes bytes read back from disk. `materialize`
+requires seven daily and one weekly clean shadow cycles. Rollback disables new
+batches, releases only pre-effect reservations, quarantines partial effects,
+retains pending reviews and reports whether a binary rollback is safe. The CLI
+does not select or activate a live canary by itself.
+
 ## oll-nightly-runtime.ts and install-oll-nightly-cron.ts — trusted deployment boundary
 
 `oll-nightly-runtime.ts` bridges the fenced coordinator to OpenClaw Code Mode

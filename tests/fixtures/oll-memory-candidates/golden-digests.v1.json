@@ -1,0 +1,39 @@
+{
+  "digests": {
+    "semanticKey": "sha256:c1ed134c7e3e9de07a558d4e673c56b274167243097f088724b5861f647ef0c1",
+    "occurrenceId": "sha256:aba925d3f127b513b4a9930cadcf53a0fb4bd5032a13a5ea28402826c75f2218",
+    "candidateId": "sha256:60dfe5f63e5b96be0922aed718fc5645e2ebdba739f143ae6dfe64f8c67f5bad",
+    "evidenceSetDigest": "sha256:2a6206ae02b30d1100e36ab55f766c287807e7d61b42a55d884507b11e951c7b",
+    "assessmentId": "sha256:7c6ce9e8603c181c82fafece43c81344a47684e0fe82378e2a472960c1fc5697",
+    "reportDigest": "sha256:1334a30a3d4822e82683ba3fd2731b0ca210d672fc0810c9d5af686a9d6a7aac",
+    "operationId": "sha256:ef7c68ab1977ad6811462b3ec89a8e54a5a923d9b578ce706e6c1d8ea06a2642",
+    "effectId": "sha256:3b0e74e15af1d39dea6a9c66b8fa16f0fcf6d673a60eb3bfccb9dd0067eae070",
+    "effectPayloadDigest": "sha256:3b0e74e15af1d39dea6a9c66b8fa16f0fcf6d673a60eb3bfccb9dd0067eae070",
+    "reviewEffectId": "sha256:07208d51f035e0f7ac8d095bce05c8af72fbfd9c6627b607198efe153ec3d082",
+    "reviewEffectPayloadDigest": "sha256:07208d51f035e0f7ac8d095bce05c8af72fbfd9c6627b607198efe153ec3d082",
+    "planId": "sha256:d588364ae29c22ed4ea6e57aadf26237e88c77cc849268c1d4045231f0ed8ae6",
+    "reservationId": "sha256:1a6aba98743bbcfceff90f451a35ff2a0277cf6ba419887bcaa53dcc875f864e",
+    "outcomeId": "sha256:fffcba1db120246e8deea5a04e4d6cc841e7da68b795f17a72dc9430fe4f9c9b",
+    "projectionDigest": "sha256:ebe3b32ac3f68d37d8855ccfe199f4d1dd3bf18a5f4bb6f657f745a71d10c26c"
+  },
+  "normalizationCases": [
+    { "input": "  Проверять  digest перед восстановлением. ", "normalized": "Проверять digest перед восстановлением." },
+    { "input": "ＡＢＣ　правило", "normalized": "ABC правило" },
+    { "input": "ёдиное\n\tправило", "normalized": "ёдиное правило" }
+  ],
+  "semanticEquivalenceGroups": [
+    ["ПРАВИЛО: проверять!", "правило проверять"],
+    ["ＡＢＣ-правило", "abc правило"]
+  ],
+  "semanticDistinctPairs": [
+    ["разрешить действие", "запретить действие"],
+    ["лимит < 5", "лимит > 5"],
+    ["значение ≤ 10", "значение ≥ 10"]
+  ],
+  "boundaries": { "maxStatementLength": 2000, "overLimitLength": 2001 },
+  "ordering": {
+    "oldestObservedAt": "2026-08-14T05:00:00.000Z",
+    "newestObservedAt": "2026-08-14T06:00:00.000Z"
+  },
+  "rankingBaseFirst": { "expectedBaseScore": 74, "expectedDecayPenalty": 12, "expectedScore": 75 }
+}

@@ -4,15 +4,18 @@ import { dirname, join, resolve } from "node:path";
 import { atomicWriteJson } from "./legacy-migration";
 import type { NightlyRuntimeAdapter, NightlySpawnRequestV1, WorkspaceRegistryAdapter } from "./contracts";
 import { applyRethinkHandoffFile, ApplicatorResult } from "./handoff-applicator";
-import { buildRethinkProposalPrompt, ExpectedHandoffV2 } from "./handoff-v2";
-import { buildNightlyContext, determineNightlyWindow, NightlyContextV1, preflightNightlyContext } from "./nightly-context";
+import { buildRethinkProposalPrompt, canonicalizeJcs, type ExpectedHandoffV2, sha256Digest } from "./handoff-v2";
+import { buildNightlyContext, determineNightlyWindow, type NightlyContext, preflightNightlyContext } from "./nightly-context";
 import { discoverNightlyWorkspaces, DiscoveredWorkspaceV1, FrozenRegistrySnapshotV1 } from "./nightly-discovery";
 import { NightlyBatchStateV1, NightlyLeaseV1, NightlyStateStore } from "./nightly-state-store";
 import { reconcileWorkspaceMemory, WorkspaceReconciliationResult } from "./reconciliation";
 import type { TrustedActorContext } from "./authorization";
+import { compileMemoryCandidateReportV2 } from "./memory-candidate-compiler-v2";
+import type { CandidateScopeRegistryV1, CandidateSourcePolicyV2 } from "./memory-candidate-contracts-v2";
+import { inspectCandidateCompilerProjectionV1 } from "./memory-candidate-rollout-v1";
 
 type BatchTransition =
-  | "pending" | "reconciling" | "preflight" | "skipped" | "dispatching"
+  | "pending" | "reconciling" | "compiling" | "preflight" | "skipped" | "dispatching"
   | "spawn_acknowledged" | "awaiting_handoff" | "handoff_received" | "validating"
   | "applying" | "apply_partial" | "review_pending" | "completed" | "failed"
   | "stale" | "cancelled" | "retrying";
@@ -52,11 +55,13 @@ export interface NightlyCoordinatorReportV1 {
   spawned: number;
   maxConcurrentRethinkRuns: number;
   registrySnapshotPath: string;
+  candidateShadow?: { attempted: number; succeeded: number; failed: number };
 }
 
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   pending: ["reconciling", "completed", "cancelled"],
-  reconciling: ["preflight", "failed", "cancelled"],
+  reconciling: ["compiling", "failed", "cancelled"],
+  compiling: ["preflight", "failed", "cancelled"],
   preflight: ["skipped", "dispatching", "failed", "cancelled"],
   skipped: ["completed", "cancelled"],
   dispatching: ["spawn_acknowledged", "failed", "cancelled"],
@@ -98,25 +103,34 @@ function leaseProjection(lease: NightlyLeaseV1): NightlyBatchStateV1["lease"] {
   };
 }
 
-function handoffExpected(batch: NightlyBatchStateV1, context: NightlyContextV1): ExpectedHandoffV2 {
+function handoffExpected(batch: NightlyBatchStateV1, context: NightlyContext): ExpectedHandoffV2 {
   if (!batch.activeWorkspace || !batch.activeRunId || !batch.activeEvaluationId || !batch.activeAttempt || !batch.activeContextDigest || !batch.activeHandoffPath) {
     throw new Error("active batch correlation is incomplete");
   }
-  return {
+  const base = {
     batchId: batch.batchId,
     workspaceId: batch.activeWorkspace,
     evaluationId: batch.activeEvaluationId,
     runId: batch.activeRunId,
-    phase: "hb-rethink",
+    phase: "hb-rethink" as const,
     attempt: batch.activeAttempt,
-    policyVersion: 1,
+    policyVersion: 1 as const,
     contextDigest: batch.activeContextDigest as `sha256:${string}`,
     expectedHandoffPath: batch.activeHandoffPath,
     signalRevisions: context.signalRevisions,
   };
+  return base;
 }
 
-function updateWorkspaceWatermark(workspace: string, context: NightlyContextV1, score: number): void {
+function candidateShadowErrorClass(error: unknown): "policy_invalid" | "scope_registry_invalid" | "compiler_failed" | "artifact_failed" {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/scope registry/i.test(message)) return "scope_registry_invalid";
+  if (/policy|candidate compiler|forwardOnlySince|workspaceTimezone|sensitive text/i.test(message)) return "policy_invalid";
+  if (/immutable artifact|EEXIST|ENOENT|permission|read-only/i.test(message)) return "artifact_failed";
+  return "compiler_failed";
+}
+
+function updateWorkspaceWatermark(workspace: string, context: NightlyContext, score: number): void {
   const path = join(workspace, "memory-state", "oll", "state.json");
   const state = readObject<Record<string, any>>(path);
   const priorRevisions = state?.evaluation?.signalRevisions || {};
@@ -158,6 +172,8 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
   const skipped: string[] = [];
   const processingOrder: string[] = [];
   let spawned = 0;
+  const candidateShadow = { attempted: 0, succeeded: 0, failed: 0 };
+  const candidateShadowReport = () => candidateShadow.attempted ? { candidateShadow: { ...candidateShadow } } : {};
 
   const checkRenewal = () => { if (renewalError) throw renewalError; };
   const renew = (ttlSeconds: number) => {
@@ -196,6 +212,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
   };
   const clearedActive = () => ({
     activeWorkspace: null,
+    activeSnapshotAt: null,
     activeRunId: null,
     activeEvaluationId: null,
     activeAttempt: null,
@@ -245,6 +262,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
         lease: leaseProjection(lease),
         workspaceQueue: snapshot.entries.map((entry) => entry.workspaceId),
         activeWorkspace: null,
+        activeSnapshotAt: null,
         activeRunId: null,
         activeEvaluationId: null,
         activeAttempt: null,
@@ -281,6 +299,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
         spawned,
         maxConcurrentRethinkRuns: Number((options.runtime as any).maxConcurrentRethinkRuns || 0),
         registrySnapshotPath: join(coordinatorRoot, "batches", batch.batchId, "registry-snapshot.json"),
+        ...candidateShadowReport(),
       };
     }
 
@@ -291,12 +310,12 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       if (!processingOrder.includes(workspaceId)) processingOrder.push(workspaceId);
       const config = workspace.config.oll.nightly;
       const contextPath = join(coordinatorRoot, "batches", batch.batchId, "contexts", `${workspaceId}.json`);
-      let context: NightlyContextV1;
+      let context: NightlyContext;
 
       if (batch.activeWorkspace === workspaceId && batch.activeRunId) {
-        context = readObject<NightlyContextV1>(contextPath);
+        context = readObject<NightlyContext>(contextPath);
       } else if (batch.activeWorkspace === workspaceId && existsSync(contextPath) && ["preflight", "skipped"].includes(batch.status)) {
-        context = readObject<NightlyContextV1>(contextPath);
+        context = readObject<NightlyContext>(contextPath);
         const recoveredPreflight = preflightNightlyContext(context);
         if (batch.status === "skipped" || !recoveredPreflight.actionable) {
           if (batch.status === "preflight") transition("skipped", {}, null, { preflight: recoveredPreflight });
@@ -309,9 +328,10 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
           continue;
         }
       } else {
-        if (!(batch.activeWorkspace === workspaceId && batch.status === "reconciling")) {
+        if (!(batch.activeWorkspace === workspaceId && ["reconciling", "compiling"].includes(batch.status))) {
           transition("reconciling", {
             activeWorkspace: workspaceId,
+            activeSnapshotAt: null,
             activeRunId: null,
             activeEvaluationId: null,
             activeAttempt: null,
@@ -319,26 +339,109 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
             activeHandoffPath: null,
           });
         }
-        const reconciliation = options.reconciliationCompletedExternally
+        const reconciliation = batch.status === "compiling"
           ? { workspace: workspace.workspacePath, status: "ok" as const }
-          : options.reconcile
-            ? await options.reconcile(workspace)
-            : await reconcileWorkspaceMemory({ workspace: workspace.workspacePath, scriptsDir: options.scriptsDir });
+          : options.reconciliationCompletedExternally
+            ? { workspace: workspace.workspacePath, status: "ok" as const }
+            : options.reconcile
+              ? await options.reconcile(workspace)
+              : await reconcileWorkspaceMemory({ workspace: workspace.workspacePath, scriptsDir: options.scriptsDir });
         if (reconciliation.status !== "ok") {
           transition("failed", { failed: [...batch.failed, workspaceId], ...clearedActive() }, "reconciliation_failed", { error: reconciliation.error || "unknown" });
           continue;
         }
-        const snapshotAt = now();
+        const snapshotAt = batch.status === "compiling" && batch.activeSnapshotAt ? batch.activeSnapshotAt : now();
         const window = determineNightlyWindow({
           now: snapshotAt,
           timezone: config.timezone,
           weeklyEnabled: workspace.config?.oll?.weeklyMode?.enabled === true,
           weekStart: "monday",
         });
-        context = buildNightlyContext({ workspace: workspace.workspacePath, workspaceId, snapshotAt, window });
+        if (batch.status === "reconciling") transition("compiling", { activeSnapshotAt: snapshotAt }, null, { snapshotAt });
+        let shadowObservation: Record<string, unknown> | null = null;
+        const candidatePolicy = workspace.config?.oll?.candidateCompiler as CandidateSourcePolicyV2 | undefined;
+        if (candidatePolicy?.mode === "shadow") {
+          candidateShadow.attempted += 1;
+          const scopeRegistry = workspace.config?.oll?.candidateScopeRegistry as CandidateScopeRegistryV1 | undefined;
+          const policyDigest = sha256Digest(canonicalizeJcs(candidatePolicy));
+          const scopeRegistryDigest = sha256Digest(canonicalizeJcs(scopeRegistry || null));
+          const attemptId = sha256Digest(canonicalizeJcs({
+            schema: "oll.memory-candidate-shadow-attempt.v1",
+            batchId: batch.batchId,
+            workspaceId,
+            snapshotAt,
+            policyDigest,
+            scopeRegistryDigest,
+          }));
+          const attemptRoot = join(coordinatorRoot, "batches", batch.batchId, "candidate-compilation-attempts");
+          try {
+            const rolloutProjection = inspectCandidateCompilerProjectionV1({ workspace: workspace.workspacePath, workspaceId });
+            if (!rolloutProjection.consistent || rolloutProjection.mode !== "shadow") {
+              throw new Error(rolloutProjection.reason || "candidate shadow rollout projection is not active");
+            }
+            writeImmutable(join(attemptRoot, `${workspaceId}.started.json`), {
+              schema: "oll.memory-candidate-shadow-attempt.v1",
+              attemptId,
+              batchId: batch.batchId,
+              workspaceId,
+              snapshotAt,
+              mode: "shadow",
+              policyDigest,
+              scopeRegistryDigest,
+              status: "started",
+            });
+            if (!scopeRegistry) throw new Error("candidate scope registry is required");
+            const report = compileMemoryCandidateReportV2({
+              workspace: workspace.workspacePath,
+              workspaceId,
+              snapshotAt,
+              batchId: batch.batchId,
+              policy: candidatePolicy,
+              scopeRegistry,
+              executionMode: "shadow",
+            });
+            writeImmutable(join(coordinatorRoot, "batches", batch.batchId, "candidate-reports", `${workspaceId}.json`), report);
+            const metrics = {
+              schema: "oll.memory-candidate-shadow-result.v1",
+              attemptId,
+              workspaceId,
+              status: "report_persisted",
+              reportDigest: report.reportDigest,
+              considered: report.considered,
+              eligible: report.eligible,
+              selected: report.selected,
+              selectedBytes: report.selectedBytes,
+              projectedModelSpawns: report.projectedModelSpawns,
+              projectedReviews: report.projectedReviews,
+              sourceCounts: report.sourceCounts,
+              rejectionCounts: report.rejectionCounts,
+            } as const;
+            writeImmutable(join(attemptRoot, `${workspaceId}.terminal.json`), metrics);
+            candidateShadow.succeeded += 1;
+            shadowObservation = metrics;
+          } catch (error) {
+            candidateShadow.failed += 1;
+            const errorClass = candidateShadowErrorClass(error);
+            const diagnostic = {
+              schema: "oll.memory-candidate-shadow-result.v1",
+              attemptId,
+              workspaceId,
+              status: "failed",
+              errorClass,
+            } as const;
+            shadowObservation = diagnostic;
+            try { writeImmutable(join(attemptRoot, `${workspaceId}.terminal.json`), diagnostic); } catch { /* shadow artifacts never block legacy rethink */ }
+          }
+        }
+        context = buildNightlyContext({
+          workspace: workspace.workspacePath,
+          workspaceId,
+          snapshotAt,
+          window,
+        });
         writeImmutable(contextPath, context);
         const preflight = preflightNightlyContext(context);
-        transition("preflight", { activeContextDigest: context.contextDigest }, null, { preflight });
+        transition("preflight", { activeContextDigest: context.contextDigest }, null, { preflight, ...(shadowObservation ? { candidateShadow: shadowObservation } : {}) });
         if (!preflight.actionable) {
           transition("skipped", {}, null, { preflight });
           updateWorkspaceWatermark(workspace.workspacePath, context, preflight.score);
@@ -346,6 +449,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
           transition("completed", {
             completed: [...batch.completed, workspaceId],
             activeWorkspace: null,
+            activeSnapshotAt: null,
             activeContextDigest: null,
           });
           continue;
@@ -358,7 +462,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       let terminal = false;
       while (!terminal && attempt <= Number(config.maxSpawnAttempts || 2)) {
         checkRenewal();
-        let expected: ExpectedHandoffV2;
+      let expected: ExpectedHandoffV2;
         let request: NightlySpawnRequestV1;
         if (batch.activeRunId && batch.activeEvaluationId === evaluationId && batch.activeAttempt === attempt && batch.activeHandoffPath) {
           expected = handoffExpected(batch, context);
@@ -466,6 +570,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
         transition("completed", {
           completed: [...batch.completed, workspaceId],
           activeWorkspace: null,
+          activeSnapshotAt: null,
           activeRunId: null,
           activeEvaluationId: null,
           activeAttempt: null,
@@ -493,6 +598,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       spawned,
       maxConcurrentRethinkRuns: Number((options.runtime as any).maxConcurrentRethinkRuns || (spawned ? 1 : 0)),
       registrySnapshotPath: join(coordinatorRoot, "batches", batch.batchId, "registry-snapshot.json"),
+      ...candidateShadowReport(),
     };
   } finally {
     if (renewalTimer) clearInterval(renewalTimer);

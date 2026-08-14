@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { canonicalizeJcs, Digest, sha256Digest } from "./handoff-v2";
+import type { MemoryCandidateReportV1, MemoryCandidateV1 } from "./memory-candidates";
 
 type JsonObject = Record<string, any>;
 
@@ -25,12 +26,49 @@ export interface NightlyContextV1 {
   contextDigest: Digest;
 }
 
+export interface NightlyContextV2 {
+  schema: "oll.nightly-context.v2";
+  workspaceId: string;
+  snapshotAt: string;
+  window: NightlyWindowV1;
+  priorEvaluationAt: string | null;
+  signalRevisions: Record<string, number>;
+  candidateRevisions: Record<string, number>;
+  candidateCompiler: null | {
+    mode: "disabled" | "shadow" | "materialize";
+    reportDigest: Digest;
+    considered: number;
+    eligible: number;
+    selected: number;
+    selectedBytes: number;
+    sourceCounts: Record<string, number>;
+    rejectionCounts: Record<string, number>;
+  };
+  signals: JsonObject[];
+  memoryCandidates: MemoryCandidateV1[];
+  observations: JsonObject[];
+  tensions: JsonObject[];
+  rules: JsonObject[];
+  contextDigest: Digest;
+}
+
+export type NightlyContext = NightlyContextV1 | NightlyContextV2;
+
 export interface NightlyPreflightV1 {
   schema: "oll.nightly-preflight.v1";
   actionable: boolean;
   reasons: string[];
   counts: { signals: number; observations: number; tensions: number; rules: number };
   score: number;
+}
+
+export interface NightlyPreflightV2 {
+  schema: "oll.nightly-preflight.v2";
+  actionable: boolean;
+  reasons: string[];
+  counts: { signals: number; memoryCandidates: number; observations: number; tensions: number; rules: number };
+  score: number;
+  candidateMode: "disabled" | "shadow" | "materialize";
 }
 
 function readObject(path: string): JsonObject {
@@ -104,7 +142,9 @@ export function buildNightlyContext(options: {
   const signals = records(join(workspace, "memory-state", "oll", "signals"))
     .filter((signal) => ["pending", "review_required", "reviewed"].includes(signal.status))
     .filter((signal) => inSnapshot(signal, options.snapshotAt))
-    .filter((signal) => Number(signal.revision || 0) > Number(processed[signal.id] || 0) || !priorEvaluationAt || Date.parse(signal.createdAt) > Date.parse(priorEvaluationAt))
+    .filter((signal) => options.window.mode === "weekly"
+      ? (!options.window.windowStart || Date.parse(signal.createdAt) >= Date.parse(options.window.windowStart))
+      : Number(signal.revision || 0) > Number(processed[signal.id] || 0) || !priorEvaluationAt || Date.parse(signal.createdAt) > Date.parse(priorEvaluationAt))
     .map((signal) => ({
       id: signal.id, revision: signal.revision, type: signal.type, scope: signal.scope,
       statement: signal.statement, expectedBehavior: signal.expectedBehavior,
@@ -142,25 +182,52 @@ export function buildNightlyContext(options: {
   return { ...base, contextDigest: sha256Digest(canonicalizeJcs(base)) };
 }
 
-export function preflightNightlyContext(context: NightlyContextV1): NightlyPreflightV1 {
+export function preflightNightlyContext(context: NightlyContextV1): NightlyPreflightV1;
+export function preflightNightlyContext(context: NightlyContextV2): NightlyPreflightV2;
+export function preflightNightlyContext(context: NightlyContext): NightlyPreflightV1 | NightlyPreflightV2;
+export function preflightNightlyContext(context: NightlyContext): NightlyPreflightV1 | NightlyPreflightV2 {
   const reasons: string[] = [];
   const corrections = context.signals.filter((signal) => signal.type === "correction").length;
   const directInstructions = context.signals.filter((signal) => ["preference", "workflow"].includes(signal.type)).length;
   const quality = context.signals.filter((signal) => signal.type === "quality").length;
   const friction = context.observations.filter((observation) => observation.category === "friction").length;
   const patterns = context.observations.filter((observation) => observation.category === "pattern").length;
+  const memoryCandidates = context.schema === "oll.nightly-context.v2" ? context.memoryCandidates : [];
+  const candidateMode = context.schema === "oll.nightly-context.v2" ? context.candidateCompiler?.mode || "disabled" : "disabled";
+  const highPriorityCandidates = memoryCandidates.filter((candidate) => candidate.ranking.score >= 80).length;
+  const candidateClusters = new Map<string, number>();
+  for (const candidate of memoryCandidates) candidateClusters.set(candidate.semanticKey, (candidateClusters.get(candidate.semanticKey) || 0) + 1);
+  const repeatedCandidates = [...candidateClusters.values()].filter((count) => count >= 2).length;
+  const strongCandidates = memoryCandidates.filter((candidate) => candidate.ranking.score >= 60).length;
   if (corrections) reasons.push("explicit_correction");
   if (directInstructions) reasons.push("preference_or_workflow_signal");
   if (quality >= 2) reasons.push("repeated_quality_signal");
   if (context.tensions.length) reasons.push("pending_tension");
   if (patterns || friction >= 2) reasons.push("operational_pattern");
-  if (context.window.mode === "weekly" && (context.signals.length || context.observations.length || context.tensions.length)) reasons.push("weekly_unresolved_context");
-  const counts = { signals: context.signals.length, observations: context.observations.length, tensions: context.tensions.length, rules: context.rules.length };
+  if (candidateMode === "materialize" && highPriorityCandidates) reasons.push("high_priority_memory_candidate");
+  if (candidateMode === "materialize" && repeatedCandidates) reasons.push("repeated_memory_candidate");
+  if (candidateMode === "materialize" && strongCandidates >= 3) reasons.push("memory_candidate_cluster");
+  if (context.window.mode === "weekly" && (context.signals.length || context.observations.length || context.tensions.length || (candidateMode === "materialize" && memoryCandidates.length))) reasons.push("weekly_unresolved_context");
+  const candidateScore = candidateMode === "materialize"
+    ? Math.min(30, Math.round(memoryCandidates.reduce((sum, candidate) => sum + candidate.ranking.score, 0) / 20))
+    : 0;
+  if (context.schema === "oll.nightly-context.v1") {
+    const counts = { signals: context.signals.length, observations: context.observations.length, tensions: context.tensions.length, rules: context.rules.length };
+    return {
+      schema: "oll.nightly-preflight.v1",
+      actionable: reasons.length > 0,
+      reasons: [...new Set(reasons)].sort(),
+      counts,
+      score: corrections * 10 + directInstructions * 5 + quality * 2 + friction * 3 + patterns + context.tensions.length * 4,
+    };
+  }
+  const counts = { signals: context.signals.length, memoryCandidates: memoryCandidates.length, observations: context.observations.length, tensions: context.tensions.length, rules: context.rules.length };
   return {
-    schema: "oll.nightly-preflight.v1",
+    schema: "oll.nightly-preflight.v2",
     actionable: reasons.length > 0,
     reasons: [...new Set(reasons)].sort(),
     counts,
-    score: corrections * 10 + directInstructions * 5 + quality * 2 + friction * 3 + patterns + context.tensions.length * 4,
+    score: corrections * 10 + directInstructions * 5 + quality * 2 + friction * 3 + patterns + context.tensions.length * 4 + candidateScore,
+    candidateMode,
   };
 }

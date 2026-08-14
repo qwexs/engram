@@ -82,6 +82,8 @@ if (!session) {
 }
 const sectionTitle = SECTION_MAP[sectionKey];
 const text = opts.text.trim();
+const recordKind = sectionKey === "decisions" ? "decision" : sectionKey === "learnings" ? "learning" : null;
+const recordTimestamp = recordKind ? new Date().toISOString() : null;
 const retrievalId = typeof opts["retrieval-id"] === "string" ? opts["retrieval-id"].trim() : "";
 const retrievalTitle = typeof opts["retrieval-title"] === "string" ? opts["retrieval-title"].trim() : "";
 
@@ -141,6 +143,9 @@ if (existsSync(notePath)) {
 
 // --- Найти секцию и вставить запись ---
 const entry = `- ${text}`;
+const entryLines = recordKind
+  ? ["", `### ${recordTimestamp} — ${recordKind}`, "", entry]
+  : [entry];
 
 // Разбить на строки, сохраняя структуру
 const lines = content.split("\n");
@@ -185,8 +190,9 @@ for (let i = sectionIdx + 1; i < insertIdx; i++) {
   }
 }
 
-// Вставить строку после lastContentLine
-lines.splice(lastContentLine + 1, 0, entry);
+// Вставить запись после lastContentLine. Decisions/Learnings несут
+// явный RFC3339 instant; старые date-only bullets остаются legacy-форматом.
+lines.splice(lastContentLine + 1, 0, ...entryLines);
 
 const newContent = lines.join("\n");
 await Bun.write(notePath, newContent);
@@ -218,5 +224,6 @@ console.log(JSON.stringify({
   sectionTitle,
   file: notePath,
   entry,
+  recordTimestamp,
   retrievalCard: retrievalPath,
 }));

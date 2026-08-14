@@ -383,6 +383,7 @@ function contentDigestForRule(input: JsonObject): `sha256:${string}` {
     rule: input.rule,
     priority: Number(input.priority || 0),
     sourceSignals: [...input.sourceSignals].sort(),
+    sourceCandidates: [...(input.sourceCandidates || [])].sort(),
     risk: input.risk,
     expectedImprovement: input.expectedImprovement,
     costOfInaction: input.costOfInaction,
@@ -434,6 +435,7 @@ export function proposeAdaptationRule(options: {
   scope: AdaptationScope;
   rule: string;
   sourceSignals: string[];
+  sourceCandidates?: string[];
   expectedImprovement: string;
   costOfInaction: string;
   rollbackRef: string;
@@ -493,6 +495,7 @@ export function proposeAdaptationRule(options: {
       rule: ruleText,
       priority: 0,
       sourceSignals: [...new Set(options.sourceSignals)],
+      sourceCandidates: [...new Set(options.sourceCandidates || [])],
       risk: risk.risk,
       status: "proposed",
       expectedImprovement,

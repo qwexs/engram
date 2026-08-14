@@ -77,7 +77,8 @@ not an activation grant.
 For every eligible entry in its immutable registry snapshot, the coordinator:
 
 1. performs deterministic memory reconciliation;
-2. collects actionable signals since the successful watermark;
+2. collects actionable signals and, when separately enabled, compiles bounded
+   memory candidates from a positive source allowlist;
 3. creates and persists a context snapshot;
 4. skips durably when no action is needed;
 5. dispatches exactly one `hb-rethink` run when actionable;
@@ -87,6 +88,11 @@ For every eligible entry in its immutable registry snapshot, the coordinator:
 
 The next invocation resumes a durable incomplete batch. It does not create an
 overlapping batch or repeat a completed side effect.
+
+Memory-candidate ingress is a separate rollout surface. It uses
+`oll.memory-candidate.v1` and `oll.rethink-handoff.v3`; it is disabled by
+default and documented in [oll-memory-candidates.md](oll-memory-candidates.md).
+Candidate evidence is proposal-only and always requires human review.
 
 ## Risk and authorization
 

@@ -205,4 +205,27 @@ describe("PR 5 deterministic nightly context and preflight", () => {
       counts: { signals: 0, observations: 0, tensions: 0, rules: 0 }, score: 0,
     });
   });
+
+  test("defense in depth keeps even a forged candidate-aware shadow context inert", () => {
+    const candidate: any = {
+      schema: "oll.memory-candidate.v1", candidateId: sha256Digest("candidate"), workspaceId: "main",
+      sourceClass: "daily-decision", sourceRef: "memory/source#1", sourceVersionDigest: sha256Digest("source"),
+      contentDigest: sha256Digest("content"), semanticKey: sha256Digest("semantic"),
+      scopeCeiling: { level: "workspace", subject: "main" }, kind: "decision", redactionClass: "minimal",
+      observedAt: "2026-08-14T12:00:00.000Z", statement: "Use a concise report format.",
+      ranking: { score: 85, reasons: ["structured_decision"], duplicateCount: 1, accessCount: 0, decayTier: null },
+      compilerVersion: 1, lifecycle: { status: "pending", disposition: null, revision: 1, updatedAt: "2026-08-14T12:00:00.000Z" },
+    };
+    const base: any = {
+      schema: "oll.nightly-context.v2", workspaceId: "main", snapshotAt: "2026-08-14T23:00:00.000Z",
+      window: { mode: "daily", timezone: "UTC", windowStart: null, windowEnd: "2026-08-14T23:00:00.000Z" },
+      priorEvaluationAt: null, signalRevisions: {}, candidateRevisions: { [candidate.candidateId]: 1 },
+      signals: [], memoryCandidates: [candidate], observations: [], tensions: [], rules: [], contextDigest: sha256Digest("context"),
+      candidateCompiler: { mode: "shadow", reportDigest: sha256Digest("report"), considered: 1, eligible: 1, selected: 1, selectedBytes: 100, sourceCounts: { "daily-decision": 1 }, rejectionCounts: {} },
+    };
+    expect(preflightNightlyContext(base)).toMatchObject({ actionable: false, candidateMode: "shadow", counts: { memoryCandidates: 1 } });
+    expect(preflightNightlyContext({ ...base, candidateCompiler: { ...base.candidateCompiler, mode: "materialize" } })).toMatchObject({
+      actionable: true, candidateMode: "materialize", reasons: ["high_priority_memory_candidate"],
+    });
+  });
 });

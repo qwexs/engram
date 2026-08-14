@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import sessionStartHandler from "../hooks/engram-session-start/handler.ts";
 import sessionEndHandler from "../hooks/engram-session-end/handler.ts";
 import { resolveQmdContext } from "../src/qmd/context.ts";
@@ -103,6 +103,22 @@ describe("shadow dirty marks from real writers", () => {
     });
   });
 
+  test("daily-note append timestamps canonical decision records", async () => {
+    const { workspace, stateDir } = makeWorkspace();
+    const result = await spawnScript("daily-note-append.js", [
+      "--session", "main",
+      "--section", "decisions",
+      "--text", "timestamped canonical decision",
+    ], workspace, stateDir);
+
+    expect(result.exitCode).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.recordTimestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(readFileSync(output.file, "utf8")).toContain(
+      `### ${output.recordTimestamp} — decision\n\n- timestamped canonical decision`,
+    );
+  });
+
   test("daily-note append canonicalizes every Telegram topic session form", async () => {
     const variants = [
       "telegram-group--1001-topic-4",
@@ -124,12 +140,12 @@ describe("shadow dirty marks from real writers", () => {
 
       expect(result.exitCode).toBe(0);
       const output = JSON.parse(result.stdout);
-      expect(relative(workspace, output.file)).toBe(join(
+      expect(relative(workspace, dirname(output.file))).toBe(join(
         "memory",
         "agent-main",
         "telegram-group--1001-topic-4",
-        "2026-08-14.md",
       ));
+      expect(basename(output.file)).toMatch(/^\d{4}-\d{2}-\d{2}\.md$/);
     }
   });
 
@@ -183,13 +199,14 @@ describe("shadow dirty marks from real writers", () => {
 
     expect(result.exitCode).toBe(0);
     const output = JSON.parse(result.stdout);
-    expect(relative(workspace, output.retrievalCard)).toBe(join(
+    expect(relative(workspace, dirname(output.retrievalCard))).toBe(join(
       "memory",
       "agent-main",
       "main",
       "retrieval",
-      "2026-08-14-heartbeat-stale-lock.md",
     ));
+    const dailyDate = basename(output.file, ".md");
+    expect(basename(output.retrievalCard)).toBe(`${dailyDate}-heartbeat-stale-lock.md`);
     expect(readFileSync(output.retrievalCard, "utf8")).toContain("# Heartbeat stale-lock repair");
     expect(readState(workspace, stateDir)).toMatchObject({
       generation: 1,

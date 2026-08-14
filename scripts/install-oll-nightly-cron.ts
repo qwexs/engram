@@ -51,6 +51,10 @@ const DEPLOYMENT_SOURCE_FILES = [
   "src/oll/trusted-runtime.ts",
   "src/oll/handoff-applicator.ts",
   "src/oll/handoff-v2.ts",
+  "src/oll/handoff-v3.ts",
+  "src/oll/memory-candidates.ts",
+  "src/oll/memory-candidate-compiler-v2.ts",
+  "src/oll/memory-candidate-contracts-v2.ts",
   "src/oll/adaptation-store.ts",
   "src/oll/reconciliation.ts",
 ] as const;

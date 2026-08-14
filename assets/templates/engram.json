@@ -40,6 +40,10 @@
       "enabled": true,
       "day": "monday"
     },
+    "candidateCompiler": {
+      "_comment": "Memory-derived rethink evidence is separately rollout-gated. Disabled is intentionally minimal; a reviewed v2 policy, scope registry, evidence digest, and matching rollout projection are required for shadow or materialize.",
+      "mode": "disabled"
+    },
     "adaptation": {
       "enabled": true,
       "mode": "observe-only",

@@ -3,6 +3,7 @@ import { resolve, join } from "node:path";
 import { parseArgs } from "node:util";
 import { atomicWriteJson } from "../src/oll/legacy-migration";
 import { computeHandoffDigest, type RethinkHandoffV2 } from "../src/oll/handoff-v2";
+import { computeHandoffDigestV3, type RethinkHandoffV3 } from "../src/oll/handoff-v3";
 
 const { values } = parseArgs({
   args: process.argv.slice(2),
@@ -15,6 +16,7 @@ const { values } = parseArgs({
     "run-id": { type: "string" },
     attempt: { type: "string" },
     "context-digest": { type: "string" },
+    schema: { type: "string", default: "v2" },
   },
   strict: true,
 });
@@ -31,8 +33,7 @@ try {
   const target = resolve(required("target"));
   const expectedTarget = join(workspace, "memory-state", "oll", "handoffs", "incoming", `${runId}.json`);
   if (target !== expectedTarget) throw new Error("empty handoff target is outside the exact incoming path");
-  const withoutDigest = {
-    schema: "oll.rethink-handoff.v2" as const,
+  const common = {
     batchId: required("batch-id"),
     workspaceId: required("workspace-id"),
     evaluationId: required("evaluation-id"),
@@ -44,7 +45,16 @@ try {
     createdAt: new Date().toISOString(),
     actions: [],
   };
-  const handoff: RethinkHandoffV2 = { ...withoutDigest, handoffDigest: computeHandoffDigest(withoutDigest) };
+  const handoff: RethinkHandoffV2 | RethinkHandoffV3 = values.schema === "v3"
+    ? (() => {
+        const withoutDigest = { ...common, schema: "oll.rethink-handoff.v3" as const, candidateDispositions: [] };
+        return { ...withoutDigest, handoffDigest: computeHandoffDigestV3(withoutDigest) };
+      })()
+    : (() => {
+        if (values.schema !== "v2") throw new Error("--schema must be v2 or v3");
+        const withoutDigest = { ...common, schema: "oll.rethink-handoff.v2" as const };
+        return { ...withoutDigest, handoffDigest: computeHandoffDigest(withoutDigest) };
+      })();
   atomicWriteJson(target, handoff);
   console.log(JSON.stringify({ status: "written", target, handoffDigest: handoff.handoffDigest }));
 } catch (error: any) {

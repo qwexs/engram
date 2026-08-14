@@ -373,6 +373,7 @@ export function applyCandidateCompilerRolloutV1(options: CandidateCompilerRollou
     }
     const configPath = join(plan.workspace, "engram.json");
     const config = readJson(configPath);
+    if (!config.oll || typeof config.oll !== "object" || Array.isArray(config.oll)) config.oll = {};
     config.oll.candidateCompiler = options.policy;
     config.oll.candidateScopeRegistry = options.scopeRegistry;
     atomicWriteJson(configPath, config);

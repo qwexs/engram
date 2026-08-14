@@ -150,6 +150,23 @@ describe("OLL memory candidate Phase 5 rollout", () => {
     expect(JSON.parse(readFileSync(join(input.workspace, "engram.json"), "utf8")).oll.candidateCompiler.schema).toBe(MEMORY_CANDIDATE_POLICY_V2_SCHEMA);
   });
 
+  test("publishes the candidate config into a clean-install workspace without an oll object", () => {
+    const input = fixture();
+    const configPath = join(input.workspace, "engram.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    delete config.oll;
+    json(configPath, config);
+    const value = request(input, "shadow", SHADOW_RELEASE);
+    expect(applyCandidateCompilerRolloutV1({ ...value, acknowledge: true })).toMatchObject({
+      status: "applied",
+      release: { status: "shadow_canary", mode: "shadow" },
+    });
+    expect(inspectCandidateCompilerProjectionV1({ workspace: input.workspace, workspaceId: "main" })).toMatchObject({
+      mode: "shadow",
+      consistent: true,
+    });
+  });
+
   test("resumes the same rollout after crashes around every live publication boundary", () => {
     const points = ["after_applying_projection", "after_config_publication", "after_active_projection"] as const;
     for (const [index, point] of points.entries()) {

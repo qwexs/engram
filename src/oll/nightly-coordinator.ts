@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { atomicWriteJson } from "./legacy-migration";
 import type { NightlyRuntimeAdapter, NightlySpawnRequestV1, WorkspaceRegistryAdapter } from "./contracts";
 import { applyRethinkHandoffFile, ApplicatorResult } from "./handoff-applicator";
 import { buildRethinkProposalPrompt, canonicalizeJcs, type ExpectedHandoffV2, sha256Digest } from "./handoff-v2";
-import { buildNightlyContext, determineNightlyWindow, type NightlyContext, preflightNightlyContext } from "./nightly-context";
+import { buildRethinkProposalPromptV3, parseRethinkHandoffV3, type ExpectedHandoffV3 } from "./handoff-v3";
+import { buildCandidateAwareNightlyContext, buildNightlyContext, determineNightlyWindow, type NightlyContext, type NightlyContextV2, preflightNightlyContext } from "./nightly-context";
 import { discoverNightlyWorkspaces, DiscoveredWorkspaceV1, FrozenRegistrySnapshotV1 } from "./nightly-discovery";
 import { NightlyBatchStateV1, NightlyLeaseV1, NightlyStateStore } from "./nightly-state-store";
 import { reconcileWorkspaceMemory, WorkspaceReconciliationResult } from "./reconciliation";
@@ -13,6 +14,8 @@ import type { TrustedActorContext } from "./authorization";
 import { compileMemoryCandidateReportV2 } from "./memory-candidate-compiler-v2";
 import type { CandidateScopeRegistryV1, CandidateSourcePolicyV2 } from "./memory-candidate-contracts-v2";
 import { inspectCandidateCompilerProjectionV1 } from "./memory-candidate-rollout-v1";
+import { assessCandidateSelectionV1, materializeCandidateReportV2, readCandidateProjectionV1 } from "./memory-candidate-store-v2";
+import { applyCandidateHandoffV3 } from "./memory-candidate-runtime-v2";
 
 type BatchTransition =
   | "pending" | "reconciling" | "compiling" | "preflight" | "skipped" | "dispatching"
@@ -103,7 +106,7 @@ function leaseProjection(lease: NightlyLeaseV1): NightlyBatchStateV1["lease"] {
   };
 }
 
-function handoffExpected(batch: NightlyBatchStateV1, context: NightlyContext): ExpectedHandoffV2 {
+function handoffExpected(batch: NightlyBatchStateV1, context: NightlyContext): ExpectedHandoffV2 | ExpectedHandoffV3 {
   if (!batch.activeWorkspace || !batch.activeRunId || !batch.activeEvaluationId || !batch.activeAttempt || !batch.activeContextDigest || !batch.activeHandoffPath) {
     throw new Error("active batch correlation is incomplete");
   }
@@ -119,7 +122,9 @@ function handoffExpected(batch: NightlyBatchStateV1, context: NightlyContext): E
     expectedHandoffPath: batch.activeHandoffPath,
     signalRevisions: context.signalRevisions,
   };
-  return base;
+  return context.schema === "oll.nightly-context.v2" && context.candidateCompiler?.mode === "materialize"
+    ? { ...base, candidateRevisions: context.candidateRevisions }
+    : base;
 }
 
 function candidateShadowErrorClass(error: unknown): "policy_invalid" | "scope_registry_invalid" | "compiler_failed" | "artifact_failed" {
@@ -309,6 +314,8 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       if (!workspace) throw new Error(`workspace ${workspaceId} missing from frozen snapshot`);
       if (!processingOrder.includes(workspaceId)) processingOrder.push(workspaceId);
       const config = workspace.config.oll.nightly;
+      const candidatePolicy = workspace.config?.oll?.candidateCompiler as CandidateSourcePolicyV2 | undefined;
+      const scopeRegistry = workspace.config?.oll?.candidateScopeRegistry as CandidateScopeRegistryV1 | undefined;
       const contextPath = join(coordinatorRoot, "batches", batch.batchId, "contexts", `${workspaceId}.json`);
       let context: NightlyContext;
 
@@ -359,10 +366,8 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
         });
         if (batch.status === "reconciling") transition("compiling", { activeSnapshotAt: snapshotAt }, null, { snapshotAt });
         let shadowObservation: Record<string, unknown> | null = null;
-        const candidatePolicy = workspace.config?.oll?.candidateCompiler as CandidateSourcePolicyV2 | undefined;
         if (candidatePolicy?.mode === "shadow") {
           candidateShadow.attempted += 1;
-          const scopeRegistry = workspace.config?.oll?.candidateScopeRegistry as CandidateScopeRegistryV1 | undefined;
           const policyDigest = sha256Digest(canonicalizeJcs(candidatePolicy));
           const scopeRegistryDigest = sha256Digest(canonicalizeJcs(scopeRegistry || null));
           const attemptId = sha256Digest(canonicalizeJcs({
@@ -433,12 +438,89 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
             try { writeImmutable(join(attemptRoot, `${workspaceId}.terminal.json`), diagnostic); } catch { /* shadow artifacts never block legacy rethink */ }
           }
         }
-        context = buildNightlyContext({
+        const legacyContext = buildNightlyContext({
           workspace: workspace.workspacePath,
           workspaceId,
           snapshotAt,
           window,
         });
+        if (candidatePolicy?.mode === "materialize") {
+          try {
+            const rolloutProjection = inspectCandidateCompilerProjectionV1({ workspace: workspace.workspacePath, workspaceId });
+            if (!rolloutProjection.consistent || rolloutProjection.mode !== "materialize") {
+              throw new Error(rolloutProjection.reason || "candidate materialize rollout projection is not active");
+            }
+            if (!scopeRegistry) throw new Error("candidate scope registry is required");
+            const report = compileMemoryCandidateReportV2({
+              workspace: workspace.workspacePath,
+              workspaceId,
+              snapshotAt,
+              batchId: batch.batchId,
+              policy: candidatePolicy,
+              scopeRegistry,
+              executionMode: "materialize",
+            });
+            writeImmutable(join(coordinatorRoot, "batches", batch.batchId, "candidate-reports", `${workspaceId}.json`), report);
+            const materialized = materializeCandidateReportV2({
+              workspace: workspace.workspacePath,
+              workspaceId,
+              report,
+              policy: candidatePolicy,
+              scopeRegistry,
+            });
+            const memoryCandidates: NightlyContextV2["memoryCandidates"] = [];
+            for (const item of materialized.candidates) {
+              let projection = readCandidateProjectionV1({ workspace: workspace.workspacePath, workspaceId, candidateId: item.candidateId });
+              if (!projection || !["pending", "deferred"].includes(projection.cluster.lifecycle.status) || projection.reservation) continue;
+              const assessment = assessCandidateSelectionV1({
+                workspace: workspace.workspacePath,
+                workspaceId,
+                candidateId: item.candidateId,
+                expectedCandidateRevision: projection.highestContiguousRevision,
+                frozenReport: report,
+                frozenPolicy: candidatePolicy,
+                frozenScopeRegistry: scopeRegistry,
+                currentReport: report,
+                currentPolicy: candidatePolicy,
+                currentScopeRegistry: scopeRegistry,
+              });
+              if (assessment.outcome !== "selected") continue;
+              projection = readCandidateProjectionV1({ workspace: workspace.workspacePath, workspaceId, candidateId: item.candidateId });
+              const cluster = report.candidates.find((candidate) => candidate.candidateId === item.candidateId);
+              if (!projection || projection.cluster.lifecycle.status !== "pending" || projection.reservation || !cluster) continue;
+              memoryCandidates.push({
+                candidateId: cluster.candidateId,
+                revision: projection.highestContiguousRevision,
+                evidenceSetDigest: cluster.evidenceSetDigest,
+                semanticKey: cluster.semanticKey,
+                effectiveScope: cluster.effectiveScope,
+                canonicalStatement: cluster.canonicalStatement,
+                ranking: cluster.ranking,
+              });
+            }
+            context = buildCandidateAwareNightlyContext({
+              legacy: legacyContext,
+              candidateCompiler: {
+                mode: "materialize",
+                reportDigest: report.reportDigest,
+                considered: report.considered,
+                eligible: report.eligible,
+                selected: report.selected,
+                selectedBytes: report.selectedBytes,
+                sourceCounts: report.sourceCounts,
+                rejectionCounts: report.rejectionCounts,
+              },
+              memoryCandidates,
+            });
+          } catch (error) {
+            transition("failed", { failed: [...batch.failed, workspaceId], ...clearedActive() }, candidateShadowErrorClass(error), {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            continue;
+          }
+        } else {
+          context = legacyContext;
+        }
         writeImmutable(contextPath, context);
         const preflight = preflightNightlyContext(context);
         transition("preflight", { activeContextDigest: context.contextDigest }, null, { preflight, ...(shadowObservation ? { candidateShadow: shadowObservation } : {}) });
@@ -462,7 +544,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       let terminal = false;
       while (!terminal && attempt <= Number(config.maxSpawnAttempts || 2)) {
         checkRenewal();
-      let expected: ExpectedHandoffV2;
+        let expected: ExpectedHandoffV2 | ExpectedHandoffV3;
         let request: NightlySpawnRequestV1;
         if (batch.activeRunId && batch.activeEvaluationId === evaluationId && batch.activeAttempt === attempt && batch.activeHandoffPath) {
           expected = handoffExpected(batch, context);
@@ -496,11 +578,17 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
           contextSnapshotPath: contextPath,
           expectedHandoffPath: expected.expectedHandoffPath,
           fencingGeneration: lease.fencingGeneration,
-          prompt: buildRethinkProposalPrompt({
-            contextSnapshot: context,
-            expected,
-            emptyHandoffWriterPath: join(options.scriptsDir, "oll-write-empty-handoff.ts"),
-          }),
+          prompt: "candidateRevisions" in expected
+            ? buildRethinkProposalPromptV3({
+                contextSnapshot: context,
+                expected,
+                emptyHandoffWriterPath: join(options.scriptsDir, "oll-write-empty-handoff.ts"),
+              })
+            : buildRethinkProposalPrompt({
+                contextSnapshot: context,
+                expected,
+                emptyHandoffWriterPath: join(options.scriptsDir, "oll-write-empty-handoff.ts"),
+              }),
         };
         if (batch.status === "dispatching") {
           const acknowledgement = await options.runtime.spawn(request);
@@ -541,16 +629,74 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
         }
         if (batch.status === "handoff_received") transition("validating");
         if (batch.status === "validating") transition("applying");
-        const applicator = options.applyHandoff || applyRethinkHandoffFile;
         let result: ApplicatorResult;
         try {
-          result = applicator({
-            workspace: workspace.workspacePath,
-            stateRoot: options.stateRoot,
-            expected,
-            trustedActorContexts: options.trustedActorContexts,
-            now: now(),
-          });
+          if ("candidateRevisions" in expected) {
+            if (!scopeRegistry || candidatePolicy?.mode !== "materialize") throw new Error("materialize runtime lost its frozen candidate policy");
+            const appliedRoot = join(workspace.workspacePath, "memory-state", "oll", "handoffs", "applied");
+            const appliedPath = join(appliedRoot, `${expected.runId}.json`);
+            const handoffPath = existsSync(expected.expectedHandoffPath) ? expected.expectedHandoffPath : appliedPath;
+            if (!existsSync(handoffPath)) throw new Error("expected candidate handoff file is unavailable");
+            const handoff = parseRethinkHandoffV3(readFileSync(handoffPath), expected, expected.expectedHandoffPath);
+            const plan = applyCandidateHandoffV3({
+              workspace: workspace.workspacePath,
+              workspaceId,
+              handoff,
+              scopeRegistry,
+              now: now(),
+              liveRevalidate: ({ candidateScopes }) => {
+                const liveConfig = readObject<Record<string, any>>(join(workspace.workspacePath, "engram.json"));
+                const livePolicy = liveConfig?.oll?.candidateCompiler as CandidateSourcePolicyV2 | undefined;
+                const liveRegistry = liveConfig?.oll?.candidateScopeRegistry as CandidateScopeRegistryV1 | undefined;
+                if (!livePolicy || !liveRegistry
+                  || sha256Digest(canonicalizeJcs(livePolicy)) !== sha256Digest(canonicalizeJcs(candidatePolicy))
+                  || sha256Digest(canonicalizeJcs(liveRegistry)) !== sha256Digest(canonicalizeJcs(scopeRegistry))) {
+                  throw new Error("candidate policy or scope registry drifted before effect commit");
+                }
+                const current = compileMemoryCandidateReportV2({
+                  workspace: workspace.workspacePath,
+                  workspaceId,
+                  snapshotAt: now(),
+                  batchId: batch.batchId,
+                  policy: livePolicy,
+                  scopeRegistry: liveRegistry,
+                  executionMode: "materialize",
+                });
+                for (const [candidateId, candidateScope] of Object.entries(candidateScopes)) {
+                  const currentCluster = current.candidates.find((candidate) => candidate.candidateId === candidateId);
+                  if (!currentCluster || canonicalizeJcs(currentCluster.effectiveScope) !== canonicalizeJcs(candidateScope)) {
+                    throw new Error(`candidate source or scope drifted before effect commit: ${candidateId}`);
+                  }
+                }
+              },
+            });
+            mkdirSync(appliedRoot, { recursive: true });
+            if (existsSync(expected.expectedHandoffPath) && !existsSync(appliedPath)) renameSync(expected.expectedHandoffPath, appliedPath);
+            const reviewEffects = plan?.effects.filter((effect) => effect.type === "mandatory_review") || [];
+            result = {
+              status: "terminal",
+              workspaceId,
+              runId: expected.runId,
+              handoffDigest: handoff.handoffDigest,
+              dispositions: reviewEffects.map((effect) => ({
+                actionId: effect.actionId,
+                operationId: plan!.planId,
+                disposition: "review_pending",
+                artifactRef: null,
+              })),
+              projectionDigest: plan ? sha256Digest(canonicalizeJcs(plan)) : handoff.handoffDigest,
+              appliedPath,
+            };
+          } else {
+            const applicator = options.applyHandoff || applyRethinkHandoffFile;
+            result = applicator({
+              workspace: workspace.workspacePath,
+              stateRoot: options.stateRoot,
+              expected,
+              trustedActorContexts: options.trustedActorContexts,
+              now: now(),
+            });
+          }
         } catch (error: any) {
           markRuntimeTerminal(options.runtime, expected.runId, false);
           transition("failed", { failed: [...batch.failed, workspaceId], ...clearedActive() }, error?.code || "apply_failed", { error: error?.message || String(error) });

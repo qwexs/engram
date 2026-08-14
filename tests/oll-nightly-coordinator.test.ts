@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { NightlySpawnRequestV1, RegistrySnapshotV1, WorkspaceRegistryAdapter } from "../src/oll/contracts";
 import { canonicalizeJcs, computeHandoffDigest, sha256Digest } from "../src/oll/handoff-v2";
+import { computeHandoffDigestV3, type RethinkHandoffV3 } from "../src/oll/handoff-v3";
 import { runNightlyCoordinator } from "../src/oll/nightly-coordinator";
+import { readCandidateProjectionV1 } from "../src/oll/memory-candidate-store-v2";
+import { candidateRuntimePathsV1 } from "../src/oll/memory-candidate-runtime-v2";
 import {
   MEMORY_CANDIDATE_POLICY_V2_SCHEMA,
   MEMORY_CANDIDATE_RANKING_POLICY_V1_SCHEMA,
@@ -87,7 +90,7 @@ function registryEntry(id: string, workspacePath: string) {
   return { workspaceId: id, workspacePath, registryRevision: 1, registryDigest: sha256Digest("registry"), configDigest: sha256Digest("ignored") } as const;
 }
 
-function configureCandidateCompiler(workspacePath: string, workspaceId: string, mode: "disabled" | "shadow", options: { missingRegistry?: boolean; evidence?: boolean } = {}): void {
+function configureCandidateCompiler(workspacePath: string, workspaceId: string, mode: "disabled" | "shadow" | "materialize", options: { missingRegistry?: boolean; evidence?: boolean } = {}): void {
   const configPath = join(workspacePath, "engram.json");
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   if (mode === "disabled") {
@@ -97,7 +100,7 @@ function configureCandidateCompiler(workspacePath: string, workspaceId: string, 
   }
   config.oll.candidateCompiler = {
     schema: MEMORY_CANDIDATE_POLICY_V2_SCHEMA,
-    mode: "shadow",
+    mode,
     forwardOnlySince: "2026-08-10T00:00:00Z",
     workspaceTimezone: "UTC",
     legacyTimestampParser: { version: "legacy-local-v1", daylightSavingAmbiguity: "reject" },
@@ -148,8 +151,8 @@ function configureCandidateCompiler(workspacePath: string, workspaceId: string, 
       workspaceId,
       releaseId: "11111111-1111-4111-8111-111111111111",
       planId: sha256Digest(`shadow-plan:${workspaceId}`),
-      mode: "shadow",
-      status: "shadow_canary",
+      mode,
+      status: mode === "shadow" ? "shadow_canary" : "materialize_review_only",
       policyDigest: sha256Digest(canonicalizeJcs(config.oll.candidateCompiler)),
       scopeRegistryDigest: config.oll.candidateScopeRegistry.digest,
       evidenceDigest: sha256Digest("phase4-evidence"),
@@ -351,6 +354,48 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
     expect((request as unknown as NightlySpawnRequestV1).prompt).toContain("oll.rethink-handoff.v2");
     const terminal = JSON.parse(readFileSync(batchArtifact(env.stateRoot, batchId, "candidate-compilation-attempts", "alpha.terminal.json"), "utf8"));
     expect(terminal).toMatchObject({ status: "failed", errorClass: "artifact_failed" });
+  });
+
+  test("materialize builds v2 context, dispatches v3, and records candidate disposition without auto-activation", async () => {
+    const env = environment([{ id: "alpha", actionable: false }]);
+    configureCandidateCompiler(env.workspaces.alpha, "alpha", "materialize");
+    let request: NightlySpawnRequestV1 | null = null;
+    const runtime = new FakeNightlyRuntime((spawnRequest, current) => {
+      request = spawnRequest;
+      const context = JSON.parse(readFileSync(spawnRequest.contextSnapshotPath, "utf8"));
+      const withoutDigest: Omit<RethinkHandoffV3, "handoffDigest"> = {
+        schema: "oll.rethink-handoff.v3",
+        batchId: spawnRequest.batchId,
+        workspaceId: spawnRequest.workspaceId,
+        evaluationId: spawnRequest.evaluationId,
+        runId: spawnRequest.runId,
+        phase: "hb-rethink",
+        attempt: spawnRequest.attempt,
+        policyVersion: 1,
+        contextDigest: spawnRequest.contextDigest,
+        createdAt: NOW,
+        actions: [],
+        candidateDispositions: Object.entries(context.candidateRevisions).map(([candidateId, revision]) => ({
+          candidateId: candidateId as `sha256:${string}`,
+          expectedRevision: Number(revision),
+          disposition: "deferred" as const,
+          rationale: "needs more evidence",
+        })),
+      };
+      write(spawnRequest.expectedHandoffPath, { ...withoutDigest, handoffDigest: computeHandoffDigestV3(withoutDigest) });
+      current.queueHandoff(spawnRequest.expectedHandoffPath);
+    });
+
+    const report = await runNightlyCoordinator(coordinatorOptions(env, runtime));
+
+    expect(report).toMatchObject({ status: "completed", completed: ["alpha"], failed: [], spawned: 1 });
+    expect((request as unknown as NightlySpawnRequestV1).prompt).toContain("oll.rethink-handoff.v3");
+    const context = JSON.parse(readFileSync(batchArtifact(env.stateRoot, report.batchId, "contexts", "alpha.json"), "utf8"));
+    expect(context).toMatchObject({ schema: "oll.nightly-context.v2", candidateCompiler: { mode: "materialize" } });
+    expect(context.memoryCandidates).toHaveLength(1);
+    const candidateId = context.memoryCandidates[0].candidateId;
+    expect(readCandidateProjectionV1({ workspace: env.workspaces.alpha, workspaceId: "alpha", candidateId })?.cluster.lifecycle.status).toBe("deferred");
+    expect(readdirSync(join(candidateRuntimePathsV1(env.workspaces.alpha).root, "rule-proposals"))).toEqual([]);
   });
 
   test("accepts fleet reconciliation evidence from the deployment wrapper without reconciling the canary twice", async () => {

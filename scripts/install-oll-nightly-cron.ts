@@ -118,8 +118,14 @@ const remaining = (cap) => {
   return Math.min(cap, seconds);
 };
 const execText = async (command, yieldMs, timeout) => {
-  const value = await tools.callValue("exec", { command, workdir: WORKSPACE, yieldMs, timeout });
-  const exitCode = value?.exitCode ?? value?.code ?? 0;
+  const detail = (value) => value?.result?.details ?? value?.details ?? value;
+  let value = detail(await tools.callValue("exec", { command, workdir: WORKSPACE, yieldMs, timeout }));
+  while (value?.status === "running") {
+    const sessionId = value?.sessionId ?? value?.session_id;
+    if (!sessionId) throw new Error("nightly exec yielded without a session id");
+    value = detail(await tools.callValue("process", { action: "poll", sessionId, timeout: Math.min(30000, remaining(30) * 1000) }));
+  }
+  const exitCode = value?.exitCode ?? value?.code ?? (value?.status === "failed" ? 1 : 0);
   if (exitCode !== 0) {
     const diagnostic = value?.stderr ?? value?.output ?? value?.aggregated ?? JSON.stringify(value);
     throw new Error("nightly exec failed (" + exitCode + "): " + String(diagnostic).slice(0, 2000));
@@ -184,7 +190,7 @@ function candidate() {
   const declarationPath = resolve(String(values["scheduler-declaration"]));
   const declaration = object(declarationPath);
   const script = buildScript({ workspace, stateRoot, registrySnapshot, allowedRoots, declarationPath, declaration });
-  const payload = { kind: "script", script, timeoutSeconds: OPENCLAW_SCRIPT_TIMEOUT_SECONDS, toolBudget: 80, toolsAllow: ["exec", "sessions_spawn"] };
+  const payload = { kind: "script", script, timeoutSeconds: OPENCLAW_SCRIPT_TIMEOUT_SECONDS, toolBudget: 80, toolsAllow: ["exec", "process", "sessions_spawn"] };
   return { workspace, stateRoot, registrySnapshot, allowedRoots, declaration, payload, payloadRevision: digestPayload(payload) };
 }
 

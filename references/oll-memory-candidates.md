@@ -3,14 +3,12 @@
 > **Status:** Phase 1 compiler, Phase 2 inert shadow integration, the isolated
 > Phase 3 candidate store/materialization APIs, the isolated Phase 4
 > review-only runtime, and Phase 5 guarded rollout/rollback tooling are
-> implemented. The synthetic rollback drill passes. A repaired real `main`
-> shadow canary is active. Its post-repair daily-mode execution on 2026-08-14
-> admitted four canonical daily candidates (one decision and three learnings),
-> while producing zero actual dispatch, review, or action effects. The earlier
-> zero-candidate cycle exposed a producer/parser/policy mismatch and remains
-> invalid diagnostic evidence. `materialize` has no time-based observation
-> gate; it remains a separate exact-policy transition requiring explicit
-> acknowledgement. The clean-install default is `disabled`.
+> implemented. The synthetic rollback drill passes. On 2026-08-15, all 12
+> registered workspaces advanced through separately acknowledged exact-policy
+> transitions to `materialize_review_only`; a real daily-mode fleet cycle then
+> completed 12/12 with no failures. It produced one pending mandatory review
+> and one inert rule proposal, while activating no rules. `materialize` has no
+> time-based observation gate. The clean-install default is `disabled`.
 
 ## Purpose
 
@@ -66,15 +64,17 @@ Compiler or shadow-artifact failure is diagnostic only and cannot block an
 ordinary behavioral rethink. Missing or `disabled` config invokes no compiler
 and creates no candidate artifacts.
 
-## Isolated review-only runtime
+## Materialize review-only runtime
 
 Phase 4 adds an explicit candidate context builder, a handoff-v3 applicator,
-and the sole candidate-review reconciler without connecting them to the nightly
-coordinator. The applicator records a whole-plan WAL, reserves the complete
-candidate set before publishing a proposal or review, and leaves every rule in
-`proposed`. Review approval, rejection, and expiry continue candidate lifecycle
-through an authority-revalidated, append-only outcome; no path activates a
-rule.
+and the sole candidate-review reconciler. The nightly coordinator invokes this
+path only for a frozen, projection-consistent `materialize` config: it persists
+the compiler report and ledger, sends a bounded `oll.nightly-context.v2`, and
+accepts only `oll.rethink-handoff.v3`. The applicator records a whole-plan WAL,
+reserves the complete candidate set before publishing a proposal or review,
+and leaves every rule in `proposed`. Review approval, rejection, and expiry
+continue candidate lifecycle through an authority-revalidated, append-only
+outcome; no candidate path activates a rule.
 
 ## Guarded rollout and rollback
 

@@ -287,25 +287,26 @@ function targetConfig(config: JsonObject, workspaceId: string): JsonObject {
         enabled: false,
       },
       weeklyMode: { enabled: true, day: "monday", ...(existingOll.weeklyMode || {}) },
-      candidateCompiler: {
-        schema: "oll.memory-candidate-policy.v1",
-        forwardOnlySince: "1970-01-01T00:00:00.000Z",
-        maxCandidatesPerRun: 50,
-        maxContextBytes: 65536,
-        dailySessions: [],
-        domainSources: false,
-        kgSources: false,
-        sourceQuotas: {
-          "daily-decision": 12,
-          "daily-learning": 12,
-          "retrieval-card": 12,
-          "domain-decision": 12,
-          "domain-proposal": 8,
-          "kg-assertion": 16,
-        },
-        ...(existingOll.candidateCompiler || {}),
-        mode: existingOll.candidateCompiler?.mode || "disabled",
-      },
+      candidateCompiler: existingOll.candidateCompiler
+        ? structuredClone(existingOll.candidateCompiler)
+        : {
+            schema: "oll.memory-candidate-policy.v1",
+            mode: "disabled",
+            forwardOnlySince: "1970-01-01T00:00:00.000Z",
+            maxCandidatesPerRun: 50,
+            maxContextBytes: 65536,
+            dailySessions: [],
+            domainSources: false,
+            kgSources: false,
+            sourceQuotas: {
+              "daily-decision": 12,
+              "daily-learning": 12,
+              "retrieval-card": 12,
+              "domain-decision": 12,
+              "domain-proposal": 8,
+              "kg-assertion": 16,
+            },
+          },
       adaptation: {
         enabled: true,
         autoApplyMaxRisk: "low",
@@ -451,9 +452,12 @@ function migrationComplete(workspace: string): boolean {
     const heartbeat = readJson(join(workspace, "memory", "heartbeat-state.json"));
     const journal = readJson(paths.journal);
     return config?.oll?.scheduleOwner === "nightly"
-      && config?.oll?.nightly?.enabled === false
       && state.schema === "oll-nightly-state.v1"
-      && state.nightlyEnabled === false
+      && state.scheduleOwner === "nightly"
+      && typeof state.nightlyEnabled === "boolean"
+      && state.nightlyEnabled === Boolean(config?.oll?.nightly?.enabled)
+      && state.legacyHeartbeat?.admission === "disabled"
+      && state.legacyHeartbeat?.application === "disabled"
       && journal.status === "completed"
       && DEPRECATED_HEARTBEAT_KEYS.every((key) => !(key in heartbeat))
       && LEGACY_OLL_PHASES.every((phase) => !(phase in (heartbeat.subagentRuns || {})))
@@ -480,7 +484,7 @@ export function migrateWorkspaceLegacyOll(options: {
       workspaceId: state.workspaceId,
       status: "unchanged",
       changed: false,
-      nightlyEnabled: false,
+      nightlyEnabled: state.nightlyEnabled,
       sourceDigest: state.migration.sourceDigest,
       proof: { legacyAdmission: "disabled", legacyApplication: "disabled", activeLegacyArtifacts: 0 },
     };

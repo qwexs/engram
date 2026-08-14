@@ -3,14 +3,13 @@
 > **Status:** Phase 0A/0B contracts, Phase 1 report-only compiler, Phase 2 inert
 > shadow integration, the isolated Phase 3 candidate store, the isolated
 > Phase 4 review-only runtime, and Phase 5 guarded rollout/rollback tooling are
-> implemented. Synthetic per-phase rollback evidence is green. A repaired real
-> `main` shadow canary is active. Its post-repair daily-mode execution on
-> 2026-08-14 admitted four canonical daily candidates (one decision and three
-> learnings), while producing zero actual dispatch, review, or action effects.
-> The earlier zero-candidate cycle exposed a producer/parser/policy mismatch
-> and remains invalid diagnostic evidence. `materialize` has no time-based
-> observation gate; it remains a separate exact-policy transition requiring
-> explicit acknowledgement.
+> implemented. Synthetic per-phase rollback evidence is green. On 2026-08-15,
+> all 12 registered workspaces advanced through separately acknowledged,
+> exact-policy transitions to `materialize_review_only`. A real daily-mode
+> fleet cycle completed 12/12 with no failures. Candidate reports were written
+> for every workspace; the only downstream effect was one pending mandatory
+> review plus its inert rule proposal. No rule was activated. `materialize` has
+> no time-based observation gate.
 > **Baseline:** Engram `c134c7f8b45c56fd753541ca2acf2aba0c2c615c` plus the local, uncommitted OLL candidate-compiler worktree reviewed on 2026-08-14.
 > **Decision boundary:** Phase 1 through Phase 5 tooling was explicitly
 > authorized on 2026-08-14. Tooling completion does not itself authorize a
@@ -875,10 +874,9 @@ inert shadow reporting outside model context. Phase 3 implements the isolated
 candidate store and materialization API without coordinator or model integration.
 
 The accurate status is: **Phase 5 guarded rollout/rollback tooling implemented;
-synthetic per-phase barrier drill passed; the repaired exact-policy,
-exact-scope `main` shadow canary is active and its first valid daily-mode cycle
-admitted four canonical candidates with zero actual downstream effects.** The
-earlier zero-candidate cycle remains invalid diagnostic evidence.
-`materialize` has no observation-window threshold; it remains a separate
-exact-policy transition with explicit acknowledgement. Active adaptation
-remains out of scope.
+synthetic per-phase barrier drill passed; all 12 registered workspaces are in
+`materialize_review_only`; and a real daily-mode fleet cycle completed 12/12
+with no failures.** Candidate reports were persisted for every workspace. One
+candidate-derived rule proposal and its mandatory review remain pending; no
+rule was activated. `materialize` has no observation-window threshold. Active
+adaptation remains out of scope.

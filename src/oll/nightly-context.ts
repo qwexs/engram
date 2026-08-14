@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { canonicalizeJcs, Digest, sha256Digest } from "./handoff-v2";
-import type { MemoryCandidateReportV1, MemoryCandidateV1 } from "./memory-candidates";
+import type { MemoryCandidateReportV1 } from "./memory-candidates";
+import type { CandidateScope, RankingSnapshotV1 } from "./memory-candidate-contracts-v2";
 
 type JsonObject = Record<string, any>;
 
@@ -45,7 +46,15 @@ export interface NightlyContextV2 {
     rejectionCounts: Record<string, number>;
   };
   signals: JsonObject[];
-  memoryCandidates: MemoryCandidateV1[];
+  memoryCandidates: Array<{
+    candidateId: Digest;
+    revision: number;
+    evidenceSetDigest: Digest;
+    semanticKey: Digest;
+    effectiveScope: CandidateScope;
+    canonicalStatement: string;
+    ranking: RankingSnapshotV1;
+  }>;
   observations: JsonObject[];
   tensions: JsonObject[];
   rules: JsonObject[];
@@ -178,6 +187,23 @@ export function buildNightlyContext(options: {
     observations,
     tensions,
     rules,
+  };
+  return { ...base, contextDigest: sha256Digest(canonicalizeJcs(base)) };
+}
+
+export function buildCandidateAwareNightlyContext(options: {
+  legacy: NightlyContextV1;
+  candidateCompiler: NonNullable<NightlyContextV2["candidateCompiler"]>;
+  memoryCandidates: NightlyContextV2["memoryCandidates"];
+}): NightlyContextV2 {
+  const { contextDigest: _legacyDigest, ...legacy } = options.legacy;
+  const candidates = [...options.memoryCandidates].sort((left, right) => left.candidateId.localeCompare(right.candidateId));
+  const base = {
+    ...legacy,
+    schema: "oll.nightly-context.v2" as const,
+    candidateRevisions: Object.fromEntries(candidates.map((candidate) => [candidate.candidateId, candidate.revision])),
+    candidateCompiler: options.candidateCompiler,
+    memoryCandidates: candidates,
   };
   return { ...base, contextDigest: sha256Digest(canonicalizeJcs(base)) };
 }

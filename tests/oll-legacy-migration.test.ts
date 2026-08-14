@@ -201,6 +201,46 @@ describe("PR 2 legacy OLL workspace migration", () => {
     expect(readFileSync(statePath, "utf8")).toBe(before);
   });
 
+  test("initial migration preserves an existing exact v2 candidate policy without legacy keys", () => {
+    const workspace = createWorkspace("main");
+    const configPath = join(workspace, "engram.json");
+    const config = readJson(configPath);
+    const candidateCompiler = {
+      schema: "oll.memory-candidate-policy.v2",
+      mode: "materialize",
+      forwardOnlySince: "2026-08-11T00:00:00.000Z",
+      daily: [], domains: [], kg: [], limits: {}, decayPolicy: {}, rankingPolicy: {},
+    };
+    config.oll = { candidateCompiler };
+    write(configPath, config);
+
+    migrateWorkspaceLegacyOll({ workspace, workspaceId: "main", now: NOW, apply: true });
+
+    expect(readJson(configPath).oll.candidateCompiler).toEqual(candidateCompiler);
+  });
+
+  test("a duplicate migration preserves a later nightly rollout and candidate config", () => {
+    const workspace = createWorkspace("main");
+    migrateWorkspaceLegacyOll({ workspace, workspaceId: "main", now: NOW, apply: true });
+    const configPath = join(workspace, "engram.json");
+    const statePath = join(workspace, "memory-state", "oll", "state.json");
+    const config = readJson(configPath);
+    config.oll.nightly.enabled = true;
+    config.oll.candidateCompiler = { schema: "oll.memory-candidate-policy.v2", mode: "materialize" };
+    write(configPath, config);
+    const state = readJson(statePath);
+    state.nightlyEnabled = true;
+    write(statePath, state);
+    const beforeConfig = readFileSync(configPath, "utf8");
+    const beforeState = readFileSync(statePath, "utf8");
+
+    const second = migrateWorkspaceLegacyOll({ workspace, workspaceId: "main", now: "2026-08-12T21:00:00.000Z", apply: true });
+
+    expect(second).toMatchObject({ status: "unchanged", changed: false, nightlyEnabled: true });
+    expect(readFileSync(configPath, "utf8")).toBe(beforeConfig);
+    expect(readFileSync(statePath, "utf8")).toBe(beforeState);
+  });
+
   test("malformed heartbeat JSON fails before the cutover marker is created", () => {
     const workspace = createWorkspace("broken", { malformedHeartbeat: true });
     expect(() => migrateWorkspaceLegacyOll({ workspace, workspaceId: "broken", now: NOW, apply: true })).toThrow();

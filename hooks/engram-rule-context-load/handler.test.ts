@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import handler, { resolveBootstrapRuleTarget } from "./handler";
+import handler, { resolveBootstrapRuleTarget, RULE_CONTEXT_BOOTSTRAP_NAME } from "./handler";
 
 const roots: string[] = [];
 
@@ -91,9 +91,19 @@ function bootstrap(workspace: string, stateRoot: string, segment: string) {
       sessionKey: `agent:main:${segment}`,
       engramStateRoot: stateRoot,
       accountId: "default",
+      bootstrapFiles: [{
+        name: "AGENTS.md",
+        path: join(workspace, "AGENTS.md"),
+        content: "baseline agent policy",
+        missing: false,
+      }],
     },
     messages: [] as string[],
   };
+}
+
+function injectedRuleContext(event: ReturnType<typeof bootstrap>) {
+  return event.context.bootstrapFiles.find((file) => file.name === RULE_CONTEXT_BOOTSTRAP_NAME);
 }
 
 afterEach(() => {
@@ -112,10 +122,29 @@ describe("PR 6 generic bootstrap rule hook", () => {
       multiPerson: false,
       personSubjects: ["person:alice", "telegram:42", "telegram:user:42"],
     });
+    const cachedBootstrapFiles = event.context.bootstrapFiles;
     await handler(event);
-    expect(event.messages).toHaveLength(1);
-    expect(event.messages[0]).toContain("Use Alice's concise reply format");
-    expect(event.messages[0]).toMatch(/engram-bootstrap-context-hash:sha256:[0-9a-f]{64}/);
+    expect(event.messages).toHaveLength(0);
+    expect(cachedBootstrapFiles).toHaveLength(1);
+    expect(event.context.bootstrapFiles).toHaveLength(2);
+    expect(injectedRuleContext(event)?.content).toContain("Use Alice's concise reply format");
+    expect(injectedRuleContext(event)?.content).toMatch(/engram-bootstrap-context-hash:sha256:[0-9a-f]{64}/);
+    expect(injectedRuleContext(event)?.missing).toBe(false);
+  });
+
+  test("normalizes the native OpenClaw colon-form session key before scope resolution", async () => {
+    const env = setup();
+    const person = activeRule("person", "person:alice", "Use the native-session rule");
+    storeRule(env.workspace, person);
+    const event = bootstrap(env.workspace, env.stateRoot, "telegram:direct:42");
+
+    expect(resolveBootstrapRuleTarget(event, env.config, env.stateRoot)).toMatchObject({
+      sessionKind: "peer-direct",
+      multiPerson: false,
+      personSubjects: ["person:alice", "telegram:42", "telegram:user:42"],
+    });
+    await handler(event);
+    expect(injectedRuleContext(event)?.content).toContain("Use the native-session rule");
   });
 
   test("group and topic bootstraps are multi-person and never receive person-private rules", async () => {
@@ -126,14 +155,12 @@ describe("PR 6 generic bootstrap rule hook", () => {
     storeRule(env.workspace, workspace);
     const group = bootstrap(env.workspace, env.stateRoot, "telegram-group--100");
     await handler(group);
-    expect(group.messages).toHaveLength(1);
-    expect(group.messages[0]).toContain("Shared workspace rule");
-    expect(group.messages[0]).not.toContain("Alice private rule");
+    expect(injectedRuleContext(group)?.content).toContain("Shared workspace rule");
+    expect(injectedRuleContext(group)?.content).not.toContain("Alice private rule");
 
     const topic = bootstrap(env.workspace, env.stateRoot, "telegram-group--100-topic-7");
     await handler(topic);
-    expect(topic.messages).toHaveLength(1);
-    expect(topic.messages[0]).not.toContain("Alice private rule");
+    expect(injectedRuleContext(topic)?.content).not.toContain("Alice private rule");
   });
 
   test("bound domain rules reach topic bootstrap without changing the existing domain payload", async () => {
@@ -151,8 +178,7 @@ describe("PR 6 generic bootstrap rule hook", () => {
     const target = resolveBootstrapRuleTarget(event, env.config, env.stateRoot);
     expect(target).toMatchObject({ sessionKind: "topic-thread", domainSubjects: ["reports"], multiPerson: true });
     await handler(event);
-    expect(event.messages).toHaveLength(1);
-    expect(event.messages[0]).toContain("Use the reports-domain structure");
+    expect(injectedRuleContext(event)?.content).toContain("Use the reports-domain structure");
   });
 
   test("observe-only mode keeps runtime injection disabled for PR7 rollout", async () => {
@@ -161,5 +187,32 @@ describe("PR 6 generic bootstrap rule hook", () => {
     const event = bootstrap(env.workspace, env.stateRoot, "main");
     await handler(event);
     expect(event.messages).toHaveLength(0);
+    expect(event.context.bootstrapFiles).toHaveLength(1);
+    expect(injectedRuleContext(event)).toBeUndefined();
+  });
+
+  test("unknown bootstrap session kinds fail closed instead of inheriting main rules", async () => {
+    const env = setup();
+    storeRule(env.workspace, activeRule("workspace", "main", "Main-only rule"));
+    const event = bootstrap(env.workspace, env.stateRoot, "subagent:worker:123");
+    expect(resolveBootstrapRuleTarget(event, env.config, env.stateRoot)).toBeNull();
+    await handler(event);
+    expect(injectedRuleContext(event)).toBeUndefined();
+  });
+
+  test("a suspended rule disappears from the next bootstrap and stale managed entries are removed", async () => {
+    const env = setup();
+    const rule = activeRule("workspace", "main", "Temporary active rule");
+    storeRule(env.workspace, rule);
+    const active = bootstrap(env.workspace, env.stateRoot, "main");
+    await handler(active);
+    expect(injectedRuleContext(active)?.content).toContain("Temporary active rule");
+
+    storeRule(env.workspace, { ...rule, status: "suspended", revision: 2 });
+    const suspended = bootstrap(env.workspace, env.stateRoot, "main");
+    suspended.context.bootstrapFiles.push(injectedRuleContext(active)!);
+    await handler(suspended);
+    expect(injectedRuleContext(suspended)).toBeUndefined();
+    expect(suspended.context.bootstrapFiles).toHaveLength(1);
   });
 });

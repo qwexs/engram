@@ -14,7 +14,7 @@
 | `engram-message-log` | `message:received` | Logs messages to `workspace/message-log/YYYY-MM-DD.jsonl`. **Disabled by default** (opt-in). |
 | `engram-topic-domain-load` | `agent:bootstrap` | On Telegram topic, resolve `entry.topic` and append Domain Context + AGENTS to bootstrap messages. |
 | `engram-peer-domain-load` | `agent:bootstrap` | On bound DM or group, resolve `entry.peer`/`entry.group` and append Domain Context + AGENTS to bootstrap messages. |
-| `engram-rule-context-load` | `agent:bootstrap` | In explicit `active` mode, append the complete matching managed-rule projection; fail closed on person ambiguity, conflicts, or byte-cap overflow. |
+| `engram-rule-context-load` | `agent:bootstrap` | In explicit `active` mode, append the complete matching managed-rule projection as an inline bootstrap file; fail closed on person ambiguity, conflicts, or byte-cap overflow. |
 | `engram-rule-rollback` | `message:received` | Suspend selected optimistic OLL rules when a user replies to their numbered notification with `Отменить N`. |
 | `engram-kg-context-load` | `agent:bootstrap` | Inject only the guarded KG v3 current projection during an authorized canary. |
 
@@ -29,14 +29,14 @@
 5. `engram-daily-note` fires on `gateway:startup` → reconcile state for notes that already exist
 6. `engram-session-start` creates a note lazily when a concrete session bootstraps
 6. domain-load hooks append bound domain context to bootstrap messages
-7. `engram-rule-context-load` appends matching active rules when rollout mode is `active`
+7. `engram-rule-context-load` appends matching active rules as a virtual `ENGRAM_RULES.md` bootstrap file when rollout mode is `active`
 8. `engram-bootstrap-qmd` leaves index maintenance to the configured scheduler
 
 ## Topic-thread bootstrap flow
 
 1. `engram-message-log` fires on `message:received` → logs to `workspace/message-log/`
 2. On the next `agent:bootstrap`, the matching domain-load hook appends Domain Context + Domain AGENTS to `event.messages`.
-3. `engram-rule-context-load` independently resolves company/workspace/domain/person rules and appends only the matching active projection.
+3. `engram-rule-context-load` independently resolves company/workspace/domain/person rules and appends only the matching active projection through `context.bootstrapFiles`.
 
 Note: auto-bind for unbound topics happens in `engram-session-start` on `agent:bootstrap` (ISS-10 piggy-back), not in the `message:received` hot path.
 

@@ -22,7 +22,7 @@ import {
   proposeAdaptationRule,
   transitionAdaptationRule,
 } from "../src/oll/adaptation-store";
-import ruleContextHook from "../hooks/engram-rule-context-load/handler";
+import ruleContextHook, { RULE_CONTEXT_BOOTSTRAP_NAME } from "../hooks/engram-rule-context-load/handler";
 
 const roots: string[] = [];
 
@@ -370,12 +370,19 @@ describe("PR 7 rollout and rollback contracts", () => {
         sessionKey: "agent:project-alpha:telegram-direct-42",
         engramStateRoot: env.stateRoot,
         accountId: "default",
+        bootstrapFiles: [{
+          name: "AGENTS.md",
+          path: join(workspace, "AGENTS.md"),
+          content: "baseline agent policy",
+          missing: false,
+        }],
       },
       messages: [],
     };
     await ruleContextHook(event);
-    expect(event.messages).toHaveLength(1);
-    expect(event.messages[0]).toContain("Use the concise report format");
+    expect(event.messages).toHaveLength(0);
+    const injected = event.context.bootstrapFiles.find((file: any) => file.name === RULE_CONTEXT_BOOTSTRAP_NAME);
+    expect(injected?.content).toContain("Use the concise report format");
 
     rollbackOllRollout({
       stateRoot: env.stateRoot,
@@ -384,9 +391,17 @@ describe("PR 7 rollout and rollback contracts", () => {
       reason: "synthetic canary rollback",
       now: "2026-08-12T05:00:00.000Z",
     });
-    const afterRollback = { ...event, messages: [] };
+    const afterRollback = {
+      ...event,
+      context: {
+        ...event.context,
+        bootstrapFiles: event.context.bootstrapFiles.filter((file: any) => file.name !== RULE_CONTEXT_BOOTSTRAP_NAME),
+      },
+      messages: [],
+    };
     await ruleContextHook(afterRollback);
     expect(afterRollback.messages).toHaveLength(0);
+    expect(afterRollback.context.bootstrapFiles.some((file: any) => file.name === RULE_CONTEXT_BOOTSTRAP_NAME)).toBe(false);
     const preservedSignal = JSON.parse(readFileSync(join(workspace, "memory-state", "oll", "signals", `${signal.id}.json`), "utf8"));
     expect(preservedSignal.id).toBe(signal.id);
   });

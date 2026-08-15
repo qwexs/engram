@@ -116,6 +116,8 @@ rendered block must fit `maxInjectedRuleBytes`; it is never truncated.
 
 `engram-rule-context-load` runs on `agent:bootstrap` for main/direct, bound
 peer/group, and topic sessions, but only when `oll.adaptation.mode=active`.
+It publishes the resolved payload as an inline virtual bootstrap file through
+`event.context.bootstrapFiles`; no generated rule file is persisted.
 The shipped template and current production workspaces remain `observe-only`;
 PR 6 therefore publishes the mechanism without performing PR 7 rollout.
 

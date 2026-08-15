@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { computeContextHash, type DomainSourceFiles } from "../_lib/domain-inject.js";
 import { resolveDomainFromEvent } from "../_lib/domain-resolve.js";
+import { normalizeSessionSegment } from "../_lib/parse-agent-id.js";
 import { loadActorRegistry } from "../../src/oll/authorization";
 import {
   composeBootstrapContextHash,
@@ -13,6 +14,8 @@ import {
 
 type JsonObject = Record<string, any>;
 
+export const RULE_CONTEXT_BOOTSTRAP_NAME = "ENGRAM_RULES.md";
+
 function readJson(path: string): JsonObject | null {
   try {
     const value = JSON.parse(readFileSync(path, "utf8"));
@@ -23,15 +26,17 @@ function readJson(path: string): JsonObject | null {
 }
 
 function sessionSegment(event: any): string {
-  return String(event?.context?.sessionKey || event?.sessionKey || "")
-    .replace(/^agent:[^:]+:/, "");
+  return normalizeSessionSegment(
+    String(event?.context?.sessionKey || event?.sessionKey || ""),
+  ) || "";
 }
 
-function classifySession(segment: string): RuleContextSessionKindV1 {
+function classifySession(segment: string): RuleContextSessionKindV1 | null {
   if (/^telegram-group--?\d+-topic-\d+$/.test(segment)) return "topic-thread";
   if (/^telegram-group--?\d+$/.test(segment)) return "group-direct";
   if (/^telegram-direct-\d+$/.test(segment)) return "peer-direct";
-  return "main";
+  if (segment === "main") return "main";
+  return null;
 }
 
 function directActor(event: any, kind: RuleContextSessionKindV1): {
@@ -93,6 +98,7 @@ export function resolveBootstrapRuleTarget(event: any, config: JsonObject, state
   if (!/^[a-z][a-z0-9_-]{0,63}$/.test(workspaceId)) return null;
   const domain = resolveDomainFromEvent(event);
   const kind = domain?.sessionKind || classifySession(sessionSegment(event));
+  if (!kind) return null;
   const multiPerson = kind === "group-direct" || kind === "topic-thread";
   return {
     workspaceId,
@@ -118,7 +124,10 @@ function domainHash(event: any): string | null {
 
 const handler = async (event: any) => {
   if (event?.type !== "agent" || event?.action !== "bootstrap") return;
-  if (!Array.isArray(event.messages)) return;
+  const bootstrapFiles = event?.context?.bootstrapFiles;
+  if (!Array.isArray(bootstrapFiles)) return;
+  const baseBootstrapFiles = bootstrapFiles.filter((file: any) => file?.name !== RULE_CONTEXT_BOOTSTRAP_NAME);
+  event.context.bootstrapFiles = baseBootstrapFiles;
   const workspace = event?.context?.workspaceDir;
   if (!workspace) return;
   const configPath = join(workspace, "engram.json");
@@ -146,7 +155,12 @@ const handler = async (event: any) => {
     domainContextHash: domainHash(event),
     ruleContextHash: resolution.contextHash,
   });
-  event.messages.push(`<!-- engram-bootstrap-context-hash:${bootstrapHash} -->\n${resolution.payload}`);
+  event.context.bootstrapFiles = [...baseBootstrapFiles, {
+    name: RULE_CONTEXT_BOOTSTRAP_NAME,
+    path: join(workspace, "memory-state", "oll", "bootstrap", RULE_CONTEXT_BOOTSTRAP_NAME),
+    content: `<!-- engram-bootstrap-context-hash:${bootstrapHash} -->\n${resolution.payload}`,
+    missing: false,
+  }];
   console.log(`[engram-rule-context-load] injected ${resolution.rules.length} active rules (${resolution.requiredBytes} bytes, hash ${resolution.contextHash})`);
 };
 

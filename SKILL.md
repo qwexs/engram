@@ -24,6 +24,12 @@ bun skills/engram/scripts/init.js --force
 bun skills/engram/scripts/watchdog.js --workspace /path/to/workspace --json
 ```
 
+Fresh init installs the complete 11-hook managed set, restarts the gateway, and
+requires the OLL rule-context and rollback hooks to be eligible/loadable in the
+runtime read-back. It provisions OLL only in safe `observe-only` mode with
+`nightly.enabled=false`; fleet registry, scheduler activation, and active mode
+remain separate acknowledgement-gated deployment steps.
+
 ## Engram QMD CLI
 
 CLI запускается на Bun прямо из TypeScript-исходников и использует тот же QMD core, что и будущие внутренние интеграции. Runtime dependencies и build step не нужны.

@@ -15,6 +15,7 @@ const { values: args } = parseArgs({
     'agent-id': { type: 'string' },
     'workspace': { type: 'string' },
     'qmd-variant': { type: 'string', default: 'auto' },
+    'hooks-dir': { type: 'string' },
     'force': { type: 'boolean', default: false },
     'with-cron': { type: 'boolean', default: false },
     'cron-schedule': { type: 'string' },
@@ -42,6 +43,8 @@ Options:
   --agent-id <id>           Agent identifier (default: main)
   --workspace <path>        Workspace to initialize (default: current directory)
   --qmd-variant <v>         QMD variant: auto|local|jina|ollama (default: auto)
+  --hooks-dir <path>        Explicit OpenClaw runtime hooks directory. By default
+                             install-hooks.js discovers managedHooksDir from OpenClaw.
   --force                   Merge with existing dirs (won't overwrite files)
   --with-cron               Also install the deterministic heartbeat cron (idempotent).
                              OLL remains owned by the separate nightly scheduler and disabled
@@ -77,7 +80,7 @@ What it does:
   4. Sets up QMD collections for search
   5. Auto-detects Telegram sessions from openclaw.json (optional)
   6. Registers QMD collections (freshness is delegated to the coordinator)
-  7. Installs OpenClaw hooks
+  7. Installs the complete OpenClaw hook set and verifies OLL hook read-back
   8. Installs deterministic non-OLL heartbeat cron (optional)
   9. Runs backfill-domain-agents for topic-thread domains (optional)
   10. Runs validate.js --quality to verify integrity
@@ -107,6 +110,8 @@ const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'assets', 'templates');
 const OSS_FALLBACK_MODEL = 'sonnet-4-6';
+const OPENCLAW_BINARY = process.env.ENGRAM_OPENCLAW || 'openclaw';
+const REQUIRED_OLL_HOOKS = ['engram-rule-context-load', 'engram-rule-rollback'];
 
 // Generated cron payloads intentionally run from the workspace and use the
 // stable `./skills/engram/scripts/...` entrypoints. Make that contract true
@@ -831,8 +836,8 @@ function runValidate() {
 // Skips automatically when:
 //   - --dry-run is set
 //   - --skip-gateway-restart is set
-//   - `openclaw` binary is not on PATH (CI / fresh test env)
-//   - `openclaw` binary is on PATH but `gateway restart` is not running (timeout 10s)
+// CI/test callers that cannot restart must pass --skip-gateway-restart.
+// A normal install fails closed when the OpenClaw binary or restart is unavailable.
 function restartGateway() {
   if (dryRun) {
     recordCreate('gateway-restart', 'openclaw gateway restart');
@@ -843,22 +848,103 @@ function restartGateway() {
     return;
   }
   // Detect openclaw binary presence first to avoid hanging in test/CI env.
-  let openclawOnPath = false;
-  try {
-    execSync('openclaw --version', { stdio: 'pipe', timeout: 5000 });
-    openclawOnPath = true;
-  } catch {
-    recordSkip('gateway-restart', 'skipped', 'openclaw binary not on PATH');
+  const version = spawnSync(OPENCLAW_BINARY, ['--version'], {
+    encoding: 'utf-8',
+    timeout: 5000,
+    shell: false,
+  });
+  if (version.error || version.status !== 0) {
+    const message = `gateway restart unavailable: ${version.error?.message || version.stderr || `exit ${version.status}`}`;
+    console.error(message);
+    recordError(message);
     return;
   }
-  if (!openclawOnPath) return;
-
-  try {
-    execSync('openclaw gateway restart', { stdio: 'pipe', timeout: 10000 });
+  const restarted = spawnSync(OPENCLAW_BINARY, ['gateway', 'restart'], {
+    encoding: 'utf-8',
+    timeout: 10000,
+    shell: false,
+  });
+  if (!restarted.error && restarted.status === 0) {
     recordCreate('gateway-restart', 'completed');
-  } catch (e) {
-    recordWarn(`gateway restart failed (timeout or non-zero exit): ${e.message?.slice(0, 200) ?? 'unknown'}`);
+  } else {
+    const detail = restarted.error?.message || restarted.stderr || restarted.stdout || `exit ${restarted.status}`;
+    const message = `gateway restart failed (timeout or non-zero exit): ${String(detail).trim().slice(0, 200)}`;
+    console.error(message);
+    recordError(message);
   }
+}
+
+// A filesystem copy is necessary but not sufficient: the restarted gateway
+// must discover the complete canonical set, and the two OLL delivery hooks
+// must be eligible/loadable. Disabled opt-in hooks such as message-log may be
+// registered without being loadable and do not block the OLL baseline.
+function verifyHookReadback() {
+  if (dryRun) {
+    recordCreate('hook-readback', 'verify all canonical hooks and required OLL hooks via openclaw hooks list --json');
+    return;
+  }
+  if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
+    recordSkip('hook-readback', 'skipped', 'ENGRAM_SKIP_HOOK_INSTALL=1');
+    return;
+  }
+  if (args['skip-gateway-restart']) {
+    recordSkip('hook-readback', 'skipped', '--skip-gateway-restart');
+    return;
+  }
+
+  const result = spawnSync(OPENCLAW_BINARY, ['hooks', 'list', '--json'], {
+    encoding: 'utf-8',
+    timeout: 30000,
+    shell: false,
+  });
+  if (result.error?.code === 'ENOENT') {
+    const message = `hook read-back unavailable: ${result.error.message}`;
+    console.error(message);
+    recordError(message);
+    return;
+  }
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message || result.stderr || result.stdout || `exit ${result.status}`;
+    const message = `hook read-back failed: ${String(detail).trim().slice(0, 300)}`;
+    console.error(message);
+    recordError(message);
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(result.stdout);
+  } catch (error) {
+    const message = `hook read-back returned invalid JSON: ${error.message}`;
+    console.error(message);
+    recordError(message);
+    return;
+  }
+  const hooks = Array.isArray(payload?.hooks) ? payload.hooks : [];
+  const byName = new Map(hooks.map((hook) => [hook?.name, hook]));
+  const canonicalHooks = readdirSync(join(SKILL_DIR, 'hooks'), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('engram-'))
+    .map((entry) => entry.name)
+    .sort();
+  const missing = canonicalHooks.filter((name) => !byName.has(name));
+  const invalidOll = REQUIRED_OLL_HOOKS.filter((name) => {
+    const hook = byName.get(name);
+    return !hook || hook.eligible !== true || hook.loadable !== true;
+  });
+  if (missing.length > 0 || invalidOll.length > 0) {
+    if (missing.length > 0) {
+      const message = `hook read-back missing canonical entries: ${missing.join(', ')}`;
+      console.error(message);
+      recordError(message);
+    }
+    if (invalidOll.length > 0) {
+      const message = `OLL hooks are not eligible/loadable after restart: ${invalidOll.join(', ')}`;
+      console.error(message);
+      recordError(message);
+    }
+    return;
+  }
+  recordCreate('hook-readback', `${canonicalHooks.length} canonical hooks registered; OLL delivery hooks eligible/loadable`);
 }
 
 // --- AC11 short-circuit: --bootstrap-from-forum runs standalone ---
@@ -1205,18 +1291,21 @@ if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
   // `install-hooks.js` owns resolution of managedHooksDir. Always ask it to
   // replace the complete set (with backup) so a custom OPENCLAW_STATE_DIR
   // cannot leave an older eight-hook installation without rule-context-load.
-  try {
-    execSync(
-      `bun ${join(SKILL_DIR, 'scripts', 'install-hooks.js')} --skill-dir ${SKILL_DIR} --force`,
-      { stdio: 'inherit' }
-    );
+  const hookInstallArgs = [
+    join(SKILL_DIR, 'scripts', 'install-hooks.js'),
+    '--skill-dir', SKILL_DIR,
+    '--force',
+  ];
+  if (args['hooks-dir']) hookInstallArgs.push('--hooks-dir', resolve(String(args['hooks-dir'])));
+  const hookInstall = spawnSync('bun', hookInstallArgs, { stdio: 'inherit', cwd: WORKSPACE });
+  if (!hookInstall.error && hookInstall.status === 0) {
     recordCreate('hooks', 'installed (force-overwrite with backup)');
-  } catch (e) {
-    console.log(`  install-hooks.js failed (exit ${e.status ?? '?'})`);
-    recordError(`install-hooks.js failed: exit ${e.status ?? '?'}`);
+  } else {
+    console.log(`  install-hooks.js failed (exit ${hookInstall.status ?? '?'})`);
+    recordError(`install-hooks.js failed: ${hookInstall.error?.message || `exit ${hookInstall.status ?? '?'}`}`);
   }
 } else {
-  recordCreate('hooks', 'install via install-hooks.js');
+  recordCreate('hooks', `install via install-hooks.js${args['hooks-dir'] ? ` into ${resolve(String(args['hooks-dir']))}` : ''}`);
 }
 
 // --- Disable built-in session-memory hook (replaced by engram-session-memory) ---
@@ -1269,9 +1358,9 @@ function disableBuiltinSessionMemory() {
   // Check current value first to stay idempotent.
   let alreadyDisabled = false;
   try {
-    const r = spawnSync('openclaw', ['config', 'get', 'hooks.internal.entries.session-memory.enabled'], {
+    const r = spawnSync(OPENCLAW_BINARY, ['config', 'get', 'hooks.internal.entries.session-memory.enabled'], {
       encoding: 'utf-8',
-      shell: true,
+      shell: false,
     });
     if (r.status === 0) {
       const val = r.stdout.trim();
@@ -1285,12 +1374,12 @@ function disableBuiltinSessionMemory() {
   }
 
   try {
-    const r = spawnSync('openclaw', [
+    const r = spawnSync(OPENCLAW_BINARY, [
       'config', 'set',
       'hooks.internal.entries.session-memory.enabled',
       'false',
       '--strict-json',
-    ], { encoding: 'utf-8', shell: true });
+    ], { encoding: 'utf-8', shell: false });
 
     if (r.status === 0) {
       console.log('  ✅ disabled built-in session-memory hook (replaced by engram-session-memory)');
@@ -1327,6 +1416,7 @@ if (validateResult.warnings > 0) {
 // and respects --skip-gateway-restart / --dry-run / no-openclaw-on-PATH.
 console.log('\nRestarting gateway...');
 restartGateway();
+verifyHookReadback();
 
 // --- Summary (AC11) ---
 console.log('\n=== Summary ===');

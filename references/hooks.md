@@ -42,18 +42,26 @@ Note: auto-bind for unbound topics happens in `engram-session-start` on `agent:b
 
 ## Installation
 
-Hooks are installed automatically by `scripts/init.js` (copies `skills/engram/hooks/engram-*` → `hooks/engram-*` in workspace root, only if not already present).
+Hooks are installed automatically by `scripts/init.js`. It calls the canonical
+installer with backup + force replacement, restarts the gateway, and reads
+`openclaw hooks list --json` back. A successful init requires both OLL delivery
+hooks (`engram-rule-context-load`, `engram-rule-rollback`) to be eligible and
+loadable.
 
 **Manual installation:**
 ```bash
-# Copy hooks to workspace
-cp -r skills/engram/hooks/engram-* hooks/
-
-# Restart Gateway to activate
+bun skills/engram/scripts/install-hooks.js --force
 openclaw gateway restart
+openclaw hooks list --json
+bun skills/engram/scripts/validate.js --quality
 ```
 
-Hook source files are in `skills/engram/hooks/`. The workspace `hooks/` directory contains the live copies — do not edit skill source directly.
+Direct `cp -r` is unsupported: the canonical source contains TypeScript while
+the managed runtime directory requires built `handler.js` + `HOOK.md` entries.
+`install-hooks.js` discovers `managedHooksDir`, builds all 11 bundles in a temp
+directory, backs up replaced entries, copies them, and verifies the runtime
+file surface. Hook source remains in `skills/engram/hooks/`; edit and commit it
+there, never in the managed runtime directory.
 
 ## Configuration
 

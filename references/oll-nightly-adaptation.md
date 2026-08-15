@@ -62,10 +62,13 @@ publishing files that are not executed is not a safety boundary.
 
 ## Workspace lifecycle
 
-`init.js` and the upgrader install the configuration, state directories, legacy
-admission marker, full hook set, and deterministic heartbeat. A clean install
-does not install a second OLL scheduler. The heartbeat performs non-OLL
-maintenance only after cutover; it cannot admit or apply legacy rethink work.
+`init.js` (including `--force` merge for an existing workspace) installs the
+configuration, state directories, legacy-admission marker, full 11-hook set,
+and optional deterministic heartbeat. It restarts the gateway and requires the
+OLL rule-context and rollback hooks to be eligible/loadable in runtime read-back.
+A clean install does not install a second OLL scheduler. The heartbeat performs
+non-OLL maintenance only after cutover; it cannot admit or apply legacy rethink
+work.
 
 An operator supplies a registry adapter and any deployment profile outside the
 canonical repository. A profile can provide exact model mapping, timezone,

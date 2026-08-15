@@ -5,7 +5,7 @@
 
 import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, lstatSync, readlinkSync, statSync } from 'node:fs';
-import { join, relative, dirname } from 'node:path';
+import { join, relative, dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadEngramConfig } from './config.js';
 import { legacyKgMutationState } from './_lib/kg-v3-authority.ts';
@@ -658,23 +658,34 @@ console.log('\n--- Hooks Sync ---');
   // SKILL_DIR is whatever process.env.ENGRAM_SKILL_DIR says, or the actual
   // file location. We follow whatever path install-hooks.js used to install.
   const skillHooksDir = join(SKILL_DIR, 'hooks');
-  if (!existsSync(skillHooksDir)) {
+  if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
+    ok('Hook sync check skipped by ENGRAM_SKIP_HOOK_INSTALL=1');
+  } else if (!existsSync(skillHooksDir)) {
     warn(`Skill hooks dir missing: ${skillHooksDir}`);
   } else {
     // Discover gateway hooks dir the same way install-hooks.js does, but
     // locally without shelling out (so the check works even if openclaw
     // CLI is unavailable in this workspace).
     const home = process.env.USERPROFILE || process.env.HOME || '';
+    const configuredStateDir = process.env.OPENCLAW_STATE_DIR?.trim()
+      || (process.env.OPENCLAW_CONFIG_PATH?.trim()
+        ? dirname(resolve(process.env.OPENCLAW_CONFIG_PATH.trim()))
+        : null)
+      || join(home, '.openclaw');
     let gatewayHooksDir = null;
-    const candidates = [
-      join(home, '.openclaw', 'hooks'),
-      join(home, '.openclaw', 'hooks'),
-    ];
+    const candidates = [...new Set([
+      join(configuredStateDir, 'hooks'),
+      join(WORKSPACE, 'hooks'),
+    ])];
     for (const c of candidates) {
       if (existsSync(c)) { gatewayHooksDir = c; break; }
     }
     if (!gatewayHooksDir) {
-      warn('Could not locate OpenClaw hooks directory (~/.openclaw/hooks). Skipping hook sync check.');
+      if (_config?.oll?.enabled === true) {
+        error(`Could not locate OpenClaw hooks directory (${candidates.join(' or ')}); OLL delivery hooks are not installed.`);
+      } else {
+        warn(`Could not locate OpenClaw hooks directory (${candidates.join(' or ')}). Skipping hook sync check.`);
+      }
     } else {
       // List hooks in skill
       const skillHooks = readdirSync(skillHooksDir, { withFileTypes: true })
@@ -688,6 +699,7 @@ console.log('\n--- Hooks Sync ---');
       //   2. handler.js exists inside (OpenClaw loads from handler.{js,ts,index.*})
       //   3. (for junctions) target resolves to <skill>/hooks/<name>
       let kept = 0, missing = 0, drifted = 0;
+      const requiredOllHooks = new Set(['engram-rule-context-load', 'engram-rule-rollback']);
       const entriesToReport = [];
       for (const name of skillHooks) {
         const link = join(gatewayHooksDir, name);
@@ -743,9 +755,13 @@ console.log('\n--- Hooks Sync ---');
       for (const e of entriesToReport) {
         if (e.status === 'ok') continue; // Don't spam OK lines for already-current entries.
         if (e.status === 'missing') {
-          warn(`Hook "${e.name}" missing in ${gatewayHooksDir} (run \`bun skills/engram/scripts/install-hooks.js\` to install)`);
+          const message = `Hook "${e.name}" missing in ${gatewayHooksDir} (run \`bun skills/engram/scripts/install-hooks.js\` to install)`;
+          if (requiredOllHooks.has(e.name)) error(message);
+          else warn(message);
         } else {
-          warn(`Hook "${e.name}" drifted: ${e.detail}`);
+          const message = `Hook "${e.name}" drifted: ${e.detail}`;
+          if (requiredOllHooks.has(e.name)) error(message);
+          else warn(message);
         }
       }
       if (missing === 0 && drifted === 0) {

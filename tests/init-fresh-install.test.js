@@ -11,10 +11,11 @@ const FAKE_QMD = process.platform === "win32"
   ? `bun "${join(import.meta.dir, "fixtures", "fake-qmd.js")}"`
   : "true";
 
-async function runInit(workspace, extraArgs = [], { force = true, extraEnv = {} } = {}) {
-  // Always pass --skip-gateway-restart in tests so the suite doesn't hang on
-  // 'openclaw gateway restart' when no gateway is running.
-  const args = [INIT_SCRIPT, "--skip-gateway-restart"];
+async function runInit(workspace, extraArgs = [], { force = true, extraEnv = {}, skipGatewayRestart = true } = {}) {
+  const args = [INIT_SCRIPT];
+  // Most tests have no gateway. The hook-readback regression below supplies a
+  // fake OpenClaw binary and deliberately exercises restart + live read-back.
+  if (skipGatewayRestart) args.push("--skip-gateway-restart");
   if (force) args.push("--force");
   else args.push("--yes");
   args.push(...extraArgs);
@@ -182,6 +183,68 @@ describe("init.js — fresh install happy path", () => {
       { cwd: workspace, stdout: "pipe", stderr: "pipe" },
     );
     expect(await generatedEntrypoint.exited).toBe(0);
+  });
+
+  test("init installs all eleven hooks and verifies the two OLL delivery hooks after restart", async () => {
+    const stateRoot = join(workspace, "openclaw-state");
+    const hooksDir = join(stateRoot, "hooks");
+    const fakeOpenclaw = join(workspace, "fake-openclaw.js");
+    writeFileSync(fakeOpenclaw, `#!/usr/bin/env bun
+import { existsSync, readdirSync } from "node:fs";
+const args = process.argv.slice(2);
+const hooksDir = ${JSON.stringify(hooksDir)};
+if (args[0] === "--version") { console.log("OpenClaw test"); process.exit(0); }
+if (args[0] === "config" && args[1] === "get") { console.log("false"); process.exit(0); }
+if (args[0] === "gateway" && args[1] === "restart") { process.exit(0); }
+if (args[0] === "hooks" && args[1] === "list" && args[2] === "--json") {
+  const names = existsSync(hooksDir)
+    ? readdirSync(hooksDir)
+        .filter((name) => name.startsWith("engram-"))
+        .filter((name) => process.env.FAKE_OMIT_OLL_HOOK !== "1" || name !== "engram-rule-context-load")
+        .sort()
+    : [];
+  console.log(JSON.stringify({
+    managedHooksDir: hooksDir,
+    hooks: names.map((name) => ({
+      name,
+      eligible: true,
+      loadable: true,
+      source: "openclaw-managed",
+    })),
+  }));
+  process.exit(0);
+}
+process.exit(2);
+`);
+    chmodSync(fakeOpenclaw, 0o755);
+
+    const result = await runInit(workspace, ["--hooks-dir", hooksDir], {
+      skipGatewayRestart: false,
+      extraEnv: {
+        ENGRAM_SKIP_HOOK_INSTALL: "0",
+        ENGRAM_OPENCLAW: fakeOpenclaw,
+        OPENCLAW_STATE_DIR: stateRoot,
+      },
+    });
+    expect(result.exitCode, result.stderr || result.stdout).toBe(0);
+    const installed = readdirSync(hooksDir).filter((name) => name.startsWith("engram-")).sort();
+    expect(installed).toHaveLength(11);
+    expect(installed).toContain("engram-rule-context-load");
+    expect(installed).toContain("engram-rule-rollback");
+    expect(existsSync(join(hooksDir, "engram-rule-context-load", "handler.js"))).toBe(true);
+    expect(result.stdout).toContain("verified: 11 runtime hook entries (2 required OLL hooks present)");
+
+    const failedReadback = await runInit(workspace, ["--hooks-dir", hooksDir], {
+      skipGatewayRestart: false,
+      extraEnv: {
+        ENGRAM_SKIP_HOOK_INSTALL: "0",
+        ENGRAM_OPENCLAW: fakeOpenclaw,
+        OPENCLAW_STATE_DIR: stateRoot,
+        FAKE_OMIT_OLL_HOOK: "1",
+      },
+    });
+    expect(failedReadback.exitCode).toBe(1);
+    expect(failedReadback.stderr + failedReadback.stdout).toContain("hook read-back missing canonical entries: engram-rule-context-load");
   });
 
   test("init --workspace initializes the explicit target, not the caller cwd", async () => {

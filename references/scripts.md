@@ -10,7 +10,12 @@
 bun skills/engram/scripts/install-hooks.js [--force] [--hooks-dir <path>]
 ```
 
-Build (TypeScript → handler.js bun bundle) and install hooks из `skills/engram/hooks/<name>/` → `~/clawd/hooks/<name>/handler.js`. Per-skill junction, backup до overwrite. После install нужен `openclaw gateway restart`. Идемпотентно; --force для повторного билда.
+Builds TypeScript handlers into temporary `handler.js` bundles and installs
+regular runtime directories under the discovered OpenClaw `managedHooksDir`
+(or explicit `--hooks-dir`). Existing entries require `--force` and are backed
+up before replacement. The installer verifies `handler.js` + `HOOK.md` for all
+11 entries and fails before mutation if the required OLL hook pair is absent
+from canonical source. Restart the gateway after a manual install.
 
 ## install-qmd.js — Install QMD search engine
 
@@ -50,10 +55,13 @@ bun skills/engram/scripts/init.js [--agent-id main] [--qmd-variant auto|local|ji
 
 Creates the complete workspace-side OLL contract: explicit workspace ID,
 nightly-only ownership, disabled/observe-only state, durable legacy-admission
-barrier, adaptation stores, all nine hooks, and QMD collections. `--with-cron`
-adds only the deterministic non-OLL heartbeat. Fleet registry enrollment and
-the single nightly scheduler are deployment-level, acknowledgement-gated steps;
-init never creates a second per-workspace OLL cron.
+barrier, adaptation stores, all 11 hooks, and QMD collections. After gateway
+restart it reads `openclaw hooks list --json` back and requires the OLL
+rule-context/rollback pair to be eligible and loadable. `--hooks-dir` selects
+an explicit isolated runtime target; otherwise `managedHooksDir` is discovered.
+`--with-cron` adds only the deterministic non-OLL heartbeat. Fleet registry
+enrollment and the single nightly scheduler are deployment-level,
+acknowledgement-gated steps; init never creates a second per-workspace OLL cron.
 
 ## add-session.js — Add new session
 

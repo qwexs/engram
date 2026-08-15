@@ -10,13 +10,34 @@
   This single invocation creates the full memory structure (directories,
   templates, registry defaults, QMD collections, hooks), auto-detects
   sessions from `openclaw.json` → `bindings[]`, installs the heartbeat
-  cron job, restarts the gateway so new hooks take effect, and runs
-  `validate.js --quality` as a final integrity check. Use `--dry-run` to
+  cron job, restarts the gateway, and verifies that all canonical hooks are
+  registered and the OLL rule/rollback hooks are eligible and loadable. It
+  also runs `validate.js --quality` as a final integrity check. Use `--dry-run` to
   preview the plan without executing. Use `--with-sample-domain` to also
   scaffold a `getting-started` domain for onboarding.
   Run from the target workspace or pass `--workspace /path/to/workspace`.
   Init creates and verifies `skills/engram` as a symlink to the canonical
   skill so the generated cron entrypoints are available immediately.
+
+## OLL clean-install contract
+
+`init.js` is the canonical workspace installer. A successful fresh init:
+
+- writes the OLL configuration with `scheduleOwner=nightly`,
+  `nightly.enabled=false`, and `adaptation.mode=observe-only`;
+- creates the managed adaptation state directories and immutable fresh-init
+  legacy-admission marker;
+- installs all 11 Engram hooks, including `engram-rule-context-load` and
+  `engram-rule-rollback`;
+- restarts the gateway and fails the init if either required OLL hook is absent,
+  ineligible, or unloadable in `openclaw hooks list --json`;
+- optionally installs only the deterministic non-OLL heartbeat cron through
+  `--with-cron`.
+
+Fresh init deliberately does **not** create deployment-specific actor/fleet
+registries, install a second nightly scheduler, enable a workspace, or switch
+adaptation to active mode. Those operations remain acknowledgement-gated and
+follow `references/oll-nightly-adaptation.md`.
 
 ## Heartbeat via Cron (Recommended)
 
@@ -131,11 +152,10 @@ Engram ships 11 hooks under `skills/engram/hooks/`:
 - `engram-topic-domain-load`, `engram-peer-domain-load`,
   `engram-rule-context-load`, `engram-rule-rollback`, `engram-kg-context-load`
 
-OpenClaw 2026.6.6 loads hooks from its **managed hooks directory** —
-`~/clawd/hooks/` on Windows (`%USERPROFILE%\clawd\hooks\`,
-`CONFIG_DIR/hooks` in OpenClaw terms). The loader scans that path on
+OpenClaw loads hooks from its **managed hooks directory** (`managedHooksDir`
+in `openclaw hooks list --json`, normally `CONFIG_DIR/hooks`). The loader scans that path on
 gateway startup; hooks that exist there as **regular directories** with
-`handler.js` + `HOOK.md` register as `openclaw-workspace` source.
+`handler.js` + `HOOK.md` register as `openclaw-managed` source.
 
 ### Source vs runtime layout
 
@@ -145,7 +165,7 @@ Hooks live in two places with intentionally different layouts:
   edit, and commit. **Only `.ts` files live here**; there are no
   pre-built `.js` artifacts in the repo. Keeping the source `.ts`-only
   means no consistency work between two parallel files per hook.
-- **Runtime** (`<workspace>/hooks/<name>/handler.js` + `HOOK.md`) —
+- **Runtime** (`<managedHooksDir>/<name>/handler.js` + `HOOK.md`) —
   what OpenClaw actually loads. **Only `.js` files live here**, plus
   `HOOK.md`. `.ts` files in the runtime dir are not loaded and are
   actively cleaned up by `install-hooks.js`.
@@ -162,22 +182,23 @@ plain Node.js — OpenClaw's loader does not need bun.
 
 ### Install (recommended)
 
-Use `scripts/install-hooks.js` to mirror the skill's hooks into
-`~/clawd/hooks/`. Default mode is **regular copy** — this is the mode
-that actually loads on OpenClaw 2026.6.6.
+Use `scripts/install-hooks.js` to mirror the skill's hooks into the discovered
+managed hooks directory. Default mode is **regular copy**.
 
 ```bash
-bun skills/engram/scripts/install-hooks.js            # install all 10 on a fresh target
+bun skills/engram/scripts/install-hooks.js            # install all 11 on a fresh target
 bun skills/engram/scripts/install-hooks.js --dry-run  # preview, no changes
 bun skills/engram/scripts/install-hooks.js --force    # overwrite existing entries
 openclaw gateway restart
-bun scripts/install-hooks.js --dry-run                # should enumerate 10 managed Engram hooks
-openclaw hooks list                                   # should include rule and KG context loaders
+bun scripts/install-hooks.js --dry-run                # should enumerate 11 managed Engram hooks
+openclaw hooks list --json                            # should include rule and KG context loaders
 ```
 
-After `openclaw gateway restart`, `openclaw hooks list` must include all ten
-Engram entries. `engram-message-log` may remain disabled by configuration;
-the context loaders inject only in their independently authorized modes.
+After `openclaw gateway restart`, `openclaw hooks list --json` must include all
+11 Engram entries. `engram-rule-context-load` and `engram-rule-rollback` must
+be eligible and loadable. `engram-message-log` may remain disabled by
+configuration; the context loaders inject only in their independently
+authorized modes.
 
 `init.js --with-cron --auto-detect-sessions` already calls
 `install-hooks.js` for you during first-time setup (and restarts the
@@ -187,11 +208,9 @@ gateway so new hooks take effect immediately). You only need to run
 
 ### Multi-workspace install
 
-If you run multiple OpenClaw workspaces on the same host (each with its
-own `hooks/`), the script autodetects the target via
-`openclaw hooks info`, which always returns the gateway's primary
-workspace (`~/clawd/hooks`). To install into additional workspaces,
-pass `--hooks-dir` explicitly:
+Gateways sharing one OpenClaw state directory share one managed hook set. If
+you run isolated OpenClaw state roots on the same host, execute the installer
+inside each gateway environment or pass its exact hooks directory explicitly:
 
 ```bash
 cd ~/workspace-b
@@ -227,8 +246,8 @@ this did NOT load on OpenClaw 2026.6.6 — the gateway reported the hooks as
 registered, but `"loaded N internal hook handlers"` stayed at the bundled
 count and `engram-topic-domain-load` (the hook this skill depends on) never
 fired. Cause: OpenClaw's loader + dynamic `import()` cache-busting do not
-follow the reparse point consistently on Windows. `--link` is preserved as
-an opt-in escape hatch for future OpenClaw releases but is **not the default**.
+follow the reparse point consistently on Windows. `--link` was removed;
+regular copy is the only supported mode.
 
 ### Why not `hooks.internal.load.extraDirs`?
 
@@ -269,7 +288,7 @@ The skill's `engram-session-memory` hook replaces the built-in
 After install + restart, both should be true:
 
 ```bash
-openclaw hooks list          # all 9 engram-* hooks show the managed source
+openclaw hooks list --json   # all 11 hooks; OLL rule/rollback pair loadable
 bun scripts/validate.js      # Errors: 0
 ```
 

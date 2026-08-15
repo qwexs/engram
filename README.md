@@ -190,11 +190,9 @@ gate. PR 7 tooling даёт dry-run plan, backup/release markers и staged rollb
 bun skills/engram/scripts/install-qmd.js
 
 # Поднять workspace-side memory/OLL contract + deterministic heartbeat cron.
+# Init установит 11 hooks, перезапустит gateway и проверит OLL hook read-back.
 # Nightly OLL создаётся observe-only/disabled и не активируется автоматически.
 bun skills/engram/scripts/init.js --with-cron
-
-# Активировать hooks
-openclaw gateway restart
 ```
 
 Существующий workspace:

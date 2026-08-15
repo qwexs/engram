@@ -19,6 +19,20 @@ afterEach(() => {
 });
 
 describe("install-hooks mutation boundary", () => {
+  test("fails before runtime mutation when the canonical OLL hook pair is incomplete", () => {
+    const fakeSkill = target();
+    const source = join(fakeSkill, "hooks", "engram-daily-note");
+    const hooks = target();
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, "handler.ts"), "export default async () => {};\n");
+    writeFileSync(join(source, "HOOK.md"), "---\nname: engram-daily-note\n---\n");
+
+    const result = spawnSync("bun", [installer, "--skill-dir", fakeSkill, "--hooks-dir", hooks, "--force"], { encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("canonical OLL hook set is incomplete");
+    expect(readdirSync(hooks)).toHaveLength(0);
+  });
+
   test("existing hook without --force is byte-stable and creates no backup", () => {
     const hooks = target();
     const existing = join(hooks, "engram-daily-note");

@@ -17,8 +17,8 @@
 //   Empirically verified: copying built `handler.js + HOOK.md` from
 //   `skills/engram/hooks/engram-*/` into managedHooksDir/engram-*/ as
 //   regular directories makes OpenClaw load the managed hook set as
-//   `openclaw-workspace` source. The current managed set contains 10 Engram
-//   hooks, including guarded rule and KG context loaders.
+//   `openclaw-managed` source. The current managed set contains 11 Engram
+//   hooks, including guarded rule, rollback, and KG context loaders.
 //
 //   The drift concern that motivated junctions ("edit in skill, re-pull, need
 //   to re-copy") is real but bounded: re-running this script after a `git
@@ -249,8 +249,31 @@ const hookNames = readdirSync(SOURCE_HOOKS, { withFileTypes: true })
   .map((e) => e.name)
   .sort();
 
+const REQUIRED_OLL_HOOKS = [
+  'engram-rule-context-load',
+  'engram-rule-rollback',
+];
+
 if (hookNames.length === 0) {
   console.error(`install-hooks: no engram-* hook directories found in ${SOURCE_HOOKS}`);
+  process.exit(1);
+}
+
+// Fail before touching the runtime directory when the canonical source set is
+// incomplete. A successful fresh install must never silently omit the two OLL
+// delivery hooks or materialize an entry without both runtime inputs.
+const missingRequiredOllHooks = REQUIRED_OLL_HOOKS.filter((name) => !hookNames.includes(name));
+const invalidSourceHooks = hookNames.filter((name) => {
+  const sourceDir = join(SOURCE_HOOKS, name);
+  return !existsSync(join(sourceDir, 'handler.ts')) || !existsSync(join(sourceDir, 'HOOK.md'));
+});
+if (missingRequiredOllHooks.length > 0 || invalidSourceHooks.length > 0) {
+  if (missingRequiredOllHooks.length > 0) {
+    console.error(`install-hooks: canonical OLL hook set is incomplete: ${missingRequiredOllHooks.join(', ')}`);
+  }
+  if (invalidSourceHooks.length > 0) {
+    console.error(`install-hooks: source hook entries require handler.ts + HOOK.md: ${invalidSourceHooks.join(', ')}`);
+  }
   process.exit(1);
 }
 
@@ -410,6 +433,19 @@ for (const p of plan) {
   }
 }
 
+// Verify the materialized runtime surface rather than equating successful
+// copy calls with a complete install. Runtime loading requires both files.
+if (!args['dry-run']) {
+  for (const name of hookNames) {
+    const dstPath = join(GATEWAY_HOOKS, name);
+    const missing = ['handler.js', 'HOOK.md'].filter((file) => !existsSync(join(dstPath, file)));
+    if (missing.length > 0) {
+      console.error(`  ❌ ${name}: runtime verification missing ${missing.join(', ')}`);
+      failed++;
+    }
+  }
+}
+
 // --- Step 5b: cleanup temp build dirs ---
 for (const builtJs of builtBundles.values()) {
   try { rmSync(dirname(builtJs), { recursive: true, force: true }); } catch {}
@@ -426,6 +462,7 @@ if (orphans.length > 0) {
 }
 
 if (failed === 0 && !args['dry-run']) {
+  console.log(`  verified: ${hookNames.length} runtime hook entries (${REQUIRED_OLL_HOOKS.length} required OLL hooks present)`);
   console.log(`\nNext: openclaw gateway restart`);
 }
 

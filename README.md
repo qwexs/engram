@@ -47,7 +47,6 @@ Stateless-агенты забывают на каждом `/new` и compaction.
 | **Командная / forum-память** | Каждый топик, DM или группа — изолированный контур; bleed по умолчанию нет |
 | **Ролевой shared-контекст** | Менеджеры входят в overlaps и видят выбранные коллекции — не всю личную память |
 | **Самоулучшающиеся ops** | Heartbeat + OLL замечают friction и предлагают фиксы |
-| **Переносимый runtime** | Пути, запуск JS-инструментов и durable state учитывают различия POSIX и Windows |
 | **Аудит дрейфа workspace** | `watchdog.js` проверяет схему, QMD, registry и heartbeat-state без правок |
 
 ---
@@ -182,11 +181,6 @@ canary на `target`, active rollout и rollback drill пройдены. Fresh i
 создаёт OLL сразу с `nightly.enabled=true` и `adaptation.mode=active`; PR 7
 tooling сохраняет dry-run plan, backup/release markers и staged rollback.
 
-Durable OLL state хранит канонические `batchId` и `operationId` внутри JSON,
-а для имён каталогов и файлов использует Windows-safe ключи без запрещённого
-символа `:`. Существующие legacy-каталоги nightly batches на POSIX продолжают
-читаться, поэтому обновление формата не требует постоянной migration-логики.
-
 ---
 
 ## Quick start
@@ -257,11 +251,6 @@ engram --version
 - [OpenClaw](https://github.com/openclaw/openclaw) — runtime агента
 - [Bun](https://bun.sh) — runtime скриптов
 - QMD — ставится bootstrap'ом; вариант `local` (GPU/CPU) или `jina` (cloud)
-
-Runtime paths используют platform-native семантику: `fileURLToPath()` для
-модульных путей, junction для workspace-ссылки на Windows и directory `fsync`
-только там, где он поддерживается. Cross-platform инварианты проверяются
-тестами; основной production-контур проекта по-прежнему работает на Linux.
 
 ## Documentation
 

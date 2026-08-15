@@ -384,7 +384,7 @@ For full subagent memory, spawn workflow, templates: [references/subagent-memory
 
 ## OpenClaw Hooks
 
-Engram ships 10 hooks that automate session tasks. **Agents do NOT need to repeat these manually.**
+Engram ships 11 hooks that automate session tasks. **Agents do NOT need to repeat these manually.**
 
 | Hook | Event | What it does |
 |------|-------|--------------|
@@ -397,6 +397,7 @@ Engram ships 10 hooks that automate session tasks. **Agents do NOT need to repea
 | `engram-topic-domain-load` | `agent:bootstrap` | Inject topic domain context |
 | `engram-peer-domain-load` | `agent:bootstrap` | Inject bound DM/group domain context |
 | `engram-rule-context-load` | `agent:bootstrap` | Inject matching active OLL rules when rollout mode is active |
+| `engram-rule-rollback` | `message:received` | Suspend selected optimistic OLL rules from an exact numbered reply |
 | `engram-kg-context-load` | `agent:bootstrap` | Inject only the guarded KG v3 current projection during an authorized canary |
 
 For hook installation, race-condition guard, side-effect-delivered pattern: [references/hooks.md](references/hooks.md)

@@ -23,6 +23,7 @@ import {
   RethinkHandoffV2,
   sha256Digest,
 } from "../src/oll/handoff-v2";
+import { computeActionIdV3, computeHandoffDigestV3 } from "../src/oll/handoff-v3";
 import { applyLegacyRethinkCompatibilityAction } from "../src/oll/legacy-compatibility";
 
 const roots: string[] = [];
@@ -298,6 +299,50 @@ describe("PR 4 deterministic applicator", () => {
     expect(readdirSync(rulesDir)).toHaveLength(1);
     expect(readdirSync(journalDir)).toHaveLength(journalCount);
     expect(readdirSync(join(env.workspace, "memory-state", "oll", "operations"))).toHaveLength(1);
+  });
+
+  test("reuses frozen trusted signal authorization and queues a routable active-rule notification", () => {
+    const env = setup();
+    const v2 = makeHandoff(env);
+    const actionWithoutId = {
+      type: v2.actions[0].type,
+      payload: { ...v2.actions[0].payload, sourceCandidates: [] },
+    };
+    const action = { ...actionWithoutId, actionId: computeActionIdV3(env.expected.evaluationId, 0, actionWithoutId) };
+    const withoutDigest = {
+      schema: "oll.rethink-handoff.v3" as const,
+      batchId: v2.batchId,
+      workspaceId: v2.workspaceId,
+      evaluationId: v2.evaluationId,
+      runId: v2.runId,
+      phase: v2.phase,
+      attempt: v2.attempt,
+      policyVersion: v2.policyVersion,
+      contextDigest: v2.contextDigest,
+      createdAt: v2.createdAt,
+      actions: [action],
+      candidateDispositions: [],
+    };
+    write(env.expected.expectedHandoffPath, { ...withoutDigest, handoffDigest: computeHandoffDigestV3(withoutDigest) });
+    const result = applyRethinkHandoffFile({
+      workspace: env.workspace,
+      stateRoot: env.stateRoot,
+      expected: { ...env.expected, candidateRevisions: {} },
+      now: NOW,
+    });
+    expect(result).toMatchObject({ status: "terminal", dispositions: [{ disposition: "verified" }] });
+    const ruleName = readdirSync(join(env.workspace, "memory-state", "oll", "rules"))[0];
+    const rule = JSON.parse(readFileSync(join(env.workspace, "memory-state", "oll", "rules", ruleName), "utf8"));
+    expect(rule.status).toBe("active");
+    const signal = JSON.parse(readFileSync(join(env.workspace, "memory-state", "oll", "signals", `${env.signal.id}.json`), "utf8"));
+    expect(signal).toMatchObject({ status: "applied", revision: 2 });
+    const notificationName = readdirSync(join(env.workspace, "memory-state", "oll", "notifications", "outbox"))[0];
+    const notification = JSON.parse(readFileSync(join(env.workspace, "memory-state", "oll", "notifications", "outbox", notificationName), "utf8"));
+    expect(notification).toMatchObject({
+      status: "pending",
+      targetSession: "telegram-direct-42",
+      items: [{ number: 1, ruleId: rule.id, status: "active" }],
+    });
   });
 
   for (const transition of ["received", "validated", "intent_recorded", "effect_committed", "verified", "terminal"] as const) {

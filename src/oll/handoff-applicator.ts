@@ -14,9 +14,11 @@ import { atomicWriteJson } from "./legacy-migration";
 import {
   createAdaptationActionReview,
   proposeAdaptationRule,
+  queueRuleActivationNotification,
   transitionAdaptationRule,
+  transitionAdaptationSignal,
 } from "./adaptation-store";
-import { classifyAdaptationRisk, TrustedActorContext } from "./authorization";
+import { classifyAdaptationRisk, loadActorRegistry, TrustedActorContext } from "./authorization";
 import {
   canonicalizeJcs,
   computeOperationId,
@@ -89,6 +91,7 @@ export interface ApplicatorOptions {
   stateRoot: string;
   expected: ExpectedHandoffV2 | ExpectedHandoffV3;
   trustedActorContexts?: Readonly<Record<string, TrustedActorContext>>;
+  skipCandidateDispositions?: boolean;
   now?: string;
   faultInjector?: (transition: JournalTransition) => void;
 }
@@ -196,6 +199,7 @@ function workspaceConfig(workspace: string, stateRoot: string): {
   workspaceId: string;
   mode: "disabled" | "observe-only" | "active";
   companyRoot: string;
+  actorRegistryPath: string;
   maxInjectedRuleBytes: number;
 } {
   const config = readJson(join(workspace, "engram.json"));
@@ -205,10 +209,14 @@ function workspaceConfig(workspace: string, stateRoot: string): {
   const companyRoot = resolve(String(config?.oll?.adaptation?.companyRuleStore || "${ENGRAM_STATE_ROOT}/oll/company-rules")
     .replaceAll("${ENGRAM_STATE_ROOT}", resolve(stateRoot)));
   assertInside(resolve(stateRoot), companyRoot, "companyRuleStore");
+  const actorRegistryPath = resolve(String(config?.oll?.adaptation?.actorRegistry || "${ENGRAM_STATE_ROOT}/oll/actors.v1.json")
+    .replaceAll("${ENGRAM_STATE_ROOT}", resolve(stateRoot)));
+  assertInside(resolve(stateRoot), actorRegistryPath, "actorRegistry");
   return {
     workspaceId,
     mode,
     companyRoot,
+    actorRegistryPath,
     maxInjectedRuleBytes: Number(config?.oll?.adaptation?.maxInjectedRuleBytes || 8192),
   };
 }
@@ -296,7 +304,12 @@ function validateCandidateSources(options: ApplicatorOptions, handoff: AnyHandof
   });
 }
 
-function actorForAction(options: ApplicatorOptions, action: AnyAction, signals: JsonObject[]): TrustedActorContext | null {
+function actorForAction(
+  options: ApplicatorOptions,
+  config: ReturnType<typeof workspaceConfig>,
+  action: AnyAction,
+  signals: JsonObject[],
+): TrustedActorContext | null {
   const declared = action.payload.authorizationResult;
   const principalId = declared.principalId;
   for (const signal of signals) {
@@ -315,7 +328,76 @@ function actorForAction(options: ApplicatorOptions, action: AnyAction, signals: 
     }
   }
   if (!principalId) return null;
-  return options.trustedActorContexts?.[principalId] || null;
+  const explicit = options.trustedActorContexts?.[principalId];
+  if (explicit) return explicit;
+  if (!signals.length || signals.some((signal) => signal.scope?.level !== "person")) return null;
+  const actorRefs = new Set(signals.flatMap((signal) => (signal.evidence || []).map((evidence: JsonObject) => String(evidence.actorRef || ""))));
+  if (actorRefs.size !== 1) return null;
+  const match = /^([^:]+):user:(.+)$/.exec([...actorRefs][0]);
+  if (!match || signals.some((signal) => signal.scope?.subject !== `${match[1]}:${match[2]}`)) return null;
+  const loaded = loadActorRegistry(config.actorRegistryPath);
+  if (loaded.registry.revision !== declared.registryRevision || loaded.digest !== declared.registryDigest) return null;
+  const principal = (loaded.registry.principals as Array<JsonObject>).filter((entry) => entry.principalId === principalId);
+  if (principal.length !== 1) return null;
+  const bindings = (principal[0].transportBindings || []).filter((binding: JsonObject) => (
+    binding.channel === match[1] && String(binding.actorId) === match[2]
+  ));
+  if (bindings.length !== 1) return null;
+  return {
+    trusted: true,
+    channel: match[1],
+    accountId: String(bindings[0].accountId),
+    actorId: match[2],
+    contextKind: "direct",
+  };
+}
+
+function notificationSessionForSignalRule(action: AnyAction): string | null {
+  if (!action.payload.sourceSignals.length || action.payload.scope.level !== "person") return null;
+  const match = /^telegram:(\d+)$/.exec(action.payload.scope.subject);
+  return match ? `telegram-direct-${match[1]}` : null;
+}
+
+function finalizeActiveSignalRule(options: {
+  applicator: ApplicatorOptions;
+  config: ReturnType<typeof workspaceConfig>;
+  handoff: AnyHandoff;
+  action: AnyAction;
+  operationId: Digest;
+  rule: JsonObject;
+  now: string;
+}): void {
+  if (options.handoff.schema !== "oll.rethink-handoff.v3"
+    || options.config.mode !== "active" || options.action.type !== "propose_rule"
+    || !options.action.payload.sourceSignals.length || options.rule.status !== "active") return;
+  const notificationSession = notificationSessionForSignalRule(options.action);
+  if (!notificationSession) throw new HandoffValidationError("policy_rejected", "active signal rule has no routable notification session");
+  queueRuleActivationNotification({
+    workspace: options.applicator.workspace,
+    ruleId: options.rule.id,
+    batchId: options.handoff.batchId,
+    planId: options.operationId,
+    operationId: options.operationId,
+    notificationSession,
+    now: options.now,
+  });
+  for (const signalId of options.action.payload.sourceSignals) {
+    const expectedRevision = options.applicator.expected.signalRevisions[signalId];
+    const path = join(resolve(options.applicator.workspace), "memory-state", "oll", "signals", `${signalId}.json`);
+    const signal = readJson(path);
+    if (signal.status === "applied" && signal.revision === expectedRevision + 1) continue;
+    if (!["pending", "reviewed"].includes(signal.status) || signal.revision !== expectedRevision) {
+      throw new HandoffValidationError("policy_rejected", `source signal finalization conflict: ${signalId}`);
+    }
+    transitionAdaptationSignal({
+      workspace: options.applicator.workspace,
+      stateRoot: options.applicator.stateRoot,
+      signalId,
+      expectedRevision,
+      status: "applied",
+      now: options.now,
+    });
+  }
 }
 
 function ruleActivationRequiresReview(
@@ -475,6 +557,15 @@ function applyAction(
     }
     if (operation.status === "effect_committed" || operation.status === "verified") {
       if (operation.status === "effect_committed") operation = updateOperation(options.workspace, operation, { status: "verified", disposition: "verified" }, now);
+      finalizeActiveSignalRule({
+        applicator: options,
+        config,
+        handoff,
+        action,
+        operationId,
+        rule: readJson(committedPath),
+        now,
+      });
       return {
         operation,
         event: appendJournal(eventsDir, {
@@ -491,18 +582,22 @@ function applyAction(
 
   const signals = validateSources(options, handoff, action);
   const candidates = validateCandidateSources(options, handoff, action);
-  const actorContext = actorForAction(options, action, signals);
+  const actorContext = actorForAction(options, config, action, signals);
   const proposalText = action.payload.rule || (existsSync(targetPath) ? String(readJson(targetPath).rule || "") : "");
   const classified = classifyAdaptationRisk({ scope: action.payload.scope, statement: proposalText, expectedBehavior: action.payload.expectedImprovement });
   if (classified.risk !== action.payload.risk) {
     return rejectionDisposition(options, eventsDir, handoff, action, operation, payloadDigest, "model risk does not match deterministic classifier", now);
   }
 
+  const notificationSession = config.mode === "active" && action.type === "propose_rule"
+    ? notificationSessionForSignalRule(action)
+    : null;
   const policyNeedsReview = classified.reviewRequired
     || candidates.length > 0
     || action.payload.reviewDisposition === "review_required"
     || action.payload.authorizationResult.status !== "authorized"
-    || !actorContext;
+    || !actorContext
+    || (config.mode === "active" && action.type === "propose_rule" && signals.length > 0 && !notificationSession);
 
   if (action.type !== "propose_rule") {
     if (!existsSync(targetPath)) return rejectionDisposition(options, eventsDir, handoff, action, operation, payloadDigest, "target rule not found", now);
@@ -670,6 +765,7 @@ function applyAction(
       }, options.faultInjector),
     };
   }
+  finalizeActiveSignalRule({ applicator: options, config, handoff, action, operationId, rule: finalRule, now });
   if (!existsSync(finalPath) || fileDigest(finalPath) !== finalDigest) throw new Error("artifact verification failed");
   operation = updateOperation(options.workspace, operation, { status: "verified", disposition: "verified" }, now);
   return {
@@ -789,7 +885,7 @@ export function applyRethinkHandoffFile(options: ApplicatorOptions): ApplicatorR
         return { actionId: action.actionId, operationId, disposition: rejected.event.transition, artifactRef: null };
       }
     });
-    const candidateDispositions = handoff.schema === "oll.rethink-handoff.v3"
+    const candidateDispositions = handoff.schema === "oll.rethink-handoff.v3" && options.skipCandidateDispositions !== true
       ? handoff.candidateDispositions.map((item) => {
           const citedActions = handoff.actions.filter((action) => action.payload.sourceCandidates.includes(item.candidateId));
           const accepted = citedActions.some((action) => dispositions.some((result) => (

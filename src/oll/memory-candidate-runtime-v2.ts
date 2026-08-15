@@ -21,6 +21,7 @@ import {
   type AdaptationRisk,
   type TrustedActorContext,
 } from "./authorization";
+import { activateCandidateRuleOptimistically } from "./adaptation-store";
 import {
   MEMORY_CANDIDATE_APPLY_PLAN_V1_SCHEMA,
   MEMORY_CANDIDATE_EFFECT_V1_SCHEMA,
@@ -44,6 +45,7 @@ import {
   applyCandidateReviewOutcomeV1,
   dispositionCandidateV1,
   markCandidateReviewPendingV1,
+  markCandidateOptimisticAppliedV1,
   memoryCandidateStoreRootV1,
   readCandidateProjectionV1,
   releaseCandidateReservationV1,
@@ -232,7 +234,7 @@ function equalIds(left: readonly string[], right: readonly string[]): boolean {
   return canonicalizeJcs([...left].sort()) === canonicalizeJcs([...right].sort());
 }
 
-function buildEffects(operationId: Digest, action: RethinkActionV3, revisions: Record<string, number>): CandidatePlannedEffectV1[] {
+function buildEffects(operationId: Digest, action: RethinkActionV3, revisions: Record<string, number>, optimisticApply: boolean): CandidatePlannedEffectV1[] {
   invariant(action.type === "propose_rule" && action.payload.rule, "candidate evidence may only produce a rule proposal");
   const effectiveScope = candidateScope(action);
   const ruleId = `candidate-${action.actionId.slice("sha256:".length, "sha256:".length + 32)}`;
@@ -243,9 +245,10 @@ function buildEffects(operationId: Digest, action: RethinkActionV3, revisions: R
     candidateRevisions: revisions,
     effectiveScope,
     type: "rule_proposal",
-    payload: { ruleId, ruleText: action.payload.rule, ruleTextDigest: sha256Digest(action.payload.rule), reviewRequired: true },
+    payload: { ruleId, ruleText: action.payload.rule, ruleTextDigest: sha256Digest(action.payload.rule), reviewRequired: !optimisticApply },
   };
   const proposal = { ...proposalBase, effectId: candidateEffectId(proposalBase as CandidatePlannedEffectV1) } as CandidatePlannedEffectV1;
+  if (optimisticApply) return [proposal];
   const reviewBase: Omit<Extract<CandidatePlannedEffectV1, { type: "mandatory_review" }>, "effectId"> = {
     schema: MEMORY_CANDIDATE_EFFECT_V1_SCHEMA,
     actionId: action.actionId,
@@ -274,6 +277,7 @@ function buildPlan(options: {
   handoff: RethinkHandoffV3;
   scopeRegistry: CandidateScopeRegistryV1;
   now: string;
+  optimisticApply?: boolean;
 }): { plan: CandidateApplyPlanV1; context: PlanValidationContext } | null {
   invariant(options.handoff.workspaceId === options.workspaceId, "candidate handoff workspace mismatch");
   invariant(options.handoff.handoffDigest === computeHandoffDigestV3(options.handoff), "candidate handoff digest mismatch");
@@ -295,7 +299,7 @@ function buildPlan(options: {
     evidenceDigests[candidateId] = projection.cluster.evidenceSetDigest;
   }
   const operationId = sha256Digest(canonicalizeJcs({ schema: "oll.memory-candidate-apply-operation.v1", handoffDigest: options.handoff.handoffDigest, candidateRevisions }));
-  const effects = actions.flatMap((action) => buildEffects(operationId, action, candidateRevisions));
+  const effects = actions.flatMap((action) => buildEffects(operationId, action, candidateRevisions, options.optimisticApply === true));
   const prePlan = {
     schema: MEMORY_CANDIDATE_APPLY_PLAN_V1_SCHEMA,
     planId: sha256Digest("candidate-plan-placeholder"),
@@ -357,7 +361,7 @@ interface RuleProposalRecordV1 {
   effectiveScope: CandidateScope;
   risk: AdaptationRisk;
   status: "proposed";
-  reviewRequired: true;
+  reviewRequired: boolean;
   createdAt: string;
 }
 
@@ -411,7 +415,7 @@ function publishEffect(root: string, plan: CandidateApplyPlanV1, effect: Candida
       effectiveScope: effect.effectiveScope,
       risk: action.payload.risk,
       status: "proposed",
-      reviewRequired: true,
+      reviewRequired: effect.payload.reviewRequired,
       createdAt: plan.createdAt,
     };
     writeNoReplace(proposalPath(root, effect), record);
@@ -450,6 +454,9 @@ export function applyCandidateHandoffV3(options: {
   handoff: RethinkHandoffV3;
   scopeRegistry: CandidateScopeRegistryV1;
   now: string;
+  optimisticApply?: boolean;
+  stateRoot?: string;
+  notificationSession?: string;
   liveRevalidate: (input: { plan: CandidateApplyPlanV1; candidateScopes: Readonly<Record<string, CandidateScope>> }) => void;
   faultInjector?: (point: CandidateApplyFaultPoint) => void;
 }): CandidateApplyPlanV1 | null {
@@ -525,18 +532,54 @@ export function applyCandidateHandoffV3(options: {
       }, options.now), context);
       options.faultInjector?.("after_effect_commit");
     }
-    const review = plan.effects.find((effect): effect is Extract<CandidatePlannedEffectV1, { type: "mandatory_review" }> => effect.type === "mandatory_review")!;
-    invariant(review, "candidate apply plan lacks mandatory review");
-    for (const reservation of plan.reservations) markCandidateReviewPendingV1({
-      workspace: options.workspace,
-      workspaceId: options.workspaceId,
-      planId: plan.planId,
-      candidateId: reservation.candidateId,
-      expectedRevision: reservation.expectedRevision + 1,
-      reviewId: review.payload.reviewId,
-      now: options.now,
-    });
-    options.faultInjector?.("after_review_pending");
+    const review = plan.effects.find((effect): effect is Extract<CandidatePlannedEffectV1, { type: "mandatory_review" }> => effect.type === "mandatory_review");
+    if (options.optimisticApply === true) {
+      invariant(!review && options.stateRoot && options.notificationSession, "optimistic candidate apply requires stateRoot and notificationSession");
+      const proposal = plan.effects.find((effect): effect is Extract<CandidatePlannedEffectV1, { type: "rule_proposal" }> => effect.type === "rule_proposal");
+      invariant(proposal && proposal.payload.reviewRequired === false, "optimistic candidate apply requires a no-review proposal");
+      const action = options.handoff.actions.find((entry) => entry.actionId === proposal.actionId)!;
+      const scope = proposal.effectiveScope.level === "self"
+        ? { level: "person" as const, subject: proposal.effectiveScope.subject }
+        : { level: proposal.effectiveScope.level, subject: proposal.effectiveScope.subject };
+      activateCandidateRuleOptimistically({
+        workspace: options.workspace,
+        stateRoot: options.stateRoot,
+        scope,
+        rule: proposal.payload.ruleText,
+        sourceCandidates: Object.keys(proposal.candidateRevisions),
+        expectedImprovement: action.payload.expectedImprovement || "Применять подтверждённый памятью рабочий паттерн последовательно.",
+        costOfInaction: action.payload.costOfInaction || "Повторение ранее выявленной ошибки или непоследовательности.",
+        rollbackRef: `candidate-plan:${plan.planId}`,
+        runId: options.handoff.runId,
+        actionId: proposal.actionId,
+        operationId: plan.operationId,
+        planId: plan.planId,
+        batchId: plan.batchId,
+        notificationSession: options.notificationSession,
+        now: options.now,
+      });
+      for (const reservation of plan.reservations) markCandidateOptimisticAppliedV1({
+        workspace: options.workspace,
+        workspaceId: options.workspaceId,
+        planId: plan.planId,
+        candidateId: reservation.candidateId,
+        expectedRevision: reservation.expectedRevision + 1,
+        operationId: plan.operationId,
+        now: options.now,
+      });
+    } else {
+      invariant(review, "candidate apply plan lacks mandatory review");
+      for (const reservation of plan.reservations) markCandidateReviewPendingV1({
+        workspace: options.workspace,
+        workspaceId: options.workspaceId,
+        planId: plan.planId,
+        candidateId: reservation.candidateId,
+        expectedRevision: reservation.expectedRevision + 1,
+        reviewId: review.payload.reviewId,
+        now: options.now,
+      });
+      options.faultInjector?.("after_review_pending");
+    }
     for (const disposition of options.handoff.candidateDispositions.filter((entry) => entry.disposition !== "consumed")) dispositionCandidateV1({
       workspace: options.workspace, workspaceId: options.workspaceId, candidateId: disposition.candidateId,
       expectedRevision: disposition.expectedRevision, disposition: disposition.disposition === "ignored" ? "ignored" : "deferred",
@@ -544,8 +587,10 @@ export function applyCandidateHandoffV3(options: {
     });
     plan = appendPlan(root, updatePlan(plan, {
       status: "terminal",
-      reasonCode: "review_created",
-      reservations: plan.reservations.map((reservation) => ({ ...reservation, status: "review_pending", reasonCode: "review_created", updatedAt: options.now })),
+      reasonCode: options.optimisticApply === true ? "optimistic_apply" : "review_created",
+      reservations: plan.reservations.map((reservation) => options.optimisticApply === true
+        ? { ...reservation, status: "released", reasonCode: "optimistic_apply", updatedAt: options.now }
+        : { ...reservation, status: "review_pending", reasonCode: "review_created", updatedAt: options.now }),
     }, options.now), context);
     return plan;
   } catch (error) {

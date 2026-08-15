@@ -1,6 +1,6 @@
 # OpenClaw Hooks
 
-> v3.6. Engram ships **9 OpenClaw hooks** that automate mechanical session tasks. Hooks run automatically — agents do NOT need to repeat these steps manually.
+> v3.6. Engram ships **11 OpenClaw hooks** that automate mechanical session tasks. Hooks run automatically — agents do NOT need to repeat these steps manually.
 
 ## Hook Table
 
@@ -15,6 +15,8 @@
 | `engram-topic-domain-load` | `agent:bootstrap` | On Telegram topic, resolve `entry.topic` and append Domain Context + AGENTS to bootstrap messages. |
 | `engram-peer-domain-load` | `agent:bootstrap` | On bound DM or group, resolve `entry.peer`/`entry.group` and append Domain Context + AGENTS to bootstrap messages. |
 | `engram-rule-context-load` | `agent:bootstrap` | In explicit `active` mode, append the complete matching managed-rule projection; fail closed on person ambiguity, conflicts, or byte-cap overflow. |
+| `engram-rule-rollback` | `message:received` | Suspend selected optimistic OLL rules when a user replies to their numbered notification with `Отменить N`. |
+| `engram-kg-context-load` | `agent:bootstrap` | Inject only the guarded KG v3 current projection during an authorized canary. |
 
 > **Note:** Disable the built-in `session-memory` hook when enabling `engram-session-memory` — they serve the same purpose but write to different locations.
 

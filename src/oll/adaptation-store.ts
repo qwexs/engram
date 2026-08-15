@@ -77,8 +77,24 @@ function pathsForRoot(workspace: string, root: string) {
     reviews: join(managedRoot, "reviews"),
     operations: join(managedRoot, "operations"),
     audit: join(managedRoot, "audit"),
+    notifications: join(managedRoot, "notifications", "outbox"),
     lock: join(managedRoot, ".adaptation-store.lock"),
   };
+}
+
+function deterministicUuid(seed: string): string {
+  const hex = createHash("sha256").update(seed).digest("hex").slice(0, 32).split("");
+  hex[12] = "5";
+  hex[16] = "a";
+  return `${hex.slice(0, 8).join("")}-${hex.slice(8, 12).join("")}-${hex.slice(12, 16).join("")}-${hex.slice(16, 20).join("")}-${hex.slice(20).join("")}`;
+}
+
+function normalizeNotificationSession(value: string): string {
+  const session = normalizeText(value, 300, "notificationSession");
+  if (!/^(?:main|telegram-direct-\d+|telegram-group--?\d+(?:-topic-\d+)?)$/.test(session)) {
+    throw new AdaptationStoreError("invalid_input", "notificationSession is not a canonical routable session");
+  }
+  return session;
 }
 
 function storePaths(workspace: string) {
@@ -803,5 +819,293 @@ export function transitionAdaptationRule(options: {
     });
     atomicWriteJson(path, next);
     return next;
+  });
+}
+
+export interface OptimisticRuleNotificationV1 {
+  schema: "oll.rule-activation-notification.v1";
+  notificationId: string;
+  workspaceId: string;
+  batchId: string;
+  planId: string;
+  operationId: string;
+  targetSession: string;
+  status: "pending" | "delivered" | "partially_reverted" | "reverted";
+  items: Array<{
+    number: number;
+    ruleId: string;
+    ruleRevision: number;
+    ruleText: string;
+    status: "active" | "suspended";
+  }>;
+  messageText: string;
+  createdAt: string;
+  deliveredAt: string | null;
+  messageId: string | null;
+  updatedAt: string;
+}
+
+function notificationText(items: OptimisticRuleNotificationV1["items"]): string {
+  const numbered = items.map((item) => `${item.number}. ${item.ruleText}`).join("\n");
+  return `Я самоулучшаюсь и зафиксировала для себя новые правила:\n\n${numbered}\n\nПравила уже применены. Если хотите отменить, ответьте на это сообщение и укажите пункты, например: «Отменить 1» или «Отменить 1, 2».`;
+}
+
+function ensureRuleActivationNotification(options: {
+  paths: ReturnType<typeof storePaths>;
+  rule: JsonObject;
+  batchId: string;
+  planId: string;
+  operationId: string;
+  notificationSession: string;
+  now: string;
+}): OptimisticRuleNotificationV1 {
+  const targetSession = normalizeNotificationSession(options.notificationSession);
+  if (!DIGEST_RE.test(options.planId) || !DIGEST_RE.test(options.operationId)) {
+    throw new AdaptationStoreError("invalid_input", "planId and operationId must be sha256 digests");
+  }
+  if (options.rule.status !== "active") throw new AdaptationStoreError("invalid_transition", "only an active rule may be announced");
+  const notificationId = deterministicUuid(`rule-notification:${options.rule.workspaceId}:${options.planId}`);
+  const notificationPath = join(options.paths.notifications, `${notificationId}.json`);
+  if (existsSync(notificationPath)) {
+    const current = readJson(notificationPath) as OptimisticRuleNotificationV1;
+    if (current.planId !== options.planId || current.items[0]?.ruleId !== options.rule.id || current.targetSession !== targetSession) {
+      throw new AdaptationStoreError("operation_conflict", "deterministic rule notification conflicts with an existing notification");
+    }
+    return current;
+  }
+  mkdirSync(options.paths.notifications, { recursive: true });
+  const items: OptimisticRuleNotificationV1["items"] = [{
+    number: 1,
+    ruleId: options.rule.id,
+    ruleRevision: options.rule.revision,
+    ruleText: options.rule.rule,
+    status: "active",
+  }];
+  const notification: OptimisticRuleNotificationV1 = {
+    schema: "oll.rule-activation-notification.v1",
+    notificationId,
+    workspaceId: options.rule.workspaceId,
+    batchId: options.batchId,
+    planId: options.planId,
+    operationId: options.operationId,
+    targetSession,
+    status: "pending",
+    items,
+    messageText: notificationText(items),
+    createdAt: options.now,
+    deliveredAt: null,
+    messageId: null,
+    updatedAt: options.now,
+  };
+  atomicWriteJson(notificationPath, notification);
+  return notification;
+}
+
+export function queueRuleActivationNotification(options: {
+  workspace: string;
+  ruleId: string;
+  batchId: string;
+  planId: string;
+  operationId: string;
+  notificationSession: string;
+  now?: string;
+}): OptimisticRuleNotificationV1 {
+  const paths = storePaths(options.workspace);
+  const ruleId = safeId(options.ruleId, "ruleId");
+  const now = options.now || new Date().toISOString();
+  return withStoreLock(paths.workspace, () => {
+    const rulePath = join(paths.rules, `${ruleId}.json`);
+    if (!existsSync(rulePath)) throw new AdaptationStoreError("not_found", `rule not found: ${ruleId}`);
+    return ensureRuleActivationNotification({ ...options, paths, rule: readJson(rulePath), now });
+  });
+}
+
+export function activateCandidateRuleOptimistically(options: {
+  workspace: string;
+  stateRoot: string;
+  scope: AdaptationScope;
+  rule: string;
+  sourceCandidates: string[];
+  expectedImprovement: string;
+  costOfInaction: string;
+  rollbackRef: string;
+  runId: string;
+  actionId: string;
+  operationId: string;
+  planId: string;
+  batchId: string;
+  notificationSession: string;
+  now?: string;
+}): { rule: JsonObject; notification: OptimisticRuleNotificationV1; created: boolean } {
+  const paths = storePaths(options.workspace);
+  const resolved = workspaceConfig(paths.workspace, options.stateRoot);
+  const scope = scopeForRule(options.scope);
+  assertScopeOwned(paths, resolved.workspaceId, { ...scope, domain: options.scope.domain });
+  if (scope.level === "company") throw new AdaptationStoreError("unsupported_scope", "candidate optimistic apply is workspace-owned");
+  const ruleText = normalizeText(options.rule, 4000, "rule");
+  const expectedImprovement = normalizeText(options.expectedImprovement, 2000, "expectedImprovement");
+  const costOfInaction = normalizeText(options.costOfInaction, 2000, "costOfInaction");
+  const rollbackRef = normalizeText(options.rollbackRef, 500, "rollbackRef");
+  const runId = safeId(options.runId, "runId");
+  if (!DIGEST_RE.test(options.actionId) || !DIGEST_RE.test(options.operationId) || !DIGEST_RE.test(options.planId)) {
+    throw new AdaptationStoreError("invalid_input", "actionId, operationId and planId must be sha256 digests");
+  }
+  const targetSession = normalizeNotificationSession(options.notificationSession);
+  const now = options.now || new Date().toISOString();
+  if (!Number.isFinite(Date.parse(now))) throw new AdaptationStoreError("invalid_input", "invalid activation timestamp");
+  const risk = classifyAdaptationRisk({ scope, statement: ruleText, expectedBehavior: expectedImprovement });
+  const ruleId = deterministicUuid(`candidate-rule:${resolved.workspaceId}:${options.actionId}`);
+  return withStoreLock(paths.workspace, () => {
+    mkdirSync(paths.rules, { recursive: true });
+    mkdirSync(paths.notifications, { recursive: true });
+    const rulePath = join(paths.rules, `${ruleId}.json`);
+    let created = false;
+    let rule: JsonObject;
+    if (existsSync(rulePath)) {
+      rule = readJson(rulePath);
+      if (rule.workspaceId !== resolved.workspaceId || rule.decision?.actionId !== options.actionId || rule.rule !== ruleText) {
+        throw new AdaptationStoreError("operation_conflict", "deterministic candidate rule conflicts with an existing rule");
+      }
+    } else {
+      rule = {
+        schema: "oll.adaptation-rule.v1",
+        id: ruleId,
+        workspaceId: resolved.workspaceId,
+        scope,
+        rule: ruleText,
+        priority: 0,
+        sourceSignals: [],
+        sourceCandidates: [...new Set(options.sourceCandidates)].sort(),
+        risk: risk.risk,
+        status: "active",
+        expectedImprovement,
+        costOfInaction,
+        rollbackRef,
+        decision: {
+          action: "activate_rule",
+          runId,
+          actionId: options.actionId,
+          reason: "candidate-derived rule activated optimistically with post-factum notification",
+          decidedAt: now,
+        },
+        activatedAt: now,
+        reviewDueAt: null,
+        expiresAt: null,
+        rolloutBatchId: options.batchId,
+        supersededBy: null,
+        revision: 1,
+        contentDigest: "",
+      };
+      rule.contentDigest = contentDigestForRule(rule);
+      atomicWriteJson(rulePath, rule);
+      writeAudit(paths, {
+        workspaceId: resolved.workspaceId,
+        type: "rule_optimistic_activated",
+        artifactRef: `rules/${ruleId}.json`,
+        artifactDigest: rule.contentDigest,
+        operationId: options.operationId,
+        actionId: options.actionId,
+        createdAt: now,
+      });
+      created = true;
+    }
+    const notification = ensureRuleActivationNotification({
+      paths,
+      rule,
+      batchId: options.batchId,
+      planId: options.planId,
+      operationId: options.operationId,
+      notificationSession: targetSession,
+      now,
+    });
+    return { rule, notification, created };
+  });
+}
+
+export function listPendingRuleActivationNotifications(options: { workspace: string }): OptimisticRuleNotificationV1[] {
+  const paths = storePaths(options.workspace);
+  if (!existsSync(paths.notifications)) return [];
+  return readdirSync(paths.notifications).filter((name) => name.endsWith(".json")).sort().flatMap((name) => {
+    const record = readJson(join(paths.notifications, name)) as OptimisticRuleNotificationV1;
+    return record.schema === "oll.rule-activation-notification.v1" && record.status === "pending" ? [record] : [];
+  });
+}
+
+export function acknowledgeRuleActivationNotification(options: {
+  workspace: string;
+  notificationId: string;
+  messageId: string;
+  now?: string;
+}): OptimisticRuleNotificationV1 {
+  const paths = storePaths(options.workspace);
+  const notificationId = safeId(options.notificationId, "notificationId");
+  const messageId = normalizeText(options.messageId, 300, "messageId");
+  const now = options.now || new Date().toISOString();
+  return withStoreLock(paths.workspace, () => {
+    const path = join(paths.notifications, `${notificationId}.json`);
+    if (!existsSync(path)) throw new AdaptationStoreError("not_found", "notification not found");
+    const current = readJson(path) as OptimisticRuleNotificationV1;
+    if (current.status !== "pending") {
+      if (current.messageId === messageId) return current;
+      throw new AdaptationStoreError("operation_conflict", "notification already acknowledged with another message");
+    }
+    const next: OptimisticRuleNotificationV1 = { ...current, status: "delivered", messageId, deliveredAt: now, updatedAt: now };
+    atomicWriteJson(path, next);
+    return next;
+  });
+}
+
+export function suspendRulesFromNotification(options: {
+  workspace: string;
+  stateRoot: string;
+  replyMessageId?: string | null;
+  notificationId?: string | null;
+  itemNumbers: number[];
+  now?: string;
+}): { notification: OptimisticRuleNotificationV1; suspendedRuleIds: string[] } {
+  const paths = storePaths(options.workspace);
+  workspaceConfig(paths.workspace, options.stateRoot);
+  const now = options.now || new Date().toISOString();
+  const numbers = [...new Set(options.itemNumbers)].sort((a, b) => a - b);
+  if (!numbers.length || numbers.some((number) => !Number.isInteger(number) || number < 1)) throw new AdaptationStoreError("invalid_input", "itemNumbers must contain positive integers");
+  return withStoreLock(paths.workspace, () => {
+    const records = existsSync(paths.notifications)
+      ? readdirSync(paths.notifications).filter((name) => name.endsWith(".json")).map((name) => ({ path: join(paths.notifications, name), record: readJson(join(paths.notifications, name)) as OptimisticRuleNotificationV1 }))
+      : [];
+    const matches = records.filter(({ record }) => options.notificationId
+      ? record.notificationId === options.notificationId
+      : Boolean(options.replyMessageId && record.messageId === options.replyMessageId));
+    if (matches.length !== 1) throw new AdaptationStoreError(matches.length ? "ambiguous_projection" : "not_found", "notification reference did not resolve uniquely");
+    const { path, record } = matches[0];
+    const selected = numbers.map((number) => {
+      const item = record.items.find((entry) => entry.number === number);
+      if (!item) throw new AdaptationStoreError("invalid_input", `notification has no item ${number}`);
+      return item;
+    });
+    const suspendedRuleIds: string[] = [];
+    for (const item of selected) {
+      const rulePath = join(paths.rules, `${safeId(item.ruleId, "ruleId")}.json`);
+      if (!existsSync(rulePath)) throw new AdaptationStoreError("not_found", `rule not found: ${item.ruleId}`);
+      const rule = readJson(rulePath);
+      if (rule.status === "active") {
+        const next: JsonObject = {
+          ...rule,
+          status: "suspended",
+          decision: { action: "suspend_rule", runId: rule.decision.runId, actionId: rule.decision.actionId, reason: `reverted from notification ${record.notificationId} item ${item.number}`, decidedAt: now },
+          revision: rule.revision + 1,
+        };
+        next.contentDigest = contentDigestForRule(next);
+        atomicWriteJson(rulePath, next);
+        writeAudit(paths, { workspaceId: rule.workspaceId, type: "rule_transition", artifactRef: `rules/${rule.id}.json`, from: "active", to: "suspended", revision: next.revision, operationId: record.operationId, actionId: rule.decision.actionId, createdAt: now });
+        suspendedRuleIds.push(rule.id);
+      } else if (rule.status !== "suspended") {
+        throw new AdaptationStoreError("invalid_transition", `rule ${rule.id} cannot be suspended from ${rule.status}`);
+      }
+    }
+    const items = record.items.map((item) => selected.some((selectedItem) => selectedItem.number === item.number) ? { ...item, status: "suspended" as const } : item);
+    const activeCount = items.filter((item) => item.status === "active").length;
+    const notification: OptimisticRuleNotificationV1 = { ...record, items, status: activeCount ? "partially_reverted" : "reverted", updatedAt: now };
+    atomicWriteJson(path, notification);
+    return { notification, suspendedRuleIds };
   });
 }

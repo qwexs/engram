@@ -1,14 +1,12 @@
 # OLL memory candidate compiler
 
 > **Status:** Phase 1 compiler, Phase 2 inert shadow integration, the isolated
-> Phase 3 candidate store/materialization APIs, the isolated Phase 4
-> review-only runtime, and Phase 5 guarded rollout/rollback tooling are
-> implemented. The synthetic rollback drill passes. On 2026-08-15, all 12
-> registered workspaces advanced through separately acknowledged exact-policy
-> transitions to `materialize_review_only`; a real daily-mode fleet cycle then
-> completed 12/12 with no failures. It produced one pending mandatory review
-> and one inert rule proposal, while activating no rules. `materialize` has no
-> time-based observation gate. The clean-install default is `disabled`.
+> Phase 3 candidate store/materialization APIs, the Phase 4 runtime, and Phase
+> 5 rollout/rollback tooling are implemented. In active adaptation mode the
+> Phase 4 runtime now uses optimistic apply: a candidate-derived rule is made
+> active immediately, a numbered post-factum notification is queued, and a
+> reply can suspend selected items. The older review-only artifacts remain
+> readable for recovery. The clean-install compiler default is `disabled`.
 
 ## Purpose
 
@@ -40,8 +38,11 @@ remains isolated from the coordinator/model path: Phase 1 creates no candidate
 state and Phase 2 never invokes the store.
 
 `oll.rethink-handoff.v3` separates `sourceSignals` from `sourceCandidates`.
-Memory evidence can only support `propose_rule`; it always creates a review and
-cannot activate, supersede, suspend, write KG, or perform an external action.
+Memory evidence can only support `propose_rule`; the model cannot directly
+activate, supersede, suspend, write KG, or perform an external action. In
+active adaptation mode the deterministic applicator promotes the proposal to
+an active, scoped rule and queues its rollback notification. In observe-only
+mode the legacy proposal + review path remains available for compatibility.
 Every candidate receives `consumed`, `ignored`, or `deferred`. A rejected
 proposal is forced back to `deferred` rather than silently consuming evidence.
 
@@ -64,7 +65,7 @@ Compiler or shadow-artifact failure is diagnostic only and cannot block an
 ordinary behavioral rethink. Missing or `disabled` config invokes no compiler
 and creates no candidate artifacts.
 
-## Materialize review-only runtime
+## Materialize runtime
 
 Phase 4 adds an explicit candidate context builder, a handoff-v3 applicator,
 and the sole candidate-review reconciler. The nightly coordinator invokes this
@@ -72,9 +73,15 @@ path only for a frozen, projection-consistent `materialize` config: it persists
 the compiler report and ledger, sends a bounded `oll.nightly-context.v2`, and
 accepts only `oll.rethink-handoff.v3`. The applicator records a whole-plan WAL,
 reserves the complete candidate set before publishing a proposal or review,
-and leaves every rule in `proposed`. Review approval, rejection, and expiry
-continue candidate lifecycle through an authority-revalidated, append-only
-outcome; no candidate path activates a rule.
+In active adaptation mode it writes the canonical rule under
+`memory-state/oll/rules/<rule-uuid>.json` with status `active`, moves consumed
+candidates directly from `reserved` to `evaluated`, and creates a durable
+`oll.rule-activation-notification.v1` outbox record. The scheduler sends a
+friendly numbered message to the exact source session and stores the returned
+message ID. A rollback command resolves that message plus item numbers and
+changes the corresponding rules to `suspended`; rules and audit history are
+never deleted. Existing proposal/review WALs continue through the legacy
+reconciler so interrupted older runs remain recoverable.
 
 ## Guarded rollout and rollback
 
@@ -122,8 +129,10 @@ the required real shadow cycles.
 4. When the operator chooses to advance, submit a separate exact-policy,
    exact-scope `materialize` request and explicitly acknowledge it. Shadow
    cycle counts and health metrics remain diagnostic rather than blocking.
-5. Active adaptation remains a separate decision. Candidate-derived proposals
-   stay review-only even when adaptation is active.
+5. Set adaptation mode to `active` to enable immediate scoped promotion,
+   post-factum notification, and numbered rollback. The historical rollout
+   projection name `materialize_review_only` is retained for on-disk
+   compatibility until a separate projection-schema migration.
 
 Stop on scope leakage, replay drift, excessive spawn/review volume, or source
 starvation. Rollback sets the compiler to `disabled`; evidence and audit state

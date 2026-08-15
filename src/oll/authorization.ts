@@ -198,7 +198,7 @@ export function authorizeAdaptationAction(options: {
 }
 
 const HIGH_RISK_RE = /\b(legal|law|privacy|personal data|security|permission|credential|payment|publish|send|message|email|external action|safety)\b|(юрид|правов|приватн|персональн|безопасн|разрешен|парол|оплат|опублик|отправ|внешнее действ)/iu;
-const LOW_RISK_RE = /\b(tone|format|terminology|wording|structure|layout|style|workflow|sequence)\b|(тон|формат|термин|формулиров|структур|стил|порядок|процесс)/iu;
+const LOW_RISK_RE = /\b(tone|format|terminology|wording|structure|layout|style|workflow|sequence)\b|(тон|формат|термин|формулиров|структур|стил|порядок|процесс|сначала[\s\S]{0,200}затем)/iu;
 
 export function classifyAdaptationRisk(input: {
   scope: AdaptationScope;

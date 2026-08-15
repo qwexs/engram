@@ -124,12 +124,12 @@ runner.
 
 ## Hooks
 
-Engram ships 10 hooks under `skills/engram/hooks/`:
+Engram ships 11 hooks under `skills/engram/hooks/`:
 
 - `engram-bootstrap-qmd`, `engram-daily-note`, `engram-message-log`
 - `engram-session-start`, `engram-session-end`, `engram-session-memory`
 - `engram-topic-domain-load`, `engram-peer-domain-load`,
-  `engram-rule-context-load`, `engram-kg-context-load`
+  `engram-rule-context-load`, `engram-rule-rollback`, `engram-kg-context-load`
 
 OpenClaw 2026.6.6 loads hooks from its **managed hooks directory** —
 `~/clawd/hooks/` on Windows (`%USERPROFILE%\clawd\hooks\`,
@@ -211,7 +211,7 @@ rejects workspace-specific names like `<agent-a>` or `<agent-b>` as
 
 Always use the installer. Source hooks are TypeScript; it builds the runtime
 `handler.js`, backs up an existing managed entry, and installs the complete
-ten-hook set. A direct `cp -r` from the source tree is unsupported and can
+eleven-hook set. A direct `cp -r` from the source tree is unsupported and can
 leave stale or missing runtime handlers:
 
 ```bash

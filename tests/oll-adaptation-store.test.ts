@@ -427,6 +427,10 @@ describe("PR 3 managed rule and review lifecycle", () => {
 
   test("deterministic risk classifier routes workspace, legal, permission, and external actions to review", () => {
     expect(classifyAdaptationRisk({ scope: { level: "person", subject: "telegram:42" }, statement: "Use this report format" }).risk).toBe("low");
+    expect(classifyAdaptationRisk({
+      scope: { level: "person", subject: "telegram:42" },
+      statement: "Для технического статуса сначала давать одно короткое предложение-итог, затем перечислять проверки.",
+    }).risk).toBe("low");
     expect(classifyAdaptationRisk({ scope: { level: "workspace", subject: "main" }, statement: "Use this format" })).toMatchObject({ risk: "medium", reviewRequired: true });
     for (const statement of ["Change legal policy", "Grant permission to publish", "Send an external email", "Измени юридическую политику", "Разреши отправлять сообщения"]) {
       expect(classifyAdaptationRisk({ scope: { level: "person", subject: "telegram:42" }, statement })).toMatchObject({ risk: "high", reviewRequired: true });

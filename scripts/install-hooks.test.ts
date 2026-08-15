@@ -36,7 +36,7 @@ describe("install-hooks mutation boundary", () => {
     expect(readdirSync(hooks).some((name) => name.startsWith("_pre-install-"))).toBe(false);
   });
 
-  test("--force backs up existing bytes and installs the complete ten-hook set", () => {
+  test("--force backs up existing bytes and installs the complete eleven-hook set", () => {
     const hooks = target();
     const existing = join(hooks, "engram-daily-note");
     mkdirSync(existing, { recursive: true });
@@ -46,8 +46,9 @@ describe("install-hooks mutation boundary", () => {
     const result = spawnSync("bun", [installer, "--skill-dir", skill, "--hooks-dir", hooks, "--force"], { encoding: "utf8" });
     expect(result.status, result.stderr || result.stdout).toBe(0);
     const installed = readdirSync(hooks).filter((name) => name.startsWith("engram-")).sort();
-    expect(installed).toHaveLength(10);
+    expect(installed).toHaveLength(11);
     expect(installed).toContain("engram-rule-context-load");
+    expect(installed).toContain("engram-rule-rollback");
     expect(installed).toContain("engram-kg-context-load");
     expect(existsSync(join(hooks, "engram-rule-context-load", "handler.js"))).toBe(true);
     const backup = readdirSync(hooks).find((name) => name.startsWith("_pre-install-"));

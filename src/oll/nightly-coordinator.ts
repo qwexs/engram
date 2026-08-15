@@ -12,7 +12,7 @@ import { NightlyBatchStateV1, NightlyLeaseV1, NightlyStateStore } from "./nightl
 import { reconcileWorkspaceMemory, WorkspaceReconciliationResult } from "./reconciliation";
 import type { TrustedActorContext } from "./authorization";
 import { compileMemoryCandidateReportV2 } from "./memory-candidate-compiler-v2";
-import type { CandidateScopeRegistryV1, CandidateSourcePolicyV2 } from "./memory-candidate-contracts-v2";
+import type { CandidateScope, CandidateScopeRegistryV1, CandidateSourcePolicyV2 } from "./memory-candidate-contracts-v2";
 import { inspectCandidateCompilerProjectionV1 } from "./memory-candidate-rollout-v1";
 import { assessCandidateSelectionV1, materializeCandidateReportV2, readCandidateProjectionV1 } from "./memory-candidate-store-v2";
 import { applyCandidateHandoffV3 } from "./memory-candidate-runtime-v2";
@@ -86,6 +86,20 @@ function readObject<T>(path: string): T {
   const value = JSON.parse(readFileSync(path, "utf8"));
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${path} must contain an object`);
   return value as T;
+}
+
+function resolveCandidateNotificationSession(
+  scope: CandidateScope,
+  policy: CandidateSourcePolicyV2,
+  registry: CandidateScopeRegistryV1,
+): string {
+  const admitted = new Set(policy.daily.map((entry) => entry.session));
+  const matches = Object.entries(registry.sourceAuthorities.daily)
+    .filter(([session, authorizedScope]) => admitted.has(session) && canonicalizeJcs(authorizedScope) === canonicalizeJcs(scope))
+    .map(([session]) => session)
+    .sort();
+  if (matches.length !== 1) throw new Error(`candidate notification session did not resolve uniquely for ${scope.level}:${scope.subject}`);
+  return matches[0];
 }
 
 function writeImmutable(path: string, value: unknown): void {
@@ -638,55 +652,95 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
             const handoffPath = existsSync(expected.expectedHandoffPath) ? expected.expectedHandoffPath : appliedPath;
             if (!existsSync(handoffPath)) throw new Error("expected candidate handoff file is unavailable");
             const handoff = parseRethinkHandoffV3(readFileSync(handoffPath), expected, expected.expectedHandoffPath);
-            const plan = applyCandidateHandoffV3({
-              workspace: workspace.workspacePath,
-              workspaceId,
-              handoff,
-              scopeRegistry,
-              now: now(),
-              liveRevalidate: ({ candidateScopes }) => {
-                const liveConfig = readObject<Record<string, any>>(join(workspace.workspacePath, "engram.json"));
-                const livePolicy = liveConfig?.oll?.candidateCompiler as CandidateSourcePolicyV2 | undefined;
-                const liveRegistry = liveConfig?.oll?.candidateScopeRegistry as CandidateScopeRegistryV1 | undefined;
-                if (!livePolicy || !liveRegistry
-                  || sha256Digest(canonicalizeJcs(livePolicy)) !== sha256Digest(canonicalizeJcs(candidatePolicy))
-                  || sha256Digest(canonicalizeJcs(liveRegistry)) !== sha256Digest(canonicalizeJcs(scopeRegistry))) {
-                  throw new Error("candidate policy or scope registry drifted before effect commit");
-                }
-                const current = compileMemoryCandidateReportV2({
-                  workspace: workspace.workspacePath,
-                  workspaceId,
-                  snapshotAt: now(),
-                  batchId: batch.batchId,
-                  policy: livePolicy,
-                  scopeRegistry: liveRegistry,
-                  executionMode: "materialize",
-                });
-                for (const [candidateId, candidateScope] of Object.entries(candidateScopes)) {
-                  const currentCluster = current.candidates.find((candidate) => candidate.candidateId === candidateId);
-                  if (!currentCluster || canonicalizeJcs(currentCluster.effectiveScope) !== canonicalizeJcs(candidateScope)) {
-                    throw new Error(`candidate source or scope drifted before effect commit: ${candidateId}`);
+            const candidateActions = handoff.actions.filter((action) => action.payload.sourceCandidates.length > 0);
+            if (candidateActions.length === 0) {
+              applyCandidateHandoffV3({
+                workspace: workspace.workspacePath,
+                workspaceId,
+                handoff,
+                scopeRegistry,
+                now: now(),
+                liveRevalidate: () => { throw new Error("signal-only handoff unexpectedly requested candidate effects"); },
+              });
+              const applicator = options.applyHandoff || applyRethinkHandoffFile;
+              result = applicator({
+                workspace: workspace.workspacePath,
+                stateRoot: options.stateRoot,
+                expected,
+                trustedActorContexts: options.trustedActorContexts,
+                skipCandidateDispositions: true,
+                now: now(),
+              });
+            } else {
+              const optimisticApply = workspace.config?.oll?.adaptation?.mode === "active";
+              const candidateAction = candidateActions[0];
+              const notificationScope: CandidateScope | null = candidateAction.payload.scope.level === "person"
+                ? { level: "self", subject: candidateAction.payload.scope.subject }
+                : candidateAction.payload.scope.level === "company"
+                  ? null
+                  : { level: candidateAction.payload.scope.level, subject: candidateAction.payload.scope.subject };
+              const notificationSession = optimisticApply && notificationScope
+                ? resolveCandidateNotificationSession(notificationScope, candidatePolicy, scopeRegistry)
+                : undefined;
+              const plan = applyCandidateHandoffV3({
+                workspace: workspace.workspacePath,
+                workspaceId,
+                handoff,
+                scopeRegistry,
+                now: now(),
+                optimisticApply,
+                stateRoot: options.stateRoot,
+                notificationSession,
+                liveRevalidate: ({ candidateScopes }) => {
+                  const liveConfig = readObject<Record<string, any>>(join(workspace.workspacePath, "engram.json"));
+                  const livePolicy = liveConfig?.oll?.candidateCompiler as CandidateSourcePolicyV2 | undefined;
+                  const liveRegistry = liveConfig?.oll?.candidateScopeRegistry as CandidateScopeRegistryV1 | undefined;
+                  if (!livePolicy || !liveRegistry
+                    || sha256Digest(canonicalizeJcs(livePolicy)) !== sha256Digest(canonicalizeJcs(candidatePolicy))
+                    || sha256Digest(canonicalizeJcs(liveRegistry)) !== sha256Digest(canonicalizeJcs(scopeRegistry))) {
+                    throw new Error("candidate policy or scope registry drifted before effect commit");
                   }
-                }
-              },
-            });
-            mkdirSync(appliedRoot, { recursive: true });
-            if (existsSync(expected.expectedHandoffPath) && !existsSync(appliedPath)) renameSync(expected.expectedHandoffPath, appliedPath);
-            const reviewEffects = plan?.effects.filter((effect) => effect.type === "mandatory_review") || [];
-            result = {
-              status: "terminal",
-              workspaceId,
-              runId: expected.runId,
-              handoffDigest: handoff.handoffDigest,
-              dispositions: reviewEffects.map((effect) => ({
-                actionId: effect.actionId,
-                operationId: plan!.planId,
-                disposition: "review_pending",
-                artifactRef: null,
-              })),
-              projectionDigest: plan ? sha256Digest(canonicalizeJcs(plan)) : handoff.handoffDigest,
-              appliedPath,
-            };
+                  const current = compileMemoryCandidateReportV2({
+                    workspace: workspace.workspacePath,
+                    workspaceId,
+                    snapshotAt: now(),
+                    batchId: batch.batchId,
+                    policy: livePolicy,
+                    scopeRegistry: liveRegistry,
+                    executionMode: "materialize",
+                  });
+                  for (const [candidateId, candidateScope] of Object.entries(candidateScopes)) {
+                    const currentCluster = current.candidates.find((candidate) => candidate.candidateId === candidateId);
+                    if (!currentCluster || canonicalizeJcs(currentCluster.effectiveScope) !== canonicalizeJcs(candidateScope)) {
+                      throw new Error(`candidate source or scope drifted before effect commit: ${candidateId}`);
+                    }
+                  }
+                },
+              });
+              mkdirSync(appliedRoot, { recursive: true });
+              if (existsSync(expected.expectedHandoffPath) && !existsSync(appliedPath)) renameSync(expected.expectedHandoffPath, appliedPath);
+              const reviewEffects = plan?.effects.filter((effect) => effect.type === "mandatory_review") || [];
+              const appliedEffects = plan?.effects.filter((effect) => effect.type === "rule_proposal" && effect.payload.reviewRequired === false) || [];
+              result = {
+                status: "terminal",
+                workspaceId,
+                runId: expected.runId,
+                handoffDigest: handoff.handoffDigest,
+                dispositions: [...reviewEffects.map((effect) => ({
+                  actionId: effect.actionId,
+                  operationId: plan!.planId,
+                  disposition: "review_pending",
+                  artifactRef: null,
+                })), ...appliedEffects.map((effect) => ({
+                  actionId: effect.actionId,
+                  operationId: plan!.planId,
+                  disposition: "verified",
+                  artifactRef: `memory-state/oll/rules`,
+                }))],
+                projectionDigest: plan ? sha256Digest(canonicalizeJcs(plan)) : handoff.handoffDigest,
+                appliedPath,
+              };
+            }
           } else {
             const applicator = options.applyHandoff || applyRethinkHandoffFile;
             result = applicator({

@@ -20,6 +20,7 @@ import {
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "watchdog.js");
 let workspace;
+const TODAY = new Date().toISOString().slice(0, 10);
 
 function createCleanWorkspace(root, { agent = "agent-main", project = "alpha" } = {}) {
   mkdirSync(join(root, "memory", "domains"), { recursive: true });
@@ -34,7 +35,7 @@ function createCleanWorkspace(root, { agent = "agent-main", project = "alpha" } 
     cron: { expectedJobName: `Heartbeat (Engram runner) — ${project}` },
   }, null, 2) + "\n");
   writeFileSync(join(root, "memory", "heartbeat-state.json"), JSON.stringify({
-    lastDailyNoteCreated: { main: "2026-07-15" },
+    lastDailyNoteCreated: { main: TODAY },
   }, null, 2) + "\n");
   mkdirSync(join(root, "memory-state", "oll"), { recursive: true });
   for (const directory of [

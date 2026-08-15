@@ -266,7 +266,7 @@ engram --version
 | Meta-domain | `references/meta-domain.md` |
 | OLL | `references/oll.md` |
 | OLL nightly adaptation — implemented runtime, clean-install contract, canary evidence and gated rollout | `references/oll-nightly-adaptation.md` |
-| OLL memory candidate compiler — bounded multi-source evidence, review-only handoff v3, guarded Phase 5 rollout/rollback | `references/oll-memory-candidates.md` |
+| OLL memory candidate compiler — bounded multi-source evidence, optimistic active-rule promotion, numbered notification/rollback | `references/oll-memory-candidates.md` |
 | Hooks | `references/hooks.md` |
 | Домены субагентов | `references/subagent-memory.md` |
 | Telegram topic-thread | `references/topic-thread.md` |

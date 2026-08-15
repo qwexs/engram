@@ -5,6 +5,11 @@ import { join } from "node:path";
 import { loadActorRegistry, type TrustedActorContext } from "../src/oll/authorization";
 import { computeActionIdV3, computeHandoffDigestV3, type RethinkActionV3, type RethinkHandoffV3 } from "../src/oll/handoff-v3";
 import { sha256Digest, type Digest } from "../src/oll/handoff-v2";
+import {
+  acknowledgeRuleActivationNotification,
+  listPendingRuleActivationNotifications,
+  suspendRulesFromNotification,
+} from "../src/oll/adaptation-store";
 import { compileMemoryCandidateReportV2 } from "../src/oll/memory-candidate-compiler-v2";
 import {
   MEMORY_CANDIDATE_POLICY_V2_SCHEMA,
@@ -225,6 +230,71 @@ function outcome(input: { review: any; disposition: "approved" | "rejected" | "e
 }
 
 describe("OLL memory candidate Phase 4 runtime", () => {
+  test("optimistically activates a candidate rule, queues its numbered notification, and suspends it by reply item", () => {
+    const input = fixture(1);
+    const stateRoot = join(input.root, "state-root");
+    mkdirSync(stateRoot, { recursive: true });
+    writeJson(join(input.root, "engram.json"), {
+      workspace: { id: "main" },
+      oll: { adaptation: { mode: "active" } },
+    });
+    const value = handoff(input);
+    const plan = applyCandidateHandoffV3({
+      workspace: input.root,
+      workspaceId: "main",
+      handoff: value,
+      scopeRegistry: input.scopeRegistry,
+      now: NOW,
+      liveRevalidate: LIVE_REVALIDATE,
+      optimisticApply: true,
+      stateRoot,
+      notificationSession: "telegram-direct-42",
+    })!;
+    expect(plan.status).toBe("terminal");
+    expect(plan.reasonCode).toBe("optimistic_apply");
+    expect(plan.effects).toHaveLength(1);
+    expect(plan.effects[0].type).toBe("rule_proposal");
+    expect(plan.effects[0].type === "rule_proposal" && plan.effects[0].payload.reviewRequired).toBe(false);
+    expect(input.report.candidates.every((candidate) => readCandidateProjectionV1({
+      workspace: input.root,
+      workspaceId: "main",
+      candidateId: candidate.candidateId,
+    })!.cluster.lifecycle.status === "evaluated")).toBe(true);
+
+    const rulesDirectory = join(input.root, "memory-state", "oll", "rules");
+    const rulePath = join(rulesDirectory, readdirSync(rulesDirectory)[0]);
+    expect(JSON.parse(readFileSync(rulePath, "utf8"))).toEqual(expect.objectContaining({ status: "active", revision: 1 }));
+    expect(readdirSync(join(candidateRuntimePathsV1(input.root).root, "reviews"))).toHaveLength(0);
+    const [pending] = listPendingRuleActivationNotifications({ workspace: input.root });
+    expect(pending.messageText).toContain("Я самоулучшаюсь");
+    expect(pending.messageText).toContain("Отменить 1");
+    const delivered = acknowledgeRuleActivationNotification({ workspace: input.root, notificationId: pending.notificationId, messageId: "telegram-message-42", now: NOW });
+    expect(delivered.status).toBe("delivered");
+    const reverted = suspendRulesFromNotification({
+      workspace: input.root,
+      stateRoot,
+      replyMessageId: "telegram-message-42",
+      itemNumbers: [1],
+      now: "2026-08-14T15:05:00.000Z",
+    });
+    expect(reverted.notification.status).toBe("reverted");
+    expect(JSON.parse(readFileSync(rulePath, "utf8"))).toEqual(expect.objectContaining({ status: "suspended", revision: 2 }));
+
+    const replay = applyCandidateHandoffV3({
+      workspace: input.root,
+      workspaceId: "main",
+      handoff: value,
+      scopeRegistry: input.scopeRegistry,
+      now: "2026-08-14T15:06:00.000Z",
+      liveRevalidate: LIVE_REVALIDATE,
+      optimisticApply: true,
+      stateRoot,
+      notificationSession: "telegram-direct-42",
+    })!;
+    expect(replay.planId).toBe(plan.planId);
+    expect(readdirSync(rulesDirectory)).toHaveLength(1);
+  });
+
   test("reserves the whole candidate set before publishing an effect and resumes the same WAL plan", () => {
     const input = fixture(2);
     const value = handoff(input);

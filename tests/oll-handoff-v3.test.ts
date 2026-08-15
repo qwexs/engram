@@ -158,10 +158,10 @@ describe("OLL rethink handoff v3", () => {
     expect(replay.status).toBe("replayed");
   });
 
-  test("rejects auto-apply semantics for memory evidence before application", () => {
+  test("accepts model auto-apply metadata while leaving activation to the deterministic applicator", () => {
     const env = setup();
-    const invalid = handoff(env, { reviewDisposition: "auto_apply" });
-    expect(() => parseRethinkHandoffV3(JSON.stringify(invalid), env.expected, env.expected.expectedHandoffPath)).toThrow("proposal-only and review-required");
+    const value = handoff(env, { reviewDisposition: "auto_apply" });
+    expect(parseRethinkHandoffV3(JSON.stringify(value), env.expected, env.expected.expectedHandoffPath)).toEqual(value);
   });
 
   test("replays candidate dispositions after a crash before the terminal journal event", () => {

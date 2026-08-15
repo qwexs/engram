@@ -85,11 +85,13 @@ describe("PR 7 OpenClaw scheduler deployment boundary", () => {
     expect(scriptPayload.timeoutSeconds).toBe(900);
     expect(scriptPayload.script).toContain("SCRIPT_DEADLINE_MS");
     expect(scriptPayload.script).toContain("RUNTIME_SOURCE_REVISION");
-    expect(scriptPayload.toolsAllow).toEqual(["exec", "process", "sessions_spawn"]);
+    expect(scriptPayload.toolsAllow).toEqual(["exec", "process", "sessions_spawn", "message"]);
     expect(scriptPayload.script).toContain('tools.callValue("process", { action: "poll", sessionId');
     expect(scriptPayload.script).toContain('value?.status === "running"');
     expect(scriptPayload.script).toContain("existing.spawnedCwd ?? existing.spawnedWorkspaceDir");
     expect(scriptPayload.script).toContain("JSON.stringify(encodeURIComponent(dispatchError))");
+    expect(scriptPayload.script).toContain('tools.callValue("message", args)');
+    expect(scriptPayload.script).toContain("oll-rule-notifications.ts");
     expect(scriptPayload.script).toContain("--scheduler-declaration");
     expect(scriptPayload.script).toContain('\\"--allowed-root\\"');
     const rolledBack = run(env, ["--action", "rollback", "--backup-path", result.backupPath, "--ack-scheduler-rollback"]);

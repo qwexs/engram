@@ -287,7 +287,7 @@ export type CandidatePlannedEffectV1 = {
       ruleId: string;
       ruleText: string;
       ruleTextDigest: Digest;
-      reviewRequired: true;
+      reviewRequired: boolean;
     };
   }
   | {
@@ -400,6 +400,7 @@ export const CANDIDATE_REASON_REGISTRY = {
   reservation_acquired: { category: "lifecycle", terminal: false, retryable: false, contentFree: true },
   plan_cancelled_before_effect: { category: "lifecycle", terminal: false, retryable: true, contentFree: true },
   review_created: { category: "review", terminal: false, retryable: false, contentFree: true },
+  optimistic_apply: { category: "lifecycle", terminal: true, retryable: false, contentFree: true },
   review_approved: { category: "review", terminal: true, retryable: false, contentFree: true },
   review_rejected_retryable: { category: "review", terminal: false, retryable: true, contentFree: true },
   review_rejected_terminal: { category: "review", terminal: true, retryable: false, contentFree: true },
@@ -433,6 +434,7 @@ const CANDIDATE_LIFECYCLE_TRANSITION_CORE = [
   { from: "deferred", to: "pending", reasonCodes: ["selected"], terminal: false, requiresReservationOwner: false, releasesReservation: false, correlationIds: ["candidateId", "assessmentId"] },
   { from: "deferred", to: "invalidated", reasonCodes: ["scope_revoked", "source_revoked", "source_superseded", "source_retracted"], terminal: true, requiresReservationOwner: false, releasesReservation: false, correlationIds: ["candidateId", "eventId"] },
   { from: "reserved", to: "review_pending", reasonCodes: ["review_created"], terminal: false, requiresReservationOwner: true, releasesReservation: false, correlationIds: ["candidateId", "operationId"] },
+  { from: "reserved", to: "evaluated", reasonCodes: ["optimistic_apply"], terminal: true, requiresReservationOwner: true, releasesReservation: true, correlationIds: ["candidateId", "operationId"] },
   { from: "reserved", to: "pending", reasonCodes: ["plan_cancelled_before_effect"], terminal: false, requiresReservationOwner: true, releasesReservation: true, correlationIds: ["candidateId", "operationId"] },
   { from: "reserved", to: "deferred", reasonCodes: ["review_policy_rejected_retryable"], terminal: false, requiresReservationOwner: true, releasesReservation: true, correlationIds: ["candidateId", "operationId"] },
   { from: "reserved", to: "dismissed", reasonCodes: ["review_policy_rejected_terminal"], terminal: true, requiresReservationOwner: true, releasesReservation: true, correlationIds: ["candidateId", "operationId"] },
@@ -816,7 +818,7 @@ function validateCandidateLifecycle(value: unknown): CandidateLifecycleV1 {
   const lifecycleReasons: Record<CandidateLifecycleStatus, readonly CandidateReasonCode[]> = {
     pending: ["admitted", "selected", "plan_cancelled_before_effect"],
     deferred: ["not_selected", "source_quota", "byte_budget", "cold_provenance_only", "source_unstable", "review_rejected_retryable", "review_expired_retryable", "review_policy_rejected_retryable"],
-    reserved: ["reservation_acquired"], review_pending: ["review_created"], evaluated: ["review_approved"],
+    reserved: ["reservation_acquired"], review_pending: ["review_created"], evaluated: ["review_approved", "optimistic_apply"],
     dismissed: ["explicit_ignore", "review_rejected_terminal", "review_expired_terminal", "review_policy_rejected_terminal"],
     invalidated: ["scope_revoked", "source_revoked", "source_superseded", "source_retracted"],
   };
@@ -1097,7 +1099,7 @@ export function validateCandidateReservationV1(value: unknown): CandidateReserva
   invariant(["held", "released", "review_pending", "quarantined"].includes(String(row.status)), "reservation status is invalid");
   reasonCode(row.reasonCode, "reservation reasonCode");
   const reservationReasons: Record<CandidateReservationV1["status"], readonly CandidateReasonCode[]> = {
-    held: ["reservation_acquired"], released: ["plan_cancelled_before_effect", "review_policy_rejected_retryable", "review_policy_rejected_terminal"],
+    held: ["reservation_acquired"], released: ["plan_cancelled_before_effect", "review_policy_rejected_retryable", "review_policy_rejected_terminal", "optimistic_apply"],
     review_pending: ["review_created"], quarantined: ["operator_quarantine", "payload_conflict"],
   };
   invariant(reservationReasons[row.status as CandidateReservationV1["status"]].includes(row.reasonCode as CandidateReasonCode), "reservation status/reason mismatch");
@@ -1122,7 +1124,7 @@ export function validateCandidatePlannedEffectV1(value: unknown): CandidatePlann
     invariant(typeof payload.ruleText === "string" && payload.ruleText.length > 0 && payload.ruleText.length <= 4000, "rule proposal ruleText is invalid");
     digest(payload.ruleTextDigest, "rule proposal ruleTextDigest");
     invariant(payload.ruleTextDigest === sha256Digest(payload.ruleText as string), "rule proposal ruleTextDigest mismatch");
-    invariant(payload.reviewRequired === true, "candidate rule proposal must require review");
+    invariant(typeof payload.reviewRequired === "boolean", "candidate rule proposal reviewRequired must be boolean");
   } else {
     const payload = exactKeys(row.payload, ["reviewId", "operationId", "ruleId", "expectedReviewRevision", "requiredAction", "requiredGrant", "registryRevision", "registryDigest", "assignedReviewer"], "mandatory review payload");
     digest(payload.reviewId, "mandatory review reviewId");
@@ -1166,14 +1168,15 @@ export function validateCandidateApplyPlanV1(value: unknown, context: { scopeReg
   }
   const proposals = effects.filter((effect): effect is Extract<CandidatePlannedEffectV1, { type: "rule_proposal" }> => effect.type === "rule_proposal");
   const reviews = effects.filter((effect): effect is Extract<CandidatePlannedEffectV1, { type: "mandatory_review" }> => effect.type === "mandatory_review");
-  invariant(proposals.length > 0 && reviews.length === proposals.length, "apply plan requires exactly one mandatory review per rule proposal");
+  invariant(proposals.length > 0, "apply plan requires at least one rule proposal");
+  invariant(reviews.length === proposals.filter((proposal) => proposal.payload.reviewRequired).length, "apply plan review count does not match review-required proposals");
   invariant(reviews.every((review) => review.payload.operationId === row.operationId), "mandatory review operationId must match apply plan");
   for (const proposal of proposals) {
     const matches = reviews.filter((review) => review.actionId === proposal.actionId
       && review.payload.ruleId === proposal.payload.ruleId
       && canonicalizeJcs(review.candidateRevisions) === canonicalizeJcs(proposal.candidateRevisions)
       && canonicalizeJcs(review.effectiveScope) === canonicalizeJcs(proposal.effectiveScope));
-    invariant(matches.length === 1, "rule proposal must have one correlated mandatory review");
+    invariant(matches.length === (proposal.payload.reviewRequired ? 1 : 0), "rule proposal review correlation does not match reviewRequired");
   }
   invariant(reviews.every((review) => proposals.some((proposal) => proposal.actionId === review.actionId && proposal.payload.ruleId === review.payload.ruleId)), "mandatory review must correlate to a rule proposal");
   invariant(row.effectCommits !== null && typeof row.effectCommits === "object" && !Array.isArray(row.effectCommits), "apply plan effectCommits must be an object");
@@ -1190,7 +1193,7 @@ export function validateCandidateApplyPlanV1(value: unknown, context: { scopeReg
   reasonCode(row.reasonCode, "apply plan reasonCode");
   const planReasons: Record<CandidateApplyPlanV1["status"], readonly CandidateReasonCode[]> = {
     intent_recorded: ["admitted"], reserving: ["reservation_acquired"], applying: ["reservation_acquired", "review_created"],
-    terminal: ["review_created", "replay_verified"], quarantined: ["operator_quarantine", "payload_conflict"],
+    terminal: ["review_created", "optimistic_apply", "replay_verified"], quarantined: ["operator_quarantine", "payload_conflict"],
     cancelled: ["plan_cancelled_before_effect", "review_policy_rejected_retryable", "review_policy_rejected_terminal"],
   };
   invariant(planReasons[row.status as CandidateApplyPlanV1["status"]].includes(row.reasonCode as CandidateReasonCode), "apply plan status/reason mismatch");
@@ -1454,14 +1457,14 @@ export const MEMORY_CANDIDATE_CONTRACT_JSON_SCHEMAS = {
     required: ["schema", "effectId", "actionId", "candidateRevisions", "effectiveScope", "type", "payload"],
     properties: { schema: { const: MEMORY_CANDIDATE_EFFECT_V1_SCHEMA }, effectId: digestJsonSchema, actionId: digestJsonSchema, candidateRevisions: { type: "object", minProperties: 1, propertyNames: digestJsonSchema, additionalProperties: { type: "integer", minimum: 1 } }, effectiveScope: scopeJsonSchema, type: { enum: ["rule_proposal", "mandatory_review"] }, payload: { type: "object" } },
     oneOf: [
-      { properties: { type: { const: "rule_proposal" }, payload: { type: "object", additionalProperties: false, required: ["ruleId", "ruleText", "ruleTextDigest", "reviewRequired"], properties: { ruleId: { type: "string", minLength: 1, maxLength: 100 }, ruleText: { type: "string", minLength: 1, maxLength: 4000 }, ruleTextDigest: digestJsonSchema, reviewRequired: { const: true } } } } },
+      { properties: { type: { const: "rule_proposal" }, payload: { type: "object", additionalProperties: false, required: ["ruleId", "ruleText", "ruleTextDigest", "reviewRequired"], properties: { ruleId: { type: "string", minLength: 1, maxLength: 100 }, ruleText: { type: "string", minLength: 1, maxLength: 4000 }, ruleTextDigest: digestJsonSchema, reviewRequired: { type: "boolean" } } } } },
       { properties: { type: { const: "mandatory_review" }, payload: { type: "object", additionalProperties: false, required: ["reviewId", "operationId", "ruleId", "expectedReviewRevision", "requiredAction", "requiredGrant", "registryRevision", "registryDigest", "assignedReviewer"], properties: { reviewId: digestJsonSchema, operationId: digestJsonSchema, ruleId: { type: "string", minLength: 1, maxLength: 100 }, expectedReviewRevision: { type: "integer", minimum: 1 }, requiredAction: { type: "string", minLength: 1, maxLength: 100 }, requiredGrant: { type: "string", minLength: 1, maxLength: 100 }, registryRevision: { type: "integer", minimum: 1 }, registryDigest: digestJsonSchema, assignedReviewer: { anyOf: [{ type: "null" }, { type: "string", minLength: 1, maxLength: 300 }] } } } } },
     ],
   },
   applyPlan: {
     $id: MEMORY_CANDIDATE_APPLY_PLAN_V1_SCHEMA, type: "object", additionalProperties: false,
     required: ["schema", "planId", "operationId", "batchId", "workspaceId", "contextDigest", "handoffDigest", "candidateRevisions", "reservations", "effects", "effectCommits", "status", "reasonCode", "createdAt", "updatedAt"],
-    properties: { schema: { const: MEMORY_CANDIDATE_APPLY_PLAN_V1_SCHEMA }, planId: digestJsonSchema, operationId: digestJsonSchema, batchId: { type: "string", minLength: 1, maxLength: 300 }, workspaceId: { type: "string", pattern: "^[a-z][a-z0-9_-]{0,63}$" }, contextDigest: digestJsonSchema, handoffDigest: digestJsonSchema, candidateRevisions: { type: "object", minProperties: 1, propertyNames: digestJsonSchema, additionalProperties: { type: "integer", minimum: 1 } }, reservations: { type: "array", minItems: 1, items: { $ref: MEMORY_CANDIDATE_RESERVATION_V1_SCHEMA } }, effects: { type: "array", minItems: 2, uniqueItems: true, items: { $ref: MEMORY_CANDIDATE_EFFECT_V1_SCHEMA } }, effectCommits: { type: "object", minProperties: 2, propertyNames: digestJsonSchema, additionalProperties: { type: "object", additionalProperties: false, required: ["payloadDigest", "status", "committedAt"], properties: { payloadDigest: digestJsonSchema, status: { enum: ["pending", "committed"] }, committedAt: { anyOf: [{ type: "null" }, instantJsonSchema] } } } }, status: { enum: ["intent_recorded", "reserving", "applying", "terminal", "quarantined", "cancelled"] }, reasonCode: { enum: Object.keys(CANDIDATE_REASON_REGISTRY) }, createdAt: instantJsonSchema, updatedAt: instantJsonSchema },
+    properties: { schema: { const: MEMORY_CANDIDATE_APPLY_PLAN_V1_SCHEMA }, planId: digestJsonSchema, operationId: digestJsonSchema, batchId: { type: "string", minLength: 1, maxLength: 300 }, workspaceId: { type: "string", pattern: "^[a-z][a-z0-9_-]{0,63}$" }, contextDigest: digestJsonSchema, handoffDigest: digestJsonSchema, candidateRevisions: { type: "object", minProperties: 1, propertyNames: digestJsonSchema, additionalProperties: { type: "integer", minimum: 1 } }, reservations: { type: "array", minItems: 1, items: { $ref: MEMORY_CANDIDATE_RESERVATION_V1_SCHEMA } }, effects: { type: "array", minItems: 1, uniqueItems: true, items: { $ref: MEMORY_CANDIDATE_EFFECT_V1_SCHEMA } }, effectCommits: { type: "object", minProperties: 1, propertyNames: digestJsonSchema, additionalProperties: { type: "object", additionalProperties: false, required: ["payloadDigest", "status", "committedAt"], properties: { payloadDigest: digestJsonSchema, status: { enum: ["pending", "committed"] }, committedAt: { anyOf: [{ type: "null" }, instantJsonSchema] } } } }, status: { enum: ["intent_recorded", "reserving", "applying", "terminal", "quarantined", "cancelled"] }, reasonCode: { enum: Object.keys(CANDIDATE_REASON_REGISTRY) }, createdAt: instantJsonSchema, updatedAt: instantJsonSchema },
   },
   reviewOutcome: {
     $id: MEMORY_CANDIDATE_REVIEW_OUTCOME_V1_SCHEMA, type: "object", additionalProperties: false,

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { NightlySpawnRequestV1, RegistrySnapshotV1, WorkspaceRegistryAdapter } from "../src/oll/contracts";
 import { canonicalizeJcs, computeHandoffDigest, sha256Digest } from "../src/oll/handoff-v2";
-import { computeHandoffDigestV3, type RethinkHandoffV3 } from "../src/oll/handoff-v3";
+import { computeActionIdV3, computeHandoffDigestV3, type RethinkHandoffV3 } from "../src/oll/handoff-v3";
 import { runNightlyCoordinator } from "../src/oll/nightly-coordinator";
 import { readCandidateProjectionV1 } from "../src/oll/memory-candidate-store-v2";
 import { candidateRuntimePathsV1 } from "../src/oll/memory-candidate-runtime-v2";
@@ -67,7 +67,12 @@ function createWorkspace(parent: string, id: string, actionable = true): string 
       schema: "oll.adaptation-signal.v1", id: signalId, workspaceId: id, type: "correction",
       scope: { level: "workspace", subject: id, domain: null },
       statement: "Use the approved report format", expectedBehavior: "Use it in the next report",
-      evidence: [], capturedBy: "fixture", authorizationDecision: { status: "review_required" },
+      evidence: [], capturedBy: "fixture", authorizationDecision: {
+        status: "review_required", resolverVersion: 1, principalId: null, grantId: null,
+        registryRevision: 1, registryDigest: sha256Digest(""),
+        requestedScope: { level: "workspace", subject: id, domain: null },
+        reason: "fixture requires review",
+      },
       dedupKey: sha256Digest(id), confidence: 1, status: "review_required", createdAt: "2026-08-11T00:30:00.000Z", reviewedAt: null, revision: 1,
     });
   }
@@ -396,6 +401,71 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
     const candidateId = context.memoryCandidates[0].candidateId;
     expect(readCandidateProjectionV1({ workspace: env.workspaces.alpha, workspaceId: "alpha", candidateId })?.cluster.lifecycle.status).toBe("deferred");
     expect(readdirSync(join(candidateRuntimePathsV1(env.workspaces.alpha).root, "rule-proposals"))).toEqual([]);
+  });
+
+  test("materialize routes a signal-only v3 action through the adaptation applicator after candidate dispositions", async () => {
+    const env = environment([{ id: "alpha" }]);
+    configureCandidateCompiler(env.workspaces.alpha, "alpha", "materialize");
+    const runtime = new FakeNightlyRuntime((spawnRequest, current) => {
+      const context = JSON.parse(readFileSync(spawnRequest.contextSnapshotPath, "utf8"));
+      const signal = context.signals[0];
+      const actionWithoutId = {
+        type: "propose_rule" as const,
+        payload: {
+          ruleId: null,
+          rule: "Use the approved report format",
+          sourceSignals: [signal.id],
+          sourceCandidates: [],
+          scope: { level: "workspace" as const, subject: "alpha" },
+          risk: "medium" as const,
+          rationale: "Preserve the approved report workflow",
+          expectedImprovement: "Consistent report structure",
+          costOfInaction: "Repeated formatting drift",
+          rollbackRef: "suspend:generated",
+          expectedRuleRevision: null,
+          authorizationResult: {
+            status: signal.authorizationDecision.status,
+            principalId: signal.authorizationDecision.principalId,
+            grantId: signal.authorizationDecision.grantId,
+            registryRevision: signal.authorizationDecision.registryRevision,
+            registryDigest: signal.authorizationDecision.registryDigest,
+            reason: signal.authorizationDecision.reason,
+          },
+          policyVersion: 1 as const,
+          reviewDisposition: "review_required" as const,
+        },
+      };
+      const action = { ...actionWithoutId, actionId: computeActionIdV3(spawnRequest.evaluationId, 0, actionWithoutId) };
+      const withoutDigest: Omit<RethinkHandoffV3, "handoffDigest"> = {
+        schema: "oll.rethink-handoff.v3",
+        batchId: spawnRequest.batchId,
+        workspaceId: spawnRequest.workspaceId,
+        evaluationId: spawnRequest.evaluationId,
+        runId: spawnRequest.runId,
+        phase: "hb-rethink",
+        attempt: spawnRequest.attempt,
+        policyVersion: 1,
+        contextDigest: spawnRequest.contextDigest,
+        createdAt: NOW,
+        actions: [action],
+        candidateDispositions: Object.entries(context.candidateRevisions).map(([candidateId, revision]) => ({
+          candidateId: candidateId as `sha256:${string}`,
+          expectedRevision: Number(revision),
+          disposition: "deferred" as const,
+          rationale: "needs more evidence",
+        })),
+      };
+      write(spawnRequest.expectedHandoffPath, { ...withoutDigest, handoffDigest: computeHandoffDigestV3(withoutDigest) });
+      current.queueHandoff(spawnRequest.expectedHandoffPath);
+    });
+
+    const report = await runNightlyCoordinator(coordinatorOptions(env, runtime));
+
+    expect(report).toMatchObject({ status: "completed", completed: ["alpha"], failed: [], spawned: 1 });
+    const rulesDir = join(env.workspaces.alpha, "memory-state", "oll", "rules");
+    expect(readdirSync(rulesDir)).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(rulesDir, readdirSync(rulesDir)[0]), "utf8"))).toMatchObject({ status: "proposed" });
+    expect(readdirSync(join(env.workspaces.alpha, "memory-state", "oll", "reviews"))).toHaveLength(1);
   });
 
   test("accepts fleet reconciliation evidence from the deployment wrapper without reconciling the canary twice", async () => {

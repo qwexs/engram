@@ -58,7 +58,7 @@ const PENDING_EVIDENCE_SCHEMA = "oll.memory-candidate-pending-evidence.v1" as co
 const QUARANTINE_SCHEMA = "oll.memory-candidate-quarantine.v1" as const;
 const REVISION_NAME = /^([0-9]{20})\.json$/;
 
-type JournalEventKind = "materialized" | "evidence_merged" | "lifecycle_transition" | "reservation_acquired" | "reservation_released" | "review_pending" | "review_outcome";
+type JournalEventKind = "materialized" | "evidence_merged" | "lifecycle_transition" | "reservation_acquired" | "reservation_released" | "review_pending" | "review_outcome" | "optimistic_applied";
 
 interface CandidateJournalEventV1 {
   schema: typeof JOURNAL_EVENT_SCHEMA;
@@ -294,7 +294,7 @@ function revisionPath(root: string, candidateId: Digest, revision: number): stri
 function validateJournalEvent(value: CandidateJournalEventV1, previous: CandidateJournalEventV1 | null): CandidateJournalEventV1 {
   invariant(value.schema === JOURNAL_EVENT_SCHEMA, "journal event schema mismatch");
   invariant(value.revision >= 1 && Number.isInteger(value.revision), "journal revision is invalid");
-  invariant(["materialized", "evidence_merged", "lifecycle_transition", "reservation_acquired", "reservation_released", "review_pending", "review_outcome"].includes(value.kind), "journal event kind is invalid");
+  invariant(["materialized", "evidence_merged", "lifecycle_transition", "reservation_acquired", "reservation_released", "review_pending", "review_outcome", "optimistic_applied"].includes(value.kind), "journal event kind is invalid");
   invariant(value.cluster.candidateId === value.candidateId && value.cluster.workspaceId === value.workspaceId, "journal event correlation mismatch");
   invariant(value.cluster.lifecycle.revision === value.revision, "journal cluster revision mismatch");
   validateCandidateClusterV1(value.cluster);
@@ -953,6 +953,52 @@ export function releaseCandidateReservationV1(options: {
         reasonCode: options.reasonCode,
         reservationOwner: null,
         correlationId: options.planId,
+        updatedAt: options.now,
+      },
+    },
+    reservation: null,
+  });
+}
+
+export function markCandidateOptimisticAppliedV1(options: {
+  workspace: string;
+  workspaceId: string;
+  planId: Digest;
+  candidateId: Digest;
+  expectedRevision: number;
+  operationId: Digest;
+  now: string;
+}): CandidateProjectionV1 {
+  const projection = readCandidateProjectionV1(options);
+  if (projection && projection.highestContiguousRevision > options.expectedRevision
+    && projection.cluster.lifecycle.status === "evaluated"
+    && projection.cluster.lifecycle.reasonCode === "optimistic_apply"
+    && projection.cluster.lifecycle.correlationId === options.operationId) return projection;
+  invariant(projection && projection.highestContiguousRevision === options.expectedRevision, "optimistic apply revision CAS conflict");
+  invariant(projection.cluster.lifecycle.status === "reserved"
+    && projection.cluster.lifecycle.reservationOwner === options.planId
+    && projection.reservation?.planId === options.planId
+    && projection.reservation.status === "held", "optimistic apply reservation owner mismatch");
+  validateLifecycleTransition("reserved", "evaluated", "optimistic_apply");
+  const root = ensureStoreRoot(options.workspace);
+  const events = readJournal(root, options.workspaceId, options.candidateId);
+  return appendEvent(root, {
+    schema: JOURNAL_EVENT_SCHEMA,
+    workspaceId: options.workspaceId,
+    candidateId: options.candidateId,
+    revision: options.expectedRevision + 1,
+    kind: "optimistic_applied",
+    correlationId: options.operationId,
+    previousEventDigest: events.at(-1)!.eventDigest,
+    cluster: {
+      ...projection.cluster,
+      lifecycle: {
+        status: "evaluated",
+        revision: options.expectedRevision + 1,
+        evaluationEpoch: projection.cluster.evaluationEpoch,
+        reasonCode: "optimistic_apply",
+        reservationOwner: null,
+        correlationId: options.operationId,
         updatedAt: options.now,
       },
     },

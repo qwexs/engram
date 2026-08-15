@@ -765,7 +765,7 @@ describe("OLL memory candidate Phase 0B contracts", () => {
     expect(validateCandidateApplyPlanV1(plan, applyPlanContext(cluster))).toEqual(plan);
     expect(() => validateCandidateApplyPlanV1({ ...plan, candidateRevisions: {} }, applyPlanContext(cluster))).toThrow("exactly cover");
     expect(() => validateCandidateApplyPlanV1({ ...plan, handoffDigest: digest("different-handoff") }, applyPlanContext(cluster))).toThrow("planId mismatch");
-    expect(() => validateCandidateApplyPlanV1({ ...plan, effects: [effects[0]], effectCommits: { [effects[0].effectId]: plan.effectCommits[effects[0].effectId] } }, applyPlanContext(cluster))).toThrow("mandatory review");
+    expect(() => validateCandidateApplyPlanV1({ ...plan, effects: [effects[0]], effectCommits: { [effects[0].effectId]: plan.effectCommits[effects[0].effectId] } }, applyPlanContext(cluster))).toThrow("review count");
     const broadenedReview = { ...effects[1], effectiveScope: { level: "workspace" as const, subject: "main" } };
     const narrowCluster = { ...cluster, effectiveScope: { level: "domain" as const, subject: "engram" } };
     const broadenedEffects = [effects[0], { ...broadenedReview, effectId: candidateEffectId(broadenedReview) }];

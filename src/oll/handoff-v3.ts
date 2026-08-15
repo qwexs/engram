@@ -157,13 +157,7 @@ function parseAction(value: unknown, evaluationId: string, ordinal: number, expe
   if (payload.policyVersion !== 1) fail("policyVersion must equal 1");
   if (!["auto_apply", "review_required", "reject"].includes(String(payload.reviewDisposition))) fail("reviewDisposition is invalid");
   const auth = authorization(payload.authorizationResult);
-  if (sourceCandidates.length && (
-    actionType !== "propose_rule"
-    || payload.reviewDisposition !== "review_required"
-    || auth.status !== "review_required"
-    || auth.principalId !== null
-    || auth.grantId !== null
-  )) fail("memory candidate evidence is proposal-only and review-required");
+  if (sourceCandidates.length && actionType !== "propose_rule") fail("memory candidate evidence may only produce a scoped rule proposal");
   const action: RethinkActionV3 = {
     type: actionType,
     actionId: string(row.actionId, "actionId", 71, DIGEST_RE) as Digest,
@@ -278,12 +272,11 @@ export function buildRethinkProposalPromptV3(input: {
     })}`,
     `Allowed actions: ${RETHINK_ACTION_TYPES.join(", ")}`,
     "Behavioral sourceSignals retain their frozen authorization contract.",
-    "Memory sourceCandidates are evidence only: any action citing one MUST be propose_rule, review_required, and authorization review_required with null principalId/grantId.",
+    "Memory sourceCandidates are evidence only: any action citing one MUST be propose_rule. The deterministic applicator, not the model, decides immediate activation and notification from the frozen workspace mode.",
     "Every context candidate MUST receive exactly one consumed, ignored, or deferred disposition. consumed means cited by a proposal; ignored means not useful; deferred means genuinely awaiting more evidence.",
     "Never broaden a candidate scope ceiling. Candidate evidence never authorizes activation, KG writes, external actions, source-code changes, or infrastructure changes.",
     ...(input.policyBoundaries || [
       "proposal-only: do not edit files except the exact handoff target",
-      "company, legal, safety, privacy, security, permission, and external-action changes require review",
       "never propose AGENTS.md, SOUL.md, skill, source-code, infrastructure, experiment, rethink2, or autoresearch changes",
     ]).map((line) => `- ${line}`),
     "Every actionId and handoffDigest must follow the JCS/SHA-256 contract. Unknown fields are rejected.",

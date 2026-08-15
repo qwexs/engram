@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -9,7 +9,8 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), "engram-qmd-cron-"));
   const workspace = join(root, "workspace");
   const manifest = join(root, "manifest.json");
-  Bun.write(join(workspace, "engram.json"), JSON.stringify({ agent: "main" }));
+  mkdirSync(workspace, { recursive: true });
+  writeFileSync(join(workspace, "engram.json"), JSON.stringify({ agent: "main" }));
   writeFileSync(manifest, JSON.stringify({
     schema: "engram.qmd.global-migration.v1",
     registry: { schema: "engram.qmd.global-registry.v1", index: { name: "test" }, workspaces: [], collections: [] },

@@ -15,7 +15,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, parse, relative, resolve, sep } from "node:path";
 import { canonicalizeJcs, sha256Digest, type Digest } from "./handoff-v2";
 import {
   CANDIDATE_SUPPORTED_VERSIONS_V1,
@@ -170,14 +170,16 @@ function inside(root: string, target: string): boolean {
 }
 
 function fsyncDirectory(path: string): void {
+  if (process.platform === "win32") return;
   const fd = openSync(path, constants.O_RDONLY);
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
 function ensureDirectory(path: string): void {
   const absolute = resolve(path);
-  const parts = absolute.split(sep).filter(Boolean);
-  let current: string = sep;
+  const parsed = parse(absolute);
+  const parts = absolute.slice(parsed.root.length).split(sep).filter(Boolean);
+  let current: string = parsed.root;
   for (const part of parts) {
     current = join(current, part);
     if (!existsSync(current)) mkdirSync(current, { mode: 0o700 });

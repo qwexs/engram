@@ -6,6 +6,7 @@
 import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync, lstatSync, realpathSync, symlinkSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execSync, spawnSync } from 'node:child_process';
 import { loadEngramConfig, resolveQmdCommand } from './config.js';
 import { addQmdCollectionSync, listQmdCollections, probeQmdExecutable } from './_lib/qmd-provision.js';
@@ -107,7 +108,7 @@ const WORKSPACE = resolve(args.workspace || process.cwd());
 const config = loadEngramConfig(WORKSPACE);
 const QMD = resolveQmdCommand(WORKSPACE);
 const agentId = args['agent-id'] || config.agent.replace(/^agent-/, '') || 'main';
-const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'assets', 'templates');
 const OSS_FALLBACK_MODEL = 'sonnet-4-6';
@@ -117,6 +118,17 @@ const INITIAL_ENGRAM_CONFIG_PATH = join(WORKSPACE, 'engram.json');
 const INITIAL_OLL_STATE_PATH = join(WORKSPACE, 'memory-state', 'oll', 'state.json');
 const FRESH_OLL_INSTALL = !existsSync(INITIAL_ENGRAM_CONFIG_PATH) && !existsSync(INITIAL_OLL_STATE_PATH);
 const EXISTING_OLL_ROLLOUT_REQUIRED = config?.oll?.nightly?.enabled === true || config?.oll?.adaptation?.mode === 'active';
+
+// A JavaScript override is useful for hermetic tests and local wrappers. Unix
+// can execute a shebang script directly, while Windows cannot; run it through
+// the current runtime on both platforms instead of relying on OS-specific
+// executable semantics.
+function runOpenClaw(argv, options = {}) {
+  const isJavaScript = /\.(?:c|m)?js$/i.test(OPENCLAW_BINARY);
+  const command = isJavaScript ? process.execPath : OPENCLAW_BINARY;
+  const args = isJavaScript ? [OPENCLAW_BINARY, ...argv] : argv;
+  return spawnSync(command, args, { shell: false, ...options });
+}
 
 // Generated cron payloads intentionally run from the workspace and use the
 // stable `./skills/engram/scripts/...` entrypoints. Make that contract true
@@ -145,7 +157,7 @@ function ensureWorkspaceSkillLink() {
   }
   try {
     mkdirSync(dirname(link), { recursive: true });
-    symlinkSync(canonical, link, 'dir');
+    symlinkSync(canonical, link, process.platform === 'win32' ? 'junction' : 'dir');
     recordCreate('workspace-skill-link', `skills/engram -> ${canonical}`);
     return true;
   } catch (error) {
@@ -803,10 +815,10 @@ function runBackfillDomainAgents() {
   }
 
   try {
-    execSync(
-      `bun ${join(SKILL_DIR, 'scripts', 'backfill-domain-agents.js')}`,
-      { stdio: 'pipe', cwd: WORKSPACE }
-    );
+    const result = spawnSync('bun', [join(SKILL_DIR, 'scripts', 'backfill-domain-agents.js')], {
+      stdio: 'pipe', cwd: WORKSPACE,
+    });
+    if (result.error || result.status !== 0) throw result.error || new Error(`exit ${result.status}`);
     recordCreate('backfill-domain-agents', 'completed');
   } catch (e) {
     recordWarn(`backfill-domain-agents.js failed: ${e.message}`);
@@ -854,7 +866,7 @@ function restartGateway() {
     return;
   }
   // Detect openclaw binary presence first to avoid hanging in test/CI env.
-  const version = spawnSync(OPENCLAW_BINARY, ['--version'], {
+  const version = runOpenClaw(['--version'], {
     encoding: 'utf-8',
     timeout: 5000,
     shell: false,
@@ -865,7 +877,7 @@ function restartGateway() {
     recordError(message);
     return;
   }
-  const restarted = spawnSync(OPENCLAW_BINARY, ['gateway', 'restart'], {
+  const restarted = runOpenClaw(['gateway', 'restart'], {
     encoding: 'utf-8',
     timeout: 10000,
     shell: false,
@@ -898,7 +910,7 @@ function verifyHookReadback() {
     return;
   }
 
-  const result = spawnSync(OPENCLAW_BINARY, ['hooks', 'list', '--json'], {
+  const result = runOpenClaw(['hooks', 'list', '--json'], {
     encoding: 'utf-8',
     timeout: 30000,
     shell: false,
@@ -1382,7 +1394,7 @@ function disableBuiltinSessionMemory() {
   // Check current value first to stay idempotent.
   let alreadyDisabled = false;
   try {
-    const r = spawnSync(OPENCLAW_BINARY, ['config', 'get', 'hooks.internal.entries.session-memory.enabled'], {
+    const r = runOpenClaw(['config', 'get', 'hooks.internal.entries.session-memory.enabled'], {
       encoding: 'utf-8',
       shell: false,
     });
@@ -1398,7 +1410,7 @@ function disableBuiltinSessionMemory() {
   }
 
   try {
-    const r = spawnSync(OPENCLAW_BINARY, [
+    const r = runOpenClaw([
       'config', 'set',
       'hooks.internal.entries.session-memory.enabled',
       'false',

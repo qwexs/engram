@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  chmodSync,
-  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -34,12 +32,7 @@ function harness(): { root: string; stateRoot: string; context: QmdContext; call
   const root = mkdtempSync(join(tmpdir(), "engram-maintenance-"));
   tempRoots.push(root);
   const workspace = join(root, "workspace");
-  const bin = join(root, "bin");
   mkdirSync(workspace);
-  mkdirSync(bin);
-  const executable = join(bin, "fake-qmd");
-  copyFileSync(fakeQmd, executable);
-  chmodSync(executable, 0o755);
   return {
     root,
     stateRoot: join(root, "state"),
@@ -49,7 +42,7 @@ function harness(): { root: string; stateRoot: string; context: QmdContext; call
       topology: "shared",
       selector: { kind: "named", name: "global" },
       physicalIndex: { path: join(root, "global.sqlite"), key: "global-index-key", exists: false },
-      command: { executable, prefixArgs: [] },
+      command: { executable: process.execPath, prefixArgs: [fakeQmd] },
       policy: {
         ownedCollections: ["main-technical"],
         readableCollections: ["main-technical"],
@@ -190,7 +183,7 @@ describe("runQmdMaintenance", () => {
     expect(invocations.map((entry) => entry.operation)).toEqual(["update", "embed"]);
     expect(invocations[0]!.argv).not.toContain("-c");
     expect(invocations[1]!.argv).toEqual([
-      "--index", "global", "embed", "--format", "json",
+      fakeQmd, "--index", "global", "embed", "--format", "json",
       "-c", "main-technical", "-c", "project-alpha", "-c", "project-beta",
     ]);
     expect(invocations[1]!.argv).not.toContain("-f");

@@ -7,6 +7,7 @@ import { parseArgs } from 'node:util';
 import { mkdirSync, readdirSync, existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerivedStatus } from './_lib/auto-derive-status.js';
 import { join, resolve, dirname, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { addQmdCollection } from './_lib/qmd-provision.js';
 
 const { values: args } = parseArgs({
@@ -131,7 +132,7 @@ const telegramChatIdArg = args['telegram-chat-id'];
 const telegramIconColor = args['telegram-icon-color'];
 const pending = args.pending;
 const WORKSPACE = process.cwd();
-const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'templates', 'domain');
 

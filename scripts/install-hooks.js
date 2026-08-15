@@ -65,6 +65,7 @@ import {
   copyFileSync,
 } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
@@ -120,7 +121,7 @@ Example workflow:
 
 // --- Resolve paths ---
 const SCRIPT_DIR = dirname(
-  new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'),
+  fileURLToPath(import.meta.url),
 );
 const SKILL_DIR = args['skill-dir']
   || process.env.ENGRAM_SKILL_DIR

@@ -53,7 +53,7 @@ describe("resolveQmdContext", () => {
     }, "yaml");
     const alias = `${root}-alias`;
     roots.push(alias);
-    symlinkSync(root, alias);
+    symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
 
     const context = resolveQmdContext({ value: alias, source: "explicit" }, runtime());
 

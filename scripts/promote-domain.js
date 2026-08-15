@@ -22,6 +22,7 @@
 import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { addQmdCollection } from './_lib/qmd-provision.js';
 
 const { values: args } = parseArgs({
@@ -124,7 +125,7 @@ console.log(`✅ registry.json: pending снят${wasPending ? '' : ' (force)'},
 // Опционально: перезаписать шаблоны
 if (refreshTemplates) {
   console.log('🔄 Перезаписываю шаблоны...');
-  const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
+  const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
   const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
   const TYPE_TEMPLATES = join(SKILL_DIR, 'templates', 'domain', entry.type);
   const TEMPLATES = join(SKILL_DIR, 'templates', 'domain');

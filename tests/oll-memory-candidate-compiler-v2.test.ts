@@ -302,10 +302,14 @@ describe("OLL memory candidate Phase 1 compiler", () => {
     write(join(root, "memory", "agent-main", "main", "2026-08-14.md"), `## Decisions\n- ${privateValue}\n`);
     const outside = join(root, "outside.md");
     write(outside, "## Decisions\n- escaped\n");
-    symlinkSync(outside, join(root, "memory", "agent-main", "main", "2026-08-15.md"));
+    // Windows requires a privileged symlink entitlement; the sensitive-text
+    // rejection below stays covered there, while POSIX CI also covers escapes.
+    if (process.platform !== "win32") {
+      symlinkSync(outside, join(root, "memory", "agent-main", "main", "2026-08-15.md"));
+    }
     const report = compile(root, p, registry, "2026-08-16T00:00:00.000Z");
     expect(report.rejectionCounts.sensitive_text).toBe(1);
-    expect(report.rejectionCounts.symlink_rejected).toBe(1);
+    if (process.platform !== "win32") expect(report.rejectionCounts.symlink_rejected).toBe(1);
     expect(JSON.stringify(report)).not.toContain(privateValue);
     expect(JSON.stringify(report)).not.toContain(outside);
   });

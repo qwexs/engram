@@ -6,6 +6,7 @@ import type { NightlySpawnRequestV1, RegistrySnapshotV1, WorkspaceRegistryAdapte
 import { canonicalizeJcs, computeHandoffDigest, sha256Digest } from "../src/oll/handoff-v2";
 import { computeActionIdV3, computeHandoffDigestV3, type RethinkHandoffV3 } from "../src/oll/handoff-v3";
 import { runNightlyCoordinator } from "../src/oll/nightly-coordinator";
+import { nightlyBatchDirectory } from "../src/oll/nightly-state-store";
 import { readCandidateProjectionV1 } from "../src/oll/memory-candidate-store-v2";
 import { candidateRuntimePathsV1 } from "../src/oll/memory-candidate-runtime-v2";
 import {
@@ -175,7 +176,7 @@ function configureCandidateCompiler(workspacePath: string, workspaceId: string, 
 }
 
 function batchArtifact(stateRoot: string, batchId: string, ...parts: string[]): string {
-  return join(stateRoot, "oll-nightly", "batches", batchId, ...parts);
+  return join(nightlyBatchDirectory(join(stateRoot, "oll-nightly"), batchId), ...parts);
 }
 
 function validEmptyHandoff(request: NightlySpawnRequestV1) {

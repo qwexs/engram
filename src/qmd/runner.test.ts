@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,12 +17,7 @@ function harness(): { context: QmdContext; log: string } {
   const temp = mkdtempSync(join(tmpdir(), "engram runner "));
   tempRoots.push(temp);
   const workspace = join(temp, "workspace with spaces");
-  const binDir = join(temp, "bin with spaces");
   mkdirSync(workspace);
-  mkdirSync(binDir);
-  const executable = join(binDir, "fake qmd");
-  copyFileSync(fixture, executable);
-  chmodSync(executable, 0o755);
   return {
     context: {
       workspace,
@@ -30,7 +25,7 @@ function harness(): { context: QmdContext; log: string } {
       topology: "shared",
       selector: { kind: "named", name: "team" },
       physicalIndex: { path: join(temp, "team.sqlite"), key: "test-index-key", exists: false },
-      command: { executable, prefixArgs: [] },
+      command: { executable: process.execPath, prefixArgs: [fixture] },
       policy: { ownedCollections: ["self-memory", "life"], readableCollections: ["self-memory", "life"] },
       warnings: [],
     },

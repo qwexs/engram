@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { awaitHandoffFile } from "../src/oll/handoff-watcher";
-import { NightlyBatchStateV1, NightlyStateError, NightlyStateStore } from "../src/oll/nightly-state-store";
+import { NightlyBatchStateV1, NightlyStateError, NightlyStateStore, nightlyBatchDirectory } from "../src/oll/nightly-state-store";
 import { sha256Digest } from "../src/oll/handoff-v2";
 
 const roots: string[] = [];
@@ -77,7 +77,7 @@ describe("PR 5 fenced lease and CAS state", () => {
     const second = store.appendEvent(created.batchId, { workspaceId: "alpha", runId: null, transition: "reconciling", errorClass: null, details: {}, createdAt: created.startedAt });
     expect([first.sequence, second.sequence]).toEqual([1, 2]);
     expect(store.readCurrentBatchId()).toBe(created.batchId);
-    expect(readFileSync(join(root, "batches", created.batchId, "events", `00000001-${first.eventId}.json`), "utf8")).toContain('"batch_started"');
+    expect(readFileSync(join(nightlyBatchDirectory(root, created.batchId), "events", `00000001-${first.eventId}.json`), "utf8")).toContain('"batch_started"');
   });
 });
 

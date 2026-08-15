@@ -14,7 +14,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, parse, resolve, sep } from "node:path";
 import {
   authorizeAdaptationAction,
   loadActorRegistry,
@@ -71,8 +71,9 @@ function inside(parent: string, child: string): boolean {
 
 function ensureDirectory(path: string): void {
   const absolute = resolve(path);
-  const parts = absolute.split(sep).filter(Boolean);
-  let current: string = sep;
+  const parsed = parse(absolute);
+  const parts = absolute.slice(parsed.root.length).split(sep).filter(Boolean);
+  let current: string = parsed.root;
   for (const part of parts) {
     current = join(current, part);
     if (!existsSync(current)) mkdirSync(current, { mode: 0o700 });
@@ -96,6 +97,7 @@ function readJson<T>(path: string): T {
 }
 
 function fsyncDirectory(path: string): void {
+  if (process.platform === "win32") return;
   const fd = openSync(path, constants.O_RDONLY);
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }

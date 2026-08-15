@@ -6,11 +6,12 @@
 import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, lstatSync, readlinkSync, statSync } from 'node:fs';
 import { join, relative, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { loadEngramConfig } from './config.js';
 import { legacyKgMutationState } from './_lib/kg-v3-authority.ts';
 
-const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')).replace(/[\\\/]scripts$/, '');
+const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || dirname(fileURLToPath(import.meta.url)).replace(/[\\\/]scripts$/, '');
 
 const { values: args } = parseArgs({
   options: {

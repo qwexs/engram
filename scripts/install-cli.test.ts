@@ -7,6 +7,7 @@ const root = resolve(import.meta.dir, "..");
 const installer = join(root, "scripts", "install-cli.js");
 const packageVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const temporaryDirectories: string[] = [];
+const launcherName = process.platform === "win32" ? "engram.cmd" : "engram";
 
 afterEach(() => {
   while (temporaryDirectories.length) rmSync(temporaryDirectories.pop()!, { recursive: true, force: true });
@@ -45,8 +46,8 @@ describe("install-cli", () => {
     const result = runWithEnvironment({ BUN_INSTALL: bunInstall }, "--dry-run");
 
     expect(result.exitCode).toBe(0);
-    expect(stdout(result)).toContain(join(bunInstall, "bin", "engram"));
-    expect(existsSync(join(bunInstall, "bin", "engram"))).toBe(false);
+    expect(stdout(result)).toContain(join(bunInstall, "bin", launcherName));
+    expect(existsSync(join(bunInstall, "bin", launcherName))).toBe(false);
   });
 
   test("dry run leaves the destination untouched", () => {
@@ -54,13 +55,13 @@ describe("install-cli", () => {
     const result = run(binDir, "--dry-run");
 
     expect(result.exitCode).toBe(0);
-    expect(existsSync(join(binDir, "engram"))).toBe(false);
+    expect(existsSync(join(binDir, launcherName))).toBe(false);
     expect(stdout(result)).toContain("Would install managed launcher");
   });
 
   test("refuses to overwrite or uninstall a foreign launcher", () => {
     const binDir = temporaryBinDir();
-    const launcher = join(binDir, "engram");
+    const launcher = join(binDir, launcherName);
     const foreign = "#!/usr/bin/env sh\necho foreign\n";
     writeFileSync(launcher, foreign, { mode: 0o755 });
     chmodSync(launcher, 0o755);
@@ -83,7 +84,7 @@ describe("install-cli", () => {
 
   test("installs idempotently and targets this checkout's CLI entrypoint", () => {
     const binDir = temporaryBinDir();
-    const launcher = join(binDir, "engram");
+    const launcher = join(binDir, launcherName);
     const first = run(binDir);
 
     expect(first.exitCode).toBe(0);

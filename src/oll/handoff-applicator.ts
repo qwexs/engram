@@ -419,7 +419,9 @@ function ruleActivationRequiresReview(
 }
 
 function operationPath(workspace: string, operationId: Digest): string {
-  return join(workspace, "memory-state", "oll", "operations", `${operationId}.json`);
+  // `sha256:<hex>` is a namespaced identifier, but `:` is not a valid
+  // Windows filename character. The validated digest body remains unique.
+  return join(workspace, "memory-state", "oll", "operations", `${operationId.slice("sha256:".length)}.json`);
 }
 
 function loadOrCreateOperation(

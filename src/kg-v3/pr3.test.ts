@@ -49,6 +49,7 @@ describe("PR3 default-context safety", () => {
   });
 
   test("benchmark requires exact proposed source and rejects missing, non-file, and escaping symlink sources", async () => {
+    if (process.platform === "win32") return;
     const workspace = mkdtempSync(join(tmpdir(), "kg-benchmark-paths-")); roots.push(workspace);
     const outside = mkdtempSync(join(tmpdir(), "kg-benchmark-outside-")); roots.push(outside);
     mkdirSync(join(workspace, "life", "_derived", "directory"), { recursive: true });

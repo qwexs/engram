@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, posix, resolve, win32 } from "node:path";
 import type { Workspace } from "../cli/args.ts";
 import { contextError } from "../cli/errors.ts";
 import type { QmdContext, QmdContextWarning, QmdSelector } from "./types.ts";
@@ -220,11 +220,14 @@ function physicalPath(
   runtime: QmdContextRuntime,
 ): string {
   if (selector.kind === "local") return join(workspace, ".qmd", "index.sqlite");
+  // The runtime is injectable for cross-platform planning/diagnostics. Use
+  // its path dialect for global cache locations instead of the host dialect.
+  const paths = runtime.platform === "win32" ? win32 : posix;
   const cacheHome = runtime.env.XDG_CACHE_HOME
-    ? resolve(runtime.env.XDG_CACHE_HOME)
-    : join(runtime.homedir(), ".cache");
+    ? paths.resolve(runtime.env.XDG_CACHE_HOME)
+    : paths.join(runtime.homedir(), ".cache");
   const name = selector.kind === "named" ? selector.name : "index";
-  return join(cacheHome, "qmd", `${name}.sqlite`);
+  return paths.join(cacheHome, "qmd", `${name}.sqlite`);
 }
 
 export function resolveNamedQmdIndexPath(
@@ -234,7 +237,8 @@ export function resolveNamedQmdIndexPath(
   if (name.trim() === "" || /[\\/]/.test(name)) {
     throw contextError("QMD named index must be a non-path name.", { name });
   }
-  return canonicalizePath(physicalPath({ kind: "named", name: name.trim() }, "", runtime));
+  const path = physicalPath({ kind: "named", name: name.trim() }, "", runtime);
+  return runtime.platform === process.platform ? canonicalizePath(path) : path;
 }
 
 export function resolveQmdContext(
@@ -256,7 +260,10 @@ export function resolveQmdContext(
   const warnings: QmdContextWarning[] = [];
   const ownedCollections = resolveOwnedCollections(qmd, warnings);
   const selector = resolveSelector(qmd, workspace, warnings);
-  const path = canonicalizePath(physicalPath(selector, workspace, runtime));
+  const physical = physicalPath(selector, workspace, runtime);
+  const path = selector.kind === "local" || runtime.platform === process.platform
+    ? canonicalizePath(physical)
+    : physical;
   const readableCollections = resolveReadableCollections(workspace, config, qmd, ownedCollections, warnings);
 
   return {

@@ -48,6 +48,14 @@ function runValidate(workspace) {
   const result = spawnSync("bun", [VALIDATE_SCRIPT, "--quality"], {
     cwd: workspace,
     encoding: "utf-8",
+    // init tests intentionally skip host hook installation. Keep the
+    // follow-up validation in the same hermetic environment.
+    env: {
+      ...process.env,
+      ENGRAM_SKIP_HOOK_INSTALL: "1",
+      HOME: workspace,
+      USERPROFILE: workspace,
+    },
   });
   return {
     exitCode: result.status,

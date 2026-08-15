@@ -82,7 +82,7 @@ describe("PR 5 immutable registry discovery", () => {
     write(join(drift, "engram.json"), config("other"));
     const escaped = workspace(outside, "escaped");
     const alias = join(allowed, "escaped-link");
-    symlinkSync(escaped, alias);
+    symlinkSync(escaped, alias, process.platform === "win32" ? "junction" : "dir");
     const duplicateA = workspace(allowed, "dup-a");
     const duplicateB = workspace(allowed, "dup-b");
     write(join(duplicateA, "engram.json"), config("duplicate"));

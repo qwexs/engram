@@ -90,8 +90,12 @@ function atomicWriteText(path: string, content: string): void {
     fsyncSync(fd);
   } finally { closeSync(fd); }
   renameSync(temp, path);
-  const dirFd = openSync(dirname(path), "r");
-  try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+  // Directory fsync makes a rename durable on POSIX. Windows rejects it with
+  // EPERM, while flushing the file descriptor above is the supported step.
+  if (process.platform !== "win32") {
+    const dirFd = openSync(dirname(path), "r");
+    try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
+  }
 }
 
 function withLock<T>(root: string, fn: () => T): T {
@@ -117,6 +121,18 @@ function iso(value: string): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) throw new NightlyStateError("invalid_timestamp", "invalid timestamp");
   return new Date(timestamp).toISOString();
+}
+
+/** Stable filesystem representation; canonical batch IDs remain in JSON. */
+export function nightlyBatchStorageKey(batchId: string): string {
+  return `b-${Buffer.from(batchId, "utf8").toString("base64url")}`;
+}
+
+/** Prefer the portable layout, but keep existing POSIX installations readable. */
+export function nightlyBatchDirectory(root: string, batchId: string): string {
+  const portable = join(root, "batches", nightlyBatchStorageKey(batchId));
+  const legacy = join(root, "batches", batchId);
+  return existsSync(portable) || !existsSync(legacy) ? portable : legacy;
 }
 
 export class NightlyStateStore {
@@ -190,7 +206,7 @@ export class NightlyStateStore {
   }
 
   batchPath(batchId: string): string {
-    return join(this.root, "batches", batchId, "batch.json");
+    return join(nightlyBatchDirectory(this.root, batchId), "batch.json");
   }
 
   readBatch(batchId: string): NightlyBatchStateV1 {
@@ -234,7 +250,7 @@ export class NightlyStateStore {
 
   appendEvent(batchId: string, input: Omit<NightlyBatchEventV1, "schema" | "eventId" | "sequence" | "batchId">): NightlyBatchEventV1 {
     return withLock(this.root, () => {
-      const eventsDir = join(this.root, "batches", batchId, "events");
+      const eventsDir = join(nightlyBatchDirectory(this.root, batchId), "events");
       mkdirSync(eventsDir, { recursive: true });
       const events = readdirSync(eventsDir).filter((name) => /^\d{8}-/.test(name)).sort();
       const sequence = events.reduce((max, name) => Math.max(max, Number(name.slice(0, 8)) || 0), 0) + 1;

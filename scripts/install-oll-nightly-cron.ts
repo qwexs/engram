@@ -70,7 +70,10 @@ function deploymentSourceRevision(workspace: string): string {
 function openclaw(argv: string[], input?: string): string {
   const binary = process.env.ENGRAM_OPENCLAW || Bun.which("openclaw");
   if (!binary) throw new Error("openclaw binary is unavailable");
-  const result = spawnSync(binary, argv, { encoding: "utf8", input });
+  const isJavaScript = /\.(?:c|m)?js$/i.test(binary);
+  const result = spawnSync(isJavaScript ? process.execPath : binary,
+    isJavaScript ? [binary, ...argv] : argv,
+    { encoding: "utf8", input, shell: false });
   if (result.error || result.status !== 0) throw new Error(result.stderr || result.error?.message || `openclaw exited ${result.status}`);
   return result.stdout || "";
 }

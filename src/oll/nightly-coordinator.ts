@@ -8,7 +8,7 @@ import { buildRethinkProposalPrompt, canonicalizeJcs, type ExpectedHandoffV2, sh
 import { buildRethinkProposalPromptV3, parseRethinkHandoffV3, type ExpectedHandoffV3 } from "./handoff-v3";
 import { buildCandidateAwareNightlyContext, buildNightlyContext, determineNightlyWindow, type NightlyContext, type NightlyContextV2, preflightNightlyContext } from "./nightly-context";
 import { discoverNightlyWorkspaces, DiscoveredWorkspaceV1, FrozenRegistrySnapshotV1 } from "./nightly-discovery";
-import { NightlyBatchStateV1, NightlyLeaseV1, NightlyStateStore } from "./nightly-state-store";
+import { NightlyBatchStateV1, NightlyLeaseV1, NightlyStateStore, nightlyBatchDirectory } from "./nightly-state-store";
 import { reconcileWorkspaceMemory, WorkspaceReconciliationResult } from "./reconciliation";
 import type { TrustedActorContext } from "./authorization";
 import { compileMemoryCandidateReportV2 } from "./memory-candidate-compiler-v2";
@@ -249,7 +249,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
         resumed = true;
         batch = current;
         batch = store.writeBatch({ ...batch, lease: leaseProjection(lease), updatedAt: now() }, batch.revision, lease);
-        snapshot = readObject(join(coordinatorRoot, "batches", batch.batchId, "registry-snapshot.json"));
+        snapshot = readObject(join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "registry-snapshot.json"));
         await options.runtime.resume(batch.batchId);
       } else {
         snapshot = await discoverNightlyWorkspaces({ adapter: options.registryAdapter, allowedRoots: options.allowedWorkspaceRoots, capturedAt: now() });
@@ -292,7 +292,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
         startedAt: timestamp,
         updatedAt: timestamp,
       }, lease);
-      writeImmutable(join(coordinatorRoot, "batches", batch.batchId, "registry-snapshot.json"), snapshot);
+      writeImmutable(join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "registry-snapshot.json"), snapshot);
       store.appendEvent(batch.batchId, { workspaceId: null, runId: null, transition: "batch_started", errorClass: null, details: { quarantined: snapshot.quarantined.length }, createdAt: timestamp });
     }
 
@@ -317,7 +317,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
         processingOrder,
         spawned,
         maxConcurrentRethinkRuns: Number((options.runtime as any).maxConcurrentRethinkRuns || 0),
-        registrySnapshotPath: join(coordinatorRoot, "batches", batch.batchId, "registry-snapshot.json"),
+        registrySnapshotPath: join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "registry-snapshot.json"),
         ...candidateShadowReport(),
       };
     }
@@ -330,7 +330,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       const config = workspace.config.oll.nightly;
       const candidatePolicy = workspace.config?.oll?.candidateCompiler as CandidateSourcePolicyV2 | undefined;
       const scopeRegistry = workspace.config?.oll?.candidateScopeRegistry as CandidateScopeRegistryV1 | undefined;
-      const contextPath = join(coordinatorRoot, "batches", batch.batchId, "contexts", `${workspaceId}.json`);
+      const contextPath = join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "contexts", `${workspaceId}.json`);
       let context: NightlyContext;
 
       if (batch.activeWorkspace === workspaceId && batch.activeRunId) {
@@ -392,7 +392,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
             policyDigest,
             scopeRegistryDigest,
           }));
-          const attemptRoot = join(coordinatorRoot, "batches", batch.batchId, "candidate-compilation-attempts");
+          const attemptRoot = join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "candidate-compilation-attempts");
           try {
             const rolloutProjection = inspectCandidateCompilerProjectionV1({ workspace: workspace.workspacePath, workspaceId });
             if (!rolloutProjection.consistent || rolloutProjection.mode !== "shadow") {
@@ -419,7 +419,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
               scopeRegistry,
               executionMode: "shadow",
             });
-            writeImmutable(join(coordinatorRoot, "batches", batch.batchId, "candidate-reports", `${workspaceId}.json`), report);
+            writeImmutable(join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "candidate-reports", `${workspaceId}.json`), report);
             const metrics = {
               schema: "oll.memory-candidate-shadow-result.v1",
               attemptId,
@@ -474,7 +474,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
               scopeRegistry,
               executionMode: "materialize",
             });
-            writeImmutable(join(coordinatorRoot, "batches", batch.batchId, "candidate-reports", `${workspaceId}.json`), report);
+            writeImmutable(join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "candidate-reports", `${workspaceId}.json`), report);
             const materialized = materializeCandidateReportV2({
               workspace: workspace.workspacePath,
               workspaceId,
@@ -527,7 +527,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
               memoryCandidates,
             });
           } catch (error) {
-            transition("failed", { failed: [...batch.failed, workspaceId], ...clearedActive() }, candidateShadowErrorClass(error), {
+          transition("failed", { failed: [...batch.failed, workspaceId], ...clearedActive() }, candidateShadowErrorClass(error), {
               error: error instanceof Error ? error.message : String(error),
             });
             continue;
@@ -797,7 +797,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       processingOrder,
       spawned,
       maxConcurrentRethinkRuns: Number((options.runtime as any).maxConcurrentRethinkRuns || (spawned ? 1 : 0)),
-      registrySnapshotPath: join(coordinatorRoot, "batches", batch.batchId, "registry-snapshot.json"),
+      registrySnapshotPath: join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "registry-snapshot.json"),
       ...candidateShadowReport(),
     };
   } finally {

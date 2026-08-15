@@ -130,8 +130,10 @@ function durableCopy(source: string, destination: string): void {
   mkdirSync(dirname(destination), { recursive: true });
   const temporary = join(dirname(destination), `.${randomUUID()}.tmp`);
   copyFileSync(source, temporary);
-  const fd = openSync(temporary, "r");
-  try { fsyncSync(fd); } finally { closeSync(fd); }
+  if (process.platform !== "win32") {
+    const fd = openSync(temporary, "r");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  }
   renameSync(temporary, destination);
   fsyncDirectory(dirname(destination));
 }

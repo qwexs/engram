@@ -6,6 +6,7 @@
 import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadEngramConfig } from './config.js';
 import { addQmdCollection } from './_lib/qmd-provision.js';
 
@@ -44,7 +45,7 @@ const WORKSPACE = process.cwd();
 const config = loadEngramConfig(WORKSPACE);
 const agentId = args['agent-id'] || config.agent.replace(/^agent-/, '') || 'main';
 const sessionKey = `${platform}-${id}`;
-const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'assets', 'templates');
 

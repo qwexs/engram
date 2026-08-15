@@ -298,7 +298,9 @@ describe("PR 4 deterministic applicator", () => {
     expect(second.status).toBe("replayed");
     expect(readdirSync(rulesDir)).toHaveLength(1);
     expect(readdirSync(journalDir)).toHaveLength(journalCount);
-    expect(readdirSync(join(env.workspace, "memory-state", "oll", "operations"))).toHaveLength(1);
+    const operationNames = readdirSync(join(env.workspace, "memory-state", "oll", "operations"));
+    expect(operationNames).toEqual([`${first.dispositions[0].operationId.slice("sha256:".length)}.json`]);
+    expect(operationNames[0]).toMatch(/^[0-9a-f]{64}\.json$/);
   });
 
   test("reuses frozen trusted signal authorization and queues a routable active-rule notification", () => {

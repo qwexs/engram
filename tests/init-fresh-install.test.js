@@ -153,6 +153,7 @@ describe("init.js — fresh install happy path", () => {
     expect(existsSync(join(workspace, "memory", "heartbeat-state.json"))).toBe(true);
     expect(existsSync(join(workspace, "memory", "weekly-synthesis-tracker.json"))).toBe(false);
     expect(existsSync(join(workspace, "memory-state", "oll", "state.json"))).toBe(true);
+    expect(existsSync(join(workspace, "memory-state", "oll", "rollout.json"))).toBe(true);
     expect(existsSync(join(workspace, "memory-state", "oll", "legacy-admission-disabled.json"))).toBe(true);
     expect(existsSync(join(workspace, "life", "README.md"))).toBe(true);
     expect(existsSync(join(workspace, "life", "index.md"))).toBe(true);
@@ -162,14 +163,25 @@ describe("init.js — fresh install happy path", () => {
     expect(config.kg).toBeUndefined();
     expect(config.oll).toMatchObject({
       scheduleOwner: "nightly",
-      nightly: { enabled: false },
-      adaptation: { mode: "observe-only" },
+      nightly: { enabled: true },
+      adaptation: { mode: "active" },
     });
     expect(config.models.heartbeat.subagents["hb-rethink"]).toBeDefined();
     expect(config.models.heartbeat.subagents["hb-rethink2"]).toBeUndefined();
     expect(config.models.heartbeat.subagents["hb-autoresearch"]).toBeUndefined();
     const ollState = JSON.parse(readFileSync(join(workspace, "memory-state", "oll", "state.json"), "utf8"));
-    expect(ollState).toMatchObject({ schema: "oll-nightly-state.v1", workspaceId: "main", nightlyEnabled: false });
+    expect(ollState).toMatchObject({ schema: "oll-nightly-state.v1", workspaceId: "main", nightlyEnabled: true });
+    const ollRollout = JSON.parse(readFileSync(join(workspace, "memory-state", "oll", "rollout.json"), "utf8"));
+    expect(ollRollout).toMatchObject({
+      schema: "oll.workspace-rollout-state.v1",
+      workspaceId: "main",
+      releaseId: "fresh-init",
+      rolloutBatchId: "fresh-init",
+      targetMode: "active",
+      status: "active",
+      activationSource: "fresh-init-default",
+      revision: 1,
+    });
     const cutover = JSON.parse(readFileSync(join(workspace, "memory-state", "oll", "legacy-admission-disabled.json"), "utf8"));
     expect(cutover).toMatchObject({
       schema: "oll.legacy-admission-disabled.v1",
@@ -183,6 +195,7 @@ describe("init.js — fresh install happy path", () => {
       { cwd: workspace, stdout: "pipe", stderr: "pipe" },
     );
     expect(await generatedEntrypoint.exited).toBe(0);
+    expect(runValidate(workspace).exitCode).toBe(0);
   });
 
   test("init installs all eleven hooks and verifies the two OLL delivery hooks after restart", async () => {
@@ -350,6 +363,36 @@ process.exit(2);
     expect(exitCode).toBe(0);
     expect(existsSync(join(memDir, "existing-file.txt"))).toBe(true);
     expect(existsSync(join(workspace, "memory", "agent-main"))).toBe(true);
+  });
+
+  test("init --force preserves an explicit disabled or rolled-back OLL state", async () => {
+    expect((await runInit(workspace)).exitCode).toBe(0);
+    const configPath = join(workspace, "engram.json");
+    const statePath = join(workspace, "memory-state", "oll", "state.json");
+    const rolloutPath = join(workspace, "memory-state", "oll", "rollout.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.oll.nightly.enabled = false;
+    config.oll.adaptation.mode = "observe-only";
+    writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    state.nightlyEnabled = false;
+    writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+    const rollout = JSON.parse(readFileSync(rolloutPath, "utf8"));
+    rollout.status = "rolled_back";
+    rollout.targetMode = "observe-only";
+    rollout.revision = 2;
+    writeFileSync(rolloutPath, JSON.stringify(rollout, null, 2) + "\n");
+    const before = {
+      config: readFileSync(configPath, "utf8"),
+      state: readFileSync(statePath, "utf8"),
+      rollout: readFileSync(rolloutPath, "utf8"),
+    };
+
+    const rerun = await runInit(workspace, [], { force: true });
+    expect(rerun.exitCode, rerun.stderr || rerun.stdout).toBe(0);
+    expect(readFileSync(configPath, "utf8")).toBe(before.config);
+    expect(readFileSync(statePath, "utf8")).toBe(before.state);
+    expect(readFileSync(rolloutPath, "utf8")).toBe(before.rollout);
   });
 
   test("init creates ops/observations and ops/tensions with index.json files", async () => {

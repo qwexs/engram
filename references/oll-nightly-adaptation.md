@@ -1,9 +1,9 @@
 # OLL Nightly Adaptation — implementation contract
 
-> **Status:** runtime and rollout tooling implemented; production activation is
-> operator-gated. New and upgraded workspaces remain `observe-only` with
-> `nightly.enabled=false` until an operator approves a deployment-specific
-> rollout and its read-back projection.
+> **Status:** runtime and rollout tooling implemented and active by default for
+> fresh workspaces. Init writes `nightly.enabled=true`,
+> `adaptation.mode=active`, and a matching read-back projection. Deployment
+> registry/scheduler ownership and later mode changes remain external.
 
 ## Boundary
 
@@ -13,8 +13,8 @@ list, canary evidence, or customer policy. Those belong in the operator's
 private deployment repository.
 
 The core may write only its configured workspace adaptation store and the
-operator-configured fleet state root. It does not create a live cron, enable a
-workspace, or select a deployment profile by itself.
+operator-configured fleet state root. It does not create a live cron or select
+a deployment profile by itself; fresh workspace activation is the init default.
 
 ## Purpose
 
@@ -66,14 +66,16 @@ publishing files that are not executed is not a safety boundary.
 configuration, state directories, legacy-admission marker, full 11-hook set,
 and optional deterministic heartbeat. It restarts the gateway and requires the
 OLL rule-context and rollback hooks to be eligible/loadable in runtime read-back.
-A clean install does not install a second OLL scheduler. The heartbeat performs
+A clean install also creates aligned active config, nightly state, and rollout
+projection. It does not install a second OLL scheduler. The heartbeat performs
 non-OLL maintenance only after cutover; it cannot admit or apply legacy rethink
 work.
 
 An operator supplies a registry adapter and any deployment profile outside the
 canonical repository. A profile can provide exact model mapping, timezone,
 allowed roots, and regulated-domain vocabulary. A profile is configuration,
-not an activation grant.
+while init activation does not grant new actors or broaden the deterministic
+low-risk authorization policy.
 
 ## Nightly coordinator
 
@@ -111,7 +113,8 @@ deterministic low-risk class is review-only.
 
 ## Rollout and rollback
 
-The operator must perform the following sequentially:
+For an existing disabled workspace or a later mode transition, the operator
+performs the following sequentially:
 
 1. run cutover preflight and quarantine or drain legacy OLL records;
 2. create a reviewed workspace registry and scheduler declaration;
@@ -121,6 +124,11 @@ The operator must perform the following sequentially:
 5. enable one workspace in observe-only mode and read back state, scheduler,
    hook delivery, batch report, and rollback evidence;
 6. approve active mode separately, after the canary gate passes.
+
+Fresh init is a distinct bootstrap path: it writes an active empty-store
+projection directly. With no authorized active rules, rule injection is a
+deterministic no-op; registry enrollment and the single scheduler are still
+deployment concerns.
 
 Rollback returns adaptation to observe-only, disables the new scheduled action,
 and suspends rules from the rollout batch. It preserves signals, handoffs, and

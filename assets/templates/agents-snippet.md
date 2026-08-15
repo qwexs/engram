@@ -177,8 +177,8 @@ bun skills/engram/scripts/memory-observe.js \
 ### 16. Deterministic Heartbeat Is Part Of Init
 
 `init.js --with-cron` installs the deterministic heartbeat only. Workspace-side
-OLL is created in `observe-only` with `nightly.enabled=false`; the single fleet
-nightly scheduler and registry enrollment remain acknowledgement-gated.
+OLL is created with `nightly.enabled=true` and `adaptation.mode=active`; the
+single fleet nightly scheduler and registry enrollment remain deployment-owned.
 
 ```bash
 bun skills/engram/scripts/init.js --with-cron

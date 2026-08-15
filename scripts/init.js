@@ -47,8 +47,8 @@ Options:
                              install-hooks.js discovers managedHooksDir from OpenClaw.
   --force                   Merge with existing dirs (won't overwrite files)
   --with-cron               Also install the deterministic heartbeat cron (idempotent).
-                             OLL remains owned by the separate nightly scheduler and disabled
-                             until an acknowledgement-gated rollout enables this workspace.
+                             OLL is initialized enabled in active mode and remains owned by
+                             the deployment's single nightly scheduler.
   --cron-schedule <e>       Schedule for the cron job: "30m" (default), "5m", "1h", or cron expr
                              Derived from engram.json -> cron.schedule, cron.expectedSchedule.expr,
                              or cron.staggerMinutes (in that order) when this flag is omitted.
@@ -77,6 +77,7 @@ What it does:
   1. Creates memory/ directory structure (session isolation)
   2. Creates life/ directory structure (Knowledge Graph)
   3. Copies template files (MEMORY.md, heartbeat-state.json, etc.)
+     Fresh OLL state is enabled in active mode with a matching projection
   4. Sets up QMD collections for search
   5. Auto-detects Telegram sessions from openclaw.json (optional)
   6. Registers QMD collections (freshness is delegated to the coordinator)
@@ -112,6 +113,10 @@ const TEMPLATES = join(SKILL_DIR, 'assets', 'templates');
 const OSS_FALLBACK_MODEL = 'sonnet-4-6';
 const OPENCLAW_BINARY = process.env.ENGRAM_OPENCLAW || 'openclaw';
 const REQUIRED_OLL_HOOKS = ['engram-rule-context-load', 'engram-rule-rollback'];
+const INITIAL_ENGRAM_CONFIG_PATH = join(WORKSPACE, 'engram.json');
+const INITIAL_OLL_STATE_PATH = join(WORKSPACE, 'memory-state', 'oll', 'state.json');
+const FRESH_OLL_INSTALL = !existsSync(INITIAL_ENGRAM_CONFIG_PATH) && !existsSync(INITIAL_OLL_STATE_PATH);
+const EXISTING_OLL_ROLLOUT_REQUIRED = config?.oll?.nightly?.enabled === true || config?.oll?.adaptation?.mode === 'active';
 
 // Generated cron payloads intentionally run from the workspace and use the
 // stable `./skills/engram/scripts/...` entrypoints. Make that contract true
@@ -169,6 +174,7 @@ if (!dryRun && !args['yes'] && !args['force']) {
   console.log(`  • install/overwrite engram hooks (with backup)`);
   console.log(`  • disable the built-in session-memory hook`);
   if (args['with-cron']) console.log(`  • install deterministic non-OLL heartbeat cron job`);
+  console.log(`  • initialize fresh OLL state enabled in active mode`);
   console.log(`  • restart the OpenClaw gateway`);
   console.log(`\nRun with --dry-run to preview without changes.`);
   console.log(`Proceed? [y/N]`);
@@ -1103,7 +1109,25 @@ ensureWorkspaceSkillLink();
 copyTemplate('MEMORY.md', 'MEMORY.md', replacements);
 copyTemplate('memory-readme.md', 'memory/README.md', replacements);
 copyTemplate('heartbeat-state.json', 'memory/heartbeat-state.json', replacements);
-copyTemplate('oll-state.json', 'memory-state/oll/state.json', replacements);
+if (FRESH_OLL_INSTALL) {
+  copyTemplate('oll-state.json', 'memory-state/oll/state.json', replacements);
+  copyTemplate('oll-rollout.json', 'memory-state/oll/rollout.json', replacements);
+} else {
+  const stateRelativePath = 'memory-state/oll/state.json';
+  const rolloutRelativePath = 'memory-state/oll/rollout.json';
+  if (existsSync(join(WORKSPACE, stateRelativePath))) {
+    recordSkip('template', stateRelativePath, 'existing OLL activation state is preserved');
+  } else {
+    recordError(`existing workspace is missing ${stateRelativePath}; init will not synthesize activation evidence`);
+  }
+  if (existsSync(join(WORKSPACE, rolloutRelativePath))) {
+    recordSkip('template', rolloutRelativePath, 'existing OLL activation state is preserved');
+  } else if (EXISTING_OLL_ROLLOUT_REQUIRED) {
+    recordError(`existing active workspace is missing ${rolloutRelativePath}; init will not synthesize activation evidence`);
+  } else {
+    recordSkip('template', rolloutRelativePath, 'not required for the existing disabled workspace');
+  }
+}
 copyTemplate('oll-legacy-admission-disabled.json', 'memory-state/oll/legacy-admission-disabled.json', replacements);
 copyTemplate('life-readme.md', 'life/README.md', replacements);
 copyTemplate('index.md', 'life/index.md', replacements);
@@ -1324,7 +1348,7 @@ if (!dryRun && process.env.ENGRAM_SKIP_HOOK_INSTALL !== '1') {
 
 // --- Cron install (optional) ---
 if (args['with-cron']) {
-  console.log('\nInstalling deterministic heartbeat cron job (nightly OLL remains operator-gated)...');
+  console.log('\nInstalling deterministic heartbeat cron job (OLL starts enabled/active under the nightly owner)...');
   const schedule = getCronSchedule();
   if (!dryRun) {
     const cronResult = spawnSync('bun', [
@@ -1335,13 +1359,13 @@ if (args['with-cron']) {
       '--schedule', schedule,
     ], { stdio: 'inherit', cwd: WORKSPACE });
     if (cronResult.status === 0) {
-      recordCreate('cron', `deterministic heartbeat installed with schedule ${schedule}; nightly OLL disabled`);
+      recordCreate('cron', `deterministic heartbeat installed with schedule ${schedule}; OLL enabled/active`);
     } else {
       console.log(`  Deterministic cron install failed (exit ${cronResult.status ?? '?'})`);
       recordWarn(`deterministic cron install failed: exit ${cronResult.status ?? '?'}`);
     }
   } else {
-    recordCreate('cron', `install deterministic heartbeat with schedule ${schedule}; keep nightly OLL disabled`);
+    recordCreate('cron', `install deterministic heartbeat with schedule ${schedule}; OLL enabled/active`);
   }
 }
 

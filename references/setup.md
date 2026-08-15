@@ -24,7 +24,9 @@
 `init.js` is the canonical workspace installer. A successful fresh init:
 
 - writes the OLL configuration with `scheduleOwner=nightly`,
-  `nightly.enabled=false`, and `adaptation.mode=observe-only`;
+  `nightly.enabled=true`, and `adaptation.mode=active`;
+- writes matching `oll-nightly-state.v1` and
+  `oll.workspace-rollout-state.v1` fresh-init projections;
 - creates the managed adaptation state directories and immutable fresh-init
   legacy-admission marker;
 - installs all 11 Engram hooks, including `engram-rule-context-load` and
@@ -35,9 +37,10 @@
   `--with-cron`.
 
 Fresh init deliberately does **not** create deployment-specific actor/fleet
-registries, install a second nightly scheduler, enable a workspace, or switch
-adaptation to active mode. Those operations remain acknowledgement-gated and
-follow `references/oll-nightly-adaptation.md`.
+registries or install a second nightly scheduler. It publishes the workspace as
+enabled/active so the deployment-owned scheduler can discover it immediately
+after registry enrollment. Candidate-memory materialization remains separately
+disabled and rollout-gated.
 
 ## Heartbeat via Cron (Recommended)
 

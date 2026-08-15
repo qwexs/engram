@@ -26,9 +26,10 @@ bun skills/engram/scripts/watchdog.js --workspace /path/to/workspace --json
 
 Fresh init installs the complete 11-hook managed set, restarts the gateway, and
 requires the OLL rule-context and rollback hooks to be eligible/loadable in the
-runtime read-back. It provisions OLL only in safe `observe-only` mode with
-`nightly.enabled=false`; fleet registry, scheduler activation, and active mode
-remain separate acknowledgement-gated deployment steps.
+runtime read-back. Fresh workspaces now start with `nightly.enabled=true`,
+`adaptation.mode=active`, and a matching fresh-init rollout projection. The
+single fleet registry and scheduler remain deployment-owned; init does not
+create a competing scheduler.
 
 ## Engram QMD CLI
 
@@ -339,10 +340,11 @@ bounded filesystem watcher, and batch timeout, plus scoped active-rule
 resolution for generic bootstrap sessions. The trusted runtime adapter is a
 deployment boundary. The live `target` observe-only canary and scheduler/
 workspace rollback drills passed; the live scheduler was then restored to the
-deterministic reconciliation command and `target` to `nightly.enabled=false`.
-Production rule injection remains disabled until a separate active-mode gate.
+deterministic reconciliation command. Fresh-init defaults now match the active
+runtime contract: nightly is enabled and authorized matching rules can be
+injected immediately; rollback tooling remains available for suspension.
 
-For current OLL runtime details (legacy compatibility plus PR 2–7 managed path/tooling): [references/oll.md](references/oll.md). PR 2 disables heartbeat-owned rethink admission/application and moves scheduling state into `oll-nightly-state.v1`; PR 3 adds trusted capture/authorization/review; PR 4 validates and applies typed handoffs idempotently; PR 5 provides durable discovery, orchestration, recovery, and strict FIFO; PR 6 resolves scoped active rules and injects them only at matching bootstrap when adaptation is explicitly active; PR 7 provides guarded rollout/rollback tooling plus synthetic and live observe-only evidence. Active-mode production rollout remains pending: [references/oll-nightly-adaptation.md](references/oll-nightly-adaptation.md).
+For current OLL runtime details (legacy compatibility plus PR 2–7 managed path/tooling): [references/oll.md](references/oll.md). PR 2 disables heartbeat-owned rethink admission/application and moves scheduling state into `oll-nightly-state.v1`; PR 3 adds trusted capture/authorization/review; PR 4 validates and applies typed handoffs idempotently; PR 5 provides durable discovery, orchestration, recovery, and strict FIFO; PR 6 resolves scoped active rules and injects them only at matching bootstrap when adaptation is explicitly active; PR 7 provides guarded rollout/rollback tooling plus synthetic and live evidence. Fresh init now selects active mode by default: [references/oll-nightly-adaptation.md](references/oll-nightly-adaptation.md).
 
 Memory-derived rethink evidence is a separate, default-disabled compiler and
 rollout surface. Phase 5 plan/apply/read-back/rollback tooling and the synthetic
@@ -350,7 +352,7 @@ per-phase rollback barrier are implemented, but no real workspace canary is
 implied by that status. Use [references/oll-memory-candidates.md](references/oll-memory-candidates.md)
 for its positive source registry, scope ceiling, handoff v3, report-only audit,
 and canary gates. Never reinterpret memory candidates as authorized adaptation
-signals or enable materialization as part of an unrelated nightly cutover.
+signals or enable materialization merely because the base OLL starts active.
 
 ## Subagent Memory
 

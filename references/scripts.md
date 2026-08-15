@@ -344,7 +344,7 @@ activation transition.
 topic bootstrap sessions through `event.messages`. Person rules require one
 exact actor-registry binding and are excluded from multi-person contexts. The
 hook is inert unless `oll.adaptation.mode=active`; default and production
-configuration remain observe-only until PR 7.
+configuration now select active mode after the completed PR 7 rollout.
 
 ## oll-rollout.ts — PR 7 canary and rollback operator boundary
 

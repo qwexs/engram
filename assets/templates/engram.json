@@ -24,7 +24,7 @@
     "enabled": true,
     "scheduleOwner": "nightly",
     "nightly": {
-      "enabled": false,
+      "enabled": true,
       "timezone": "UTC",
       "weekStart": "monday",
       "coordinatorStateRoot": "${ENGRAM_STATE_ROOT}/oll-nightly",
@@ -46,7 +46,7 @@
     },
     "adaptation": {
       "enabled": true,
-      "mode": "observe-only",
+      "mode": "active",
       "autoApplyMaxRisk": "low",
       "actorRegistry": "${ENGRAM_STATE_ROOT}/oll/actors.v1.json",
       "companyRuleStore": "${ENGRAM_STATE_ROOT}/oll/company-rules",

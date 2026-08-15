@@ -1,0 +1,13 @@
+{
+  "schema": "oll.workspace-rollout-state.v1",
+  "workspaceId": "{{AGENT_ID}}",
+  "releaseId": "fresh-init",
+  "rolloutBatchId": "fresh-init",
+  "targetMode": "active",
+  "status": "active",
+  "schedulerJobId": null,
+  "schedulerPayloadRevision": null,
+  "activationSource": "fresh-init-default",
+  "updatedAt": "{{NOW}}",
+  "revision": 1
+}

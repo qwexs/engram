@@ -9,8 +9,8 @@ Read this document top to bottom and execute each phase sequentially.
 > below are historical compatibility only: heartbeat cannot admit, claim, or
 > apply `hb-rethink`, `hb-rethink2`, or `hb-autoresearch`. Their legacy state
 > is removed from `heartbeat-state.json` and migrated to
-> `memory-state/oll/state.json`. Nightly rethink itself remains disabled until
-> the coordinator/canary rollout.
+> `memory-state/oll/state.json`. Fresh init enables the nightly-owned managed
+> path; this heartbeat still cannot dispatch legacy rethink work.
 
 > **ARCHITECTURE NOTE — durable handoff, suppressed announce**
 > `sessions_spawn` is asynchronous. The cron requester dispatches every claimed child and finishes

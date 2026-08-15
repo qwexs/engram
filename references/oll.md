@@ -6,8 +6,9 @@
 > legacy heartbeat rethink/rethink2/autoresearch dispatch and application.
 > PR 3 adds managed capture and review; PR 4 adds a strict proposal-only handoff
 > and deterministic applicator; PR 5 adds the resumable strict-FIFO coordinator;
-> PR 6 adds scoped rule resolution and the generic bootstrap hook. Production
-> remains observe-only, so scheduler activation and live rule injection are off.
+> PR 6 adds scoped rule resolution and the generic bootstrap hook. Fresh init
+> now enables nightly and active rule delivery by default; authorization and
+> scope checks still fail closed.
 
 ## Storage Structure
 
@@ -118,10 +119,11 @@ rendered block must fit `maxInjectedRuleBytes`; it is never truncated.
 peer/group, and topic sessions, but only when `oll.adaptation.mode=active`.
 It publishes the resolved payload as an inline virtual bootstrap file through
 `event.context.bootstrapFiles`; no generated rule file is persisted.
-The shipped template and current production workspaces remain `observe-only`;
-PR 6 therefore publishes the mechanism without performing PR 7 rollout.
+The shipped template starts in `active` mode. An empty or unauthorized rule
+store still yields no injected directives; only matching active rules that pass
+the existing actor/scope policy are delivered.
 
-## Canary rollout and rollback tooling (PR 7, live activation pending)
+## Canary rollout and rollback tooling (PR 7)
 
 `src/oll/rollout.ts` and `scripts/oll-rollout.ts` provide a dry-run-first,
 explicitly acknowledged operator boundary. Observe-only canary activation

@@ -177,9 +177,9 @@ surprises и patterns — и возвращает сигналы в управл
 trusted capture, proposal-only handoff, deterministic applicator и durable
 strict-FIFO nightly coordinator. PR 6 добавляет scoped active-rule resolver и
 универсальную bootstrap-инъекцию с conflict/cap guards. Live observe-only
-canary на `target` и rollback drill пройдены; live вернулся к безопасному
-`nightly.enabled=false`. Active rule injection остаётся отдельным операторским
-gate. PR 7 tooling даёт dry-run plan, backup/release markers и staged rollback.
+canary на `target`, active rollout и rollback drill пройдены. Fresh init теперь
+создаёт OLL сразу с `nightly.enabled=true` и `adaptation.mode=active`; PR 7
+tooling сохраняет dry-run plan, backup/release markers и staged rollback.
 
 ---
 
@@ -191,7 +191,7 @@ bun skills/engram/scripts/install-qmd.js
 
 # Поднять workspace-side memory/OLL contract + deterministic heartbeat cron.
 # Init установит 11 hooks, перезапустит gateway и проверит OLL hook read-back.
-# Nightly OLL создаётся observe-only/disabled и не активируется автоматически.
+# Fresh OLL создаётся сразу enabled/active; единый nightly scheduler остаётся внешним.
 bun skills/engram/scripts/init.js --with-cron
 ```
 

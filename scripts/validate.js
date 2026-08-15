@@ -514,8 +514,21 @@ if (existsSync(heartbeatPath)) {
         if (nightlyState.nightlyEnabled !== Boolean(_config?.oll?.nightly?.enabled)) {
           error('memory-state/oll/state.json nightlyEnabled does not match engram.json');
         }
+        const rolloutRequired = _config?.oll?.nightly?.enabled === true || _config?.oll?.adaptation?.mode === 'active';
+        if (rolloutRequired) {
+          const rollout = JSON.parse(readFileSync(join(WORKSPACE, 'memory-state/oll/rollout.json'), 'utf8'));
+          const expectedStatus = _config?.oll?.adaptation?.mode === 'active' ? 'active' : 'observe_only_canary';
+          if (
+            rollout.schema !== 'oll.workspace-rollout-state.v1'
+            || rollout.workspaceId !== _config?.workspace?.id
+            || rollout.targetMode !== _config?.oll?.adaptation?.mode
+            || rollout.status !== expectedStatus
+          ) {
+            error('memory-state/oll/rollout.json does not match active OLL configuration');
+          }
+        }
       } catch (e) {
-        error(`memory-state/oll/state.json parse error: ${e.message}`);
+        error(`managed OLL activation state parse error: ${e.message}`);
       }
     } else {
       warn('Legacy heartbeat OLL admission remains enabled; run oll-legacy-cutover before nightly rollout');

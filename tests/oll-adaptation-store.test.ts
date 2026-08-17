@@ -254,7 +254,7 @@ describe("optimistic rule notification copy", () => {
       });
 
       expect(notification.items[0].ruleText).toBe(canonicalRule);
-      expect(notification.messageText).toContain(`1. ${expectedPrefix} благодарить пациента за доверие.`);
+      expect(notification.messageText).toContain(`> 1. ${expectedPrefix} благодарить пациента за доверие.`);
       expect(notification.messageText).not.toContain("В домене sample-copy");
     });
   }

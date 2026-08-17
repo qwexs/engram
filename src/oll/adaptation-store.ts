@@ -858,7 +858,7 @@ function notificationRuleText(ruleText: string, targetSession: string): string {
 }
 
 function notificationText(items: OptimisticRuleNotificationV1["items"], targetSession: string): string {
-  const numbered = items.map((item) => `${item.number}. ${notificationRuleText(item.ruleText, targetSession)}`).join("\n");
+  const numbered = items.map((item) => `> ${item.number}. ${notificationRuleText(item.ruleText, targetSession)}`).join("\n\n");
   return `Я самоулучшаюсь и зафиксировала для себя новые правила:\n\n${numbered}\n\nПравила уже применены. Если хотите отменить, ответьте на это сообщение и укажите пункты, например: «Отменить 1» или «Отменить 1, 2».`;
 }
 

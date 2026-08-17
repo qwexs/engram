@@ -845,8 +845,20 @@ export interface OptimisticRuleNotificationV1 {
   updatedAt: string;
 }
 
-function notificationText(items: OptimisticRuleNotificationV1["items"]): string {
-  const numbered = items.map((item) => `${item.number}. ${item.ruleText}`).join("\n");
+function notificationRuleText(ruleText: string, targetSession: string): string {
+  const context = /^telegram-group--?\d+-topic-\d+$/.test(targetSession)
+    ? "текущем топике"
+    : /^telegram-group--?\d+$/.test(targetSession)
+      ? "текущей группе"
+      : /^(?:main|telegram-direct-\d+)$/.test(targetSession)
+        ? "текущем чате"
+        : null;
+  if (!context) return ruleText;
+  return ruleText.replace(/^В домене\s+[^\s,:;.!?]+(?=\s|[,:;.!?]|$)/u, `В ${context}`);
+}
+
+function notificationText(items: OptimisticRuleNotificationV1["items"], targetSession: string): string {
+  const numbered = items.map((item) => `${item.number}. ${notificationRuleText(item.ruleText, targetSession)}`).join("\n");
   return `Я самоулучшаюсь и зафиксировала для себя новые правила:\n\n${numbered}\n\nПравила уже применены. Если хотите отменить, ответьте на это сообщение и укажите пункты, например: «Отменить 1» или «Отменить 1, 2».`;
 }
 
@@ -891,7 +903,7 @@ function ensureRuleActivationNotification(options: {
     targetSession,
     status: "pending",
     items,
-    messageText: notificationText(items),
+    messageText: notificationText(items, targetSession),
     createdAt: options.now,
     deliveredAt: null,
     messageId: null,

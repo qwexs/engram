@@ -19,6 +19,7 @@ import {
   expireAdaptationReviews,
   listPendingAdaptationSignals,
   proposeAdaptationRule,
+  queueRuleActivationNotification,
   transitionAdaptationRule,
   transitionAdaptationSignal,
 } from "../src/oll/adaptation-store";
@@ -220,6 +221,43 @@ describe("PR 3 trusted adaptation capture", () => {
     cpSync(join(first.workspace, "memory-state", "oll", "signals", `${signal.id}.json`), target);
     expect(() => listPendingAdaptationSignals(second)).toThrow("foreign signal projection");
   });
+});
+
+describe("optimistic rule notification copy", () => {
+  const cases = [
+    ["telegram-group--100123-topic-7", "В текущем топике"],
+    ["telegram-group--100123", "В текущей группе"],
+    ["telegram-direct-42", "В текущем чате"],
+  ] as const;
+
+  for (const [targetSession, expectedPrefix] of cases) {
+    test(`hides an internal domain slug for ${targetSession}`, () => {
+      const env = setup();
+      const ruleId = randomUUID();
+      const canonicalRule = "В домене sample-copy благодарить пациента за доверие.";
+      write(join(env.workspace, "memory-state", "oll", "rules", `${ruleId}.json`), {
+        id: ruleId,
+        workspaceId: env.id,
+        status: "active",
+        revision: 1,
+        rule: canonicalRule,
+      });
+
+      const notification = queueRuleActivationNotification({
+        workspace: env.workspace,
+        ruleId,
+        batchId: "nightly-fixture",
+        planId: digest(`plan:${targetSession}`),
+        operationId: digest(`operation:${targetSession}`),
+        notificationSession: targetSession,
+        now: NOW,
+      });
+
+      expect(notification.items[0].ruleText).toBe(canonicalRule);
+      expect(notification.messageText).toContain(`1. ${expectedPrefix} благодарить пациента за доверие.`);
+      expect(notification.messageText).not.toContain("В домене sample-copy");
+    });
+  }
 });
 
 describe("PR 3 managed rule and review lifecycle", () => {

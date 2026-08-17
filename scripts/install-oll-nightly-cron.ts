@@ -189,7 +189,8 @@ if (step.status !== "completed") throw new Error("unexpected nightly terminal st
 const notificationBatch = parse(await execText(${q(notificationPendingCommand)}, 30000, remaining(120)));
 let notificationsDelivered = 0;
 for (const delivery of notificationBatch.deliveries ?? []) {
-  const args = { action: "send", channel: delivery.channel, chatId: delivery.chatId, message: delivery.message };
+  if (typeof delivery.target !== "string" || !delivery.target) throw new Error("rule notification delivery has no target");
+  const args = { action: "send", target: delivery.target, message: delivery.message };
   if (delivery.threadId) args.threadId = delivery.threadId;
   const sent = await tools.callValue("message", args);
   const messageId = String(sent?.messageId ?? sent?.message_id ?? sent?.id ?? sent?.result?.messageId ?? sent?.result?.message_id ?? "");

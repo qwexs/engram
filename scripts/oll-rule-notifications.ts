@@ -33,13 +33,13 @@ function oneWorkspace(): string {
   return resolve(workspaces[0]);
 }
 
-function route(session: string): { channel: "telegram"; chatId: string; threadId?: string } {
+function route(session: string): { channel: "telegram"; chatId: string; target: string; threadId?: string } {
   const direct = /^telegram-direct-(\d+)$/.exec(session);
-  if (direct) return { channel: "telegram", chatId: direct[1] };
+  if (direct) return { channel: "telegram", chatId: direct[1], target: `telegram:${direct[1]}` };
   const topic = /^telegram-group-(-?\d+)-topic-(\d+)$/.exec(session);
-  if (topic) return { channel: "telegram", chatId: topic[1], threadId: topic[2] };
+  if (topic) return { channel: "telegram", chatId: topic[1], target: `telegram:${topic[1]}`, threadId: topic[2] };
   const group = /^telegram-group-(-?\d+)$/.exec(session);
-  if (group) return { channel: "telegram", chatId: group[1] };
+  if (group) return { channel: "telegram", chatId: group[1], target: `telegram:${group[1]}` };
   throw new Error(`unsupported notification session: ${session}`);
 }
 

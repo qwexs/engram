@@ -91,6 +91,9 @@ describe("PR 7 OpenClaw scheduler deployment boundary", () => {
     expect(scriptPayload.script).toContain("existing.spawnedCwd ?? existing.spawnedWorkspaceDir");
     expect(scriptPayload.script).toContain("JSON.stringify(encodeURIComponent(dispatchError))");
     expect(scriptPayload.script).toContain('tools.callValue("message", args)');
+    expect(scriptPayload.script).toContain('target: delivery.target');
+    expect(scriptPayload.script).toContain('rule notification delivery has no target');
+    expect(scriptPayload.script).not.toContain('chatId: delivery.chatId');
     expect(scriptPayload.script).toContain("oll-rule-notifications.ts");
     expect(scriptPayload.script).toContain("--scheduler-declaration");
     expect(scriptPayload.script).toContain('\\"--allowed-root\\"');

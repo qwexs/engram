@@ -266,7 +266,8 @@ describe("OLL memory candidate Phase 4 runtime", () => {
     expect(JSON.parse(readFileSync(rulePath, "utf8"))).toEqual(expect.objectContaining({ status: "active", revision: 1 }));
     expect(readdirSync(join(candidateRuntimePathsV1(input.root).root, "reviews"))).toHaveLength(0);
     const [pending] = listPendingRuleActivationNotifications({ workspace: input.root });
-    expect(pending.messageText).toContain("Я самоулучшаюсь");
+    expect(pending.messageText).toMatch(/^⭐ /);
+    expect(pending.messageText).not.toContain("Я самоулучшаюсь");
     expect(pending.messageText).toContain("Отменить 1");
     const delivered = acknowledgeRuleActivationNotification({ workspace: input.root, notificationId: pending.notificationId, messageId: "telegram-message-42", now: NOW });
     expect(delivered.status).toBe("delivered");

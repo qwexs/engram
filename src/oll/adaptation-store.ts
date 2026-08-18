@@ -857,9 +857,66 @@ function notificationRuleText(ruleText: string, targetSession: string): string {
   return ruleText.replace(/^В домене\s+[^\s,:;.!?]+(?=\s|[,:;.!?]|$)/u, `В ${context}`);
 }
 
-function notificationText(items: OptimisticRuleNotificationV1["items"], targetSession: string): string {
+const NOTIFICATION_INTRO_HISTORY = 3;
+
+const NOTIFICATION_INTROS = [
+  (count: number) => count === 1
+    ? "⭐ Немного вздремнула, проснулась чуть мудрее — и решила сохранить одно полезное правило."
+    : "⭐ Немного вздремнула, проснулась чуть мудрее — и решила сохранить несколько полезных правил.",
+  (count: number) => count === 1
+    ? "⭐ Пока всё было тихо, я навела порядок в мыслях. Одно правило точно стоит взять с собой дальше."
+    : "⭐ Пока всё было тихо, я навела порядок в мыслях. Несколько правил точно стоит взять с собой дальше.",
+  (count: number) => count === 1
+    ? "⭐ Кажется, во сне у меня случился маленький апгрейд. Вот одно правило, которое я решила зафиксировать."
+    : "⭐ Кажется, во сне у меня случился маленький апгрейд. Вот правила, которые я решила зафиксировать.",
+  (count: number) => count === 1
+    ? "⭐ Ночь прошла не зря: одна полезная мысль превратилась в новое правило."
+    : "⭐ Ночь прошла не зря: несколько полезных мыслей превратились в новые правила.",
+  (count: number) => count === 1
+    ? "⭐ Пока серверы тихо гудели, я кое-что переосмыслила и оставила себе одно правило."
+    : "⭐ Пока серверы тихо гудели, я кое-что переосмыслила и оставила себе несколько правил.",
+  (count: number) => count === 1
+    ? "⭐ Проснулась с ощущением, что кое-что стало понятнее. Зафиксировала одно правило, пока мысль не убежала."
+    : "⭐ Проснулась с ощущением, что кое-что стало понятнее. Зафиксировала новые правила, пока мысли не разбежались.",
+  (count: number) => count === 1
+    ? "⭐ Устроила небольшую ночную ревизию привычек — одно правило прошло отбор."
+    : "⭐ Устроила небольшую ночную ревизию привычек — несколько правил прошли отбор.",
+  (count: number) => count === 1
+    ? "⭐ Сон оказался продуктивным: вернулась с одним небольшим, но полезным улучшением."
+    : "⭐ Сон оказался продуктивным: вернулась с несколькими небольшими, но полезными улучшениями.",
+] as const;
+
+function notificationIntro(items: OptimisticRuleNotificationV1["items"], planId: string, recentIntros: string[]): string {
+  const start = Number.parseInt(planId.slice(-8), 16) % NOTIFICATION_INTROS.length;
+  const recent = new Set(recentIntros.slice(0, NOTIFICATION_INTRO_HISTORY));
+  for (let offset = 0; offset < NOTIFICATION_INTROS.length; offset += 1) {
+    const intro = NOTIFICATION_INTROS[(start + offset) % NOTIFICATION_INTROS.length](items.length);
+    if (!recent.has(intro)) return intro;
+  }
+  return NOTIFICATION_INTROS[start](items.length);
+}
+
+function recentNotificationIntros(paths: ReturnType<typeof storePaths>, targetSession: string): string[] {
+  if (!existsSync(paths.notifications)) return [];
+  return readdirSync(paths.notifications)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => readJson(join(paths.notifications, name)) as OptimisticRuleNotificationV1)
+    .filter((record) => record.schema === "oll.rule-activation-notification.v1"
+      && record.targetSession === targetSession
+      && typeof record.messageText === "string")
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.notificationId.localeCompare(left.notificationId))
+    .map((record) => record.messageText.split("\n", 1)[0]);
+}
+
+function notificationText(
+  items: OptimisticRuleNotificationV1["items"],
+  targetSession: string,
+  planId: string,
+  recentIntros: string[],
+): string {
   const numbered = items.map((item) => `> ${item.number}. ${notificationRuleText(item.ruleText, targetSession)}`).join("\n\n");
-  return `Я самоулучшаюсь и зафиксировала для себя новые правила:\n\n${numbered}\n\nПравила уже применены. Если хотите отменить, ответьте на это сообщение и укажите пункты, например: «Отменить 1» или «Отменить 1, 2».`;
+  const intro = notificationIntro(items, planId, recentIntros);
+  return `${intro}\n\n${numbered}\n\nПравила уже применены. Если хотите отменить, ответьте на это сообщение и укажите пункты, например: «Отменить 1» или «Отменить 1, 2».`;
 }
 
 function ensureRuleActivationNotification(options: {
@@ -903,7 +960,7 @@ function ensureRuleActivationNotification(options: {
     targetSession,
     status: "pending",
     items,
-    messageText: notificationText(items, targetSession),
+    messageText: notificationText(items, targetSession, options.planId, recentNotificationIntros(options.paths, targetSession)),
     createdAt: options.now,
     deliveredAt: null,
     messageId: null,

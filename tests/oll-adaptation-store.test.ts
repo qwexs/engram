@@ -254,10 +254,39 @@ describe("optimistic rule notification copy", () => {
       });
 
       expect(notification.items[0].ruleText).toBe(canonicalRule);
+      expect(notification.messageText).toMatch(/^⭐ /);
+      expect(notification.messageText).not.toContain("Я самоулучшаюсь");
       expect(notification.messageText).toContain(`> 1. ${expectedPrefix} благодарить пациента за доверие.`);
       expect(notification.messageText).not.toContain("В домене sample-copy");
     });
   }
+
+  test("varies the opening without repeating recent intros in the same chat", () => {
+    const env = setup();
+    const intros = Array.from({ length: 4 }, (_, index) => {
+      const ruleId = randomUUID();
+      write(join(env.workspace, "memory-state", "oll", "rules", `${ruleId}.json`), {
+        id: ruleId,
+        workspaceId: env.id,
+        status: "active",
+        revision: 1,
+        rule: `Правило ${index + 1}`,
+      });
+      const notification = queueRuleActivationNotification({
+        workspace: env.workspace,
+        ruleId,
+        batchId: "nightly-fixture",
+        planId: digest(`varied-plan:${index}`),
+        operationId: digest(`varied-operation:${index}`),
+        notificationSession: "telegram-direct-42",
+        now: new Date(Date.parse(NOW) + index * 1000).toISOString(),
+      });
+      return notification.messageText.split("\n", 1)[0];
+    });
+
+    expect(intros.every((intro) => intro.startsWith("⭐ "))).toBe(true);
+    expect(new Set(intros).size).toBe(intros.length);
+  });
 });
 
 describe("PR 3 managed rule and review lifecycle", () => {

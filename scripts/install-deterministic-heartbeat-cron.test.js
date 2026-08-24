@@ -25,10 +25,29 @@ describe("install-deterministic-heartbeat-cron", () => {
     expect(spec.payload.source).not.toContain("rethinkAlerts");
     expect(spec.payload.source).not.toContain("agentTurn"); expect(spec.payload.toolsAllow).toEqual(["exec", "sessions_spawn"]);
     expect(spec.schedule).toEqual({ kind: "cron", expr: "20 * * * *", tz: "UTC", staggerMs: 0 });
+    expect(spec.enabled).toBeFalse();
   });
   test("can prepare a disabled canary without changing its deterministic contract", () => {
     const result = spawnSync("bun", [script, "--workspace", workspace(), "--disabled", "--dry-run"], { encoding: "utf8" });
     expect(result.status).toBe(0); const spec = JSON.parse(result.stdout);
     expect(spec.enabled).toBeFalse(); expect(spec.payload.timeoutSeconds).toBe(420); expect(spec.payload.toolBudget).toBe(20);
+  });
+  test("requires explicit --enabled to activate the cron", () => {
+    const result = spawnSync("bun", [script, "--workspace", workspace(), "--enabled", "--dry-run"], { encoding: "utf8" });
+    expect(result.status).toBe(0); const spec = JSON.parse(result.stdout);
+    expect(spec.enabled).toBeTrue();
+  });
+  test("bounds OpenClaw CLI calls with --timeout-ms", () => {
+    const dir = workspace();
+    const fake = join(dir, "slow-openclaw.js");
+    writeFileSync(fake, `await new Promise((resolve) => setTimeout(resolve, 10000));`);
+    const started = Date.now();
+    const result = spawnSync("bun", [script, "--workspace", dir, "--timeout-ms", "1000", "--action", "status"], {
+      encoding: "utf8",
+      env: { ...process.env, ENGRAM_OPENCLAW: fake },
+    });
+    expect(result.status).toBe(1);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(result.stderr).toContain("ETIMEDOUT");
   });
 });

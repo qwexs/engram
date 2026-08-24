@@ -12,7 +12,8 @@ const { values: args } = parseArgs({
     action: { type: "string" }, workspace: { type: "string" }, "agent-id": { type: "string" },
     session: { type: "string", default: "main" }, "label-prefix": { type: "string" },
     "cron-name": { type: "string" }, schedule: { type: "string" }, tz: { type: "string" },
-    disabled: { type: "boolean", default: false }, "dry-run": { type: "boolean", default: false },
+    disabled: { type: "boolean", default: false }, enabled: { type: "boolean", default: false },
+    "timeout-ms": { type: "string", default: "120000" }, "dry-run": { type: "boolean", default: false },
     help: { type: "boolean", short: "h", default: false },
   }, strict: true,
 });
@@ -30,7 +31,8 @@ Usage:
 
 Creates payload.kind=script, not agentTurn. OpenClaw requires
 cron.triggers.enabled=true before script payloads may run. Start with
---disabled for a canary, then enable only after that gateway preflight passes.
+the default disabled canary, then re-run with --enabled only after gateway
+preflight and watchdog checks pass. --disabled remains an explicit alias.
 `);
   process.exit(exitCode);
 }
@@ -38,6 +40,9 @@ cron.triggers.enabled=true before script payloads may run. Start with
 if (args.help) usage();
 if (!["install", "status", "uninstall"].includes(action)) fail(`Unknown action: ${action}`);
 if (!args.workspace) fail("--workspace is required");
+if (args.enabled && args.disabled) fail("--enabled and --disabled are mutually exclusive");
+const timeoutMs = Number.parseInt(String(args["timeout-ms"]), 10);
+if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) fail("--timeout-ms must be an integer >= 1000");
 const workspace = canonical(args.workspace);
 if (!existsSync(resolve(workspace, "engram.json"))) fail(`Workspace does not contain engram.json: ${workspace}`);
 const config = loadEngramConfig(workspace);
@@ -103,7 +108,7 @@ function buildSpec() {
       kind: "script", source: buildScript(), timeoutSeconds: 420, toolBudget: 20,
       toolsAllow: ["exec", "sessions_spawn"],
     },
-    delivery: { mode: "none" }, enabled: !args.disabled,
+    delivery: { mode: "none" }, enabled: args.enabled && !args.disabled,
   };
 }
 
@@ -116,7 +121,7 @@ function openclaw(argv, input) {
   const isJavaScript = /\.(?:c|m)?js$/i.test(binary);
   const result = spawnSync(isJavaScript ? process.execPath : binary,
     isJavaScript ? [binary, ...argv] : argv,
-    { encoding: "utf8", input, shell: false });
+    { encoding: "utf8", input, shell: false, timeout: timeoutMs });
   if (result.error || result.status !== 0) { console.error(result.stderr || result.error?.message || `openclaw exited ${result.status}`); process.exit(1); }
   return result.stdout || "";
 }
@@ -135,8 +140,8 @@ function install() {
     "--no-deliver", "--script", "-", "--script-timeout-seconds", String(spec.payload.timeoutSeconds),
     "--script-tool-budget", String(spec.payload.toolBudget),
   ];
-  if (existing) command.push(args.disabled ? "--disable" : "--enable");
-  else if (args.disabled) command.push("--disabled");
+  if (existing) command.push(spec.enabled ? "--enable" : "--disable");
+  else if (!spec.enabled) command.push("--disabled");
   const output = openclaw(command, spec.payload.source);
   const id = existing?.id ?? parseJson(output).id ?? "<unknown>";
   console.log(`✅ ${existing ? "updated" : "created"} deterministic heartbeat cron ${id}`);

@@ -14,8 +14,14 @@ description: "Engram daily-note writer: reject unstable session/workspace coordi
 # Initialize complete memory system
 bun skills/engram/scripts/init.js --agent-id main --qmd-variant auto
 
-# With heartbeat cron (recommended)
+# With a disabled heartbeat canary (recommended first step)
 bun skills/engram/scripts/init.js --agent-id main --qmd-variant auto --with-cron
+
+# Enable the cron only after watchdog/canary verification
+bun skills/engram/scripts/init.js --agent-id main --qmd-variant auto --with-cron --enable-cron
+
+# Provision an additional workspace without shared hooks/config/restart/cron
+bun skills/engram/scripts/init.js --workspace /path/to/workspace --agent-id work --workspace-only
 
 # Force merge into existing workspace
 bun skills/engram/scripts/init.js --force
@@ -24,9 +30,11 @@ bun skills/engram/scripts/init.js --force
 bun skills/engram/scripts/watchdog.js --workspace /path/to/workspace --json
 ```
 
-Fresh init installs the complete 11-hook managed set, restarts the gateway, and
+Fresh full init installs the complete 11-hook managed set, restarts the gateway, and
 requires the OLL rule-context and rollback hooks to be eligible/loadable in the
-runtime read-back. Fresh workspaces now start with `nightly.enabled=true`,
+runtime read-back. `--workspace-only` intentionally skips every shared runtime
+mutation. Cron provisioning is disabled by default and requires explicit
+`--enable-cron` after preflight. Fresh workspaces now start with `nightly.enabled=true`,
 `adaptation.mode=active`, and a matching fresh-init rollout projection. The
 single fleet registry and scheduler remain deployment-owned; init does not
 create a competing scheduler.

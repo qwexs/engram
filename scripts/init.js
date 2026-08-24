@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, cpSync, lstatSync, realpathSync, symlinkSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { loadEngramConfig, resolveQmdCommand } from './config.js';
 import { addQmdCollectionSync, listQmdCollections, probeQmdExecutable } from './_lib/qmd-provision.js';
 
@@ -19,11 +19,14 @@ const { values: args } = parseArgs({
     'hooks-dir': { type: 'string' },
     'force': { type: 'boolean', default: false },
     'with-cron': { type: 'boolean', default: false },
+    'enable-cron': { type: 'boolean', default: false },
     'cron-schedule': { type: 'string' },
     'auto-detect-sessions': { type: 'boolean' },
     'with-sample-domain': { type: 'boolean', default: false },
     'dry-run': { type: 'boolean', default: false },
     'skip-gateway-restart': { type: 'boolean', default: false },
+    'workspace-only': { type: 'boolean', default: false },
+    'child-timeout-ms': { type: 'string', default: '120000' },
     'bootstrap-from-forum': { type: 'boolean', default: false },
     'bootstrap-chat': { type: 'string', default: '' },
     'bootstrap-yes': { type: 'boolean', default: false },
@@ -48,6 +51,9 @@ Options:
                              install-hooks.js discovers managedHooksDir from OpenClaw.
   --force                   Merge with existing dirs (won't overwrite files)
   --with-cron               Also install the deterministic heartbeat cron (idempotent).
+                             The cron is created disabled unless --enable-cron is explicit.
+  --enable-cron             Enable a newly installed heartbeat cron immediately.
+                             Use only after a successful watchdog/canary check.
                              OLL is initialized enabled in active mode and remains owned by
                              the deployment's single nightly scheduler.
   --cron-schedule <e>       Schedule for the cron job: "30m" (default), "5m", "1h", or cron expr
@@ -72,6 +78,9 @@ Options:
                              waits for a single y/N before proceeding.
   --dry-run                  Print the full plan without executing
   --skip-gateway-restart      Do not run 'openclaw gateway restart' (CI / test env)
+  --workspace-only           Provision only workspace-local files and QMD collections.
+                             Skip shared hooks, global config edits, cron, and gateway restart.
+  --child-timeout-ms <ms>    Maximum runtime for child CLI/QMD operations (default: 120000)
   -h, --help                Show this help
 
 What it does:
@@ -113,6 +122,16 @@ const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'assets', 'templates');
 const OSS_FALLBACK_MODEL = 'sonnet-4-6';
 const OPENCLAW_BINARY = process.env.ENGRAM_OPENCLAW || 'openclaw';
+const CHILD_TIMEOUT_MS = Number.parseInt(String(args['child-timeout-ms']), 10);
+if (!Number.isFinite(CHILD_TIMEOUT_MS) || CHILD_TIMEOUT_MS < 1000) {
+  console.error('--child-timeout-ms must be an integer >= 1000');
+  process.exit(2);
+}
+const WORKSPACE_ONLY = !!args['workspace-only'];
+if (WORKSPACE_ONLY && args['with-cron']) {
+  console.error('--workspace-only cannot be combined with --with-cron');
+  process.exit(2);
+}
 const REQUIRED_OLL_HOOKS = ['engram-rule-context-load', 'engram-rule-rollback'];
 const INITIAL_ENGRAM_CONFIG_PATH = join(WORKSPACE, 'engram.json');
 const INITIAL_OLL_STATE_PATH = join(WORKSPACE, 'memory-state', 'oll', 'state.json');
@@ -127,7 +146,7 @@ function runOpenClaw(argv, options = {}) {
   const isJavaScript = /\.(?:c|m)?js$/i.test(OPENCLAW_BINARY);
   const command = isJavaScript ? process.execPath : OPENCLAW_BINARY;
   const args = isJavaScript ? [OPENCLAW_BINARY, ...argv] : argv;
-  return spawnSync(command, args, { shell: false, ...options });
+  return spawnSync(command, args, { shell: false, timeout: CHILD_TIMEOUT_MS, ...options });
 }
 
 // Generated cron payloads intentionally run from the workspace and use the
@@ -183,11 +202,13 @@ if (!dryRun && !args['yes'] && !args['force']) {
   console.log(`\nengram init — this will:`);
   console.log(`  • create memory/ and life/ directories in: ${WORKSPACE}`);
   console.log(`  • register QMD collections (without indexing or embedding)`);
-  console.log(`  • install/overwrite engram hooks (with backup)`);
-  console.log(`  • disable the built-in session-memory hook`);
+  if (!WORKSPACE_ONLY) {
+    console.log(`  • install/overwrite engram hooks (with backup)`);
+    console.log(`  • disable the built-in session-memory hook`);
+  }
   if (args['with-cron']) console.log(`  • install deterministic non-OLL heartbeat cron job`);
   console.log(`  • initialize fresh OLL state enabled in active mode`);
-  console.log(`  • restart the OpenClaw gateway`);
+  if (!WORKSPACE_ONLY) console.log(`  • restart the OpenClaw gateway`);
   console.log(`\nRun with --dry-run to preview without changes.`);
   console.log(`Proceed? [y/N]`);
 
@@ -220,7 +241,7 @@ function detectQmdVariant() {
 
 function qmdAvailable() {
   try {
-    return probeQmdExecutable({ workspace: WORKSPACE, executable: QMD, probe: 'help' }).ok;
+    return probeQmdExecutable({ workspace: WORKSPACE, executable: QMD, probe: 'help', timeoutMs: CHILD_TIMEOUT_MS }).ok;
   } catch {
     return false;
   }
@@ -591,7 +612,7 @@ async function bootstrapFromForum() {
       '--pending',
       '--description', `Telegram topic "${p.name}" (auto-bound via --bootstrap-from-forum)`,
     ];
-    const result = spawnSync('bun', args, { encoding: 'utf-8', cwd: WORKSPACE });
+    const result = spawnSync('bun', args, { encoding: 'utf-8', cwd: WORKSPACE, timeout: CHILD_TIMEOUT_MS });
     const stdout = (result.stdout || '').trim();
     if (result.status === 0) {
       console.log(`  ✓ ${p.proposedSlug} (${p.chatId}:${p.threadId})`);
@@ -710,7 +731,7 @@ function addSessionQmdCollection(sessionKey) {
   }
 
   try {
-    const listed = listQmdCollections({ workspace: WORKSPACE });
+    const listed = listQmdCollections({ workspace: WORKSPACE, timeoutMs: CHILD_TIMEOUT_MS });
     if (!listed.ok) throw new Error(listed.stderr || listed.spawnError?.message || 'collection list failed');
     if (listed.stdout.split(/\r?\n/).some((line) => line.trimStart().startsWith(`${collectionName} (qmd://`))) {
       recordSkip('qmd-collection', collectionName, 'already exists');
@@ -721,6 +742,7 @@ function addSessionQmdCollection(sessionKey) {
       collection: collectionName,
       path: sessionPath,
       mask: '**/*.md',
+      timeoutMs: CHILD_TIMEOUT_MS,
     });
     if (!added.ok) throw new Error(added.stderr || added.spawnError?.message || 'collection add failed');
     recordCreate('qmd-collection', collectionName);
@@ -789,10 +811,13 @@ function createSampleDomain() {
   }
 
   try {
-    execSync(
-      `bun ${join(SKILL_DIR, 'scripts', 'add-domain.js')} --domain ${domainName} --type dev-project --description "Sample domain for onboarding"`,
-      { stdio: 'pipe', cwd: WORKSPACE }
-    );
+    const result = spawnSync('bun', [
+      join(SKILL_DIR, 'scripts', 'add-domain.js'),
+      '--domain', domainName,
+      '--type', 'dev-project',
+      '--description', 'Sample domain for onboarding',
+    ], { stdio: 'pipe', cwd: WORKSPACE, timeout: CHILD_TIMEOUT_MS });
+    if (result.error || result.status !== 0) throw result.error || new Error(`exit ${result.status}`);
     recordCreate('sample-domain', domainName);
     return true;
   } catch (e) {
@@ -816,7 +841,7 @@ function runBackfillDomainAgents() {
 
   try {
     const result = spawnSync('bun', [join(SKILL_DIR, 'scripts', 'backfill-domain-agents.js')], {
-      stdio: 'pipe', cwd: WORKSPACE,
+      stdio: 'pipe', cwd: WORKSPACE, timeout: CHILD_TIMEOUT_MS,
     });
     if (result.error || result.status !== 0) throw result.error || new Error(`exit ${result.status}`);
     recordCreate('backfill-domain-agents', 'completed');
@@ -835,7 +860,12 @@ function runValidate() {
   const result = spawnSync(
     'bun',
     [join(SKILL_DIR, 'scripts', 'validate.js'), '--quality', '--agent-id', agentId],
-    { encoding: 'utf-8', cwd: WORKSPACE }
+    {
+      encoding: 'utf-8',
+      cwd: WORKSPACE,
+      timeout: CHILD_TIMEOUT_MS,
+      env: WORKSPACE_ONLY ? { ...process.env, ENGRAM_SKIP_HOOK_INSTALL: '1' } : process.env,
+    }
   );
 
   const output = result.stdout + result.stderr;
@@ -1281,11 +1311,18 @@ if (hasQmd) {
 // --- QMD collections ---
 if (hasQmd) {
   console.log('\nSetting up QMD collections...');
-  const collections = [
-    { path: '.', name: 'openclaw-root', mask: '*.md' },
-    { path: `memory/agent-${agentId}/main`, name: `openclaw-memory-agent-${agentId}-main`, mask: '**/*.md' },
-    { path: 'life', name: 'life', mask: '**/*.md' },
-  ];
+  const workspaceCollection = {
+    path: `memory/agent-${agentId}/main`,
+    name: `openclaw-memory-agent-${agentId}-main`,
+    mask: '**/*.md',
+  };
+  const collections = WORKSPACE_ONLY
+    ? [workspaceCollection]
+    : [
+        { path: '.', name: 'openclaw-root', mask: '*.md' },
+        workspaceCollection,
+        { path: 'life', name: 'life', mask: '**/*.md' },
+      ];
 
   for (const col of collections) {
     if (dryRun) {
@@ -1298,11 +1335,13 @@ if (hasQmd) {
         collection: col.name,
         path: join(WORKSPACE, col.path),
         mask: col.mask,
+        timeoutMs: CHILD_TIMEOUT_MS,
       });
       if (!added.ok) throw new Error(added.stderr || added.spawnError?.message || 'collection add failed');
       recordCreate('qmd-collection', col.name);
-    } catch {
-      recordSkip('qmd-collection', col.name, 'may already exist');
+    } catch (error) {
+      const detail = String(error?.message || error).trim().slice(0, 300);
+      recordError(`qmd collection ${col.name} failed: ${detail}`);
     }
   }
 
@@ -1320,7 +1359,10 @@ if (hasQmd) {
 
 // --- Install hooks ---
 console.log('\nInstalling OpenClaw hooks (copy-based)...');
-if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
+if (WORKSPACE_ONLY) {
+  console.log('  skipped by --workspace-only');
+  recordSkip('hooks', 'install', '--workspace-only');
+} else if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
   console.log('  skipped by ENGRAM_SKIP_HOOK_INSTALL=1');
   recordSkip('hooks', 'install', 'ENGRAM_SKIP_HOOK_INSTALL=1');
 } else if (!dryRun) {
@@ -1333,7 +1375,7 @@ if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
     '--force',
   ];
   if (args['hooks-dir']) hookInstallArgs.push('--hooks-dir', resolve(String(args['hooks-dir'])));
-  const hookInstall = spawnSync('bun', hookInstallArgs, { stdio: 'inherit', cwd: WORKSPACE });
+  const hookInstall = spawnSync('bun', hookInstallArgs, { stdio: 'inherit', cwd: WORKSPACE, timeout: CHILD_TIMEOUT_MS });
   if (!hookInstall.error && hookInstall.status === 0) {
     recordCreate('hooks', 'installed (force-overwrite with backup)');
   } else {
@@ -1350,7 +1392,9 @@ if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
 // Running both creates duplicate files. We disable the built-in by writing
 // hooks.internal.entries.session-memory.enabled = false in openclaw.json.
 // Gateway API cannot do this (protected path), so we edit the file directly.
-if (!dryRun && process.env.ENGRAM_SKIP_HOOK_INSTALL !== '1') {
+if (WORKSPACE_ONLY) {
+  recordSkip('built-in-hook', 'session-memory', '--workspace-only');
+} else if (!dryRun && process.env.ENGRAM_SKIP_HOOK_INSTALL !== '1') {
   disableBuiltinSessionMemory();
 } else if (process.env.ENGRAM_SKIP_HOOK_INSTALL === '1') {
   recordSkip('built-in-hook', 'session-memory', 'ENGRAM_SKIP_HOOK_INSTALL=1');
@@ -1363,21 +1407,24 @@ if (args['with-cron']) {
   console.log('\nInstalling deterministic heartbeat cron job (OLL starts enabled/active under the nightly owner)...');
   const schedule = getCronSchedule();
   if (!dryRun) {
-    const cronResult = spawnSync('bun', [
+    const cronArgs = [
       join(SKILL_DIR, 'scripts', 'install-deterministic-heartbeat-cron.js'),
       '--action', 'install',
       '--agent-id', agentId,
       '--workspace', WORKSPACE,
       '--schedule', schedule,
-    ], { stdio: 'inherit', cwd: WORKSPACE });
+      '--timeout-ms', String(CHILD_TIMEOUT_MS),
+    ];
+    cronArgs.push(args['enable-cron'] ? '--enabled' : '--disabled');
+    const cronResult = spawnSync('bun', cronArgs, { stdio: 'inherit', cwd: WORKSPACE, timeout: CHILD_TIMEOUT_MS });
     if (cronResult.status === 0) {
-      recordCreate('cron', `deterministic heartbeat installed with schedule ${schedule}; OLL enabled/active`);
+      recordCreate('cron', `deterministic heartbeat installed ${args['enable-cron'] ? 'enabled' : 'disabled'} with schedule ${schedule}; OLL enabled/active`);
     } else {
       console.log(`  Deterministic cron install failed (exit ${cronResult.status ?? '?'})`);
       recordWarn(`deterministic cron install failed: exit ${cronResult.status ?? '?'}`);
     }
   } else {
-    recordCreate('cron', `install deterministic heartbeat with schedule ${schedule}; OLL enabled/active`);
+    recordCreate('cron', `install deterministic heartbeat ${args['enable-cron'] ? 'enabled' : 'disabled'} with schedule ${schedule}; OLL enabled/active`);
   }
 }
 
@@ -1450,9 +1497,14 @@ if (validateResult.warnings > 0) {
 // --with-cron or --with-sample-domain is set, hooks-only runs leave new hook
 // entries un-picked-up until a manual gateway restart. Restart is idempotent
 // and respects --skip-gateway-restart / --dry-run / no-openclaw-on-PATH.
-console.log('\nRestarting gateway...');
-restartGateway();
-verifyHookReadback();
+if (WORKSPACE_ONLY) {
+  recordSkip('gateway-restart', 'skipped', '--workspace-only');
+  recordSkip('hook-readback', 'skipped', '--workspace-only');
+} else {
+  console.log('\nRestarting gateway...');
+  restartGateway();
+  verifyHookReadback();
+}
 
 // --- Summary (AC11) ---
 console.log('\n=== Summary ===');

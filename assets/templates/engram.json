@@ -11,13 +11,11 @@
     "collection": "{COLLECTION_NAME}",
     "_collections_comment": "Maintenance allowlist for heartbeat qmd embed/update. Keep vertical/child access collections registered in QMD, but do not add them here; child workspaces maintain their own embeddings.",
     "collections": [
-      "{COLLECTION_NAME}",
-      "life",
-      "openclaw-root"
+      "{COLLECTION_NAME}"
     ],
-    "_maintenance_comment": "legacy keeps current update/embed behavior. shadow additionally records cheap dirty generations but never runs maintenance. coordinated is reserved for the coordinator rollout.",
+    "_maintenance_comment": "Fresh workspaces delegate QMD freshness to the single deployment coordinator. Do not switch to legacy when multiple workspaces share one physical index.",
     "maintenance": {
-      "mode": "legacy"
+      "mode": "coordinated"
     }
   },
   "oll": {

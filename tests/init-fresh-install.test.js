@@ -344,6 +344,18 @@ process.exit(0);
     expect(result.stdout).toContain("skipped by --workspace-only");
   });
 
+  test("init remains idempotent when its QMD collection already exists", async () => {
+    const collection = "openclaw-memory-agent-main-main";
+    writeFileSync(join(workspace, "collection"), `console.log(${JSON.stringify(`${collection} (qmd://${collection}/)`)});`);
+    const result = await runInit(workspace, ["--workspace-only"], {
+      extraEnv: {
+        ENGRAM_QMD: process.execPath,
+      },
+    });
+    expect(result.exitCode, result.stderr || result.stdout).toBe(0);
+    expect(result.stdout).toContain(`SKIP ${collection} (already exists)`);
+  });
+
   test("init rejects cron in workspace-only mode", async () => {
     const result = await runInit(workspace, ["--workspace-only", "--with-cron"]);
     expect(result.exitCode).toBe(2);

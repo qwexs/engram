@@ -81,7 +81,9 @@ if (commandArgs[0] === "--help") {
 }
 
 if (commandArgs[0] === "collection" && commandArgs[1] === "list") {
-  console.log("Collections (0):");
+  const collections = String(process.env.FAKE_QMD_COLLECTIONS || "").split(",").filter(Boolean);
+  console.log(`Collections (${collections.length}):`);
+  for (const collection of collections) console.log(`${collection} (qmd://${collection}/)`);
   process.exit(0);
 }
 

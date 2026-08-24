@@ -1324,9 +1324,29 @@ if (hasQmd) {
         { path: 'life', name: 'life', mask: '**/*.md' },
       ];
 
+  let existingCollections = new Set();
+  try {
+    const listed = listQmdCollections({ workspace: WORKSPACE, timeoutMs: CHILD_TIMEOUT_MS });
+    if (!listed.ok) throw new Error(listed.stderr || listed.spawnError?.message || 'collection list failed');
+    existingCollections = new Set(
+      listed.stdout
+        .split(/\r?\n/)
+        .map((line) => line.match(/^\s*([^\s]+)\s+\(qmd:\/\//)?.[1])
+        .filter(Boolean),
+    );
+  } catch (error) {
+    const detail = String(error?.message || error).trim().slice(0, 300);
+    recordError(`qmd collection list failed: ${detail}`);
+  }
+
   for (const col of collections) {
     if (dryRun) {
       recordCreate('qmd-collection', col.name);
+      continue;
+    }
+    if (existingCollections.has(col.name)) {
+      console.log(`  SKIP ${col.name} (already exists)`);
+      recordSkip('qmd-collection', col.name, 'already exists');
       continue;
     }
     try {

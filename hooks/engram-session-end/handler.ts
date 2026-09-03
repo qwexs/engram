@@ -2,6 +2,7 @@ import { existsSync, appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { normalizeSessionSegment, splitAgentAndSession } from "../_lib/parse-agent-id.js";
 import { runtimeSessionSkipReason } from "../_lib/runtime-session.js";
+import { withDailyNoteLock } from "../../src/daily-note-lock.ts";
 import { markWorkspaceQmdDirty } from "../../src/qmd/maintenance-integration.ts";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -53,16 +54,17 @@ const handler = async (event: any) => {
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: TZ });
   const notePath = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey, `${today}.md`);
 
-  if (!existsSync(notePath)) return;
-
-  // Avoid duplicate session:end
-  const content = readFileSync(notePath, "utf-8");
-  const lines = content.trimEnd().split("\n");
-  const lastLine = lines[lines.length - 1]?.trim() || "";
-  if (lastLine.startsWith("<!-- session:end:")) return;
-
-  const iso = localISO(TZ);
-  appendFileSync(notePath, `\n<!-- session:end:${iso} -->\n`);
+  const written = withDailyNoteLock(notePath, () => {
+    if (!existsSync(notePath)) return false;
+    const content = readFileSync(notePath, "utf-8");
+    const lines = content.trimEnd().split("\n");
+    const lastLine = lines[lines.length - 1]?.trim() || "";
+    if (lastLine.startsWith("<!-- session:end:")) return false;
+    const iso = localISO(TZ);
+    appendFileSync(notePath, `\n<!-- session:end:${iso} -->\n`);
+    return true;
+  });
+  if (!written) return;
   console.log(`[engram-session-end] Wrote session:end to ${notePath}`);
 
   await markWorkspaceQmdDirty({

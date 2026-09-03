@@ -1,0 +1,9 @@
+{
+  "name": "@qwexs/engram-memory-observation-plugin",
+  "version": "3.6.2",
+  "private": true,
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}

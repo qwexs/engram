@@ -1,0 +1,154 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { BATCH_LIVE_FAILURE_SCHEMA, BATCH_LIVE_JOB_SCHEMA } from "./batch-live-worker.ts";
+import { recoverTerminalBatch, type BatchTerminalRecoveryFaultPoint } from "./batch-terminal-recovery.ts";
+import { sha256, type JsonValue } from "./ledger.ts";
+
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+function write(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function fixture() {
+  const workspace = mkdtempSync(join(tmpdir(), "batch-recovery-workspace-"));
+  const storeRoot = mkdtempSync(join(tmpdir(), "batch-recovery-store-"));
+  roots.push(workspace, storeRoot);
+  const traceId = sha256("recovery-trace");
+  const bundleId = sha256("recovery-bundle");
+  const jobId = sha256("recovery-job");
+  const job = {
+    schema: BATCH_LIVE_JOB_SCHEMA,
+    jobId,
+    partition: { workspaceId: "main", runtimeSessionKey: "agent:main:telegram:direct:1", scopeClass: "self", scopeId: "telegram:1", producerEpoch: "v1", policyDigest: sha256("policy") },
+    evaluationPolicyDigest: sha256("evaluation-policy"),
+    bundle: { schema: "engram.memory-batch-bundle.v1", bundleId, partitionId: sha256("partition"), sourceRefs: [{ traceId }] },
+    createdAt: "2026-09-03T10:00:00.000Z",
+  };
+  const failureBase = {
+    schema: BATCH_LIVE_FAILURE_SCHEMA,
+    jobId,
+    bundleId,
+    errorCode: "batch_invalid_json",
+    attempt: 2,
+    maxAttempts: 2,
+    traceIds: [traceId],
+    failedAt: "2026-09-03T10:05:00.000Z",
+  };
+  const failure = { ...failureBase, failureId: sha256(failureBase as unknown as JsonValue) };
+  const batchRoot = join(storeRoot, "memory-batch-live", "v1");
+  write(join(batchRoot, "jobs", `${jobId.slice(7)}.json`), job);
+  write(join(batchRoot, "failures", `${jobId.slice(7)}.json`), failure);
+  write(join(batchRoot, "done", `${jobId.slice(7)}.json`), failure);
+  const stateRoot = join(workspace, "memory-state", "memory-observation", "v1");
+  write(join(stateRoot, "queues", "evaluator", `${traceId.slice(7)}.json`), {
+    schema: "engram.memory-observation-ledger-queue.v1", traceId, queueClass: "evaluator", status: "terminal",
+    attempt: 2, maxAttempts: 2, nextAttemptAt: "2026-09-03T10:00:00.000Z", createdAt: "2026-09-03T10:00:00.000Z",
+    updatedAt: "2026-09-03T10:05:00.000Z", claimedAt: null, claimToken: null, terminalAt: "2026-09-03T10:05:00.000Z", reasonCode: "batch_invalid_json",
+  });
+  write(join(stateRoot, "evidence", `${traceId.slice(7)}.json`), { traceId, expiresAt: "2026-09-06T10:00:00.000Z" });
+  return { workspace, storeRoot, jobId, traceId };
+}
+
+function recoveryInput(input: ReturnType<typeof fixture>) {
+  return {
+    ...input,
+    authorizedBy: "operator",
+    authorizedAt: "2026-09-03T19:00:00.000Z",
+    reason: "retry after provider stabilization",
+  };
+}
+
+const FAULT_POINTS: BatchTerminalRecoveryFaultPoint[] = [
+  "after_authorization", "after_failure_archive", "after_done_archive",
+  "after_queue_requeue", "before_completed", "after_completed",
+];
+
+describe("bounded terminal batch recovery", () => {
+  test("plans without mutation and requeues only the authorized terminal job", () => {
+    const input = fixture();
+    const common = recoveryInput(input);
+    expect(recoverTerminalBatch(common).status).toBe("planned");
+    const applied = recoverTerminalBatch({ ...common, apply: true });
+    expect(applied.status).toBe("requeued");
+    const queue = JSON.parse(readFileSync(join(input.workspace, "memory-state", "memory-observation", "v1", "queues", "evaluator", `${input.traceId.slice(7)}.json`), "utf8"));
+    expect(queue).toMatchObject({ status: "queued", attempt: 0, terminalAt: null, reasonCode: "operator_recovery_requeued" });
+    expect(recoverTerminalBatch({ ...common, apply: true })).toEqual(applied);
+  });
+
+  for (const faultAt of FAULT_POINTS) {
+    test(`resumes the exact authorized state after ${faultAt}`, () => {
+      const input = fixture();
+      const common = recoveryInput(input);
+      expect(() => recoverTerminalBatch({ ...common, apply: true, faultAt })).toThrow(`fault injection at ${faultAt}`);
+      const resumed = recoverTerminalBatch({ ...common, apply: true });
+      expect(resumed.status).toBe("requeued");
+      expect(recoverTerminalBatch({ ...common, apply: true })).toEqual(resumed);
+      const queue = JSON.parse(readFileSync(join(input.workspace, "memory-state", "memory-observation", "v1", "queues", "evaluator", `${input.traceId.slice(7)}.json`), "utf8"));
+      expect(queue).toMatchObject({ status: "queued", attempt: 0, terminalAt: null, reasonCode: "operator_recovery_requeued" });
+    });
+  }
+
+  test("rejects a changed queue after authorization without archiving terminal artifacts", () => {
+    const input = fixture();
+    const common = recoveryInput(input);
+    const plan = recoverTerminalBatch(common);
+    expect(() => recoverTerminalBatch({ ...common, apply: true, faultAt: "after_authorization" })).toThrow(/fault injection/);
+    const queuePath = join(input.workspace, "memory-state", "memory-observation", "v1", "queues", "evaluator", `${input.traceId.slice(7)}.json`);
+    const queue = JSON.parse(readFileSync(queuePath, "utf8"));
+    write(queuePath, { ...queue, attempt: 1 });
+    expect(() => recoverTerminalBatch({ ...common, apply: true })).toThrow(/queue state changed/);
+    expect(readFileSync(join(input.storeRoot, "memory-batch-live", "v1", "failures", `${input.jobId.slice(7)}.json`), "utf8")).toBeTruthy();
+    expect(() => readFileSync(plan.archivedFailureRef, "utf8")).toThrow();
+  });
+
+  test("rejects changed archived failure content on resume", () => {
+    const input = fixture();
+    const common = recoveryInput(input);
+    const plan = recoverTerminalBatch(common);
+    expect(() => recoverTerminalBatch({ ...common, apply: true, faultAt: "after_failure_archive" })).toThrow(/fault injection/);
+    const failure = JSON.parse(readFileSync(plan.archivedFailureRef, "utf8"));
+    write(plan.archivedFailureRef, { ...failure, failedAt: "2026-09-03T19:01:00.000Z" });
+    expect(() => recoverTerminalBatch({ ...common, apply: true })).toThrow();
+  });
+
+  test("rejects a completed marker whose identity or content changed", () => {
+    const input = fixture();
+    const common = recoveryInput(input);
+    const applied = recoverTerminalBatch({ ...common, apply: true });
+    const completedPath = join(dirname(applied.archivedFailureRef), "completed.json");
+    write(completedPath, { ...applied, reason: "different authorization" });
+    expect(() => recoverTerminalBatch({ ...common, apply: true })).toThrow(/completed recovery artifact does not match/);
+  });
+
+  test("reclaims a stale abrupt-crash lock but preserves a live owner lock", () => {
+    const stale = fixture();
+    const staleCommon = recoveryInput(stale);
+    const staleLock = join(stale.workspace, "memory-state", "memory-observation", "v1", "locks", "evaluator.worker");
+    mkdirSync(dirname(staleLock), { recursive: true });
+    symlinkSync(JSON.stringify({ pid: 2_147_483_647 }), staleLock);
+    expect(recoverTerminalBatch({ ...staleCommon, apply: true }).status).toBe("requeued");
+
+    const live = fixture();
+    const liveCommon = recoveryInput(live);
+    const liveLock = join(live.workspace, "memory-state", "memory-observation", "v1", "locks", "evaluator.worker");
+    mkdirSync(dirname(liveLock), { recursive: true });
+    symlinkSync(JSON.stringify({ pid: process.pid }), liveLock);
+    expect(() => recoverTerminalBatch({ ...liveCommon, apply: true })).toThrow(/worker lock is held/);
+  });
+
+  test("rejects expired evidence before moving immutable failure artifacts", () => {
+    const input = fixture();
+    expect(() => recoverTerminalBatch({
+      ...input,
+      authorizedBy: "operator",
+      authorizedAt: "2026-09-07T19:00:00.000Z",
+      reason: "too late",
+      apply: true,
+    })).toThrow(/expired/);
+  });
+});

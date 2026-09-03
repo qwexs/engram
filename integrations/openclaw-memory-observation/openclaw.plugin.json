@@ -1,0 +1,13 @@
+{
+  "id": "engram-memory-observation",
+  "name": "Engram memory observation",
+  "description": "Captures trusted completed turns, runs guarded immediate or batch evaluation, and supports exact-scope daily-note, QMD, recall, and Decision-to-OLL provenance paths.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

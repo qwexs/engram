@@ -5,8 +5,9 @@
 //   --retrieval-id heartbeat-lock --retrieval-title "Heartbeat stale-lock repair"
 
 import { join, dirname, isAbsolute, resolve } from "path";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { loadEngramConfig } from "./config.js";
+import { withDailyNoteLock } from "../src/daily-note-lock.ts";
 import { markWorkspaceQmdDirty } from "../src/qmd/maintenance-integration.ts";
 import { normalizeSessionSegment, splitCanonicalSessionKey } from "../src/session-key.ts";
 
@@ -127,75 +128,39 @@ function buildTemplate(date) {
 `;
 }
 
-// --- Создать директорию если нет ---
-if (!existsSync(noteDir)) {
-  mkdirSync(noteDir, { recursive: true });
-}
-
-// --- Прочитать или создать файл ---
-let content;
-if (existsSync(notePath)) {
-  content = await Bun.file(notePath).text();
-} else {
-  content = buildTemplate(today);
-  await Bun.write(notePath, content);
-}
-
-// --- Найти секцию и вставить запись ---
 const entry = `- ${text}`;
 const entryLines = recordKind
   ? ["", `### ${recordTimestamp} — ${recordKind}`, "", entry]
   : [entry];
 
-// Разбить на строки, сохраняя структуру
-const lines = content.split("\n");
-
-// Найти индекс заголовка секции (## SectionTitle)
-const sectionHeader = `## ${sectionTitle}`;
-let sectionIdx = -1;
-for (let i = 0; i < lines.length; i++) {
-  if (lines[i].trim() === sectionHeader) {
-    sectionIdx = i;
-    break;
+withDailyNoteLock(notePath, () => {
+  if (!existsSync(noteDir)) mkdirSync(noteDir, { recursive: true });
+  const content = existsSync(notePath) ? readFileSync(notePath, "utf8") : buildTemplate(today);
+  const lines = content.split("\n");
+  const sectionHeader = `## ${sectionTitle}`;
+  let sectionIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === sectionHeader) {
+      sectionIdx = i;
+      break;
+    }
   }
-}
+  if (sectionIdx === -1) throw new Error(`Секция "${sectionHeader}" не найдена в ${notePath}`);
 
-if (sectionIdx === -1) {
-  console.error(`❌ Секция "${sectionHeader}" не найдена в ${notePath}`);
-  process.exit(1);
-}
-
-// Найти конец секции (следующий ## заголовок или EOF)
-// Игнорировать: ## Heartbeat Report, <!-- extracted:... -->
-let insertIdx = sectionIdx + 1;
-while (insertIdx < lines.length) {
-  const line = lines[insertIdx];
-  // Стоп-условие: другой ## заголовок (кроме ### подзаголовков внутри текущей секции)
-  if (/^## /.test(line) && line.trim() !== sectionHeader) {
-    break;
+  let insertIdx = sectionIdx + 1;
+  while (insertIdx < lines.length) {
+    const line = lines[insertIdx];
+    if (/^## /.test(line) && line.trim() !== sectionHeader) break;
+    if (/^<!-- extracted:/.test(line)) break;
+    insertIdx++;
   }
-  // Стоп-условие: watermark extracted (всегда в конце файла)
-  if (/^<!-- extracted:/.test(line)) {
-    break;
+  let lastContentLine = sectionIdx;
+  for (let i = sectionIdx + 1; i < insertIdx; i++) {
+    if (lines[i].trim() !== "") lastContentLine = i;
   }
-  insertIdx++;
-}
-
-// Вставить запись: ищем последнюю непустую строку секции, добавляем после
-// Найти последнюю непустую строку в секции (между sectionIdx+1 и insertIdx)
-let lastContentLine = sectionIdx; // если секция пустая — вставим сразу после заголовка
-for (let i = sectionIdx + 1; i < insertIdx; i++) {
-  if (lines[i].trim() !== "") {
-    lastContentLine = i;
-  }
-}
-
-// Вставить запись после lastContentLine. Decisions/Learnings несут
-// явный RFC3339 instant; старые date-only bullets остаются legacy-форматом.
-lines.splice(lastContentLine + 1, 0, ...entryLines);
-
-const newContent = lines.join("\n");
-await Bun.write(notePath, newContent);
+  lines.splice(lastContentLine + 1, 0, ...entryLines);
+  writeFileSync(notePath, lines.join("\n"), "utf8");
+});
 
 if (retrievalPath) {
   mkdirSync(retrievalDir, { recursive: true });

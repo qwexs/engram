@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { normalizeSessionSegment, splitAgentAndSession } from "../_lib/parse-agent-id.js";
 import { runtimeSessionSkipReason } from "../_lib/runtime-session.js";
+import { withDailyNoteLock } from "../../src/daily-note-lock.ts";
 import { markWorkspaceQmdDirty } from "../../src/qmd/maintenance-integration.ts";
 
 const TZ = process.env.ENGRAM_TZ || process.env.TZ || "UTC";
@@ -68,44 +69,42 @@ const handler = async (event: any) => {
   const sessionDir = join(workspaceDir, "memory", `agent-${agentId}`, sessionKey);
   const notePath = join(sessionDir, `${today}.md`);
 
-  // Create daily note lazily for the session that is actually bootstrapping.
-  if (!existsSync(notePath)) {
-    mkdirSync(sessionDir, { recursive: true });
-    writeFileSync(notePath, TEMPLATE(today));
-    console.log(`[engram-session-start] Created daily note ${notePath}`);
-  }
-
   // Register state before debounce returns: even repeated bootstraps should
   // keep heartbeat-state in sync with the existing session directory/note.
   updateHeartbeatState(workspaceDir, sessionKey, today);
 
-  // Skip if there's already a session:start within the last 15 minutes (debounce repeated bootstraps)
-  const content = existsSync(notePath) ? readFileSync(notePath, "utf-8") : "";
-  const lines = content.trimEnd().split("\n");
-  const lastLine = lines[lines.length - 1]?.trim() || "";
-  if (lastLine.startsWith("<!-- session:start:")) {
+  const startResult = withDailyNoteLock(notePath, () => {
+    if (!existsSync(notePath)) {
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(notePath, TEMPLATE(today));
+      console.log(`[engram-session-start] Created daily note ${notePath}`);
+    }
+    const content = readFileSync(notePath, "utf-8");
+    const lines = content.trimEnd().split("\n");
+    const lastLine = lines[lines.length - 1]?.trim() || "";
+    if (lastLine.startsWith("<!-- session:start:")) return "last-line" as const;
+    const debounceMs = 15 * 60 * 1000;
+    const now = Date.now();
+    const recentStart = lines.slice().reverse().find(l => l.trim().startsWith("<!-- session:start:"));
+    if (recentStart) {
+      const match = recentStart.match(/<!-- session:start:(.+?) -->/);
+      if (match) {
+        const timestamp = new Date(match[1]).getTime();
+        if (!isNaN(timestamp) && now - timestamp < debounceMs) return "recent" as const;
+      }
+    }
+    const iso = localISO(TZ);
+    appendFileSync(notePath, `<!-- session:start:${iso} -->\n`);
+    return "written" as const;
+  });
+  if (startResult === "last-line") {
     console.log(`[engram-session-start] Skipped (last line already session:start)`);
     return;
   }
-  // Also skip if any session:start was written in the last 15 minutes
-  const debounceMs = 15 * 60 * 1000;
-  const now = Date.now();
-  const recentStart = lines.slice().reverse().find(l => l.trim().startsWith("<!-- session:start:"));
-  if (recentStart) {
-    const m = recentStart.match(/<!-- session:start:(.+?) -->/);
-    if (m) {
-      try {
-        const ts = new Date(m[1]).getTime();
-        if (!isNaN(ts) && now - ts < debounceMs) {
-          console.log(`[engram-session-start] Skipped (session:start written < 15min ago)`);
-          return;
-        }
-      } catch {}
-    }
+  if (startResult === "recent") {
+    console.log(`[engram-session-start] Skipped (session:start written < 15min ago)`);
+    return;
   }
-
-  const iso = localISO(TZ);
-  appendFileSync(notePath, `<!-- session:start:${iso} -->\n`);
   console.log(`[engram-session-start] Wrote session:start to ${notePath}`);
 
   // Move handoff .md files from memory/ root to memory/agent-{agentId}/{sessionKey}/YYYY-MM-DD/.

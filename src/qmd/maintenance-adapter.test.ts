@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   markGlobalQmdBackfill,
+  markGlobalQmdInitialSync,
   runGlobalQmdMaintenance,
   runWorkspaceQmdMaintenance,
 } from "./maintenance-adapter.ts";
@@ -128,6 +129,18 @@ describe("global maintenance adapter", () => {
       stateRoot,
     });
     expect(state.dirty).toMatchObject({ bm25: false, vectors: true, collections: ["test-memory"] });
+  });
+
+  test("marks an explicit initial-sync batch bm25 and vectors dirty without executing QMD", async () => {
+    const root = workspace("coordinated");
+    const stateRoot = mkdtempSync(join(tmpdir(), "engram-maintenance-state-"));
+    const state = await markGlobalQmdInitialSync({
+      workspace: root,
+      collections: ["test-memory"],
+      expectedIndex: "sample-global",
+      stateRoot,
+    });
+    expect(state.dirty).toMatchObject({ bm25: true, vectors: true, collections: ["test-memory"] });
   });
 
   test("accepts a registry-scoped collection outside the coordinator workspace read scope", async () => {

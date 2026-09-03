@@ -70,6 +70,18 @@ describe("executeQmdRead", () => {
     expect(existsSync(log)).toBe(false);
   });
 
+  test("allows an internal caller to narrow the readable collection set", async () => {
+    const context = harness();
+    const log = join(context.workspace, "argv.log");
+    await expectCode(executeQmdRead(context, {
+      operation: "query", query: "term", collections: ["child"],
+    }, {
+      caller: { kind: "coordinator", allowedCollections: ["life"], capabilities: ["read"] },
+      env: { FAKE_QMD_LOG: log },
+    }), EXIT_CODES.POLICY_DENIED);
+    expect(existsSync(log)).toBe(false);
+  });
+
   test.each([
     [{ FAKE_QMD_MODE: "non-zero" }, EXIT_CODES.QMD_OPERATION_FAILED],
     [{ FAKE_QMD_READ_MODE: "malformed" }, EXIT_CODES.QMD_OPERATION_FAILED],

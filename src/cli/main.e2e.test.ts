@@ -34,7 +34,7 @@ describe("engram executable", () => {
 
     const version = await invoke(["--version"]);
     expect(version).toEqual(expect.objectContaining({ exitCode: 0, stderr: "" }));
-    expect(version.stdout).toBe("3.6.1\n");
+    expect(version.stdout).toBe("3.6.2\n");
   });
 
   test("wraps JSON success output in the standard envelope", async () => {
@@ -48,7 +48,7 @@ describe("engram executable", () => {
         elapsedMs: expect.any(Number),
         workspace: root,
       },
-      data: { kind: "version", version: "3.6.1" },
+      data: { kind: "version", version: "3.6.2" },
     });
   });
 
@@ -206,6 +206,39 @@ describe("engram executable", () => {
       const human = await invoke(["--workspace", workspace, "qmd", "query", "term", "-c", "life"]);
       expect(human).toEqual(expect.objectContaining({ exitCode: 0, stderr: "" }));
       expect(JSON.parse(human.stdout)).toEqual([{ file: "qmd://life/example.md", score: 0.9 }]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+
+  test("runs the deterministic recall evaluator through the CLI", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "engram-cli-recall-eval-"));
+    try {
+      const fixture = join(root, "tests", "fixtures", "fake-qmd.js");
+      const corpus = join(root, "tests", "fixtures", "recall-evaluator", "corpus.v1.json");
+      writeFileSync(join(workspace, "engram.json"), JSON.stringify({
+        qmd: {
+          collections: ["workspace-memory"],
+          command: process.execPath,
+          commandArgs: [fixture],
+        },
+      }));
+      const result = await invoke([
+        "--json", "--workspace", workspace, "qmd", "recall-eval", corpus,
+      ], {
+        FAKE_QMD_RESULTS_BY_QUERY: JSON.stringify({
+          "exact memory": [{ file: "qmd://workspace-memory/exact.md", score: 1.0 }],
+          "semantic memory": [{ file: "qmd://workspace-memory/near.md", score: 0.9 }, { file: "qmd://workspace-memory/vector.md", score: 0.8 }],
+          default: [{ file: "qmd://workspace-memory/exact.md", score: 1.0 }],
+        }),
+      });
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        command: "qmd.recall-eval",
+        ok: true,
+        data: { schema: "engram.qmd.recall-evaluator.v1", totals: { cases: 4, passed: 4, failed: 0 } },
+      });
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

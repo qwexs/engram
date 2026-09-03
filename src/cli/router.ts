@@ -1,6 +1,7 @@
 import type { ParsedInvocation } from "./args.ts";
 import { usageError } from "./errors.ts";
 import { parseQmdReadArgs } from "./qmd-read-args.ts";
+import { parseQmdRecallEvalArgs } from "./qmd-recall-eval-args.ts";
 import { resolveQmdContext } from "../qmd/context.ts";
 import {
   inspectQmdCapabilities,
@@ -11,9 +12,10 @@ import {
   type QmdStatusData,
 } from "../qmd/diagnostics.ts";
 import { executeQmdRead, type QmdReadData, type QmdReadOperation } from "../qmd/read.ts";
+import { evaluateQmdRecallCorpus, loadRecallCorpus, type RecallEvaluatorResult } from "../qmd/recall-evaluator.ts";
 import type { QmdContextData } from "../qmd/types.ts";
 
-export const VERSION = "3.6.1";
+export const VERSION = "3.6.2";
 
 const GLOBAL_OPTIONS_HELP = `Global options:
   --workspace <path>    Workspace root (default: current directory)
@@ -47,6 +49,7 @@ QMD commands:
   search <query> -c <collection>... [--limit <n>]
   query <query> -c <collection>... [--limit <n>]
   vsearch <query> -c <collection>... [--limit <n>]
+  recall-eval <corpus.json>
 
 ${GLOBAL_OPTIONS_HELP}
 `;
@@ -65,6 +68,12 @@ export type RoutedSuccess =
       kind: "qmd-read";
       command: "qmd.search" | "qmd.query" | "qmd.vsearch";
       data: QmdReadData;
+      text: string;
+    }
+  | {
+      kind: "qmd-recall-eval";
+      command: "qmd.recall-eval";
+      data: RecallEvaluatorResult;
       text: string;
     };
 
@@ -176,6 +185,18 @@ export async function route(invocation: ParsedInvocation): Promise<RoutedSuccess
         command: `qmd.${subcommand}`,
         data: result.data,
         text: result.stdout,
+      };
+    }
+    if (subcommand === "recall-eval") {
+      const { corpusPath } = parseQmdRecallEvalArgs(args);
+      const context = resolveQmdContext(options.workspace);
+      const corpus = loadRecallCorpus(corpusPath);
+      const data = await evaluateQmdRecallCorpus(context, corpus, { timeoutMs: options.timeoutMs });
+      return {
+        kind: "qmd-recall-eval",
+        command: "qmd.recall-eval",
+        data,
+        text: `${JSON.stringify(data, null, 2)}\n`,
       };
     }
     throw usageError(subcommand === undefined

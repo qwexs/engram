@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { auditQmdGlobalRegistry, type QmdGlobalRegistry } from "../src/qmd/global-registry.ts";
-import { markGlobalQmdBackfill, runGlobalQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
+import { markGlobalQmdBackfill, markGlobalQmdInitialSync, runGlobalQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
 
 type Options = Record<string, string | boolean>;
 
@@ -56,7 +56,7 @@ if (options.help || options.h) {
   console.log(`qmd-maintenance-coordinator
 
 Usage:
-  bun scripts/qmd-maintenance-coordinator.ts --manifest <path> --workspace <path> [--collections <a,b,...>] [--initial-backfill] [--allow-partial-dirty-scope] [--state-root <path>] [--timeout-ms <ms>]
+  bun scripts/qmd-maintenance-coordinator.ts --manifest <path> --workspace <path> [--collections <a,b,...>] [--initial-backfill|--initial-sync] [--allow-partial-dirty-scope] [--state-root <path>] [--timeout-ms <ms>]
 
 The manifest may be a global registry or a migration/provisioning manifest
 containing a registry. This command is the only coordinated execution entry
@@ -64,7 +64,8 @@ point; workspace heartbeats delegate when maintenance.mode=coordinated.
 
 Without --collections, routine maintenance uses the full registry. An
 --initial-backfill requires an explicit --collections subset and marks only
-that subset vector-dirty before the pass; it never implies a full-index run.`);
+that subset vector-dirty before the pass. --initial-sync requires an explicit
+--collections subset and marks the subset BM25+vector-dirty before the pass.`);
   process.exit(0);
 }
 
@@ -75,16 +76,23 @@ try {
   if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)) {
     throw new Error("--timeout-ms must be a positive integer");
   }
-  if (options["initial-backfill"] && typeof options.collections !== "string") {
-    throw new Error("--initial-backfill requires an explicit --collections subset");
+  if (options["initial-backfill"] && options["initial-sync"]) {
+    throw new Error("--initial-backfill and --initial-sync are mutually exclusive");
   }
-  if (options["allow-partial-dirty-scope"] && typeof options.collections !== "string") {
-    throw new Error("--allow-partial-dirty-scope requires an explicit --collections subset");
+  if ((options["initial-backfill"] || options["initial-sync"] || options["allow-partial-dirty-scope"]) && typeof options.collections !== "string") {
+    throw new Error("--collections is required for initial maintenance flags");
   }
   const workspace = required(options, "workspace");
-  const collections = selectedCollections(options, registry);
+  const collections = (options["initial-backfill"] || options["initial-sync"] || options["allow-partial-dirty-scope"])
+    ? selectedCollections({ ...options, collections: required(options, "collections") }, registry)
+    : selectedCollections(options, registry);
   const trustedCollections = registry.collections.map((entry) => entry.name);
   const stateRoot = typeof options["state-root"] === "string" ? resolve(options["state-root"]) : undefined;
+  const initialSync = options["initial-sync"]
+    ? await markGlobalQmdInitialSync({
+      workspace, collections, expectedIndex: registry.index.name, trustedCollections, stateRoot,
+    })
+    : undefined;
   const backfill = options["initial-backfill"]
     ? await markGlobalQmdBackfill({
       workspace, collections, expectedIndex: registry.index.name, trustedCollections, stateRoot,
@@ -99,7 +107,7 @@ try {
     allowPartialDirtyScope: options["allow-partial-dirty-scope"] === true,
     trustedCollections,
   });
-  console.log(JSON.stringify({ ...result, ...(backfill ? { backfill } : {}) }));
+  console.log(JSON.stringify({ ...result, ...(backfill ? { backfill } : {}), ...(initialSync ? { initialSync } : {}) }));
   process.exit(result.status === "error" || result.status === "partial" ? 1 : 0);
 } catch (error) {
   console.error(JSON.stringify({

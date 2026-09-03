@@ -118,6 +118,14 @@ if (["search", "query", "vsearch"].includes(commandArgs[0])) {
   if (delayMs > 0) await Bun.sleep(delayMs);
   if (process.env.FAKE_QMD_READ_MODE === "malformed") console.log("{");
   else if (process.env.FAKE_QMD_READ_MODE === "object") console.log("{}");
+  else if (process.env.FAKE_QMD_RESULTS_BY_QUERY) {
+    const map = JSON.parse(process.env.FAKE_QMD_RESULTS_BY_QUERY);
+    const key = process.env.FAKE_QMD_QUERY || commandArgs[1] || "default";
+    console.log(JSON.stringify(map[key] ?? map.default ?? [{ file: "qmd://life/example.md", score: 0.9 }]));
+  }
+  else if (commandArgs[0] === "query" && commandArgs[1] === "shared") {
+    console.log(JSON.stringify([{ file: "qmd://workspace-memory/visible.md", score: 0.92 }, { file: "qmd://visible/adjacent.md", score: 0.85 }]));
+  }
   else console.log(JSON.stringify([{ file: "qmd://life/example.md", score: 0.9 }]));
   process.exit(0);
 }

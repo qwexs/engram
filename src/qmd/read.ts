@@ -22,14 +22,15 @@ export type QmdReadData = {
   operationRecord: QmdOperationRecord;
 };
 export type QmdReadResult = { data: QmdReadData; stdout: string };
+export type QmdReadOptions = QmdProcessOptions & { caller?: QmdCallerContext };
 
 export async function executeQmdRead(
   context: QmdContext,
   request: QmdReadRequest,
-  runner: QmdProcessOptions = {},
+  runner: QmdReadOptions = {},
 ): Promise<QmdReadResult> {
-  const invocation = buildQmdInvocation(context, request);
-  const caller: QmdCallerContext = {
+  const invocation = buildQmdInvocation(context, { ...request, ...(runner.timeoutMs === undefined ? {} : { timeoutMs: runner.timeoutMs }) });
+  const caller: QmdCallerContext = runner.caller ?? {
     kind: "operator",
     allowedCollections: [...context.policy.readableCollections],
     capabilities: ["diagnostics", "read"],

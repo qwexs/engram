@@ -1,0 +1,18 @@
+[
+  {
+    "schema": "engram.recall-eval-case.v2",
+    "caseId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "datasetId": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "scope": {"workspaceId": "main", "runtimeSessionKey": "agent:main:telegram:direct:100000001", "scopeClass": "self", "scopeId": "telegram:100000001"},
+    "questionClass": "state-correction",
+    "question": "bad",
+    "sourceTraceIds": ["sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"],
+    "goldEvidenceRefs": [{"kind": "canonical-record", "ref": "canonical://decision/1", "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}],
+    "expectedClaims": ["x"],
+    "forbiddenClaims": ["y"],
+    "mustAbstain": false,
+    "critical": true,
+    "tags": [],
+    "adjudication": {"source": "model", "verifierRef": "verifier://bad", "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}
+  }
+]

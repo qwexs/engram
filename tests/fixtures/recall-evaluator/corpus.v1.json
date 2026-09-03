@@ -1,0 +1,44 @@
+{
+  "schema": "engram.qmd.recall-corpus.v1",
+  "version": "2026-08-24",
+  "collectionScope": "workspace-memory",
+  "cases": [
+    {
+      "id": "exact-doc",
+      "kind": "positive-exact",
+      "operation": "query",
+      "query": "exact memory",
+      "collections": ["workspace-memory"],
+      "expectedCanonicalDocument": "qmd://workspace-memory/exact.md",
+      "expectedPath": "qmd://workspace-memory/exact.md"
+    },
+    {
+      "id": "vector-doc",
+      "kind": "positive-vector",
+      "operation": "vsearch",
+      "query": "semantic memory",
+      "collections": ["workspace-memory"],
+      "expectedCanonicalDocument": "qmd://workspace-memory/vector.md",
+      "expectedPath": "qmd://workspace-memory/vector.md"
+    },
+    {
+      "id": "policy-denied",
+      "kind": "negative-policy",
+      "operation": "search",
+      "query": "private",
+      "collections": ["private-policy"],
+      "expectedCanonicalDocument": "qmd://private/secret.md",
+      "expectedPath": "qmd://private/secret.md",
+      "expectedErrorCode": "POLICY_DENIED"
+    },
+    {
+      "id": "isolation-denied",
+      "kind": "negative-isolation",
+      "operation": "query",
+      "query": "shared",
+      "collections": ["workspace-memory"],
+      "expectedCanonicalDocument": "qmd://protected/secret.md",
+      "expectedPath": "qmd://protected/secret.md"
+    }
+  ]
+}

@@ -15,6 +15,7 @@ import type {
 
 export type QmdProcessOptions = {
   env?: Record<string, string | undefined>;
+  timeoutMs?: number;
 };
 
 export type QmdRunnerOptions = QmdProcessOptions & {

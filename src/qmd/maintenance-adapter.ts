@@ -57,6 +57,8 @@ export type GlobalQmdBackfillMarkOptions = {
   trustedCollections?: string[];
 };
 
+export type GlobalQmdInitialSyncMarkOptions = GlobalQmdBackfillMarkOptions;
+
 function configFor(workspace: string): JsonObject {
   const path = join(resolve(workspace), "engram.json");
   if (!existsSync(path)) throw contextError("Workspace does not contain engram.json.", { path });
@@ -224,6 +226,36 @@ export async function markGlobalQmdBackfill(
     collections,
     reason: "operator:initial-backfill",
     bm25: false,
+    vectors: true,
+  });
+}
+
+/** Marks an explicit initial-sync batch as BM25+vector dirty before the coordinated pass. */
+export async function markGlobalQmdInitialSync(
+  options: GlobalQmdInitialSyncMarkOptions,
+) {
+  const workspace = resolve(options.workspace);
+  const mode = resolveWorkspaceQmdMaintenanceMode(workspace);
+  if (mode !== "coordinated") {
+    throw contextError("Global QMD initial-sync requires qmd.maintenance.mode=coordinated.", { mode });
+  }
+  const context = resolveQmdContext({ value: workspace, source: "explicit" });
+  if (context.selector.kind !== "named" || context.selector.name !== options.expectedIndex) {
+    throw contextError("Coordinator workspace does not resolve the expected named QMD index.", {
+      expectedIndex: options.expectedIndex,
+      selector: context.selector,
+    });
+  }
+  const collections = trustedCoordinatorCollections(
+    options.collections,
+    options.trustedCollections,
+    context.policy.readableCollections,
+  );
+  return markQmdDirty(options.stateRoot ?? resolveQmdMaintenanceStateRoot(), {
+    indexKey: context.physicalIndex.key,
+    collections,
+    reason: "operator:initial-sync",
+    bm25: true,
     vectors: true,
   });
 }

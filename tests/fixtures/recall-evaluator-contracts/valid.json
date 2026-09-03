@@ -1,0 +1,34 @@
+[
+  {
+    "schema": "engram.recall-eval-case.v1",
+    "caseId": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "datasetId": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "scope": {"workspaceId": "main", "runtimeSessionKey": "agent:main:telegram:direct:100000001", "scopeClass": "self", "scopeId": "telegram:100000001"},
+    "questionClass": "state-correction",
+    "question": "What is the current decision?",
+    "sourceTraceIds": ["sha256:3333333333333333333333333333333333333333333333333333333333333333"],
+    "goldEvidenceRefs": [{"kind": "canonical-record", "ref": "canonical://decision/1", "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"}],
+    "expectedClaims": ["decision is active"],
+    "forbiddenClaims": ["old decision"],
+    "mustAbstain": false,
+    "critical": true,
+    "tags": ["currentness", "conflict"],
+    "adjudication": {"source": "human", "verifierRef": "verifier://human/1", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"}
+  },
+  {
+    "schema": "engram.recall-eval-case.v1",
+    "caseId": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "datasetId": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "scope": {"workspaceId": "main", "runtimeSessionKey": "agent:main:telegram:direct:100000001", "scopeClass": "self", "scopeId": "telegram:100000001"},
+    "questionClass": "no-evidence",
+    "question": "Should I answer?",
+    "sourceTraceIds": ["sha256:7777777777777777777777777777777777777777777777777777777777777777"],
+    "goldEvidenceRefs": [],
+    "expectedClaims": ["abstain"],
+    "forbiddenClaims": ["any answer"],
+    "mustAbstain": true,
+    "critical": false,
+    "tags": ["abstention"],
+    "adjudication": {"source": "deterministic-check", "verifierRef": "verifier://det/check/1", "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"}
+  }
+]

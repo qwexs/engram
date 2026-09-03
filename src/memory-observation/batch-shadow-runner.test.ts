@@ -66,7 +66,10 @@ function entry(index: number): BatchSourceFrameEntryV1 {
   const traceId = sha256(`trace-${index}`);
   const sourceTurnId = `channel-user:v1:${index.toString(16).padStart(64, "0")}`;
   const sourceCompletedAt = `2026-08-31T20:0${index}:00.000Z`;
-  const payload = { text: index === 1 ? "PRIVATE-EVIDENCE-ALPHA" : "PRIVATE-EVIDENCE-BETA" };
+  const payload = {
+    source: { role: "user", text: index === 1 ? "PRIVATE-EVIDENCE-ALPHA" : "PRIVATE-EVIDENCE-BETA" },
+    outcome: { role: "assistant", text: `completed-${index}` },
+  };
   const evidenceIdentity = { schema: "engram.memory-evidence-envelope.v1" as const, traceId, scope, payload };
   return {
     envelope: {
@@ -79,7 +82,10 @@ function entry(index: number): BatchSourceFrameEntryV1 {
       evidenceDigest: sha256(evidenceIdentity as unknown as JsonValue),
       policyVersion: "memory-observation-authority-v1",
       policyDigest,
-      evidenceRefs: [{ kind: "message", ref: `telegram:${index}`, digest: sha256(`message-${index}`) }],
+      evidenceRefs: [
+        { kind: "source-turn", ref: sourceTurnId, digest: sha256(`source-turn-${index}`) },
+        { kind: "message", ref: `telegram:${index}`, digest: sha256(`message-${index}`) },
+      ],
       authority: { id: "openclaw-runtime", version: "runtime-v1", digest: sha256("runtime-v1") },
       admittedAt: sourceCompletedAt,
     },
@@ -162,6 +168,7 @@ describe("Terra paired shadow runner", () => {
     expect(wire.instructions).toContain("do not split its diagnosis, clarification, approval, completion, or verification");
     expect(wire.instructions).toContain("routine restart or health confirmations");
     expect(wire.instructions).toContain("completed verified root-cause diagnosis");
+    expect(wire.instructions).toContain("actor-aligned source-turn citation");
     expect(raw.promptDigest).not.toBe(legacy.promptDigest);
     expect(raw.configDigest).not.toBe(legacy.configDigest);
     expect(raw.resultKey).not.toBe(legacy.resultKey);
@@ -327,6 +334,20 @@ describe("Terra paired shadow runner", () => {
       text: `Уникальный факт ${index + 1}.`,
     }));
     expectCode(() => parseBatchShadowOutput(overLimit, compiled, new Date("2026-08-31T20:11:00.000Z")), "INVALID_OUTPUT");
+  });
+
+  test("rejects reply-context-only citations that do not anchor the asserted actor to a source turn", () => {
+    const compiled = bundle();
+    const output = validOutput();
+    if (output.groups[0].decision !== "write") throw new Error("fixture is not a write group");
+    output.groups[0].assertions[0].citations = compiled.inputs.map((input) => ({
+      traceId: input.traceId,
+      evidenceRef: input.evidenceRefs[1],
+    }));
+    expectCode(
+      () => parseBatchShadowOutput(output, compiled, new Date("2026-08-31T20:11:00.000Z")),
+      "ACTOR_CITATION_MISMATCH",
+    );
   });
 
   test("marks economics unknown when provider usage is absent", async () => {

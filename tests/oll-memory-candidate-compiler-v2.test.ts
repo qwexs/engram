@@ -397,7 +397,7 @@ describe("OLL memory candidate Phase 1 compiler", () => {
       scopeClass: "self",
       scopeId: "telegram:100000001",
     };
-    const evaluationPolicyDigest = sha256Digest("memory-batch-shadow-prompt-v8");
+    const evaluationPolicyDigest = sha256Digest("memory-batch-shadow-prompt-v9");
     write(join(root, relativePath), [
       "# 2026-08-14",
       "",
@@ -451,7 +451,7 @@ describe("OLL memory candidate Phase 1 compiler", () => {
       scopeClass: "self",
       scopeId: "telegram:100000001",
     };
-    const evaluationPolicyDigest = sha256Digest("memory-batch-shadow-prompt-v8");
+    const evaluationPolicyDigest = sha256Digest("memory-batch-shadow-prompt-v9");
     write(join(root, relativePath), `# 2026-08-14\n\n## Decisions\n\n<!-- engram-entry:${entryId} -->\n- ${statement}\n`);
     const receiptPath = join(root, "memory-state", "memory-observation", "v1", "receipts", "by-entry", `${"e".repeat(64)}.json`);
     const receipt = batchApplyReceipt({ entryId, relativePath, statement, scope: exactScope, evaluationPolicyDigest });

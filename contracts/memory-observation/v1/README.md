@@ -157,6 +157,10 @@ later product/authority contract and is not a hidden PR1 deliverable.
   target evidence plus bounded reply context, never future supersession, and it
   skips explanation-only restatements while retaining new verified status or a
   concrete operational plan accurately even when follow-up still awaits approval.
+- Batch prompt v9 requires every durable assertion to carry at least one exact
+  `source-turn` citation whose current evidence segment matches `actorRef`
+  (`source.role=user` or `outcome.role=assistant`). Reply-context message
+  citations remain supporting context and cannot replace that source anchor.
 - The daily-note OLL parser rejects naked or invalid observer anchors as
   `invalid_schema`. A valid batch Decision is admitted only through the
   versioned `oll-receipt-producer-registry.json` join: exact applicator and

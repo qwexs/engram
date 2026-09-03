@@ -15,7 +15,7 @@ import { executeQmdRead, type QmdReadData, type QmdReadOperation } from "../qmd/
 import { evaluateQmdRecallCorpus, loadRecallCorpus, type RecallEvaluatorResult } from "../qmd/recall-evaluator.ts";
 import type { QmdContextData } from "../qmd/types.ts";
 
-export const VERSION = "3.6.2";
+export const VERSION = "3.6.3";
 
 const GLOBAL_OPTIONS_HELP = `Global options:
   --workspace <path>    Workspace root (default: current directory)

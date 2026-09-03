@@ -23,7 +23,7 @@ type Row = Record<string, unknown>;
 
 export const BATCH_SHADOW_OUTPUT_SCHEMA = "engram.memory-batch-shadow-output.v1" as const;
 export const BATCH_SHADOW_RESULT_SCHEMA = "engram.memory-batch-shadow-result.v1" as const;
-export const BATCH_SHADOW_PROMPT_VERSION = "memory-batch-shadow-prompt-v8" as const;
+export const BATCH_SHADOW_PROMPT_VERSION = "memory-batch-shadow-prompt-v9" as const;
 export const MAX_ASSERTIONS_PER_WRITE_GROUP = 8;
 
 export type BatchScopedCitationV1 = {
@@ -34,7 +34,7 @@ export type BatchScopedCitationV1 = {
 export type BatchShadowAssertionV1 = {
   section: "events" | "decisions";
   text: string;
-  actorRef: "user" | "assistant" | "system";
+  actorRef: "user" | "assistant";
   outcomeStatus: "completed" | "in-progress" | "decided" | "corrected" | "failed" | "unknown";
   confidence: number;
   reasonCodes: string[];
@@ -168,7 +168,7 @@ const USAGE_KEYS_V1 = new Set(["inputTokens", "outputTokens"]);
 const USAGE_KEYS_V2 = new Set(["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"]);
 const COST_KEYS = new Set(["provenance", "currency", "amount"]);
 const COMPLETION_KEYS = new Set(["output", "resolvedModel", "usage", "costUsd", "latencyMs"]);
-const ACTORS = new Set(["user", "assistant", "system"]);
+const ACTORS = new Set(["user", "assistant"]);
 const OUTCOMES = new Set(["completed", "in-progress", "decided", "corrected", "failed", "unknown"]);
 const EVIDENCE_KINDS = new Set(["source-turn", "message", "approved-tool-outcome"]);
 const SCOPE_CLASSES = new Set(["self", "managers", "company", "project"]);
@@ -335,6 +335,8 @@ const SYSTEM_PROMPT = [
   "Cover every admitted traceId exactly once across groups. Do not invent or omit traceIds.",
   "Keep sourceRefs inside each group in compiler order, and order groups by the earliest compiler source in each group.",
   "Every assertion must cite exact objects {traceId,evidenceRef}; copy evidenceRef from that trace only.",
+  "Every assertion must include at least one source-turn citation for a trace whose current source/outcome contains the asserted actor: source for user, outcome for assistant.",
+  "Reply-context message citations may support interpretation, but cannot replace the actor-aligned source-turn citation.",
   `A write group may contain 1 to ${MAX_ASSERTIONS_PER_WRITE_GROUP} assertions when the evidence supports distinct durable facts.`,
   "Keep each assertion atomic and independently useful. Never repeat or paraphrase the same fact as multiple assertions.",
   "Use only evidence in this immutable bundle. Do not infer cross-scope facts or later outcomes.",
@@ -377,7 +379,7 @@ function outputContract(): JsonValue {
               exactKeys: ["section", "text", "actorRef", "outcomeStatus", "confidence", "reasonCodes", "citations"],
               section: "events|decisions",
               text: "one or two short lines",
-              actorRef: "user|assistant|system",
+              actorRef: "user|assistant",
               outcomeStatus: "completed|in-progress|decided|corrected|failed|unknown",
               confidence: "number 0..1",
               reasonCodes: { type: "array", items: "token" },
@@ -551,6 +553,7 @@ export function parseBatchShadowOutput(value: unknown, bundleValue: unknown, now
       if (seenAssertions.has(assertionKey)) fail("INVALID_ASSERTION", "write group contains a duplicate assertion");
       seenAssertions.add(assertionKey);
       const seenCitations = new Set<string>();
+      let actorAlignedSourceTurn = false;
       for (const citationValue of assertion.citations) {
         const citation = row(citationValue);
         if (!citation || !exactKeys(citation, CITATION_KEYS) || !validDigest(citation.traceId)
@@ -559,9 +562,24 @@ export function parseBatchShadowOutput(value: unknown, bundleValue: unknown, now
         }
         const admitted = inputByTrace.get(citation.traceId)!.evidenceRefs;
         if (!admitted.some((ref) => same(ref, citation.evidenceRef))) fail("INVALID_CITATION", "citation evidenceRef is not admitted for its traceId");
+        if (citation.evidenceRef.kind === "source-turn") {
+          const sourceRef = bundle.sourceRefs[sourceIndex.get(citation.traceId)!]!;
+          const input = inputByTrace.get(citation.traceId)!;
+          const evidence = row(input.evidence);
+          const segment: Row | null = assertion.actorRef === "user" ? row(evidence?.source) : row(evidence?.outcome);
+          if (citation.evidenceRef.ref !== sourceRef.sourceTurnId) {
+            fail("INVALID_CITATION", "source-turn citation does not match its exact source turn");
+          }
+          if (segment?.role === assertion.actorRef && typeof segment.text === "string" && segment.text.trim()) {
+            actorAlignedSourceTurn = true;
+          }
+        }
         const citationKey = canonical(citation as unknown as JsonValue);
         if (seenCitations.has(citationKey)) fail("INVALID_CITATION", "assertion contains a duplicate citation");
         seenCitations.add(citationKey);
+      }
+      if (!actorAlignedSourceTurn) {
+        fail("ACTOR_CITATION_MISMATCH", "assertion lacks an actor-aligned source-turn citation");
       }
     }
   }

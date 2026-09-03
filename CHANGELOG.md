@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **fix(memory): require actor-aligned source citations in batch output.** A
+  write assertion must now cite an exact current `source-turn` whose user or
+  assistant segment matches `actorRef`; bounded reply context may support
+  interpretation but cannot independently authorize a durable assertion.
+
 - **fix(memory): close the consolidated batch contract gaps.** Batch apply and
   replay now reauthorize current producer and trace policy, validate the full
   canonical observation shape, pin exact plugin bytes, reread live consumer

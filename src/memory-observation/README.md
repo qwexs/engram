@@ -57,6 +57,9 @@ write still retains its exact runtime session scope.
   session lifecycle writers, preventing stale replace from losing their data.
 - apply-time batch producer/trace reauthorization and full canonical runtime
   observation validation;
+- prompt-v9 actor-aligned grounding: every batch assertion must cite an exact
+  current source-turn whose `source` or `outcome` segment matches the asserted
+  user or assistant actor; reply-context citations are supporting evidence only;
 - crash-safe bounded terminal recovery with staged authorization, exact
   evidence snapshots, and stale-owner lock recovery;
 - exact-session QMD dirty handoff with durable retry; family projections reject

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **fix(memory): close the consolidated batch contract gaps.** Batch apply and
+  replay now reauthorize current producer and trace policy, validate the full
+  canonical observation shape, pin exact plugin bytes, reread live consumer
+  policy, run independent retention purge, and resume terminal recovery across
+  crashes and stale locks.
+
+- **feat(memory): make Recall Authority batch-aware.** Multiple assertions may
+  share one source trace while retaining distinct observation, receipt, and
+  canonical-entry identities; the compiler verifies full batch provenance.
+
+- **feat(memory): bridge receipt-backed observer Decisions into OLL.** Only
+  allowlisted batch Decisions with exact scope, evaluator policy, canonical
+  receipt, destination read-back, and live rollout state are eligible.
+
+- **feat(memory): preserve exact model routing, QMD handoff, and typed recall
+  evaluation in the consolidated runtime.** The observer requests its sealed
+  provider/model through a one-model plugin allowlist, daily-note applies can
+  durably retry an exact QMD dirty handoff, and recall evaluation remains
+  read-only, scope-bound, and reproducible.
+
+- **feat(memory): expand the bounded batch canary to the main-agent family.**
+  Projection v3 admits `agent:main:*` while retaining exact source-session
+  provenance, owner checks, one model call per scheduled run, and one
+  canonical daily-note apply per wake. Scope-aware claiming prevents one
+  session applicator from consuming another session's queue.
+
 - **fix(memory): stop bootstrap noise from inactive sessions and stale writer
   guidance.** Gateway startup now reconciles only daily notes that already
   exist; the active session bootstrap remains the sole lazy creator. KG v3

@@ -46,6 +46,11 @@ Global options:
 
 Read commands require one non-empty query and at least one explicit collection. Repeated `-c` enables multi-collection reads. `--limit` accepts an integer from 1 to 100. The core rejects collections outside the caller allowlist before spawning QMD.
 
+`recall-eval` is deterministic and read-only. It uses the typed QMD read path, a versioned corpus contract, and emits machine-readable recall metrics plus miss diagnostics.
+
+- The bounded SPEC R1 adapter lives in `src/qmd/recall-evaluator-contracts.ts` and adds strict versioned recall-eval case/result/report parsing plus deterministic synthetic reports.
+- The R2 offline dataset gate lives in `src/qmd/recall-evaluator-baseline.ts`. It seals a dataset with a stable digest and rejects runs before retrieval unless the exact approved scope contains 20-30 post-cutover canonical episodes, at least 25 adjudicated cases, five cases in every required class, and 100% traceable positive gold. It is read-only and does not activate model calls, schedulers, or canonical writes.
+
 ## JSON protocol
 
 Success schema: `engram.cli.result.v1`.

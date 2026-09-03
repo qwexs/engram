@@ -16,6 +16,7 @@ import type { CandidateScope, CandidateScopeRegistryV1, CandidateSourcePolicyV2 
 import { inspectCandidateCompilerProjectionV1 } from "./memory-candidate-rollout-v1";
 import { assessCandidateSelectionV1, materializeCandidateReportV2, readCandidateProjectionV1 } from "./memory-candidate-store-v2";
 import { applyCandidateHandoffV3 } from "./memory-candidate-runtime-v2";
+import type { ObserverReceiptProducerRegistryV1 } from "./observer-receipt-bridge-v1.ts";
 
 type BatchTransition =
   | "pending" | "reconciling" | "compiling" | "preflight" | "skipped" | "dispatching"
@@ -330,6 +331,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       const config = workspace.config.oll.nightly;
       const candidatePolicy = workspace.config?.oll?.candidateCompiler as CandidateSourcePolicyV2 | undefined;
       const scopeRegistry = workspace.config?.oll?.candidateScopeRegistry as CandidateScopeRegistryV1 | undefined;
+      const observerReceiptProducerRegistry = workspace.config?.oll?.observerReceiptProducerRegistry as ObserverReceiptProducerRegistryV1 | undefined;
       const contextPath = join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "contexts", `${workspaceId}.json`);
       let context: NightlyContext;
 
@@ -417,6 +419,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
               batchId: batch.batchId,
               policy: candidatePolicy,
               scopeRegistry,
+              observerReceiptProducerRegistry,
               executionMode: "shadow",
             });
             writeImmutable(join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "candidate-reports", `${workspaceId}.json`), report);
@@ -472,6 +475,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
               batchId: batch.batchId,
               policy: candidatePolicy,
               scopeRegistry,
+              observerReceiptProducerRegistry,
               executionMode: "materialize",
             });
             writeImmutable(join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "candidate-reports", `${workspaceId}.json`), report);
@@ -695,10 +699,13 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
                   const liveConfig = readObject<Record<string, any>>(join(workspace.workspacePath, "engram.json"));
                   const livePolicy = liveConfig?.oll?.candidateCompiler as CandidateSourcePolicyV2 | undefined;
                   const liveRegistry = liveConfig?.oll?.candidateScopeRegistry as CandidateScopeRegistryV1 | undefined;
+                  const liveObserverReceiptProducerRegistry = liveConfig?.oll?.observerReceiptProducerRegistry as ObserverReceiptProducerRegistryV1 | undefined;
                   if (!livePolicy || !liveRegistry
                     || sha256Digest(canonicalizeJcs(livePolicy)) !== sha256Digest(canonicalizeJcs(candidatePolicy))
-                    || sha256Digest(canonicalizeJcs(liveRegistry)) !== sha256Digest(canonicalizeJcs(scopeRegistry))) {
-                    throw new Error("candidate policy or scope registry drifted before effect commit");
+                    || sha256Digest(canonicalizeJcs(liveRegistry)) !== sha256Digest(canonicalizeJcs(scopeRegistry))
+                    || sha256Digest(canonicalizeJcs(liveObserverReceiptProducerRegistry || null))
+                      !== sha256Digest(canonicalizeJcs(observerReceiptProducerRegistry || null))) {
+                    throw new Error("candidate policy, scope registry, or observer receipt producer registry drifted before effect commit");
                   }
                   const current = compileMemoryCandidateReportV2({
                     workspace: workspace.workspacePath,
@@ -707,6 +714,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
                     batchId: batch.batchId,
                     policy: livePolicy,
                     scopeRegistry: liveRegistry,
+                    observerReceiptProducerRegistry: liveObserverReceiptProducerRegistry,
                     executionMode: "materialize",
                   });
                   for (const [candidateId, candidateScope] of Object.entries(candidateScopes)) {

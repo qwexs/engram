@@ -14,6 +14,12 @@ import {
   type CandidateScopeRegistryV1,
   type CandidateSourcePolicyV2,
 } from "../src/oll/memory-candidate-contracts-v2";
+import {
+  OLL_OBSERVER_RECEIPT_REGISTRY_V1_SCHEMA,
+  observerReceiptProducerRegistryDigestV1,
+  type ObserverReceiptProducerRegistryV1,
+  type ObserverReceiptScopeV1,
+} from "../src/oll/observer-receipt-bridge-v1.ts";
 
 const NOW = "2026-08-14T12:00:00.000Z";
 const roots: string[] = [];
@@ -191,8 +197,111 @@ function workspace(options: { minimal?: boolean } = {}) {
   return { root, policy: p, registry };
 }
 
-function compile(root: string, p: CandidateSourcePolicyV2, registry: CandidateScopeRegistryV1, snapshotAt = NOW) {
-  return compileMemoryCandidateReportV2({ workspace: root, workspaceId: "main", policy: p, scopeRegistry: registry, snapshotAt, batchId: `report-only:${snapshotAt}` });
+function compile(
+  root: string,
+  p: CandidateSourcePolicyV2,
+  registry: CandidateScopeRegistryV1,
+  snapshotAt = NOW,
+  observerReceiptProducerRegistry?: ObserverReceiptProducerRegistryV1,
+  executionMode: "report-only" | "shadow" | "materialize" = "report-only",
+) {
+  return compileMemoryCandidateReportV2({
+    workspace: root,
+    workspaceId: "main",
+    policy: p,
+    scopeRegistry: registry,
+    observerReceiptProducerRegistry,
+    executionMode,
+    snapshotAt,
+    batchId: `report-only:${snapshotAt}`,
+  });
+}
+
+const BATCH_PRODUCER = {
+  id: "batch-post-turn-observer",
+  version: "v1",
+  digest: "sha256:69bf6adb1ebcf5b258102f13871ca7ab29af55df47f0709a489616d76c1d1f74" as const,
+};
+const DAILY_APPLICATOR = {
+  id: "daily-note-applicator",
+  version: "v1",
+  digest: "sha256:f9e632bc639b5f4240c15f4ac1fffb2ffa1c0b299a380d1432216c9a2c8b7ef5" as const,
+};
+
+function bridgeRegistry(
+  exactScope: ObserverReceiptScopeV1,
+  evaluationPolicyDigest: `sha256:${string}`,
+  rolloutState: "report-only" | "shadow" | "materialize" = "report-only",
+): ObserverReceiptProducerRegistryV1 {
+  const base: Omit<ObserverReceiptProducerRegistryV1, "digest"> = {
+    schema: OLL_OBSERVER_RECEIPT_REGISTRY_V1_SCHEMA,
+    workspaceId: "main",
+    registryVersion: 1,
+    canonicalApplicator: DAILY_APPLICATOR,
+    entries: [{
+      producer: BATCH_PRODUCER,
+      observationSchemas: ["engram.memory-batch-observation.v1"],
+      allowedObservationClasses: ["episodic.decision"],
+      allowedScopeClasses: ["self"],
+      exactScopeAllowlist: [exactScope],
+      requiredReceiptSchema: "engram.memory-apply-receipt.v1",
+      requireCanonicalReadBack: true,
+      allowedEvaluationPolicyDigests: [evaluationPolicyDigest],
+      rolloutState,
+    }],
+  };
+  return { ...base, digest: observerReceiptProducerRegistryDigestV1(base) };
+}
+
+function batchApplyReceipt(input: {
+  entryId: `sha256:${string}`;
+  relativePath: string;
+  statement: string;
+  scope: ObserverReceiptScopeV1;
+  evaluationPolicyDigest: `sha256:${string}`;
+}) {
+  const sourceTurnId = `channel-user:v1:${"a".repeat(64)}`;
+  const traceId = sha256Digest("batch-source-trace");
+  const operationId = sha256Digest("batch-daily-apply-operation");
+  const evidenceRef = { kind: "source-turn" as const, ref: sourceTurnId, digest: sha256Digest("source-evidence") };
+  return {
+    schema: "engram.memory-apply-receipt.v1",
+    receiptId: sha256Digest(`engram.memory-apply-receipt.v1\0${operationId}`),
+    traceId,
+    sourceObservationRef: sha256Digest("batch-observation-id"),
+    sourceCompletedAt: "2026-08-14T10:15:00.000Z",
+    scope: input.scope,
+    producer: DAILY_APPLICATOR,
+    sourceProvenance: {
+      sourceTurnId,
+      producer: BATCH_PRODUCER,
+      observationClass: "episodic.decision",
+      evidenceRefs: [evidenceRef],
+      observationDigest: sha256Digest("batch-observation-digest"),
+      batchSourceRefs: [{
+        traceId,
+        sourceTurnId,
+        sourceDigest: sha256Digest("source-digest"),
+        evidenceDigest: sha256Digest("evidence-digest"),
+        sourceCompletedAt: "2026-08-14T10:15:00.000Z",
+      }],
+      batchCitations: [{ traceId, evidenceRef }],
+      batchEvaluationPolicyDigest: input.evaluationPolicyDigest,
+    },
+    consumer: "daily-note",
+    operationId,
+    destinationDate: "2026-08-14",
+    destinationRef: `${input.relativePath}#engram-entry:${input.entryId}`,
+    destinationEntryId: input.entryId,
+    status: "applied",
+    canonicalMutation: true,
+    readBackDigest: sha256Digest([
+      `<!-- engram-entry:${input.entryId} -->`,
+      ...input.statement.split("\n").map((line, index) => `${index === 0 ? "- " : "  "}${line}`),
+    ].join("\n")),
+    policyDigest: sha256Digest("daily-note-canary-policy"),
+    completedAt: "2026-08-14T10:16:00.000Z",
+  };
 }
 
 describe("OLL memory candidate Phase 1 compiler", () => {
@@ -273,6 +382,94 @@ describe("OLL memory candidate Phase 1 compiler", () => {
     const strict = compile(root, p, registry, "2026-08-15T00:00:00.000Z");
     expect(strict.occurrences).toEqual([]);
     expect(strict.rejectionCounts.timestamp_invalid).toBe(2);
+  });
+
+  test("default-denies observer-authored decisions and admits a receipt-joined batch decision only through the exact registry", () => {
+    const { root, policy: p, registry } = workspace({ minimal: true });
+    p.forwardOnlySince = "2026-08-14T00:00:00Z";
+    p.workspaceTimezone = "UTC";
+    const entryId = `sha256:${"d".repeat(64)}` as const;
+    const relativePath = "memory/agent-main/main/2026-08-14.md";
+    const statement = "Observer-authored decision becomes an OLL candidate only after the receipt join.\nThe complete canonical entry must read back.";
+    const exactScope: ObserverReceiptScopeV1 = {
+      workspaceId: "main",
+      runtimeSessionKey: "agent:main:telegram:direct:100000001",
+      scopeClass: "self",
+      scopeId: "telegram:100000001",
+    };
+    const evaluationPolicyDigest = sha256Digest("memory-batch-shadow-prompt-v8");
+    write(join(root, relativePath), [
+      "# 2026-08-14",
+      "",
+      "## Decisions",
+      "",
+      `<!-- engram-entry:${entryId} -->`,
+      ...statement.split("\n").map((line, index) => `${index === 0 ? "- " : "  "}${line}`),
+      "",
+    ].join("\n"));
+
+    const missingSidecar = compile(root, p, registry, "2026-08-15T00:00:00.000Z");
+    expect(missingSidecar.occurrences).toEqual([]);
+    expect(missingSidecar.rejectionCounts.invalid_schema).toBe(1);
+
+    const receiptPath = join(root, "memory-state", "memory-observation", "v1", "receipts", "by-entry", `${"d".repeat(64)}.json`);
+    const receipt = batchApplyReceipt({ entryId, relativePath, statement, scope: exactScope, evaluationPolicyDigest });
+    writeJson(receiptPath, receipt);
+    const noRegistry = compile(root, p, registry, "2026-08-15T00:00:00.000Z");
+    expect(noRegistry.occurrences).toEqual([]);
+    expect(noRegistry.rejectionCounts.unsupported_source).toBe(1);
+
+    const producerRegistry = bridgeRegistry(exactScope, evaluationPolicyDigest);
+    const admitted = compile(root, p, registry, "2026-08-15T00:00:00.000Z", producerRegistry);
+    expect(admitted.occurrences).toHaveLength(1);
+    expect(admitted.occurrences[0]).toMatchObject({
+      sourceClass: "daily-decision",
+      parserVersion: "daily-note-receipt-v1",
+      canonicalStatement: statement.replace("\n", " "),
+      provenanceRootId: receipt.sourceProvenance.observationDigest,
+      observedAt: receipt.sourceCompletedAt,
+    });
+    expect(compile(root, p, registry, "2026-08-15T00:00:00.000Z", producerRegistry)).toEqual(admitted);
+
+    writeJson(receiptPath, { ...receipt, readBackDigest: sha256Digest("wrong-read-back") });
+    const mismatchedReadBack = compile(root, p, registry, "2026-08-15T00:00:00.000Z", producerRegistry);
+    expect(mismatchedReadBack.occurrences).toEqual([]);
+    expect(mismatchedReadBack.rejectionCounts.invalid_schema).toBe(1);
+  });
+
+  test("keeps report-only batch admission out of materialize and denies scope or evaluator-policy drift", () => {
+    const { root, policy: p, registry } = workspace({ minimal: true });
+    p.mode = "materialize";
+    p.forwardOnlySince = "2026-08-14T00:00:00Z";
+    p.workspaceTimezone = "UTC";
+    const entryId = `sha256:${"e".repeat(64)}` as const;
+    const relativePath = "memory/agent-main/main/2026-08-14.md";
+    const statement = "Only an explicitly materialized bridge may feed adaptation.";
+    const exactScope: ObserverReceiptScopeV1 = {
+      workspaceId: "main",
+      runtimeSessionKey: "agent:main:telegram:direct:100000001",
+      scopeClass: "self",
+      scopeId: "telegram:100000001",
+    };
+    const evaluationPolicyDigest = sha256Digest("memory-batch-shadow-prompt-v8");
+    write(join(root, relativePath), `# 2026-08-14\n\n## Decisions\n\n<!-- engram-entry:${entryId} -->\n- ${statement}\n`);
+    const receiptPath = join(root, "memory-state", "memory-observation", "v1", "receipts", "by-entry", `${"e".repeat(64)}.json`);
+    const receipt = batchApplyReceipt({ entryId, relativePath, statement, scope: exactScope, evaluationPolicyDigest });
+    writeJson(receiptPath, receipt);
+
+    const reportOnly = bridgeRegistry(exactScope, evaluationPolicyDigest, "report-only");
+    const gated = compile(root, p, registry, "2026-08-15T00:00:00.000Z", reportOnly, "materialize");
+    expect(gated.occurrences).toEqual([]);
+    expect(gated.rejectionCounts.unsupported_source).toBe(1);
+
+    const materialize = bridgeRegistry(exactScope, evaluationPolicyDigest, "materialize");
+    expect(compile(root, p, registry, "2026-08-15T00:00:00.000Z", materialize, "materialize").occurrences).toHaveLength(1);
+
+    const wrongScope = bridgeRegistry({ ...exactScope, runtimeSessionKey: "agent:main:telegram:direct:999" }, evaluationPolicyDigest, "materialize");
+    expect(compile(root, p, registry, "2026-08-15T00:00:00.000Z", wrongScope, "materialize").rejectionCounts.unsupported_source).toBe(1);
+
+    const wrongPolicy = bridgeRegistry(exactScope, sha256Digest("different-evaluator-policy"), "materialize");
+    expect(compile(root, p, registry, "2026-08-15T00:00:00.000Z", wrongPolicy, "materialize").rejectionCounts.unsupported_source).toBe(1);
   });
 
   test("accepts producer-stamped records under their matching canonical section", () => {

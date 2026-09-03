@@ -43,6 +43,12 @@ import {
   type CandidateSourcePolicyV2,
   type EvidenceOccurrenceV1,
 } from "./memory-candidate-contracts-v2";
+import {
+  observerReceiptRolloutAllowsV1,
+  observerReceiptScopeEqualV1,
+  validateObserverReceiptProducerRegistryV1,
+  type ObserverReceiptProducerRegistryV1,
+} from "./observer-receipt-bridge-v1.ts";
 
 const COMPILER_VERSION = "compiler-v2" as const;
 const NORMALIZER_VERSION = "semantic-v1" as const;
@@ -106,6 +112,7 @@ export interface CompileMemoryCandidateReportV2Options {
   snapshotAt: string;
   batchId: string;
   executionMode?: "report-only" | "shadow" | "materialize";
+  observerReceiptProducerRegistry?: ObserverReceiptProducerRegistryV1;
 }
 
 function inside(root: string, target: string): boolean {
@@ -282,12 +289,172 @@ function admitDraft(options: CompileMemoryCandidateReportV2Options, draft: Occur
   }
 }
 
+const OBSERVER_ENTRY_ANCHOR_RE = /^<!-- engram-entry:(sha256:[a-f0-9]{64}) -->$/;
+const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
+
+type ObserverEntryAdmission =
+  | {
+      status: "admitted";
+      observedAt: string;
+      provenanceRootId: Digest;
+      statement: string;
+    }
+  | {
+      status: "rejected";
+      reason: CandidateReasonCode;
+    };
+
+function sameProducerRef(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
+  return Object.keys(left).length === 3
+    && left.id === right.id
+    && left.version === right.version
+    && left.digest === right.digest;
+}
+
+function validSourceTurnId(value: unknown): value is string {
+  return typeof value === "string" && /^channel-user:v1:[a-f0-9]{64}$/.test(value);
+}
+
+function validEvidenceRef(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length === 3
+    && ["source-turn", "message", "approved-tool-outcome"].includes(String(row.kind))
+    && typeof row.ref === "string" && row.ref.length > 0 && row.ref.length <= 500
+    && DIGEST_RE.test(String(row.digest));
+}
+
+function validBatchReceiptProvenance(receipt: Record<string, any>): boolean {
+  const provenance = receipt.sourceProvenance as Record<string, any>;
+  if (!validSourceTurnId(provenance.sourceTurnId)
+    || !Array.isArray(provenance.evidenceRefs)
+    || provenance.evidenceRefs.length < 1
+    || provenance.evidenceRefs.length > 8
+    || !provenance.evidenceRefs.every(validEvidenceRef)) return false;
+  const sourceRefs = provenance.batchSourceRefs as Array<Record<string, unknown>>;
+  if (sourceRefs.length > 100 || sourceRefs.some((sourceRef) => {
+    if (!sourceRef || typeof sourceRef !== "object" || Array.isArray(sourceRef) || Object.keys(sourceRef).length !== 5) return true;
+    try { assertRfc3339(String(sourceRef.sourceCompletedAt), "batch sourceCompletedAt"); } catch { return true; }
+    return !DIGEST_RE.test(String(sourceRef.traceId))
+      || !validSourceTurnId(sourceRef.sourceTurnId)
+      || !DIGEST_RE.test(String(sourceRef.sourceDigest))
+      || !DIGEST_RE.test(String(sourceRef.evidenceDigest));
+  })) return false;
+  const admittedTraceIds = new Set(sourceRefs.map((sourceRef) => sourceRef.traceId));
+  const citations = provenance.batchCitations as Array<Record<string, unknown>>;
+  if (citations.length > 16 || citations.some((citation) => !citation
+    || typeof citation !== "object"
+    || Array.isArray(citation)
+    || Object.keys(citation).length !== 2
+    || !admittedTraceIds.has(citation.traceId)
+    || !validEvidenceRef(citation.evidenceRef))) return false;
+  return receipt.traceId === sourceRefs[0]!.traceId
+    && provenance.sourceTurnId === sourceRefs[0]!.sourceTurnId;
+}
+
+function observerCanonicalEntry(source: StableSource, destinationEntryId: Digest): { rendered: string; statement: string } | null {
+  const lines = source.text.split(/\r?\n/);
+  const anchor = `<!-- engram-entry:${destinationEntryId} -->`;
+  const indexes = lines.flatMap((line, index) => line === anchor ? [index] : []);
+  if (indexes.length !== 1) return null;
+  const index = indexes[0]!;
+  const first = /^-\s+(.+)$/.exec(lines[index + 1] || "");
+  if (!first) return null;
+  const rendered = [anchor, lines[index + 1]!];
+  const statement = [first[1]];
+  for (let cursor = index + 2; cursor < lines.length; cursor += 1) {
+    const continuation = /^\s{2}(.*)$/.exec(lines[cursor]!);
+    if (!continuation) break;
+    rendered.push(lines[cursor]!);
+    statement.push(continuation[1]);
+  }
+  return { rendered: rendered.join("\n"), statement: statement.join("\n") };
+}
+
+function observerEntryAdmission(
+  options: CompileMemoryCandidateReportV2Options,
+  source: StableSource,
+  section: "decisions" | "learnings",
+  destinationEntryId: Digest,
+): ObserverEntryAdmission {
+  const receiptPath = join(
+    options.workspace,
+    "memory-state",
+    "memory-observation",
+    "v1",
+    "receipts",
+    "by-entry",
+    `${destinationEntryId.slice("sha256:".length)}.json`,
+  );
+  try {
+    const receipt = JSON.parse(stableRead(options.workspace, receiptPath).text) as Record<string, any>;
+    const expectedClass = section === "decisions" ? "episodic.decision" : "episodic.learning";
+    const expectedRef = `${source.relativePath}#engram-entry:${destinationEntryId}`;
+    const expectedDate = basename(source.relativePath, ".md");
+    const canonicalEntry = observerCanonicalEntry(source, destinationEntryId);
+    if (!canonicalEntry) return { status: "rejected", reason: "invalid_schema" };
+    const expectedReadBackDigest = sha256Digest(canonicalEntry.rendered);
+    if (receipt.schema !== "engram.memory-apply-receipt.v1"
+      || !DIGEST_RE.test(String(receipt.receiptId))
+      || !DIGEST_RE.test(String(receipt.traceId))
+      || !DIGEST_RE.test(String(receipt.sourceObservationRef))
+      || !DIGEST_RE.test(String(receipt.operationId))
+      || receipt.receiptId !== sha256Digest(`engram.memory-apply-receipt.v1\0${receipt.operationId}`)
+      || receipt.destinationEntryId !== destinationEntryId
+      || receipt.destinationRef !== expectedRef
+      || receipt.destinationDate !== expectedDate
+      || receipt.status !== "applied"
+      || receipt.canonicalMutation !== true
+      || receipt.consumer !== "daily-note"
+      || receipt.readBackDigest !== expectedReadBackDigest
+      || !DIGEST_RE.test(String(receipt.policyDigest))
+      || !receipt.scope || typeof receipt.scope !== "object"
+      || receipt.scope.workspaceId !== options.workspaceId
+      || !receipt.producer || typeof receipt.producer !== "object"
+      || !receipt.sourceProvenance || typeof receipt.sourceProvenance !== "object"
+      || !receipt.sourceProvenance.producer || typeof receipt.sourceProvenance.producer !== "object"
+      || receipt.sourceProvenance.observationClass !== expectedClass
+      || !DIGEST_RE.test(String(receipt.sourceProvenance.observationDigest))
+      || !DIGEST_RE.test(String(receipt.sourceProvenance.batchEvaluationPolicyDigest))
+      || !Array.isArray(receipt.sourceProvenance.batchSourceRefs)
+      || receipt.sourceProvenance.batchSourceRefs.length === 0
+      || !Array.isArray(receipt.sourceProvenance.batchCitations)
+      || receipt.sourceProvenance.batchCitations.length === 0
+      || !validBatchReceiptProvenance(receipt)) return { status: "rejected", reason: "invalid_schema" };
+    assertRfc3339(receipt.sourceCompletedAt, "observer receipt sourceCompletedAt");
+    assertRfc3339(receipt.completedAt, "observer receipt completedAt");
+    const registry = options.observerReceiptProducerRegistry;
+    if (!registry || !sameProducerRef(receipt.producer, registry.canonicalApplicator)) {
+      return { status: "rejected", reason: "unsupported_source" };
+    }
+    const admission = registry.entries.find((entry) => sameProducerRef(receipt.sourceProvenance.producer, entry.producer));
+    const executionMode = options.executionMode || "report-only";
+    if (!admission
+      || !admission.allowedObservationClasses.includes(expectedClass)
+      || !admission.allowedScopeClasses.includes(receipt.scope.scopeClass)
+      || !admission.exactScopeAllowlist.some((scope) => observerReceiptScopeEqualV1(scope, receipt.scope))
+      || !admission.allowedEvaluationPolicyDigests.includes(receipt.sourceProvenance.batchEvaluationPolicyDigest)
+      || !observerReceiptRolloutAllowsV1(admission.rolloutState, executionMode)) {
+      return { status: "rejected", reason: "unsupported_source" };
+    }
+    return {
+      status: "admitted",
+      observedAt: receipt.sourceCompletedAt,
+      provenanceRootId: receipt.sourceProvenance.observationDigest,
+      statement: canonicalEntry.statement,
+    };
+  } catch {
+    return { status: "rejected", reason: "invalid_schema" };
+  }
+}
+
 function parseDailyFile(options: CompileMemoryCandidateReportV2Options, session: CandidateSourcePolicyV2["daily"][number], source: StableSource, occurrences: EvidenceOccurrenceV1[], rejections: Partial<Record<CandidateReasonCode, number>>): void {
   const authority = options.scopeRegistry.sourceAuthorities.daily[session.session];
   const scope = effectiveScope(options.scopeRegistry, authority, session.scopeCeiling);
   const fileDate = basename(source.relativePath, ".md");
   let section: "decisions" | "learnings" | null = null;
   let explicitTimestamp: string | null = null;
+  let pendingObserverEntry: Digest | null = null;
   let ordinal = 0;
   for (const line of source.text.split(/\r?\n/)) {
     const heading = /^##\s+(.+?)\s*$/.exec(line);
@@ -295,6 +462,7 @@ function parseDailyFile(options: CompileMemoryCandidateReportV2Options, session:
       const normalized = heading[1].toLowerCase();
       section = normalized === "decisions" || normalized === "learnings" ? normalized : null;
       explicitTimestamp = null;
+      pendingObserverEntry = null;
       continue;
     }
     const recordHeading = /^###\s+(\S+)\s+—\s+(decision|learning)\s*$/i.exec(line);
@@ -303,14 +471,48 @@ function parseDailyFile(options: CompileMemoryCandidateReportV2Options, session:
       if (section !== recordSection) {
         section = null;
         explicitTimestamp = null;
+        pendingObserverEntry = null;
         continue;
       }
       explicitTimestamp = recordHeading[1];
+      pendingObserverEntry = null;
+      continue;
+    }
+    const observerAnchor = OBSERVER_ENTRY_ANCHOR_RE.exec(line);
+    if (observerAnchor) {
+      pendingObserverEntry = observerAnchor[1] as Digest;
       continue;
     }
     const bullet = /^[-*]\s+(.+)$/.exec(line);
-    if (!bullet || !section || !session.sections.includes(section)) continue;
+    if (!bullet || !section || !session.sections.includes(section)) {
+      if (line.trim()) pendingObserverEntry = null;
+      continue;
+    }
     ordinal += 1;
+    if (pendingObserverEntry) {
+      const admission = observerEntryAdmission(options, source, section, pendingObserverEntry);
+      if (admission.status === "rejected") {
+        increment(rejections, admission.reason);
+      } else {
+        admitDraft(options, {
+          sourceClass: section === "decisions" ? "daily-decision" : "daily-learning",
+          evidenceKind: section === "decisions" ? "decision" : "learning",
+          sourceRef: sourceRef(source.relativePath, `${section}:engram-entry:${pendingObserverEntry}`),
+          sourceVersionDigest: source.digest,
+          statement: admission.statement,
+          provenanceRootId: admission.provenanceRootId,
+          authoritativeScope: authority,
+          effectiveScope: scope,
+          observedAt: admission.observedAt,
+          originalTimestamp: admission.observedAt,
+          timezone: options.policy.workspaceTimezone,
+          parserVersion: "daily-note-receipt-v1",
+          kgDecay: null,
+        }, occurrences, rejections);
+      }
+      pendingObserverEntry = null;
+      continue;
+    }
     admitDraft(options, {
       sourceClass: section === "decisions" ? "daily-decision" : "daily-learning",
       evidenceKind: section === "decisions" ? "decision" : "learning",
@@ -627,15 +829,21 @@ export function compileMemoryCandidateReportV2(options: CompileMemoryCandidateRe
   if (!existsSync(workspace) || !lstatSync(workspace).isDirectory()) throw new Error("workspace is not a directory");
   const policy = validateCandidatePolicyV2(options.policy);
   const scopeRegistry = validateCandidateScopeRegistryV1(options.scopeRegistry);
+  const observerReceiptProducerRegistry = options.observerReceiptProducerRegistry
+    ? validateObserverReceiptProducerRegistryV1(options.observerReceiptProducerRegistry)
+    : undefined;
   if (policy.mode === "disabled") throw new Error("disabled candidate policy cannot compile a report");
   const executionMode = options.executionMode || "report-only";
   if (executionMode === "shadow" && policy.mode !== "shadow") throw new Error("shadow execution requires a shadow policy");
   if (executionMode === "materialize" && policy.mode !== "materialize") throw new Error("materialize execution requires a materialize policy");
   if (scopeRegistry.workspaceId !== options.workspaceId) throw new Error("scope registry workspace mismatch");
+  if (observerReceiptProducerRegistry && observerReceiptProducerRegistry.workspaceId !== options.workspaceId) {
+    throw new Error("observer receipt producer registry workspace mismatch");
+  }
   if (scopeRegistry.digest !== candidateScopeRegistryDigestV1(scopeRegistry)) throw new Error("scope registry digest mismatch");
   assertRfc3339(options.snapshotAt, "snapshotAt");
   if (!options.batchId || options.batchId.length > 300) throw new Error("batchId is invalid");
-  const frozen = { ...options, workspace, policy, scopeRegistry };
+  const frozen = { ...options, workspace, policy, scopeRegistry, observerReceiptProducerRegistry };
   const kg = snapshotKg(frozen);
   const { occurrences, rejections } = compileOccurrences(frozen, kg);
   const candidates = candidateClusters(frozen, occurrences, rejections);
@@ -650,6 +858,9 @@ export function compileMemoryCandidateReportV2(options: CompileMemoryCandidateRe
     snapshotAt: options.snapshotAt,
     policyDigest,
     scopeRegistryDigest: scopeRegistry.digest,
+    ...(observerReceiptProducerRegistry
+      ? { observerReceiptProducerRegistryDigest: observerReceiptProducerRegistry.digest }
+      : {}),
     kgAssertionDigest: kg.assertionDigest,
     accessStateDigest: kg.accessStateDigest,
   }));

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { compileMemoryCandidateReportV2 } from "../src/oll/memory-candidate-compiler-v2";
 import type { CandidateScopeRegistryV1, CandidateSourcePolicyV2 } from "../src/oll/memory-candidate-contracts-v2";
+import type { ObserverReceiptProducerRegistryV1 } from "../src/oll/observer-receipt-bridge-v1.ts";
 
 const { values } = parseArgs({
   args: process.argv.slice(2),
@@ -13,6 +14,7 @@ const { values } = parseArgs({
     "batch-id": { type: "string" },
     "policy-file": { type: "string" },
     "scope-registry-file": { type: "string" },
+    "observer-receipt-registry-file": { type: "string" },
   },
   strict: true,
 });
@@ -28,11 +30,22 @@ try {
   const workspaceId = String(config?.workspace?.id || "");
   const policy = (values["policy-file"] ? readJson(values["policy-file"]) : config?.oll?.candidateCompiler) as CandidateSourcePolicyV2 | undefined;
   const scopeRegistry = (values["scope-registry-file"] ? readJson(values["scope-registry-file"]) : config?.oll?.candidateScopeRegistry) as CandidateScopeRegistryV1 | undefined;
+  const observerReceiptProducerRegistry = (values["observer-receipt-registry-file"]
+    ? readJson(values["observer-receipt-registry-file"])
+    : config?.oll?.observerReceiptProducerRegistry) as ObserverReceiptProducerRegistryV1 | undefined;
   if (!policy) throw new Error("candidate policy is required via --policy-file or engram.json");
   if (!scopeRegistry) throw new Error("trusted scope registry is required via --scope-registry-file or engram.json");
   const snapshotAt = values["snapshot-at"] || new Date().toISOString();
   const batchId = values["batch-id"] || `report-only:${snapshotAt}`;
-  const report = compileMemoryCandidateReportV2({ workspace, workspaceId, policy, scopeRegistry, snapshotAt, batchId });
+  const report = compileMemoryCandidateReportV2({
+    workspace,
+    workspaceId,
+    policy,
+    scopeRegistry,
+    observerReceiptProducerRegistry,
+    snapshotAt,
+    batchId,
+  });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 } catch (error) {
   const message = String((error as Error)?.message || error)

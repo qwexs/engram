@@ -93,8 +93,8 @@ export const CANDIDATE_SUPPORTED_VERSIONS_V1: CandidateContractVersionRegistryV1
   compilerVersions: ["compiler-v2"],
   normalizerVersions: ["semantic-v1"],
   parserVersions: {
-    "daily-decision": ["daily-note-v2"],
-    "daily-learning": ["daily-note-v2"],
+    "daily-decision": ["daily-note-v2", "daily-note-receipt-v1"],
+    "daily-learning": ["daily-note-v2", "daily-note-receipt-v1"],
     "retrieval-card": ["retrieval-card-v1"],
     "domain-decision": ["canonical-decisions-v1"],
     "domain-proposal": ["canonical-proposals-v1"],

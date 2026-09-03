@@ -1,0 +1,27 @@
+{
+  "schema": "engram.memory-consumer-policy.v1",
+  "policyId": "memory-observation-daily-note-template",
+  "policyVersion": "v1",
+  "consumer": "daily-note",
+  "workspaceId": "template",
+  "mode": "disabled",
+  "inputSchemas": ["engram.memory-observation.v1"],
+  "allowedProducers": [
+    {
+      "id": "post-turn-observer",
+      "version": "v1",
+      "digest": "sha256:d4f0bf349ea08594fbd3a72f1e6f05ea5dda32800422c1e2cefbc434552cd406"
+    }
+  ],
+  "allowedObservationClasses": ["episodic.event", "episodic.decision"],
+  "allowedCanonicalSourceSchemas": [],
+  "exactScopeAllowlist": [],
+  "requiredProvenanceFields": ["traceId", "sourceTurnId", "scope", "producer", "evidenceRefs", "sourceCompletedAt", "observationDigest"],
+  "sideEffectClass": "canonical-write",
+  "soleMutator": "daily-note-applicator",
+  "rawEvidenceAllowed": false,
+  "applyTimeRecheck": true,
+  "denyUnknownProducer": true,
+  "denyUnknownClass": true,
+  "denyUnknownScope": true
+}

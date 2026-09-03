@@ -184,7 +184,7 @@ describe("OLL rethink handoff v3", () => {
 
   test("rejects scope broadening even when the outer v3 handoff is valid", () => {
     const env = setup();
-    const invalid = handoff(env, { scope: { level: "company", subject: "takeron" } });
+    const invalid = handoff(env, { scope: { level: "company", subject: "example-company" } });
     write(env.expected.expectedHandoffPath, invalid);
     const result = applyRethinkHandoffFile({ workspace: env.workspace, stateRoot: env.stateRoot, expected: env.expected, now: NOW });
     expect(result.dispositions[0].disposition).toBe("policy_rejected");

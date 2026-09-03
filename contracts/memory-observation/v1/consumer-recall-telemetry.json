@@ -1,0 +1,32 @@
+{
+  "schema": "engram.memory-consumer-policy.v1",
+  "policyId": "memory-observation-recall-telemetry-template",
+  "policyVersion": "v1",
+  "consumer": "recall-telemetry",
+  "workspaceId": "template",
+  "mode": "disabled",
+  "inputSchemas": ["engram.memory-observation.v1", "engram.memory-trace-event.v1"],
+  "allowedProducers": [
+    {
+      "id": "post-turn-observer",
+      "version": "v1",
+      "digest": "sha256:d4f0bf349ea08594fbd3a72f1e6f05ea5dda32800422c1e2cefbc434552cd406"
+    },
+    {
+      "id": "memory-trace-writer",
+      "version": "v1",
+      "digest": "sha256:d570cbed441fe0bb05eff36b09af915b10c410628ca8bdd92a018aae9be6a139"
+    }
+  ],
+  "allowedObservationClasses": ["diagnostic.recall-failure"],
+  "allowedCanonicalSourceSchemas": [],
+  "exactScopeAllowlist": [],
+  "requiredProvenanceFields": ["traceId", "scope", "producer", "policyDigest", "stageRef"],
+  "sideEffectClass": "telemetry-only",
+  "soleMutator": "memory-trace-writer",
+  "rawEvidenceAllowed": false,
+  "applyTimeRecheck": true,
+  "denyUnknownProducer": true,
+  "denyUnknownClass": true,
+  "denyUnknownScope": true
+}

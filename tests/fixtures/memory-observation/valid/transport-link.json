@@ -1,0 +1,15 @@
+{
+  "schema": "engram.memory-observation-transport-link.v1",
+  "linkId": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "workspaceId": "fixture-main",
+  "runtimeSessionKey": "agent:fixture-main:telegram:direct:100000001",
+  "channel": "telegram",
+  "transportMessageId": "42",
+  "messageRole": "assistant",
+  "sourceTurnId": "channel-user:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "traceId": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "evidenceDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "parentTransportMessageId": "41",
+  "createdAt": "2026-08-26T00:00:00.000Z",
+  "expiresAt": "2026-08-29T00:00:00.000Z"
+}

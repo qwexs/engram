@@ -33,7 +33,7 @@ describe("scanFile", () => {
   });
 
   test("flags a Telegram supergroup chat id", () => {
-    const src = `chatId = "-1004252667646";`;
+    const src = `chatId = "-1001234567890";`;
     const issues = scanFile("hooks/foo/handler.ts", src);
     expect(issues.some((i) => i.pattern === "telegram-supergroup-chat-id")).toBe(true);
   });

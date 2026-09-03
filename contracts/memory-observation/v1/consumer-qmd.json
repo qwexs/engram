@@ -1,0 +1,37 @@
+{
+  "schema": "engram.memory-consumer-policy.v1",
+  "policyId": "memory-observation-qmd-template",
+  "policyVersion": "v1",
+  "consumer": "qmd",
+  "workspaceId": "template",
+  "mode": "disabled",
+  "inputSchemas": ["engram.canonical-record-ref.v1"],
+  "allowedProducers": [
+    {
+      "id": "daily-note-applicator",
+      "version": "v1",
+      "digest": "sha256:f9e632bc639b5f4240c15f4ac1fffb2ffa1c0b299a380d1432216c9a2c8b7ef5"
+    },
+    {
+      "id": "kg-v3-explicit-intent-ingress",
+      "version": "v1",
+      "digest": "sha256:4ce96fc1cde6d2a165301813bda9aa206bb6c30a820f11d178ff3a7f6b2bcc9a"
+    },
+    {
+      "id": "domain-document-writer",
+      "version": "v1",
+      "digest": "sha256:27675ade06d1c01919a6feb8d5ea7efdb123a8751cd12b1d0a577e85a19f14a3"
+    }
+  ],
+  "allowedObservationClasses": [],
+  "allowedCanonicalSourceSchemas": ["engram.daily-note-entry.v1", "engram.kg-assertion.v3-mvp", "engram.domain-document.v1"],
+  "exactScopeAllowlist": [],
+  "requiredProvenanceFields": ["canonicalRef", "canonicalDigest", "scope", "producer"],
+  "sideEffectClass": "derived-index",
+  "soleMutator": "qmd-indexer",
+  "rawEvidenceAllowed": false,
+  "applyTimeRecheck": true,
+  "denyUnknownProducer": true,
+  "denyUnknownClass": true,
+  "denyUnknownScope": true
+}

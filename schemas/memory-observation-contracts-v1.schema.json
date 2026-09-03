@@ -1,0 +1,728 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qwexs.dev/engram/schemas/memory-observation-contracts-v1.schema.json",
+  "title": "Engram Memory Observation Layer PR0 contracts",
+  "oneOf": [
+    { "$ref": "#/$defs/observationJob" },
+    { "$ref": "#/$defs/transportLink" },
+    { "$ref": "#/$defs/observation" },
+    { "$ref": "#/$defs/batchObservation" },
+    { "$ref": "#/$defs/traceEvent" },
+    { "$ref": "#/$defs/applyReceipt" },
+    { "$ref": "#/$defs/producerRegistry" },
+    { "$ref": "#/$defs/ollObserverReceiptProducerRegistry" },
+    { "$ref": "#/$defs/classRegistry" },
+    { "$ref": "#/$defs/authorityPolicy" },
+    { "$ref": "#/$defs/consumerPolicy" }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,299}$"
+    },
+    "instant": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspaceId", "runtimeSessionKey", "scopeClass", "scopeId"],
+      "properties": {
+        "workspaceId": { "$ref": "#/$defs/token" },
+        "runtimeSessionKey": { "type": "string", "pattern": "^agent:[^\\s]{1,2042}$" },
+        "scopeClass": { "enum": ["self", "managers", "company", "project"] },
+        "scopeId": { "$ref": "#/$defs/token" }
+      }
+    },
+    "producerRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "digest"],
+      "properties": {
+        "id": { "$ref": "#/$defs/token" },
+        "version": { "$ref": "#/$defs/token" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref", "digest"],
+      "properties": {
+        "kind": { "enum": ["source-turn", "message", "approved-tool-outcome"] },
+        "ref": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "sourceObservationProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceTurnId", "producer", "observationClass", "evidenceRefs",
+        "observationDigest"
+      ],
+      "properties": {
+        "sourceTurnId": { "type": "string", "pattern": "^channel-user:v1:[a-f0-9]{64}$" },
+        "producer": { "$ref": "#/$defs/producerRef" },
+        "observationClass": {
+          "enum": ["episodic.event", "episodic.decision"]
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "observationDigest": { "$ref": "#/$defs/digest" }
+        ,
+        "batchSourceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/batchSourceRef" }
+        },
+        "batchCitations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/batchCitation" }
+        },
+        "batchEvaluationPolicyDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "batchSourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["traceId", "sourceTurnId", "sourceDigest", "evidenceDigest", "sourceCompletedAt"],
+      "properties": {
+        "traceId": { "$ref": "#/$defs/digest" },
+        "sourceTurnId": { "type": "string", "pattern": "^channel-user:v1:[a-f0-9]{64}$" },
+        "sourceDigest": { "$ref": "#/$defs/digest" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "sourceCompletedAt": { "$ref": "#/$defs/instant" }
+      }
+    },
+    "batchCitation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["traceId", "evidenceRef"],
+      "properties": {
+        "traceId": { "$ref": "#/$defs/digest" },
+        "evidenceRef": { "$ref": "#/$defs/evidenceRef" }
+      }
+    },
+    "observationJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "traceId", "sourceTurnId", "scope", "sourceCompletedAt",
+        "sourceDigest", "evidenceDigest", "policyVersion", "policyDigest",
+        "evidenceRefs", "authority", "admittedAt"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-observation-job.v1" },
+        "traceId": { "$ref": "#/$defs/digest" },
+        "sourceTurnId": { "type": "string", "pattern": "^channel-user:v1:[a-f0-9]{64}$" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "sourceCompletedAt": { "$ref": "#/$defs/instant" },
+        "sourceDigest": { "$ref": "#/$defs/digest" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "policyVersion": { "$ref": "#/$defs/token" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "evidenceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "authority": { "$ref": "#/$defs/producerRef" },
+        "admittedAt": { "$ref": "#/$defs/instant" }
+      }
+    },
+    "transportLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "linkId", "workspaceId", "runtimeSessionKey", "channel",
+        "transportMessageId", "messageRole", "sourceTurnId", "traceId",
+        "evidenceDigest", "parentTransportMessageId", "createdAt", "expiresAt"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-observation-transport-link.v1" },
+        "linkId": { "$ref": "#/$defs/digest" },
+        "workspaceId": { "$ref": "#/$defs/token" },
+        "runtimeSessionKey": { "type": "string", "pattern": "^agent:[^\\s]{1,2042}$" },
+        "channel": { "enum": ["telegram", "openclaw"] },
+        "transportMessageId": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "messageRole": { "enum": ["user", "assistant"] },
+        "sourceTurnId": { "type": "string", "pattern": "^channel-user:v1:[a-f0-9]{64}$" },
+        "traceId": { "$ref": "#/$defs/digest" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "parentTransportMessageId": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1, "maxLength": 2048 }
+          ]
+        },
+        "createdAt": { "$ref": "#/$defs/instant" },
+        "expiresAt": { "$ref": "#/$defs/instant" }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "observationId", "traceId", "sourceTurnId", "scope", "producer",
+        "observationClass", "targetConsumer", "payload", "evidenceRefs",
+        "sourceCompletedAt", "confidence", "reasonCodes", "observationDigest", "completedAt"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-observation.v1" },
+        "observationId": { "$ref": "#/$defs/digest" },
+        "traceId": { "$ref": "#/$defs/digest" },
+        "sourceTurnId": { "type": "string", "pattern": "^channel-user:v1:[a-f0-9]{64}$" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "producer": { "$ref": "#/$defs/producerRef" },
+        "observationClass": {
+          "enum": [
+            "episodic.event",
+            "episodic.decision",
+            "diagnostic.durable-intent-gap",
+            "diagnostic.recall-failure",
+            "procedural.candidate-evidence"
+          ]
+        },
+        "targetConsumer": {
+          "enum": ["daily-note", "kg-v3-diagnostic", "oll", "recall-telemetry"]
+        },
+        "payload": { "type": "object" },
+        "evidenceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/evidenceRef" }
+        },
+        "sourceCompletedAt": { "$ref": "#/$defs/instant" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reasonCodes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/token" }
+        },
+        "observationDigest": { "$ref": "#/$defs/digest" },
+        "completedAt": { "$ref": "#/$defs/instant" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "observationClass": { "const": "episodic.event" } }, "required": ["observationClass"] },
+          "then": {
+            "properties": {
+              "targetConsumer": { "const": "daily-note" },
+              "payload": {
+                "type": "object",
+                "allOf": [{ "$ref": "#/$defs/episodicPayload" }],
+                "properties": { "section": { "const": "events" } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "observationClass": { "const": "episodic.decision" } }, "required": ["observationClass"] },
+          "then": {
+            "properties": {
+              "targetConsumer": { "const": "daily-note" },
+              "payload": {
+                "type": "object",
+                "allOf": [{ "$ref": "#/$defs/episodicPayload" }],
+                "properties": { "section": { "const": "decisions" } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "observationClass": { "const": "diagnostic.durable-intent-gap" } }, "required": ["observationClass"] },
+          "then": {
+            "properties": {
+              "targetConsumer": { "const": "kg-v3-diagnostic" },
+              "payload": { "$ref": "#/$defs/durableIntentGapPayload" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "observationClass": { "const": "diagnostic.recall-failure" } }, "required": ["observationClass"] },
+          "then": {
+            "properties": {
+              "targetConsumer": { "const": "recall-telemetry" },
+              "payload": { "$ref": "#/$defs/recallFailurePayload" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "observationClass": { "const": "procedural.candidate-evidence" } }, "required": ["observationClass"] },
+          "then": {
+            "properties": {
+              "targetConsumer": { "const": "oll" },
+              "payload": { "$ref": "#/$defs/proceduralPayload" }
+            }
+          }
+        }
+      ]
+    },
+    "batchObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "observationId", "bundleId", "groupId", "assertionIndex", "scope",
+        "sourceRefs", "producer", "observationClass", "targetConsumer", "payload",
+        "citations", "sourceCompletedAt", "confidence", "reasonCodes",
+        "evaluationPolicyDigest", "observationDigest", "completedAt"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-batch-observation.v1" },
+        "observationId": { "$ref": "#/$defs/digest" },
+        "bundleId": { "$ref": "#/$defs/digest" },
+        "groupId": { "$ref": "#/$defs/token" },
+        "assertionIndex": { "type": "integer", "minimum": 0, "maximum": 7 },
+        "scope": { "$ref": "#/$defs/scope" },
+        "sourceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/batchSourceRef" }
+        },
+        "producer": { "$ref": "#/$defs/producerRef" },
+        "observationClass": { "enum": ["episodic.event", "episodic.decision"] },
+        "targetConsumer": { "const": "daily-note" },
+        "payload": { "$ref": "#/$defs/episodicPayload" },
+        "citations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/batchCitation" }
+        },
+        "sourceCompletedAt": { "$ref": "#/$defs/instant" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reasonCodes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/token" }
+        },
+        "evaluationPolicyDigest": { "$ref": "#/$defs/digest" },
+        "observationDigest": { "$ref": "#/$defs/digest" },
+        "completedAt": { "$ref": "#/$defs/instant" }
+      }
+    },
+    "episodicPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["section", "text", "actorRef", "outcomeStatus"],
+      "properties": {
+        "section": { "enum": ["events", "decisions"] },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "actorRef": { "$ref": "#/$defs/token" },
+        "outcomeStatus": { "enum": ["completed", "in-progress", "decided", "corrected", "failed", "unknown"] }
+      }
+    },
+    "durableIntentGapPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intentKind", "summary"],
+      "properties": {
+        "intentKind": { "enum": ["identity", "preference", "decision", "constraint"] },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    },
+    "recallFailurePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["failureStage", "summary"],
+      "properties": {
+        "failureStage": { "enum": ["capture", "admission", "index", "retrieval", "utilization", "currentness"] },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    },
+    "proceduralPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "evidenceKind"],
+      "properties": {
+        "statement": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "evidenceKind": { "enum": ["decision", "learning", "constraint"] }
+      }
+    },
+    "traceEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "eventId", "traceId", "stage", "scope", "producer",
+        "stageRef", "recordedAt", "policyDigest", "reasonCode", "verification"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-trace-event.v1" },
+        "eventId": { "$ref": "#/$defs/digest" },
+        "traceId": { "$ref": "#/$defs/digest" },
+        "stage": {
+          "enum": [
+            "source_completed", "observation_admitted", "observation_skipped", "batch_evaluation_terminal",
+            "canonical_applied", "canonical_indexed", "retrieved", "utilized",
+            "outcome_correct", "outcome_incorrect", "abstained"
+          ]
+        },
+        "scope": { "$ref": "#/$defs/scope" },
+        "producer": { "$ref": "#/$defs/producerRef" },
+        "stageRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "ref", "digest"],
+          "properties": {
+            "kind": { "enum": ["source-turn", "observation", "batch-result", "canonical-record", "index-generation", "retrieval-result", "utilization"] },
+            "ref": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "digest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "recordedAt": { "$ref": "#/$defs/instant" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "reasonCode": { "$ref": "#/$defs/token" },
+        "verification": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["source", "verifierRef", "digest"],
+              "properties": {
+                "source": { "enum": ["human", "deterministic-check"] },
+                "verifierRef": { "type": "string", "minLength": 1, "maxLength": 500 },
+                "digest": { "$ref": "#/$defs/digest" }
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "stage": { "const": "source_completed" } }, "required": ["stage"] },
+          "then": {
+            "properties": {
+              "stageRef": { "type": "object", "properties": { "kind": { "const": "source-turn" } } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "stage": { "enum": ["observation_admitted", "observation_skipped"] } }, "required": ["stage"] },
+          "then": {
+            "properties": {
+              "stageRef": { "type": "object", "properties": { "kind": { "const": "observation" } } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "stage": { "const": "batch_evaluation_terminal" } }, "required": ["stage"] },
+          "then": {
+            "properties": {
+              "stageRef": { "type": "object", "properties": { "kind": { "const": "batch-result" } } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "stage": { "const": "canonical_applied" } }, "required": ["stage"] },
+          "then": {
+            "properties": {
+              "stageRef": { "type": "object", "properties": { "kind": { "const": "canonical-record" } } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "stage": { "const": "canonical_indexed" } }, "required": ["stage"] },
+          "then": {
+            "properties": {
+              "stageRef": { "type": "object", "properties": { "kind": { "const": "index-generation" } } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "stage": { "const": "retrieved" } }, "required": ["stage"] },
+          "then": {
+            "properties": {
+              "stageRef": { "type": "object", "properties": { "kind": { "const": "retrieval-result" } } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "stage": { "enum": ["utilized", "outcome_correct", "outcome_incorrect", "abstained"] } }, "required": ["stage"] },
+          "then": {
+            "properties": {
+              "stageRef": { "type": "object", "properties": { "kind": { "const": "utilization" } } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "stage": { "enum": ["outcome_correct", "outcome_incorrect"] } }, "required": ["stage"] },
+          "then": { "properties": { "verification": { "type": "object" } } },
+          "else": { "properties": { "verification": { "type": "null" } } }
+        }
+      ]
+    },
+    "applyReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "receiptId", "traceId", "sourceObservationRef", "sourceCompletedAt",
+        "scope", "producer", "sourceProvenance", "consumer", "operationId", "destinationDate",
+        "destinationRef", "destinationEntryId", "status", "canonicalMutation",
+        "readBackDigest", "policyDigest", "completedAt"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-apply-receipt.v1" },
+        "receiptId": { "$ref": "#/$defs/digest" },
+        "traceId": { "$ref": "#/$defs/digest" },
+        "sourceObservationRef": { "$ref": "#/$defs/digest" },
+        "sourceCompletedAt": { "$ref": "#/$defs/instant" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "producer": { "$ref": "#/$defs/producerRef" },
+        "sourceProvenance": { "$ref": "#/$defs/sourceObservationProvenance" },
+        "consumer": { "const": "daily-note" },
+        "operationId": { "$ref": "#/$defs/digest" },
+        "destinationDate": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "destinationRef": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "destinationEntryId": { "$ref": "#/$defs/digest" },
+        "status": { "enum": ["applied", "duplicate", "shadowed", "skipped", "failed"] },
+        "canonicalMutation": { "type": "boolean" },
+        "readBackDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "completedAt": { "$ref": "#/$defs/instant" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "applied" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "canonicalMutation": { "const": true },
+              "readBackDigest": { "$ref": "#/$defs/digest" }
+            }
+          },
+          "else": { "properties": { "canonicalMutation": { "const": false } } }
+        }
+      ]
+    },
+    "producerRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "registryVersion", "releasedAt", "producers"],
+      "properties": {
+        "schema": { "const": "engram.memory-producer-registry.v1" },
+        "registryVersion": { "type": "integer", "minimum": 1 },
+        "releasedAt": { "$ref": "#/$defs/instant" },
+        "producers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "version", "digest", "authorityClass", "artifactSchemas", "observationClasses", "capabilities"],
+            "properties": {
+              "id": { "$ref": "#/$defs/token" },
+              "version": { "$ref": "#/$defs/token" },
+              "digest": { "$ref": "#/$defs/digest" },
+              "authorityClass": { "enum": ["runtime", "evaluator", "applicator", "typed-ingress", "compiler", "indexer", "telemetry"] },
+              "artifactSchemas": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/token" } },
+              "observationClasses": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "episodic.event", "episodic.decision", "diagnostic.durable-intent-gap",
+                    "diagnostic.recall-failure", "procedural.candidate-evidence"
+                  ]
+                }
+              },
+              "capabilities": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["mayReadRawEvidence", "mayMutateCanonicalMemory", "mayMaterializeRules", "mayWriteDerivedIndex"],
+                "properties": {
+                  "mayReadRawEvidence": { "type": "boolean" },
+                  "mayMutateCanonicalMemory": { "type": "boolean" },
+                  "mayMaterializeRules": { "type": "boolean" },
+                  "mayWriteDerivedIndex": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ollObserverReceiptProducerRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "workspaceId", "registryVersion", "canonicalApplicator", "entries", "digest"],
+      "properties": {
+        "schema": { "const": "oll.memory-observer-receipt-producer-registry.v1" },
+        "workspaceId": { "$ref": "#/$defs/token" },
+        "registryVersion": { "type": "integer", "minimum": 1 },
+        "canonicalApplicator": { "$ref": "#/$defs/producerRef" },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "producer", "observationSchemas", "allowedObservationClasses", "allowedScopeClasses",
+              "exactScopeAllowlist", "requiredReceiptSchema", "requireCanonicalReadBack",
+              "allowedEvaluationPolicyDigests", "rolloutState"
+            ],
+            "properties": {
+              "producer": { "$ref": "#/$defs/producerRef" },
+              "observationSchemas": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "uniqueItems": true,
+                "items": { "const": "engram.memory-batch-observation.v1" }
+              },
+              "allowedObservationClasses": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "enum": ["episodic.decision", "episodic.learning"] }
+              },
+              "allowedScopeClasses": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "enum": ["self", "managers", "company", "project"] }
+              },
+              "exactScopeAllowlist": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "$ref": "#/$defs/scope" }
+              },
+              "requiredReceiptSchema": { "const": "engram.memory-apply-receipt.v1" },
+              "requireCanonicalReadBack": { "const": true },
+              "allowedEvaluationPolicyDigests": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "$ref": "#/$defs/digest" }
+              },
+              "rolloutState": { "enum": ["report-only", "shadow", "materialize"] }
+            }
+          }
+        },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "classRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "registryVersion", "classes"],
+      "properties": {
+        "schema": { "const": "engram.memory-observation-class-registry.v1" },
+        "registryVersion": { "type": "integer", "minimum": 1 },
+        "classes": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "targetConsumer", "payloadContract", "canonicalWriteAuthority"],
+            "properties": {
+              "id": {
+                "enum": [
+                  "episodic.event", "episodic.decision", "diagnostic.durable-intent-gap",
+                  "diagnostic.recall-failure", "procedural.candidate-evidence"
+                ]
+              },
+              "targetConsumer": { "enum": ["daily-note", "kg-v3-diagnostic", "oll", "recall-telemetry"] },
+              "payloadContract": { "$ref": "#/$defs/token" },
+              "canonicalWriteAuthority": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "authorityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "policyVersion", "rules", "defaultDecision", "replayReauthorizationRequired"],
+      "properties": {
+        "schema": { "const": "engram.memory-authority-policy.v1" },
+        "policyVersion": { "$ref": "#/$defs/token" },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["artifactSchema", "stage", "allowedAuthorityClasses", "allowedProducerIds", "requiredTrustedInputs"],
+            "properties": {
+              "artifactSchema": { "$ref": "#/$defs/token" },
+              "stage": { "$ref": "#/$defs/token" },
+              "allowedAuthorityClasses": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "enum": ["runtime", "evaluator", "applicator", "typed-ingress", "compiler", "indexer", "telemetry"] }
+              },
+              "allowedProducerIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/token" } },
+              "requiredTrustedInputs": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/token" } }
+            }
+          }
+        },
+        "defaultDecision": { "const": "deny" },
+        "replayReauthorizationRequired": { "const": true }
+      }
+    },
+    "consumerPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "policyId", "policyVersion", "consumer", "workspaceId", "mode",
+        "inputSchemas", "allowedProducers", "allowedObservationClasses",
+        "allowedCanonicalSourceSchemas", "exactScopeAllowlist", "requiredProvenanceFields",
+        "sideEffectClass", "soleMutator", "rawEvidenceAllowed", "applyTimeRecheck",
+        "denyUnknownProducer", "denyUnknownClass", "denyUnknownScope"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-consumer-policy.v1" },
+        "policyId": { "$ref": "#/$defs/token" },
+        "policyVersion": { "$ref": "#/$defs/token" },
+        "consumer": { "enum": ["daily-note", "kg-v3", "kg-v3-diagnostic", "oll", "qmd", "recall-telemetry"] },
+        "workspaceId": { "$ref": "#/$defs/token" },
+        "mode": { "enum": ["disabled", "shadow", "canary", "active"] },
+        "inputSchemas": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/token" } },
+        "allowedProducers": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/producerRef" } },
+        "allowedObservationClasses": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "episodic.event", "episodic.decision", "diagnostic.durable-intent-gap",
+              "diagnostic.recall-failure", "procedural.candidate-evidence"
+            ]
+          }
+        },
+        "allowedCanonicalSourceSchemas": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/token" } },
+        "exactScopeAllowlist": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/scope" } },
+        "requiredProvenanceFields": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/token" } },
+        "sideEffectClass": { "enum": ["canonical-write", "rule-materialization", "derived-index", "telemetry-only", "none"] },
+        "soleMutator": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/token" }] },
+        "rawEvidenceAllowed": { "const": false },
+        "applyTimeRecheck": { "const": true },
+        "denyUnknownProducer": { "const": true },
+        "denyUnknownClass": { "const": true },
+        "denyUnknownScope": { "const": true }
+      }
+    }
+  }
+}

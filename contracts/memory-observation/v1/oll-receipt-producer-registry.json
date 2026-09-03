@@ -1,0 +1,28 @@
+{
+  "schema": "oll.memory-observer-receipt-producer-registry.v1",
+  "workspaceId": "template",
+  "registryVersion": 1,
+  "canonicalApplicator": {
+    "id": "daily-note-applicator",
+    "version": "v1",
+    "digest": "sha256:f9e632bc639b5f4240c15f4ac1fffb2ffa1c0b299a380d1432216c9a2c8b7ef5"
+  },
+  "entries": [
+    {
+      "producer": {
+        "id": "batch-post-turn-observer",
+        "version": "v1",
+        "digest": "sha256:69bf6adb1ebcf5b258102f13871ca7ab29af55df47f0709a489616d76c1d1f74"
+      },
+      "observationSchemas": ["engram.memory-batch-observation.v1"],
+      "allowedObservationClasses": ["episodic.decision"],
+      "allowedScopeClasses": ["self"],
+      "exactScopeAllowlist": [],
+      "requiredReceiptSchema": "engram.memory-apply-receipt.v1",
+      "requireCanonicalReadBack": true,
+      "allowedEvaluationPolicyDigests": [],
+      "rolloutState": "report-only"
+    }
+  ],
+  "digest": "sha256:559a662f807e67910ae5d038130ca13d3a4c9af9677fef20488380ebabe1389a"
+}

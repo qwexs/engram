@@ -1,0 +1,45 @@
+{
+  "schema": "engram.memory-apply-receipt.v1",
+  "receiptId": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "traceId": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "sourceObservationRef": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "sourceCompletedAt": "2026-08-24T18:00:00.000Z",
+  "scope": {
+    "workspaceId": "fixture-main",
+    "runtimeSessionKey": "agent:fixture-main:telegram:direct:100000001",
+    "scopeClass": "self",
+    "scopeId": "telegram:100000001"
+  },
+  "producer": {
+    "id": "daily-note-applicator",
+    "version": "v1",
+    "digest": "sha256:f9e632bc639b5f4240c15f4ac1fffb2ffa1c0b299a380d1432216c9a2c8b7ef5"
+  },
+  "sourceProvenance": {
+    "sourceTurnId": "channel-user:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "producer": {
+      "id": "post-turn-observer",
+      "version": "v1",
+      "digest": "sha256:d4f0bf349ea08594fbd3a72f1e6f05ea5dda32800422c1e2cefbc434552cd406"
+    },
+    "observationClass": "episodic.event",
+    "evidenceRefs": [
+      {
+        "kind": "source-turn",
+        "ref": "channel-user:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    ],
+    "observationDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+  },
+  "consumer": "daily-note",
+  "operationId": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "destinationDate": "2026-08-24",
+  "destinationRef": "memory/agent-fixture-main/telegram-direct-100000001/2026-08-24.md#engram-entry",
+  "destinationEntryId": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "status": "applied",
+  "canonicalMutation": true,
+  "readBackDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "policyDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "completedAt": "2026-08-24T18:00:02.000Z"
+}

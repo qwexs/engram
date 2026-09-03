@@ -1,0 +1,26 @@
+{
+  "schema": "engram.memory-trace-event.v1",
+  "eventId": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "traceId": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "stage": "outcome_correct",
+  "scope": {
+    "workspaceId": "fixture-main",
+    "runtimeSessionKey": "agent:fixture-main:telegram:direct:100000001",
+    "scopeClass": "self",
+    "scopeId": "telegram:100000001"
+  },
+  "producer": {
+    "id": "memory-trace-writer",
+    "version": "v1",
+    "digest": "sha256:d570cbed441fe0bb05eff36b09af915b10c410628ca8bdd92a018aae9be6a139"
+  },
+  "stageRef": {
+    "kind": "utilization",
+    "ref": "utilization:fixture-1",
+    "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+  },
+  "recordedAt": "2026-08-24T18:05:00.000Z",
+  "policyDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "reasonCode": "model-says-correct",
+  "verification": null
+}

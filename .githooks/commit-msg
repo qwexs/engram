@@ -3,7 +3,7 @@
 #
 # Local commit-msg guard for the engram repo. Runs the personal-data
 # linter against the commit message itself (not just staged files), so
-# `Refs: outline.apriori.tech/...` style leaks in commit footers are
+# `Refs: docs.internal.example/...` style leaks in commit footers are
 # caught before they land in history.
 #
 # The staged-files path is already covered by pre-commit; this hook
@@ -43,7 +43,7 @@ if ! bun "$LINTER" --text-file "$MSG_FILE"; then
 
 Personal-data linter failed. Your commit message contains patterns that
 look like local filesystem paths, reserved agentIds, Telegram chatIds,
-bot tokens, or workspace-specific FQDNs (e.g. outline.apriori.tech).
+bot tokens, or workspace-specific FQDNs (e.g. docs.internal.example).
 None of those belong in the public engram repo.
 
 What to do:

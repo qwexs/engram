@@ -1,0 +1,36 @@
+{
+  "schema": "engram.memory-observation-class-registry.v1",
+  "registryVersion": 1,
+  "classes": [
+    {
+      "id": "episodic.event",
+      "targetConsumer": "daily-note",
+      "payloadContract": "episodicPayload",
+      "canonicalWriteAuthority": false
+    },
+    {
+      "id": "episodic.decision",
+      "targetConsumer": "daily-note",
+      "payloadContract": "episodicPayload",
+      "canonicalWriteAuthority": false
+    },
+    {
+      "id": "diagnostic.durable-intent-gap",
+      "targetConsumer": "kg-v3-diagnostic",
+      "payloadContract": "durableIntentGapPayload",
+      "canonicalWriteAuthority": false
+    },
+    {
+      "id": "diagnostic.recall-failure",
+      "targetConsumer": "recall-telemetry",
+      "payloadContract": "recallFailurePayload",
+      "canonicalWriteAuthority": false
+    },
+    {
+      "id": "procedural.candidate-evidence",
+      "targetConsumer": "oll",
+      "payloadContract": "proceduralPayload",
+      "canonicalWriteAuthority": false
+    }
+  ]
+}

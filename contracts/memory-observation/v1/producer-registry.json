@@ -1,0 +1,153 @@
+{
+  "schema": "engram.memory-producer-registry.v1",
+  "registryVersion": 1,
+  "releasedAt": "2026-08-24T18:00:00.000Z",
+  "producers": [
+    {
+      "id": "openclaw-runtime",
+      "version": "v1",
+      "digest": "sha256:41580b56cf8dc83fea5f78568092308214f851833a5c6cae537bf1a21b3626bd",
+      "authorityClass": "runtime",
+      "artifactSchemas": ["engram.memory-observation-job.v1", "engram.memory-trace-event.v1"],
+      "observationClasses": [],
+      "capabilities": {
+        "mayReadRawEvidence": true,
+        "mayMutateCanonicalMemory": false,
+        "mayMaterializeRules": false,
+        "mayWriteDerivedIndex": false
+      }
+    },
+    {
+      "id": "post-turn-observer",
+      "version": "v1",
+      "digest": "sha256:d4f0bf349ea08594fbd3a72f1e6f05ea5dda32800422c1e2cefbc434552cd406",
+      "authorityClass": "evaluator",
+      "artifactSchemas": ["engram.memory-observation.v1"],
+      "observationClasses": [
+        "episodic.event",
+        "episodic.decision",
+        "diagnostic.durable-intent-gap",
+        "diagnostic.recall-failure",
+        "procedural.candidate-evidence"
+      ],
+      "capabilities": {
+        "mayReadRawEvidence": true,
+        "mayMutateCanonicalMemory": false,
+        "mayMaterializeRules": false,
+        "mayWriteDerivedIndex": false
+      }
+    },
+    {
+      "id": "batch-post-turn-observer",
+      "version": "v1",
+      "digest": "sha256:69bf6adb1ebcf5b258102f13871ca7ab29af55df47f0709a489616d76c1d1f74",
+      "authorityClass": "evaluator",
+      "artifactSchemas": ["engram.memory-batch-observation.v1", "engram.memory-trace-event.v1"],
+      "observationClasses": ["episodic.event", "episodic.decision"],
+      "capabilities": {
+        "mayReadRawEvidence": true,
+        "mayMutateCanonicalMemory": false,
+        "mayMaterializeRules": false,
+        "mayWriteDerivedIndex": false
+      }
+    },
+    {
+      "id": "daily-note-applicator",
+      "version": "v1",
+      "digest": "sha256:f9e632bc639b5f4240c15f4ac1fffb2ffa1c0b299a380d1432216c9a2c8b7ef5",
+      "authorityClass": "applicator",
+      "artifactSchemas": ["engram.memory-apply-receipt.v1", "engram.memory-trace-event.v1"],
+      "observationClasses": [],
+      "capabilities": {
+        "mayReadRawEvidence": false,
+        "mayMutateCanonicalMemory": true,
+        "mayMaterializeRules": false,
+        "mayWriteDerivedIndex": false
+      }
+    },
+    {
+      "id": "kg-v3-explicit-intent-ingress",
+      "version": "v1",
+      "digest": "sha256:4ce96fc1cde6d2a165301813bda9aa206bb6c30a820f11d178ff3a7f6b2bcc9a",
+      "authorityClass": "typed-ingress",
+      "artifactSchemas": ["engram.kg-assertion.v3-mvp", "engram.kg-v3-write-receipt.v1"],
+      "observationClasses": [],
+      "capabilities": {
+        "mayReadRawEvidence": false,
+        "mayMutateCanonicalMemory": true,
+        "mayMaterializeRules": false,
+        "mayWriteDerivedIndex": false
+      }
+    },
+    {
+      "id": "oll-memory-candidate-compiler",
+      "version": "v2",
+      "digest": "sha256:e2f9f457c61985f3bb884e6ae3a7b00560d7f8dd49d8a6907d4a14f39bc2f1b7",
+      "authorityClass": "compiler",
+      "artifactSchemas": ["oll.memory-evidence-occurrence.v1", "oll.memory-candidate-report.v2"],
+      "observationClasses": [],
+      "capabilities": {
+        "mayReadRawEvidence": false,
+        "mayMutateCanonicalMemory": false,
+        "mayMaterializeRules": false,
+        "mayWriteDerivedIndex": false
+      }
+    },
+    {
+      "id": "oll-rule-materializer",
+      "version": "v1",
+      "digest": "sha256:1070a034a95178233941d5a02fb553b3ad202617bfa68dcb0b86a5980badfa5a",
+      "authorityClass": "applicator",
+      "artifactSchemas": ["oll.adaptation-operation.v1", "engram.memory-apply-receipt.v1"],
+      "observationClasses": [],
+      "capabilities": {
+        "mayReadRawEvidence": false,
+        "mayMutateCanonicalMemory": false,
+        "mayMaterializeRules": true,
+        "mayWriteDerivedIndex": false
+      }
+    },
+    {
+      "id": "domain-document-writer",
+      "version": "v1",
+      "digest": "sha256:27675ade06d1c01919a6feb8d5ea7efdb123a8751cd12b1d0a577e85a19f14a3",
+      "authorityClass": "applicator",
+      "artifactSchemas": ["engram.domain-document.v1"],
+      "observationClasses": [],
+      "capabilities": {
+        "mayReadRawEvidence": false,
+        "mayMutateCanonicalMemory": true,
+        "mayMaterializeRules": false,
+        "mayWriteDerivedIndex": false
+      }
+    },
+    {
+      "id": "qmd-indexer",
+      "version": "v1",
+      "digest": "sha256:c4a63d368a772e949b7b56f4dcd2918985fffc464f5dc6051ce94e73377a7c41",
+      "authorityClass": "indexer",
+      "artifactSchemas": ["engram.memory-trace-event.v1", "qmd.index-generation.v1"],
+      "observationClasses": [],
+      "capabilities": {
+        "mayReadRawEvidence": false,
+        "mayMutateCanonicalMemory": false,
+        "mayMaterializeRules": false,
+        "mayWriteDerivedIndex": true
+      }
+    },
+    {
+      "id": "memory-trace-writer",
+      "version": "v1",
+      "digest": "sha256:d570cbed441fe0bb05eff36b09af915b10c410628ca8bdd92a018aae9be6a139",
+      "authorityClass": "telemetry",
+      "artifactSchemas": ["engram.memory-trace-event.v1"],
+      "observationClasses": [],
+      "capabilities": {
+        "mayReadRawEvidence": false,
+        "mayMutateCanonicalMemory": false,
+        "mayMaterializeRules": false,
+        "mayWriteDerivedIndex": false
+      }
+    }
+  ]
+}

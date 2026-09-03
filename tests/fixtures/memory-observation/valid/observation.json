@@ -1,0 +1,37 @@
+{
+  "schema": "engram.memory-observation.v1",
+  "observationId": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "traceId": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "sourceTurnId": "channel-user:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "scope": {
+    "workspaceId": "fixture-main",
+    "runtimeSessionKey": "agent:fixture-main:telegram:direct:100000001",
+    "scopeClass": "self",
+    "scopeId": "telegram:100000001"
+  },
+  "producer": {
+    "id": "post-turn-observer",
+    "version": "v1",
+    "digest": "sha256:d4f0bf349ea08594fbd3a72f1e6f05ea5dda32800422c1e2cefbc434552cd406"
+  },
+  "observationClass": "episodic.event",
+  "targetConsumer": "daily-note",
+  "payload": {
+    "section": "events",
+    "text": "Fixture rollout contract was reviewed.",
+    "actorRef": "operator",
+    "outcomeStatus": "completed"
+  },
+  "evidenceRefs": [
+    {
+      "kind": "source-turn",
+      "ref": "channel-user:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    }
+  ],
+  "sourceCompletedAt": "2026-08-24T18:00:00.000Z",
+  "confidence": 0.93,
+  "reasonCodes": ["explicit-completed-event"],
+  "observationDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "completedAt": "2026-08-24T18:00:01.000Z"
+}

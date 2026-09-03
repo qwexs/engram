@@ -1,0 +1,27 @@
+{
+  "schema": "engram.memory-consumer-policy.v1",
+  "policyId": "memory-observation-oll-template",
+  "policyVersion": "v1",
+  "consumer": "oll",
+  "workspaceId": "template",
+  "mode": "disabled",
+  "inputSchemas": ["engram.memory-batch-observation.v1", "engram.memory-apply-receipt.v1"],
+  "allowedProducers": [
+    {
+      "id": "batch-post-turn-observer",
+      "version": "v1",
+      "digest": "sha256:69bf6adb1ebcf5b258102f13871ca7ab29af55df47f0709a489616d76c1d1f74"
+    }
+  ],
+  "allowedObservationClasses": ["episodic.decision"],
+  "allowedCanonicalSourceSchemas": [],
+  "exactScopeAllowlist": [],
+  "requiredProvenanceFields": ["traceId", "producer", "observationClass", "scope", "policyDigest", "batchEvaluationPolicyDigest", "destinationEntryId", "readBackDigest"],
+  "sideEffectClass": "rule-materialization",
+  "soleMutator": "oll-rule-materializer",
+  "rawEvidenceAllowed": false,
+  "applyTimeRecheck": true,
+  "denyUnknownProducer": true,
+  "denyUnknownClass": true,
+  "denyUnknownScope": true
+}

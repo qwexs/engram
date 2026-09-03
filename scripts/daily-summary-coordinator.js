@@ -32,7 +32,7 @@ mutates historical items.json or summary.md.
 
 Usage:
   bun skills/engram/scripts/daily-summary-coordinator.js \\
-    --workspace /workspace/main --workspace /workspace/elena --json
+    --workspace /workspaces/alpha --workspace /workspaces/beta --json
 
 Options:
   --workspace <path>       Engram workspace to process; repeat in desired order.

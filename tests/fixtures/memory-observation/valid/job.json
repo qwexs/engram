@@ -1,0 +1,29 @@
+{
+  "schema": "engram.memory-observation-job.v1",
+  "traceId": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "sourceTurnId": "channel-user:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "scope": {
+    "workspaceId": "fixture-main",
+    "runtimeSessionKey": "agent:fixture-main:telegram:direct:100000001",
+    "scopeClass": "self",
+    "scopeId": "telegram:100000001"
+  },
+  "sourceCompletedAt": "2026-08-24T18:00:00.000Z",
+  "sourceDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "evidenceDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "policyVersion": "memory-observation-v1",
+  "policyDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "evidenceRefs": [
+    {
+      "kind": "source-turn",
+      "ref": "channel-user:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    }
+  ],
+  "authority": {
+    "id": "openclaw-runtime",
+    "version": "v1",
+    "digest": "sha256:41580b56cf8dc83fea5f78568092308214f851833a5c6cae537bf1a21b3626bd"
+  },
+  "admittedAt": "2026-08-24T18:00:00.100Z"
+}

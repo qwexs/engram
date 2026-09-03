@@ -244,8 +244,8 @@ cards automatically, for routine conversation, or through a scheduled job.
 
 ```bash
 bun skills/engram/scripts/daily-summary-coordinator.js \
-  --workspace /opt/openclaw/workspace \
-  --workspace /opt/openclaw/workspaces/elena \
+  --workspace /workspaces/alpha \
+  --workspace /workspaces/beta \
   --json
 ```
 

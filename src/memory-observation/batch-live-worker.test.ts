@@ -373,6 +373,36 @@ describe("durable live micro-batch worker", () => {
     expect((await worker.processOne()).status).toBe("duplicate");
   });
 
+  test("names a replayed deferred bundle by the active evaluation policy", async () => {
+    const { workspace, ledger, policy } = setup();
+    admit(ledger, 31, "2026-08-31T20:01:00.000Z");
+    admit(ledger, 32, "2026-08-31T20:02:00.000Z");
+    let current = new Date("2026-08-31T20:20:00.000Z");
+    const now = () => current;
+    const complete = async (request: any) => ({
+      resolvedModel: "openai/gpt-5.6-terra",
+      output: JSON.stringify({
+        schema: "engram.memory-batch-shadow-output.v1",
+        groups: [{
+          groupId: "policy-bound-defer",
+          decision: "defer",
+          sourceRefs: JSON.parse(request.prompt).task.sources.map((entry: any) => entry.sourceRef.traceId),
+          reason: "awaiting_continuation",
+        }],
+      }),
+    });
+    const first = new BatchLiveWorker({ workspace, ledger, policy, storeRoot: join(workspace, "state"), complete, now });
+    expect((await first.processOne()).status).toBe("completed");
+
+    current = new Date("2026-08-31T20:26:00.000Z");
+    const nextPolicy = { ...policy, evaluationPolicyDigest: `sha256:${"8".repeat(64)}` as const };
+    const replay = new BatchLiveWorker({ workspace, ledger, policy: nextPolicy, storeRoot: join(workspace, "state"), complete, now });
+    expect((await replay.processOne()).status).toBe("duplicate");
+    expect(readdirSync(join(workspace, "state", "memory-batch-live", "v1", "jobs"))).toHaveLength(2);
+    expect(readdirSync(join(workspace, "state", "memory-batch-live", "v1", "terminals"))).toHaveLength(2);
+    expect(readdirSync(join(workspace, "state", "memory-batch-live", "v1", "done"))).toHaveLength(2);
+  });
+
   test("counts invalid model output as a bounded attempt and seals terminal failure", async () => {
     const { workspace, ledger, policy } = setup();
     admit(ledger, 5, "2026-08-31T20:01:00.000Z");

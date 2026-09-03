@@ -25,6 +25,7 @@ import {
   type MemoryObservationProjectionV1,
 } from "../src/memory-observation/projection.ts";
 import { hasExactInferenceModelAuthorization } from "../src/memory-observation/inference-boundary.ts";
+import { deriveBatchEvaluationPolicyDigest } from "../src/memory-observation/batch-evaluation-policy.ts";
 import { preflightCanaryQmdBinding } from "../src/memory-observation/qmd-binding-preflight.ts";
 import { resolveQmdContext } from "../src/qmd/context.ts";
 
@@ -451,14 +452,14 @@ if (batchCommand) {
     : MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2;
   projection.evaluation = {
     mode: "batch-cron",
-    policyDigest: `sha256:${createHash("sha256").update(JSON.stringify({
-      schema: "engram.memory-batch-live-policy.v1",
+    policyDigest: deriveBatchEvaluationPolicyDigest({
       workspaceId,
       sessionKey,
       scopeId,
       model: inferenceModel,
+      pluginDigest: bundle.digest,
       batch,
-    })).digest("hex")}`,
+    }),
     batch,
   };
 }

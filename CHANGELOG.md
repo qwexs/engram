@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **fix(memory): bind batch replay identity to evaluator releases.** Batch
+  policy digests now include the prompt contract and installed plugin
+  bytes, preventing a new evaluator from colliding with an immutable terminal
+  created for an older deferred bundle. A managed scheduler installer also
+  propagates nested `exec` status and nonzero exit codes instead of recording
+  failed workers as successful cron runs.
+
 - **fix(memory): require actor-aligned source citations in batch output.** A
   write assertion must now cite an exact current `source-turn` whose user or
   assistant segment matches `actorRef`; bounded reply context may support

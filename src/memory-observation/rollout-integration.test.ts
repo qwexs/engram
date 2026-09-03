@@ -80,6 +80,8 @@ describe("memory observation shadow and daily-note canary rollout integration", 
     expect(rolloutSource).toContain("plugins.entries.${PLUGIN_ID}.llm.allowModelOverride");
     expect(rolloutSource).toContain("plugins.entries.${PLUGIN_ID}.llm.allowedModels");
     expect(rolloutSource).toContain("hasExactInferenceModelAuthorization");
+    expect(rolloutSource).toContain("deriveBatchEvaluationPolicyDigest");
+    expect(rolloutSource).toContain("pluginDigest: bundle.digest");
     expect(rolloutSource).not.toContain("inference model must match the configured default main agent model");
     const registry = JSON.parse(readFileSync(join(repository, "contracts", "memory-observation", "v1", "producer-registry.json"), "utf8"));
     const runtime = registry.producers.find((producer: any) => producer.id === "openclaw-runtime");

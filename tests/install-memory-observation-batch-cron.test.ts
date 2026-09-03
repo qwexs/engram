@@ -38,7 +38,9 @@ if (args[0] !== "cron") process.exit(2);
 if (args[1] === "get") { console.log(JSON.stringify(state)); process.exit(0); }
 if (args[1] !== "edit") process.exit(2);
 const value = (flag) => { const at = args.indexOf(flag); return at >= 0 ? args[at + 1] : null; };
-state.payload = { kind: "script", script: readFileSync(0, "utf8"), timeoutSeconds: Number(value("--script-timeout-seconds")), toolBudget: Number(value("--script-tool-budget")), toolsAllow: String(value("--tools") || "").split(",").filter(Boolean) };
+// Match OpenClaw's read-back normalization: semantic content is preserved,
+// while object key insertion order is not part of the scheduler contract.
+state.payload = { kind: "script", script: readFileSync(0, "utf8"), toolBudget: Number(value("--script-tool-budget")), timeoutSeconds: Number(value("--script-timeout-seconds")), toolsAllow: String(value("--tools") || "").split(",").filter(Boolean) };
 writeFileSync(statePath, JSON.stringify(state)); console.log(JSON.stringify(state));
 `);
   chmodSync(fake, 0o755);

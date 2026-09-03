@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   closeSync,
@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { canonicalizeJcs, sha256Digest } from "../src/oll/handoff-v2.ts";
 
 type JsonObject = Record<string, any>;
 
@@ -48,7 +49,7 @@ function atomicWrite(path: string, value: unknown): void {
 }
 
 function digest(value: unknown): `sha256:${string}` {
-  return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+  return sha256Digest(canonicalizeJcs(value));
 }
 
 function openclaw(argv: string[], input?: string): string {

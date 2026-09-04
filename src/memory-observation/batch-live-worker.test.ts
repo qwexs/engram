@@ -542,6 +542,10 @@ describe("durable live micro-batch worker", () => {
       ["queued", 1, "batch_invalid_output"],
     ]);
 
+    current = new Date("2026-08-31T20:21:00.000Z");
+    expect(await worker.processOne()).toEqual({ status: "idle", reason: "pending_retry_not_due" });
+    expect(calls).toBe(1);
+
     current = new Date("2026-08-31T20:26:00.000Z");
     await expect(worker.processOne()).rejects.toMatchObject({ code: "INVALID_OUTPUT" });
     const terminal = readdirSync(queueDirectory).map((name) => readFileSync(join(queueDirectory, name), "utf8"))

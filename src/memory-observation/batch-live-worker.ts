@@ -404,6 +404,14 @@ export class BatchLiveWorker {
     try {
       const pending = this.pendingJob();
       let job = pending;
+      if (job) {
+        const queueByTrace = new Map(this.options.ledger.listQueue().map((record) => [record.traceId, record]));
+        const retryNotDue = job.bundle.sourceRefs.some((source) => {
+          const record = queueByTrace.get(source.traceId);
+          return record?.status === "queued" && Date.parse(record.nextAttemptAt) > now.getTime();
+        });
+        if (retryNotDue) return { status: "idle", reason: "pending_retry_not_due" };
+      }
       if (!job) {
         const candidate = selectCandidate(this.options.ledger.peekDueEvaluationEvidence(now), this.options.policy, now);
         if (candidate.length === 0) return { status: "idle", reason: "flush_not_due" };

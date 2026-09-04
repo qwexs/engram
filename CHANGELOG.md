@@ -6,6 +6,8 @@
   deferred batch gets one retry-neutral reconsideration window; replay of the
   unchanged immutable result then records terminal per-source traces instead
   of leaving the same bundle at the head of the evaluator queue forever.
+  Pending jobs also honor the durable `nextAttemptAt` retry boundary before
+  replaying provider or validator failures.
 
 - **fix(memory): bind batch replay identity to evaluator releases.** Batch
   policy digests now include the prompt contract and installed plugin

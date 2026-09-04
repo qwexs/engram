@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **fix(memory): bound semantic-defer replay and restore queue liveness.** A
+  deferred batch gets one retry-neutral reconsideration window; replay of the
+  unchanged immutable result then records terminal per-source traces instead
+  of leaving the same bundle at the head of the evaluator queue forever.
+
 - **fix(memory): bind batch replay identity to evaluator releases.** Batch
   policy digests now include the prompt contract and installed plugin
   bytes, preventing a new evaluator from colliding with an immutable terminal

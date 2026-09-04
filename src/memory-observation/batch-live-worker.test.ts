@@ -336,7 +336,7 @@ describe("durable live micro-batch worker", () => {
     expect(readdirSync(observationDirectory)).toHaveLength(3);
   });
 
-  test("keeps semantic defer ordered and retry-neutral", async () => {
+  test("keeps semantic defer ordered, retry-neutral, and terminal on unchanged reconsideration", async () => {
     const { workspace, ledger, policy } = setup();
     admit(ledger, 3, "2026-08-31T20:01:00.000Z");
     admit(ledger, 4, "2026-08-31T20:02:00.000Z");
@@ -371,6 +371,112 @@ describe("durable live micro-batch worker", () => {
     expect(existsSync(join(workspace, "memory-state", "memory-observation", "v1", "observations", "batch"))).toBe(false);
     current = new Date("2026-08-31T20:26:00.000Z");
     expect((await worker.processOne()).status).toBe("duplicate");
+    const queueDirectory = join(ledger.root, "queues", "evaluator");
+    const queue = readdirSync(queueDirectory).map((name) => JSON.parse(readFileSync(join(queueDirectory, name), "utf8")));
+    expect(queue.map((record) => [record.status, record.attempt, record.reasonCode])).toEqual([
+      ["terminal", 1, "semantic_batch_defer"],
+      ["terminal", 1, "semantic_batch_defer"],
+    ]);
+    expect(ledger.peekDueEvaluationEvidence(now())).toHaveLength(0);
+    expect(queue.flatMap((record) => ledger.readTrace(record.traceId))
+      .filter((entry) => entry.stage === "batch_evaluation_terminal")).toHaveLength(2);
+  });
+
+  test("drains a fresh successor cohort after one bounded deferred replay", async () => {
+    const { workspace, ledger, policy } = setup();
+    admit(ledger, 40, "2026-08-31T20:01:00.000Z");
+    admit(ledger, 41, "2026-08-31T20:02:00.000Z");
+    let current = new Date("2026-08-31T20:20:00.000Z");
+    const now = () => current;
+    let calls = 0;
+    const worker = new BatchLiveWorker({
+      workspace,
+      ledger,
+      policy,
+      storeRoot: join(workspace, "state"),
+      now,
+      complete: async (request: any) => {
+        calls++;
+        const sources = JSON.parse(request.prompt).task.sources;
+        if (calls === 1) {
+          return {
+            resolvedModel: "openai/gpt-5.6-terra",
+            output: JSON.stringify({
+              schema: "engram.memory-batch-shadow-output.v1",
+              groups: [{
+                groupId: "deferred-case",
+                decision: "defer",
+                sourceRefs: sources.map((entry: any) => entry.sourceRef.traceId),
+                reason: "awaiting_continuation",
+              }],
+            }),
+          };
+        }
+        return {
+          resolvedModel: "openai/gpt-5.6-terra",
+          output: JSON.stringify({
+            schema: "engram.memory-batch-shadow-output.v1",
+            groups: [{
+              groupId: "successor-case",
+              decision: "skip",
+              sourceRefs: sources.map((entry: any) => entry.sourceRef.traceId),
+              reason: "social_noise",
+            }],
+          }),
+        };
+      },
+    });
+    expect((await worker.processOne()).status).toBe("completed");
+    admit(ledger, 42, "2026-08-31T20:21:00.000Z");
+
+    current = new Date("2026-08-31T20:26:00.000Z");
+    expect((await worker.processOne()).status).toBe("duplicate");
+    expect(calls).toBe(1);
+
+    current = new Date("2026-08-31T20:40:00.000Z");
+    expect((await worker.processOne()).status).toBe("completed");
+    expect(calls).toBe(2);
+    expect(ledger.peekDueEvaluationEvidence(now())).toHaveLength(0);
+  });
+
+  test("does not consume the defer window when resuming before its queue effect", async () => {
+    const { workspace, ledger, policy } = setup();
+    admit(ledger, 43, "2026-08-31T20:01:00.000Z");
+    let current = new Date("2026-08-31T20:20:00.000Z");
+    const now = () => current;
+    let calls = 0;
+    const complete = async (request: any) => {
+      calls++;
+      const sources = JSON.parse(request.prompt).task.sources;
+      return {
+        resolvedModel: "openai/gpt-5.6-terra",
+        output: JSON.stringify({
+          schema: "engram.memory-batch-shadow-output.v1",
+          groups: [{
+            groupId: "defer-crash-case",
+            decision: "defer",
+            sourceRefs: sources.map((entry: any) => entry.sourceRef.traceId),
+            reason: "awaiting_continuation",
+          }],
+        }),
+      };
+    };
+    let injected = false;
+    const failing = new BatchLiveWorker({
+      workspace, ledger, policy, storeRoot: join(workspace, "state"), complete, now,
+      fault: (point) => { if (!injected && point === "after_terminal") { injected = true; throw new Error("fault:after_terminal"); } },
+    });
+    await expect(failing.processOne()).rejects.toThrow("fault:after_terminal");
+
+    const resumed = new BatchLiveWorker({ workspace, ledger, policy, storeRoot: join(workspace, "state"), complete, now });
+    expect((await resumed.processOne()).status).toBe("duplicate");
+    expect(ledger.listQueue()[0]).toMatchObject({ status: "queued", attempt: 0, reasonCode: "semantic_batch_defer" });
+    expect(calls).toBe(1);
+
+    current = new Date("2026-08-31T20:26:00.000Z");
+    expect((await resumed.processOne()).status).toBe("duplicate");
+    expect(ledger.listQueue()[0]).toMatchObject({ status: "terminal", attempt: 1, reasonCode: "semantic_batch_defer" });
+    expect(calls).toBe(1);
   });
 
   test("names a replayed deferred bundle by the active evaluation policy", async () => {

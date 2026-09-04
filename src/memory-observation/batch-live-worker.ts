@@ -128,12 +128,7 @@ export type BatchLiveTerminalV1 = {
   bundleId: Digest;
   resultKey: Digest;
   resultDigest: Digest;
-  dispositions: Array<BatchEvaluationDispositionV1 | {
-    traceId: Digest;
-    decision: "defer";
-    reasonCode: string;
-    observationRefs: [];
-  }>;
+  dispositions: BatchEvaluationDispositionV1[];
   completedAt: string;
 };
 
@@ -537,6 +532,9 @@ export class BatchLiveWorker {
       writeImmutable(this.terminalPath(job.jobId), terminal as unknown as JsonValue);
       this.options.fault?.("after_terminal");
 
+      const previouslyDeferred = new Set(this.options.ledger.listQueue()
+        .filter((record) => record.status === "queued" && record.reasonCode === "semantic_batch_defer")
+        .map((record) => record.traceId));
       const claimed = this.options.ledger.claimBatchExact(
         ownerToken,
         dispositions.map((entry) => entry.traceId),
@@ -547,7 +545,7 @@ export class BatchLiveWorker {
       for (const disposition of dispositions) {
         const record = claimedByTrace.get(disposition.traceId)!;
         if (record.status !== "claimed") continue;
-        if (disposition.decision === "defer") {
+        if (disposition.decision === "defer" && !previouslyDeferred.has(disposition.traceId)) {
           this.options.ledger.deferBatchClaim(
             ownerToken,
             record,

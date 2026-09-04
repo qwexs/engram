@@ -145,7 +145,7 @@ export type EvaluationEvidenceV1 = {
 
 export type BatchEvaluationDispositionV1 = {
   traceId: Digest;
-  decision: "write" | "skip";
+  decision: "write" | "skip" | "defer";
   reasonCode: string;
   observationRefs: Digest[];
 };
@@ -677,8 +677,7 @@ export class MemoryObservationLedger {
       const records = traceIds.map((traceId) => this.readQueue(traceId));
       if (records.some((record) => {
         const accepted = acceptedReasonByTrace.get(record.traceId);
-        if (accepted && record.reasonCode === accepted
-          && (record.status === "terminal" || record.status === "queued")) return false;
+        if (accepted && record.reasonCode === accepted && record.status === "terminal") return false;
         if (record.status === "claimed") return false;
         return record.status !== "queued" || Date.parse(record.nextAttemptAt) > now.getTime();
       })) {
@@ -686,8 +685,7 @@ export class MemoryObservationLedger {
       }
       return records.map((record) => {
         const accepted = acceptedReasonByTrace.get(record.traceId);
-        if (accepted && record.reasonCode === accepted
-          && (record.status === "terminal" || record.status === "queued")) return record;
+        if (accepted && record.reasonCode === accepted && record.status === "terminal") return record;
         const claimed: LedgerQueueRecordV1 = {
           ...record,
           status: "claimed",
@@ -715,7 +713,7 @@ export class MemoryObservationLedger {
       || disposition.observationRefs.some((value) => !/^sha256:[a-f0-9]{64}$/.test(value))
       || new Set(disposition.observationRefs).size !== disposition.observationRefs.length
       || (disposition.decision === "write" && disposition.observationRefs.length < 1)
-      || (disposition.decision === "skip" && disposition.observationRefs.length !== 0)) {
+      || (disposition.decision !== "write" && disposition.observationRefs.length !== 0)) {
       throw new ObservationLedgerError("INVALID_BATCH_DISPOSITION", "batch disposition is invalid");
     }
     return this.withStateLock(() => {

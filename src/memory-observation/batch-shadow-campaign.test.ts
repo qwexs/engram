@@ -44,7 +44,7 @@ function source(index: number): BatchSourceFrameEntryV1 {
       authority: { id: "openclaw-runtime", version: "runtime-v1", digest: sha256("runtime-v1") },
       admittedAt: sourceCompletedAt,
     },
-    evidence: { ...evidenceIdentity, createdAt: sourceCompletedAt, expiresAt: "2026-09-03T20:00:00.000Z" },
+    evidence: { ...evidenceIdentity, createdAt: sourceCompletedAt, expiresAt: "2099-09-03T20:00:00.000Z" },
   };
 }
 

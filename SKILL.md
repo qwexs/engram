@@ -5,7 +5,7 @@ description: "Engram daily-note writer: reject unstable session/workspace coordi
 
 # Engram Memory System
 
-> v3.6.4 (2026-09-03). Skill is read-only — copy scripts to your workspace, do not edit.
+> v3.6.5 (2026-09-04). Skill is read-only — copy scripts to your workspace, do not edit.
 > Changelog: [CHANGELOG.md](CHANGELOG.md) · Script reference: [references/scripts.md](references/scripts.md) · Watchdog: [references/watchdog.md](references/watchdog.md)
 
 ## Quick Start

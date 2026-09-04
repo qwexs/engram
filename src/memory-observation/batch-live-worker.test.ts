@@ -533,7 +533,13 @@ describe("durable live micro-batch worker", () => {
       },
     });
 
-    await expect(worker.processOne()).rejects.toMatchObject({ code: "INVALID_OUTPUT" });
+    expect(await worker.processOne()).toMatchObject({
+      status: "retry",
+      sourceCount: 2,
+      reason: "batch_invalid_output",
+      attempt: 1,
+      maxAttempts: 2,
+    });
     const queueDirectory = join(ledger.root, "queues", "evaluator");
     const firstAttempt = readdirSync(queueDirectory).map((name) => readFileSync(join(queueDirectory, name), "utf8"))
       .map((value) => JSON.parse(value));
@@ -547,7 +553,13 @@ describe("durable live micro-batch worker", () => {
     expect(calls).toBe(1);
 
     current = new Date("2026-08-31T20:26:00.000Z");
-    await expect(worker.processOne()).rejects.toMatchObject({ code: "INVALID_OUTPUT" });
+    expect(await worker.processOne()).toMatchObject({
+      status: "terminal_failure",
+      sourceCount: 2,
+      reason: "batch_invalid_output",
+      attempt: 2,
+      maxAttempts: 2,
+    });
     const terminal = readdirSync(queueDirectory).map((name) => readFileSync(join(queueDirectory, name), "utf8"))
       .map((value) => JSON.parse(value));
     expect(terminal.map((record) => [record.status, record.attempt, record.reasonCode])).toEqual([

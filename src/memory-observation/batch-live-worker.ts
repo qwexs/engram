@@ -147,6 +147,14 @@ export type BatchLiveFailureV1 = {
 export type BatchLiveRunResult =
   | { status: "idle" | "busy"; reason?: string }
   | {
+      status: "retry" | "terminal_failure";
+      jobId: Digest;
+      sourceCount: number;
+      reason: string;
+      attempt: number;
+      maxAttempts: number;
+    }
+  | {
       status: "completed" | "duplicate";
       jobId: Digest;
       sourceCount: number;
@@ -449,7 +457,8 @@ export class BatchLiveWorker {
           errorCode,
           failedAt,
         ));
-        if (retried.every((record) => record.status === "terminal")) {
+        const terminal = retried.every((record) => record.status === "terminal");
+        if (terminal) {
           const failureBase = {
             schema: BATCH_LIVE_FAILURE_SCHEMA,
             jobId: job.jobId,
@@ -467,7 +476,14 @@ export class BatchLiveWorker {
           writeImmutable(this.failurePath(job.jobId), failure as unknown as JsonValue);
           writeImmutable(this.donePath(job.jobId), failure as unknown as JsonValue);
         }
-        throw error;
+        return {
+          status: terminal ? "terminal_failure" : "retry",
+          jobId: job.jobId,
+          sourceCount: job.bundle.sourceRefs.length,
+          reason: errorCode,
+          attempt: Math.max(...retried.map((record) => record.attempt)),
+          maxAttempts: Math.max(...retried.map((record) => record.maxAttempts)),
+        };
       }
       this.options.fault?.("after_result");
       this.authorizeCurrentBatchEffects();

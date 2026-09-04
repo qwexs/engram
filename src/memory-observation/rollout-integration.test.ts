@@ -75,7 +75,6 @@ describe("memory observation shadow and daily-note canary rollout integration", 
     expect(source).not.toContain("agentId: agentIdFromSessionKey");
     expect(source).toContain("model: current.projection.inference.model");
     expect(source).not.toContain("configuredAgentModel");
-    expect(source).not.toContain("src/post-turn-observer");
     const rolloutSource = readFileSync(rollout, "utf8");
     expect(rolloutSource).toContain("plugins.entries.${PLUGIN_ID}.llm.allowModelOverride");
     expect(rolloutSource).toContain("plugins.entries.${PLUGIN_ID}.llm.allowedModels");

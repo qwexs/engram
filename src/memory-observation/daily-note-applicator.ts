@@ -407,7 +407,8 @@ export class DailyNoteCanaryApplicator {
     if (!policy) return null;
     const queued = this.listQueue()
       .filter((record) => (record.status === "queued"
-        || record.status === "qmd_pending") && this.queueMatchesPolicy(record, policy))
+        && (this.queueMatchesPolicy(record, policy) || this.queueNeedsSupersededDisposition(record, policy)))
+        || (record.status === "qmd_pending" && this.queueMatchesPolicy(record, policy)))
       .map((record) => ({
         record,
         dueAt: record.status === "qmd_pending" ? (record.nextAttemptAt ?? record.updatedAt) : record.updatedAt,
@@ -655,21 +656,25 @@ export class DailyNoteCanaryApplicator {
 
   private reconcileSuperseded(policy: DailyNoteCanaryPolicy, now: Date): void {
     for (const record of this.listQueue()) {
-      if (record.status !== "queued") continue;
-      let observation: DailyNoteObservation;
-      try { observation = this.readObservation(record); }
-      catch { continue; }
-      const sameRuntimePartition = observation.scope.workspaceId === policy.exactScope.workspaceId
-        && observation.scope.runtimeSessionKey === policy.exactScope.runtimeSessionKey;
-      const predatesPolicy = Date.parse(observation.completedAt) < Date.parse(policy.applyAfter);
-      const scopeWasRebound = sameRuntimePartition && !sameScope(observation.scope, policy.exactScope);
-      const batchPolicyWasReplaced = sameRuntimePartition
-        && observation.schema === "engram.memory-batch-observation.v1"
-        && observation.evaluationPolicyDigest !== policy.allowedBatchEvaluationPolicyDigest;
-      if (predatesPolicy || scopeWasRebound || batchPolicyWasReplaced) {
+      if (this.queueNeedsSupersededDisposition(record, policy)) {
         this.finishQueue(record, "policy_superseded_before_apply", now);
       }
     }
+  }
+
+  private queueNeedsSupersededDisposition(record: DailyNoteConsumerQueueRecordV1, policy: DailyNoteCanaryPolicy): boolean {
+    if (record.status !== "queued") return false;
+    let observation: DailyNoteObservation;
+    try { observation = this.readObservation(record); }
+    catch { return false; }
+    const sameRuntimePartition = observation.scope.workspaceId === policy.exactScope.workspaceId
+      && observation.scope.runtimeSessionKey === policy.exactScope.runtimeSessionKey;
+    const predatesPolicy = sameRuntimePartition && Date.parse(observation.completedAt) < Date.parse(policy.applyAfter);
+    const scopeWasRebound = sameRuntimePartition && !sameScope(observation.scope, policy.exactScope);
+    const batchPolicyWasReplaced = sameRuntimePartition
+      && observation.schema === "engram.memory-batch-observation.v1"
+      && observation.evaluationPolicyDigest !== policy.allowedBatchEvaluationPolicyDigest;
+    return predatesPolicy || scopeWasRebound || batchPolicyWasReplaced;
   }
 
   private recoverClaims(now: Date): void {

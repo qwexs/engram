@@ -8,7 +8,9 @@
   boundary remains idempotent and rejects identity drift. Exact-scope workers
   no longer block on another family session's pending batch, and consumer work
   made permanently ineligible by a replacement policy receives a terminal
-  disposition instead of remaining queued forever.
+  disposition instead of remaining queued forever. The batch scheduler now
+  discovers those nonterminal consumer records across replaced exact-scope
+  boundaries so the terminal reconciler is always reachable.
 
 - **fix(memory): bound semantic-defer replay and restore queue liveness.** A
   deferred batch gets one retry-neutral reconsideration window; replay of the

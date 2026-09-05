@@ -100,6 +100,19 @@ function admittedScope(value: any): ObservationScope | null {
   return scope;
 }
 
+function currentlyBoundScope(value: any): ObservationScope | null {
+  const runtimeSessionKey = value?.scope?.runtimeSessionKey;
+  if (typeof runtimeSessionKey !== "string") return null;
+  const binding = memoryObservationBinding(projection, runtimeSessionKey);
+  if (!binding) return null;
+  return {
+    workspaceId,
+    runtimeSessionKey,
+    scopeClass: binding.scopeClass,
+    scopeId: binding.scopeId,
+  };
+}
+
 function collectScopes(): ScopeCandidate[] {
   const candidates = new Map<string, ScopeCandidate>();
   const add = (scope: ObservationScope | null, firstAt: unknown) => {
@@ -118,6 +131,13 @@ function collectScopes(): ScopeCandidate[] {
       }
     }
   }
+  const dailyQueueDirectory = join(workspace, "memory-state", "memory-observation", "v1", "consumers", "daily-note", "queue");
+  const pendingDailyObservationIds = new Set(existsSync(dailyQueueDirectory)
+    ? readdirSync(dailyQueueDirectory).filter((entry) => entry.endsWith(".json"))
+      .map((name) => readJson(join(dailyQueueDirectory, name)))
+      .filter((value) => value?.status !== "terminal" && typeof value?.observationId === "string")
+      .map((value) => value.observationId)
+    : []);
   const observationDirectory = join(workspace, "memory-state", "memory-observation", "v1", "observations", "batch");
   if (existsSync(observationDirectory)) {
     for (const name of readdirSync(observationDirectory).filter((entry) => entry.endsWith(".json"))) {
@@ -125,6 +145,17 @@ function collectScopes(): ScopeCandidate[] {
       if (value?.evaluationPolicyDigest === projection.evaluation!.policyDigest
         && Date.parse(value?.completedAt) >= Date.parse(dailyNote.applyAfter)) {
         add(admittedScope(value), value.completedAt);
+      } else if (pendingDailyObservationIds.has(value?.observationId)) {
+        add(currentlyBoundScope(value), value.completedAt);
+      }
+    }
+  }
+  const typedObservationDirectory = join(workspace, "memory-state", "memory-observation", "v1", "observations", "typed");
+  if (existsSync(typedObservationDirectory) && pendingDailyObservationIds.size > 0) {
+    for (const name of readdirSync(typedObservationDirectory).filter((entry) => entry.endsWith(".json"))) {
+      const value = readJson(join(typedObservationDirectory, name));
+      if (pendingDailyObservationIds.has(value?.observationId)) {
+        add(currentlyBoundScope(value), value.completedAt);
       }
     }
   }

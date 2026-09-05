@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -243,6 +243,38 @@ describe("batch shadow campaign", () => {
 
       unlinkSync(join(setup.root, "observations/batch", `${String(observation.observationId).slice(7)}.json`));
       expect(() => snapshotBatchShadowCampaign(setup.config)).toThrow(BatchShadowCampaignError);
+    } finally {
+      rmSync(setup.root, { recursive: true, force: true });
+      rmSync(setup.store, { recursive: true, force: true });
+    }
+  });
+
+  test("retains provider measurement when semantic validation rejects a paid completion", async () => {
+    const setup = fixture();
+    try {
+      await expect(runBatchShadowCampaign(setup.config, {
+        complete: async () => ({
+          resolvedModel: "openai/gpt-5.6-terra",
+          usage: { inputTokens: 111, outputTokens: 22, cacheReadTokens: 33, cacheWriteTokens: 0 },
+          costUsd: 0.0042,
+          latencyMs: 1234,
+          output: "not-json",
+        }),
+      })).rejects.toThrow("strict JSON");
+
+      const attemptsRoot = join(setup.store, "memory-batch-shadow", "v1", "attempts");
+      const campaignDirectory = readdirSync(attemptsRoot)[0];
+      const terminal = JSON.parse(readFileSync(join(attemptsRoot, campaignDirectory, "000001.terminal.json"), "utf8"));
+      expect(terminal).toMatchObject({
+        schema: "engram.memory-batch-shadow-attempt-terminal.v2",
+        status: "failed",
+        errorCode: "INVALID_JSON",
+        providerMeasurement: {
+          usage: { inputTokens: 111, outputTokens: 22, cacheReadTokens: 33, cacheWriteTokens: 0 },
+          costUsd: 0.0042,
+          latencyMs: 1234,
+        },
+      });
     } finally {
       rmSync(setup.root, { recursive: true, force: true });
       rmSync(setup.store, { recursive: true, force: true });

@@ -507,6 +507,11 @@ export async function runBatchShadowCampaign(configValue: unknown, options: {
     let attemptIndex: number | null = null;
     let outputDigest: Digest | null = null;
     let requestDigest: Digest | null = null;
+    let providerMeasurement: {
+      usage: BatchShadowProviderResult["usage"] | null;
+      costUsd: number | null;
+      latencyMs: number | null;
+    } | null = null;
     try {
       const run = await runBatchShadow({
         bundle,
@@ -527,6 +532,11 @@ export async function runBatchShadowCampaign(configValue: unknown, options: {
           } as unknown as JsonValue);
           const completion = await provider(request);
           outputDigest = sha256(completion.output);
+          providerMeasurement = {
+            usage: completion.usage ?? null,
+            costUsd: completion.costUsd ?? null,
+            latencyMs: completion.latencyMs ?? null,
+          };
           return completion;
         },
       });
@@ -534,7 +544,7 @@ export async function runBatchShadowCampaign(configValue: unknown, options: {
       if (attemptIndex !== null) {
         const prefix = (attemptIndex as number).toString().padStart(6, "0");
         createOnlyJson(join(attemptDirectory(storeRoot, key), `${prefix}.terminal.json`), {
-          schema: "engram.memory-batch-shadow-attempt-terminal.v1",
+          schema: "engram.memory-batch-shadow-attempt-terminal.v2",
           campaignKey: key,
           attemptIndex,
           bundleId: bundle.bundleId,
@@ -542,6 +552,7 @@ export async function runBatchShadowCampaign(configValue: unknown, options: {
           outputDigest,
           status: "validated",
           errorCode: null,
+          providerMeasurement,
           terminalAt: new Date().toISOString(),
         } as unknown as JsonValue);
       }
@@ -552,7 +563,7 @@ export async function runBatchShadowCampaign(configValue: unknown, options: {
           ? error.code
           : error instanceof Error ? error.name : "UNKNOWN_ERROR";
         createOnlyJson(join(attemptDirectory(storeRoot, key), `${prefix}.terminal.json`), {
-          schema: "engram.memory-batch-shadow-attempt-terminal.v1",
+          schema: "engram.memory-batch-shadow-attempt-terminal.v2",
           campaignKey: key,
           attemptIndex,
           bundleId: bundle.bundleId,
@@ -560,6 +571,7 @@ export async function runBatchShadowCampaign(configValue: unknown, options: {
           outputDigest,
           status: "failed",
           errorCode,
+          providerMeasurement,
           terminalAt: new Date().toISOString(),
         } as unknown as JsonValue);
       }

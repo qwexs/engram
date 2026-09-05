@@ -286,6 +286,34 @@ describe("daily-note canary applicator", () => {
     expect(applicator.listQueue()).toHaveLength(0);
   });
 
+  test("terminalizes queued work that predates a replacement apply policy", async () => {
+    const root = workspace();
+    const value = batchObservation();
+    persistBatch(root, value);
+    const original = policy({
+      applyAfter: "2026-08-26T21:00:00.000Z",
+      allowedObservationClasses: ["episodic.event", "episodic.decision"],
+      allowedBatchEvaluationPolicyDigest: value.evaluationPolicyDigest,
+    });
+    const initial = new DailyNoteCanaryApplicator({ workspace: root, resolveActivePolicy: () => original });
+    expect(initial.reconcile(new Date("2026-08-26T21:32:00.000Z"))).toBe(1);
+
+    const replacement = policy({
+      applyAfter: "2026-08-27T00:00:00.000Z",
+      allowedObservationClasses: ["episodic.event", "episodic.decision"],
+      allowedBatchEvaluationPolicyDigest: sha256("replacement-batch-policy"),
+    });
+    const recovered = new DailyNoteCanaryApplicator({ workspace: root, resolveActivePolicy: () => replacement });
+    expect(await recovered.processOne(new Date("2026-08-27T00:01:00.000Z"))).toEqual({ status: "idle" });
+    expect(recovered.listQueue()).toContainEqual(expect.objectContaining({
+      observationId: value.observationId,
+      status: "terminal",
+      terminalAt: "2026-08-27T00:01:00.000Z",
+      reasonCode: "policy_superseded_before_apply",
+    }));
+    expect(existsSync(join(root, "memory"))).toBe(false);
+  });
+
   test("applies an admitted decision to Decisions with a typed receipt and idempotent replay", async () => {
     const root = workspace();
     const value = observation({

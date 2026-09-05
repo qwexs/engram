@@ -350,6 +350,7 @@ export type MemoryObservationPurgeResult = {
   consumerQueue: number;
   traces: number;
   receipts: number;
+  preAdmission: number;
 };
 
 function lifecycleJson(path: string): Record<string, any> | null {
@@ -386,7 +387,7 @@ function withLifecycleLock<T>(root: string, operation: () => T): T {
 /** Purges only bounded v1 sidecars; corrupt records and canonical memory/KG are retained. */
 export function purgeMemoryObservationLifecycle(workspace: string, now = new Date()): MemoryObservationPurgeResult {
   const root = join(resolve(workspace), ...ROOT_SEGMENTS);
-  const result: MemoryObservationPurgeResult = { evidence: 0, transportLinks: 0, envelopes: 0, observations: 0, evaluatorQueue: 0, consumerQueue: 0, traces: 0, receipts: 0 };
+  const result: MemoryObservationPurgeResult = { evidence: 0, transportLinks: 0, envelopes: 0, observations: 0, evaluatorQueue: 0, consumerQueue: 0, traces: 0, receipts: 0, preAdmission: 0 };
   if (!existsSync(root)) return result;
   return withLifecycleLock(root, () => {
     const cutoff30 = now.getTime() - OBSERVATION_RETENTION_MS;
@@ -420,6 +421,17 @@ export function purgeMemoryObservationLifecycle(workspace: string, now = new Dat
     };
     purgeExpiresAt(join(root, "evidence"), "evidence");
     purgeExpiresAt(join(root, "transport-links"), "transportLinks");
+    const preAdmissionDir = join(root, "pre-admission");
+    let preAdmissionChanged = false;
+    if (existsSync(preAdmissionDir)) for (const name of readdirSync(preAdmissionDir).filter((value) => value.endsWith(".json"))) {
+      const path = join(preAdmissionDir, name);
+      const record = lifecycleJson(path);
+      const completed = record?.status === "admitted"
+        ? isExpired(record.admittedAt, cutoff30)
+        : record?.status === "terminal" && isExpired(record.terminalAt, cutoff30);
+      if (completed) { unlinkSync(path); result.preAdmission++; preAdmissionChanged = true; }
+    }
+    if (preAdmissionChanged) flushDirectory(preAdmissionDir);
     const envelopeDir = join(root, "envelopes");
     let envelopesChanged = false;
     if (existsSync(envelopeDir)) for (const name of readdirSync(envelopeDir).filter((value) => value.endsWith(".json"))) {

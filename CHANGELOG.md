@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **fix(memory): make admission and family-batch recovery crash-complete.**
+  Completed runtime turns are durably spooled before ledger admission and
+  reconciled on plugin startup; replay after either side of the admission
+  boundary remains idempotent and rejects identity drift. Exact-scope workers
+  no longer block on another family session's pending batch, and consumer work
+  made permanently ineligible by a replacement policy receives a terminal
+  disposition instead of remaining queued forever.
+
 - **fix(memory): bound semantic-defer replay and restore queue liveness.** A
   deferred batch gets one retry-neutral reconsideration window; replay of the
   unchanged immutable result then records terminal per-source traces instead

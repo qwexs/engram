@@ -141,11 +141,11 @@ function setup() {
   return { workspace, ledger, policy };
 }
 
-function admit(ledger: MemoryObservationLedger, index: number, completedAt: string): void {
+function admit(ledger: MemoryObservationLedger, index: number, completedAt: string, sourceScope: ObservationScope = SCOPE): void {
   const sourceTurnId = `channel-user:v1:${index.toString(16).padStart(64, "0")}`;
   const source: TrustedCompletedTurn = {
     sourceTurnId,
-    scope: SCOPE,
+    scope: sourceScope,
     sourceCompletedAt: completedAt,
     authority: RUNTIME,
     evidenceRefs: [{ kind: "source-turn", ref: sourceTurnId, digest: sha256(`evidence-${index}`) }],
@@ -159,6 +159,66 @@ function admit(ledger: MemoryObservationLedger, index: number, completedAt: stri
 }
 
 describe("durable live micro-batch worker", () => {
+  test("selects pending jobs by exact scope instead of blocking another family session", async () => {
+    const { workspace, ledger, policy } = setup();
+    const topicScope: ObservationScope = {
+      workspaceId: "main",
+      runtimeSessionKey: "agent:main:telegram:group:-100123:topic:7",
+      scopeClass: "self",
+      scopeId: "workspace:main",
+    };
+    const topicLedger = new MemoryObservationLedger({
+      workspace,
+      workspaceId: "main",
+      exactSessionKeys: [topicScope.runtimeSessionKey],
+      producerRegistry: REGISTRY,
+      authorityPolicy: AUTHORITY,
+      limits: {
+        evidenceTtlMs: 72 * 60 * 60 * 1_000,
+        maxJobs: 100,
+        maxBytes: 10_000_000,
+        maxQueueAgeMs: 7 * 24 * 60 * 60 * 1_000,
+        maxAttempts: 2,
+        claimTtlMs: 300_000,
+        maxInferenceCalls: 1,
+      },
+      evaluatorEnabled: true,
+      evaluationStartedAt: "2026-08-31T20:00:00.000Z",
+    });
+    const topicPolicy = { ...policy, exactScope: topicScope };
+    const storeRoot = join(workspace, "state");
+    const now = () => new Date("2026-08-31T20:20:00.000Z");
+    const complete = async (request: any) => {
+      const sources = JSON.parse(request.prompt).task.sources;
+      return {
+        resolvedModel: "openai/gpt-5.6-terra",
+        output: JSON.stringify({
+          schema: "engram.memory-batch-shadow-output.v1",
+          groups: [{
+            groupId: "skip-case",
+            decision: "skip",
+            sourceRefs: sources.map((entry: any) => entry.sourceRef.traceId),
+            reason: "not_durable",
+          }],
+        }),
+      };
+    };
+
+    admit(topicLedger, 70, "2026-08-31T20:01:00.000Z", topicScope);
+    let stopped = false;
+    const topicCreator = new BatchLiveWorker({
+      workspace, ledger: topicLedger, policy: topicPolicy, storeRoot, complete, now,
+      fault: (point) => { if (!stopped && point === "after_job") { stopped = true; throw new Error("fault:topic-job"); } },
+    });
+    await expect(topicCreator.processOne()).rejects.toThrow("fault:topic-job");
+
+    admit(ledger, 71, "2026-08-31T20:02:00.000Z");
+    const directWorker = new BatchLiveWorker({ workspace, ledger, policy, storeRoot, complete, now });
+    expect((await directWorker.processOne()).status).toBe("completed");
+    expect((await new BatchLiveWorker({ workspace, ledger: topicLedger, policy: topicPolicy, storeRoot, complete, now }).processOne()).status)
+      .toBe("completed");
+  });
+
   test("re-authorizes pending jobs against current observation and terminal-trace policy", async () => {
     for (const artifactSchema of ["engram.memory-batch-observation.v1", "engram.memory-trace-event.v1"]) {
       const { workspace, ledger, policy } = setup();

@@ -2,8 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { MemoryObservationLedger, sha256, type TrustedCompletedTurn } from "./ledger.ts";
-import { OpenClawObservationRuntimeAdapter, observationRuntimeAdapterError, type RuntimeObservationBinding } from "./runtime-adapter.ts";
+import { MemoryObservationLedger, purgeMemoryObservationLifecycle, sha256, type TrustedCompletedTurn } from "./ledger.ts";
+import {
+  OpenClawObservationRuntimeAdapter,
+  observationRuntimeAdapterError,
+  type RuntimeAdapterFaultPoint,
+  type RuntimeObservationBinding,
+} from "./runtime-adapter.ts";
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -70,6 +75,8 @@ function adapter(options: {
   binding?: RuntimeObservationBinding | null;
   now?: () => Date;
   admitted?: TrustedCompletedTurn[];
+  spoolRoot?: string;
+  fault?: (point: RuntimeAdapterFaultPoint) => void;
 } = {}) {
   const admitted = options.admitted ?? [];
   const binding = options.binding === undefined ? {
@@ -84,6 +91,8 @@ function adapter(options: {
     authority: { id: authority.id, version: authority.version, digest: authority.digest },
     resolveBinding: (key) => key === sessionKey ? binding : null,
     now: options.now ?? (() => new Date("2026-08-24T19:35:00.000Z")),
+    ...(options.spoolRoot ? { spoolRoot: options.spoolRoot } : {}),
+    ...(options.fault ? { fault: options.fault } : {}),
   });
 }
 
@@ -104,6 +113,71 @@ function attach(adapterValue: OpenClawObservationRuntimeAdapter) {
 }
 
 describe("OpenClaw PR2 runtime adapter", () => {
+  test("recovers a completed source across crashes on both sides of ledger admission", () => {
+    for (const faultPoint of ["after_completed_spool", "after_admission"] as const) {
+      const root = workspace();
+      const store = ledger(root);
+      const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+      const binding: RuntimeObservationBinding = {
+        workspaceId: "fixture-main",
+        scopeClass: "self",
+        scopeId: "telegram:100000001",
+        requireOwner: true,
+        allowedChannels: ["telegram"],
+        admit: (source, now) => store.admit(source, now),
+      };
+      let injected = false;
+      const crashing = adapter({
+        binding,
+        spoolRoot,
+        fault: (point) => {
+          if (!injected && point === faultPoint) { injected = true; throw new Error(`fault:${faultPoint}`); }
+        },
+      });
+      expect(() => complete(crashing)).toThrow(`fault:${faultPoint}`);
+      expect(crashing.listSpool()).toContainEqual(expect.objectContaining({ status: "completed", sourceTurnId }));
+
+      const recovered = adapter({ binding, spoolRoot });
+      expect(recovered.reconcileCompleted()).toEqual({ admitted: 1, retained: 0, terminal: 0 });
+      expect(store.listQueue()).toHaveLength(1);
+      expect(recovered.listSpool()).toContainEqual(expect.objectContaining({
+        status: "admitted",
+        sourceTurnId,
+        reasonCode: "ledger_admitted_after_recovery",
+      }));
+      expect(recovered.reconcileCompleted()).toEqual({ admitted: 0, retained: 0, terminal: 0 });
+    }
+  });
+
+  test("rejects the same durable source identity with different completed content", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "pre-admission");
+    const first = adapter({ spoolRoot, fault: (point) => {
+      if (point === "after_completed_spool") throw new Error("fault:after_completed_spool");
+    } });
+    expect(() => complete(first)).toThrow("fault:after_completed_spool");
+
+    const conflicting = adapter({ spoolRoot });
+    const fixture = attach(conflicting);
+    expect(() => conflicting.completeAgentEnd({
+      ...fixture.endEvent,
+      messages: fixture.endEvent.messages.map((message) => message.role === "assistant"
+        ? { ...message, content: "Different terminal content" }
+        : message),
+    }, fixture.runContext)).toThrow("different durable admission content");
+    expect(conflicting.listSpool()).toContainEqual(expect.objectContaining({ status: "completed", sourceTurnId }));
+  });
+
+  test("retains incomplete recovery work and purges only old terminal spool records", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    const completed = adapter({ spoolRoot });
+    expect(complete(completed).status).toBe("admitted");
+    expect(completed.listSpool()).toHaveLength(1);
+    expect(purgeMemoryObservationLifecycle(root, new Date("2026-09-24T19:35:00.001Z"))).toMatchObject({ preAdmission: 1 });
+    expect(completed.listSpool()).toHaveLength(0);
+  });
+
   test("converts only the trusted four-hook chain into one neutral completed turn", () => {
     const admitted: TrustedCompletedTurn[] = [];
     const runtime = adapter({ admitted });

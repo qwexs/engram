@@ -389,6 +389,7 @@ export class DailyNoteCanaryApplicator {
     if (!this.acquireLease(leaseToken, now)) return { status: "busy" };
     let claimed: DailyNoteConsumerQueueRecordV1 | null = null;
     try {
+      this.reconcileSuperseded(policy, now);
       claimed = this.claimNext(policy, now);
       if (!claimed) return { status: "idle" };
       this.fault?.("after_claim");
@@ -649,6 +650,25 @@ export class DailyNoteCanaryApplicator {
         && allowsObservationPolicy(policy, observation);
     } catch {
       return false;
+    }
+  }
+
+  private reconcileSuperseded(policy: DailyNoteCanaryPolicy, now: Date): void {
+    for (const record of this.listQueue()) {
+      if (record.status !== "queued") continue;
+      let observation: DailyNoteObservation;
+      try { observation = this.readObservation(record); }
+      catch { continue; }
+      const sameRuntimePartition = observation.scope.workspaceId === policy.exactScope.workspaceId
+        && observation.scope.runtimeSessionKey === policy.exactScope.runtimeSessionKey;
+      const predatesPolicy = Date.parse(observation.completedAt) < Date.parse(policy.applyAfter);
+      const scopeWasRebound = sameRuntimePartition && !sameScope(observation.scope, policy.exactScope);
+      const batchPolicyWasReplaced = sameRuntimePartition
+        && observation.schema === "engram.memory-batch-observation.v1"
+        && observation.evaluationPolicyDigest !== policy.allowedBatchEvaluationPolicyDigest;
+      if (predatesPolicy || scopeWasRebound || batchPolicyWasReplaced) {
+        this.finishQueue(record, "policy_superseded_before_apply", now);
+      }
     }
   }
 

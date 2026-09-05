@@ -1,4 +1,17 @@
-import type { ProducerRef, TrustedCompletedTurn } from "./ledger.ts";
+import { randomUUID } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import type { JsonValue, ProducerRef, TrustedCompletedTurn } from "./ledger.ts";
 import { ObservationLedgerError, sha256 } from "./ledger.ts";
 import { MAX_REPLY_CONTEXT_PAIRS, type ReplyContextResult } from "./reply-context.ts";
 
@@ -41,6 +54,31 @@ export type RuntimeAdapterResult =
   | { status: "ignored"; reason: string }
   | { status: "captured" | "adopted" | "attached" | "duplicate"; sourceTurnId?: string }
   | { status: "admitted"; sourceTurnId: string; result: unknown };
+
+export const RUNTIME_ADMISSION_SPOOL_SCHEMA = "engram.memory-runtime-admission-spool.v1" as const;
+
+export type RuntimeAdmissionSpoolRecordV1 = {
+  schema: typeof RUNTIME_ADMISSION_SPOOL_SCHEMA;
+  sourceTurnId: string;
+  runtimeSessionKey: string;
+  bindingFingerprint: string;
+  source: TrustedCompletedTurn;
+  transport: {
+    channel: "telegram" | "openclaw";
+    inboundMessageId: string;
+    parentMessageId?: string;
+    deliveryMessageId?: string;
+  };
+  payloadDigest: string;
+  status: "completed" | "admitted" | "terminal";
+  createdAt: string;
+  updatedAt: string;
+  admittedAt: string | null;
+  terminalAt: string | null;
+  reasonCode: string | null;
+};
+
+export type RuntimeAdapterFaultPoint = "after_completed_spool" | "after_admission";
 
 type PendingTurn = {
   runtimeSessionKey: string;
@@ -150,21 +188,31 @@ function timestamp(value: unknown, fallback: number): number {
   return value < 10_000_000_000 ? value * 1_000 : value;
 }
 
+function flushDirectory(path: string): void {
+  if (process.platform === "win32") return;
+  const descriptor = openSync(path, "r");
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
 export class OpenClawObservationRuntimeAdapter {
   private readonly pending = new Map<string, PendingTurn>();
   private readonly adopted = new Map<string, AdoptedTurn>();
   private readonly runs = new Map<string, BoundRun>();
   private readonly completed = new Map<string, CompletedRun>();
+  private readonly spoolRoot: string | null;
 
   constructor(private readonly options: {
     authority: ProducerRef;
     resolveBinding: (runtimeSessionKey: string) => RuntimeObservationBinding | null;
     now?: () => Date;
     stateTtlMs?: number;
+    spoolRoot?: string;
+    fault?: (point: RuntimeAdapterFaultPoint) => void;
   }) {
     if (options.stateTtlMs !== undefined && (!Number.isInteger(options.stateTtlMs) || options.stateTtlMs < 1)) {
       throw new RuntimeAdapterError("INVALID_CONFIG", "runtime adapter state TTL is invalid");
     }
+    this.spoolRoot = options.spoolRoot ? resolve(options.spoolRoot) : null;
   }
 
   captureMessageReceived(eventValue: unknown, contextValue: unknown): RuntimeAdapterResult {
@@ -411,6 +459,29 @@ export class OpenClawObservationRuntimeAdapter {
     return { pending: this.pending.size, adopted: this.adopted.size, runs: this.runs.size };
   }
 
+  reconcileCompleted(now = this.now()): { admitted: number; retained: number; terminal: number } {
+    const result = { admitted: 0, retained: 0, terminal: 0 };
+    for (const record of this.listSpool().filter((entry) => entry.status === "completed")) {
+      const binding = this.options.resolveBinding(record.runtimeSessionKey);
+      if (!binding) { result.retained++; continue; }
+      if (this.bindingFingerprint(binding) !== record.bindingFingerprint) {
+        this.finishSpool(record, "terminal", now, "scope_revoked_before_admission");
+        result.terminal++;
+        continue;
+      }
+      binding.admit(record.source, new Date(record.source.sourceCompletedAt), record.transport);
+      this.finishSpool(record, "admitted", now, "ledger_admitted_after_recovery");
+      result.admitted++;
+    }
+    return result;
+  }
+
+  listSpool(): RuntimeAdmissionSpoolRecordV1[] {
+    if (!this.spoolRoot || !existsSync(this.spoolRoot)) return [];
+    return readdirSync(this.spoolRoot).filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).sort()
+      .map((name) => this.readSpool(join(this.spoolRoot!, name)));
+  }
+
   private now(): Date { return this.options.now?.() ?? new Date(); }
   private stateTtlMs(): number { return this.options.stateTtlMs ?? 30 * 60 * 1_000; }
 
@@ -490,16 +561,112 @@ export class OpenClawObservationRuntimeAdapter {
         "source-completion-time",
       ],
     };
+    const transport = {
+      channel: params.bound.channel,
+      inboundMessageId: params.bound.messageId,
+      ...(params.bound.replyToId ? { parentMessageId: params.bound.replyToId } : {}),
+      ...(params.deliveryMessageId ? { deliveryMessageId: params.deliveryMessageId } : {}),
+    };
+    const spool = this.persistCompletedSpool(source, params.bound.bindingFingerprint, transport, params.now);
+    this.options.fault?.("after_completed_spool");
+    const result = params.binding.admit(source, params.now, transport);
+    this.options.fault?.("after_admission");
+    if (spool) this.finishSpool(spool, "admitted", params.now, "ledger_admitted");
     return {
       status: "admitted",
       sourceTurnId: params.bound.sourceTurnId,
-      result: params.binding.admit(source, params.now, {
-        channel: params.bound.channel,
-        inboundMessageId: params.bound.messageId,
-        ...(params.bound.replyToId ? { parentMessageId: params.bound.replyToId } : {}),
-        ...(params.deliveryMessageId ? { deliveryMessageId: params.deliveryMessageId } : {}),
-      }),
+      result,
     };
+  }
+
+  private persistCompletedSpool(
+    source: TrustedCompletedTurn,
+    bindingFingerprint: string,
+    transport: RuntimeAdmissionSpoolRecordV1["transport"],
+    now: Date,
+  ): RuntimeAdmissionSpoolRecordV1 | null {
+    if (!this.spoolRoot) return null;
+    const payloadDigest = sha256({ source, transport, bindingFingerprint } as unknown as JsonValue);
+    const path = this.spoolPath(source.sourceTurnId);
+    if (existsSync(path)) {
+      const current = this.readSpool(path);
+      if (current.sourceTurnId !== source.sourceTurnId || current.payloadDigest !== payloadDigest) {
+        throw new RuntimeAdapterError("IDENTITY_CONFLICT", "completed source identity has different durable admission content");
+      }
+      if (current.status === "terminal") {
+        throw new RuntimeAdapterError("SCOPE_REVOKED", "durable completed source already has a terminal disposition");
+      }
+      return current;
+    }
+    const record: RuntimeAdmissionSpoolRecordV1 = {
+      schema: RUNTIME_ADMISSION_SPOOL_SCHEMA,
+      sourceTurnId: source.sourceTurnId,
+      runtimeSessionKey: source.scope.runtimeSessionKey,
+      bindingFingerprint,
+      source,
+      transport,
+      payloadDigest,
+      status: "completed",
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      admittedAt: null,
+      terminalAt: null,
+      reasonCode: null,
+    };
+    this.writeSpool(path, record);
+    return record;
+  }
+
+  private finishSpool(
+    record: RuntimeAdmissionSpoolRecordV1,
+    status: "admitted" | "terminal",
+    now: Date,
+    reasonCode: string,
+  ): void {
+    if (!this.spoolRoot) return;
+    const next: RuntimeAdmissionSpoolRecordV1 = {
+      ...record,
+      status,
+      updatedAt: now.toISOString(),
+      admittedAt: status === "admitted" ? now.toISOString() : null,
+      terminalAt: status === "terminal" ? now.toISOString() : null,
+      reasonCode,
+    };
+    this.writeSpool(this.spoolPath(record.sourceTurnId), next);
+  }
+
+  private spoolPath(sourceTurnId: string): string {
+    if (!this.spoolRoot || !/^channel-user:v1:[a-f0-9]{64}$/.test(sourceTurnId)) {
+      throw new RuntimeAdapterError("INVALID_TURN", "durable source identity is invalid");
+    }
+    return join(this.spoolRoot, `${sourceTurnId.slice(-64)}.json`);
+  }
+
+  private readSpool(path: string): RuntimeAdmissionSpoolRecordV1 {
+    let record: RuntimeAdmissionSpoolRecordV1;
+    try { record = JSON.parse(readFileSync(path, "utf8")) as RuntimeAdmissionSpoolRecordV1; }
+    catch { throw new RuntimeAdapterError("STATE_CORRUPT", "durable admission spool is unreadable"); }
+    if (record.schema !== RUNTIME_ADMISSION_SPOOL_SCHEMA
+      || !/^channel-user:v1:[a-f0-9]{64}$/.test(record.sourceTurnId)
+      || record.runtimeSessionKey !== record.source?.scope?.runtimeSessionKey
+      || record.payloadDigest !== sha256({
+        source: record.source,
+        transport: record.transport,
+        bindingFingerprint: record.bindingFingerprint,
+      } as unknown as JsonValue)) {
+      throw new RuntimeAdapterError("STATE_CORRUPT", "durable admission spool failed validation");
+    }
+    return record;
+  }
+
+  private writeSpool(path: string, record: RuntimeAdmissionSpoolRecordV1): void {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const temp = `${path}.tmp-${process.pid}-${randomUUID()}`;
+    const descriptor = openSync(temp, "wx", 0o600);
+    try { writeFileSync(descriptor, `${JSON.stringify(record, null, 2)}\n`, "utf8"); fsyncSync(descriptor); }
+    finally { closeSync(descriptor); }
+    renameSync(temp, path);
+    flushDirectory(dirname(path));
   }
 
   private bindingFingerprint(binding: RuntimeObservationBinding): string {

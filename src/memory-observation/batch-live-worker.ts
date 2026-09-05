@@ -410,7 +410,7 @@ export class BatchLiveWorker {
       return { status: "busy" };
     }
     try {
-      const pending = this.pendingJob();
+      const pending = this.pendingJob(this.options.policy);
       let job = pending;
       if (job) {
         const queueByTrace = new Map(this.options.ledger.listQueue().map((record) => [record.traceId, record]));
@@ -605,13 +605,15 @@ export class BatchLiveWorker {
     }
   }
 
-  private pendingJob(): BatchLiveJobV1 | null {
+  private pendingJob(policy: BatchLivePolicyV1): BatchLiveJobV1 | null {
     const directory = join(this.root, "jobs");
     if (!existsSync(directory)) return null;
     const jobs = readdirSync(directory).filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).sort();
     for (const name of jobs) {
       const job = readJson<BatchLiveJobV1>(join(directory, name));
-      if (!existsSync(this.donePath(job.jobId))) return job;
+      if (!existsSync(this.donePath(job.jobId))
+        && job.evaluationPolicyDigest === policy.evaluationPolicyDigest
+        && sameScope(scopeFromPartition(job.partition), policy.exactScope)) return job;
     }
     return null;
   }

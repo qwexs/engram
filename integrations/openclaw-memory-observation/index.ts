@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/core";
@@ -256,10 +256,37 @@ function adapterFor(api: any, runtimeSessionKey: string): OpenClawObservationRun
     adapter = new OpenClawObservationRuntimeAdapter({
       authority: RUNTIME_AUTHORITY,
       resolveBinding: (key) => bindingFor(api, active, key),
+      spoolRoot: join(active.workspace, "memory-state", "memory-observation", "v1", "pre-admission"),
     });
     adapters.set(key, adapter);
   }
   return adapter;
+}
+
+function reconcileConfiguredSpools(api: any): void {
+  const runtimeSessionKeys = new Set<string>();
+  for (const workspace of configuredWorkspaces(api)) {
+    const directory = join(workspace, "memory-state", "memory-observation", "v1", "pre-admission");
+    if (!existsSync(directory)) continue;
+    for (const name of readdirSync(directory).filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry))) {
+      try {
+        const runtimeSessionKey = readJson(join(directory, name))?.runtimeSessionKey;
+        if (typeof runtimeSessionKey === "string" && runtimeSessionKey) runtimeSessionKeys.add(runtimeSessionKey);
+      } catch (error) {
+        api.logger.warn?.(`engram-memory-observation: admission spool scan failed ${String(error)}`);
+      }
+    }
+  }
+  for (const runtimeSessionKey of runtimeSessionKeys) {
+    try {
+      const result = adapterFor(api, runtimeSessionKey)?.reconcileCompleted();
+      if (result && (result.admitted > 0 || result.retained > 0 || result.terminal > 0)) {
+        api.logger.info?.(`engram-memory-observation: admission reconciliation ${JSON.stringify(result)}`);
+      }
+    } catch (error) {
+      api.logger.warn?.(`engram-memory-observation: admission reconciliation failed ${String(error)}`);
+    }
+  }
 }
 
 function supportedChannel(event: any, context: any): "telegram" | "openclaw" | null {
@@ -464,6 +491,7 @@ export default definePluginEntry({
       id: "engram-memory-observation-evaluator",
       start: () => {
         purgeConfiguredWorkspaces(api);
+        reconcileConfiguredSpools(api);
         if (lifecycleTimer) clearInterval(lifecycleTimer);
         lifecycleTimer = setInterval(() => purgeConfiguredWorkspaces(api), LIFECYCLE_INTERVAL_MS);
         lifecycleTimer.unref?.();

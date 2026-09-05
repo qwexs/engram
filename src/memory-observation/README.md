@@ -68,6 +68,9 @@ write still retains its exact runtime session scope.
 - exact-session QMD dirty handoff with durable retry; family canaries require
   a pinned registry-slice resolver that maps each exact runtime session to
   exactly one owned/readable `*.md` collection and rejects every fallback;
+- immutable content-free index handoffs bound to the apply receipt and dirty
+  generation after rereading both durable predecessors, plus coordinator reconciliation that emits `canonical_indexed`
+  only after completed update+embed and exact SQLite entry/digest read-back;
 - read-only Recall Authority compilation for immediate and multi-assertion
   batch receipts;
 - receipt-joined Decision-to-OLL admission gated by exact producer, scope,
@@ -81,7 +84,34 @@ write still retains its exact runtime session scope.
 - fleet activation or cross-agent/workspace bindings;
 - discovery of host-persisted turns for which `message_received` never reached
   the plugin; bounded public transcript-SDK recovery remains report-only work
-  tracked below.
+  tracked below;
+- live `retrieved` or `utilized` emission: the installed OpenClaw surfaces
+  expose neither a durable exact ranked-result artifact nor an authoritative
+  list of selected memory references. Model self-report, caller-supplied ranks,
+  opaque operation digests, and prompt-text inference are rejected as proof.
+
+## Index, retrieval, and utilization provenance status
+
+The source path is implemented as
+`canonical_applied → memory-index-handoff → canonical_indexed`. The daily-note
+applicator seals the exact apply receipt, QMD binding, and dirty generation.
+The global coordinator may seal `qmd.index-generation.v1` only when both
+maintenance phases cover that generation and the physical index contains the
+exact collection/root/document anchor with the canonical digest.
+After a physical-index rotation, the new index must additionally contain the
+exact vector row; generation counters from different indexes are not compared.
+Older apply receipts and handoffs remain retained while a newer dependent is
+inside the 180-day audit window. Any reconciliation failure makes the
+coordinator process fail for scheduler alerting.
+
+The contract pack defines content-free retrieval and utilization receipt shapes,
+but deliberately registers no producer, authority rule, consumer admission, or
+writer. A future retrieval
+adapter must read a durable QMD operation/result artifact and verify the exact
+ranked hit; a future utilization adapter must receive host-owned final-selection
+metadata. Therefore `canonical_indexed` is coordinator-capable, while
+`retrieved` and `utilized` are schema-only—not enabled or observed. No rollout
+claim may collapse those states.
 
 Observer-authored Decisions are anchored and receipt-backed. The OLL bridge
 accepts only explicitly allowlisted batch Decisions whose receipt, source

@@ -13,6 +13,7 @@ import {
   DailyNoteCanaryApplicator,
   type DailyNoteCanaryPolicy,
 } from "../src/memory-observation/daily-note-applicator.ts";
+import { qmdMaintenancePaths } from "../src/qmd/maintenance.ts";
 import {
   deriveObservationId,
   deriveSourceDigest,
@@ -343,15 +344,24 @@ async function fixture(): Promise<{ root: string; frame: RecallCaptureFrame }> {
   const applicator = new DailyNoteCanaryApplicator({
     workspace: root,
     resolveActivePolicy: () => policy,
-    dirtyMarker: async () => ({
-      schema: "engram.qmd.dirty-mark.v1",
-      status: "marked",
-      mode: "coordinated",
-      workspace: root,
-      indexKey: "named:test",
-      generation: 1,
-      collections: ["main-direct-memory"],
-    }),
+    dirtyMarker: async (input) => {
+      const indexKey = "a".repeat(64);
+      const stateRoot = join(root, "qmd-maintenance");
+      const markedAt = "2026-08-29T09:49:00.000Z";
+      const statePath = qmdMaintenancePaths(stateRoot, indexKey).state;
+      mkdirSync(dirname(statePath), { recursive: true });
+      writeFileSync(statePath, `${JSON.stringify({
+        schema: "engram.qmd.maintenance-state.v1", indexKey, generation: 1,
+        updateCompletedGeneration: 0, embedCompletedGeneration: 0,
+        dirty: { bm25: true, vectors: true, collections: ["main-direct-memory"], reasons: [{ generation: 1, reason: input.reason, markedAt }] },
+        lastUpdateAt: null, lastEmbedAt: null, lastError: null,
+      }, null, 2)}\n`);
+      return {
+        schema: "engram.qmd.dirty-mark.v1", status: "marked", mode: "coordinated", workspace: root,
+        indexKey, generation: 1, collections: ["main-direct-memory"], stateRoot,
+        reason: input.reason, markedAt,
+      };
+    },
   });
   for (let index = 0; index < 20; index++) {
     expect((await applicator.processOne(new Date("2026-08-29T09:50:00.000Z"))).status).toBe("applied");

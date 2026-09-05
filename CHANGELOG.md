@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **feat(memory): add source-specific QMD index and recall provenance.**
+  A successful canonical apply now publishes an immutable, content-free index
+  handoff after the exact dirty generation. The global maintenance coordinator
+  reconciles those handoffs only after update and embed have completed the
+  generation and an exact SQLite read-back matches collection root, entry
+  anchor, and canonical digest; it then emits `qmd.index-generation.v1` and a
+  `canonical_indexed` trace. Handoff publication rereads both the immutable
+  apply receipt and the durable maintenance reason/generation; a same-root
+  physical-index or collection-name rotation can be proven only by a unique
+  same-root document read-back plus the exact vector row under the current
+  registry allowlist, not by comparing unrelated generation counters. Apply
+  receipts and handoffs remain retained while a newer dependent provenance
+  artifact is inside its audit window. Coordinator provenance failures return
+  a failing process status. New retrieval and utilization schemas
+  reserve the content-free joins needed downstream, but deliberately ship no
+  emitter: the installed OpenClaw hook surface exposes neither an authoritative
+  QMD ranked-result artifact nor the final selected memory references. Those
+  content-free shapes have no registered producer, authority rule, consumer
+  admission, or writer until reviewed host adapters supply those durable
+  predecessors.
+
 - **fix(memory): resolve family QMD handoff by exact runtime session.**
   A v3 family canary must now pin its workspace registry slice and resolve each
   concrete runtime session to exactly one owned/readable `*.md` collection.

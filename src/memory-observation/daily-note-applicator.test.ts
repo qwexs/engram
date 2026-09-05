@@ -22,6 +22,8 @@ import {
   type BatchObservationV1,
 } from "./batch-observation.ts";
 import type { WorkspaceDirtyMarkResult } from "../qmd/maintenance-integration.ts";
+import { readIndexHandoff } from "../qmd/index-provenance.ts";
+import { qmdMaintenancePaths } from "../qmd/maintenance.ts";
 
 const roots: string[] = [];
 const contractSchema = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "schemas", "memory-observation-contracts-v1.schema.json"), "utf8"));
@@ -29,6 +31,7 @@ const ajv = new Ajv2020({ strict: true });
 addFormats(ajv);
 ajv.addSchema(contractSchema);
 const validateReceipt = ajv.getSchema(`${contractSchema.$id}#/$defs/applyReceipt`)!;
+const validateTraceEvent = ajv.getSchema(`${contractSchema.$id}#/$defs/traceEvent`)!;
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 function workspace(): string {
@@ -152,15 +155,29 @@ function count(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-function marked(root: string): WorkspaceDirtyMarkResult {
+function marked(root: string, reason: string, collections = ["main-direct-memory"]): WorkspaceDirtyMarkResult {
+  const indexKey = "f".repeat(64);
+  const stateRoot = join(root, "qmd-maintenance");
+  const markedAt = "2026-08-26T21:31:30.000Z";
+  const statePath = qmdMaintenancePaths(stateRoot, indexKey).state;
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileSync(statePath, `${JSON.stringify({
+    schema: "engram.qmd.maintenance-state.v1", indexKey, generation: 1,
+    updateCompletedGeneration: 0, embedCompletedGeneration: 0,
+    dirty: { bm25: true, vectors: true, collections, reasons: [{ generation: 1, reason, markedAt }] },
+    lastUpdateAt: null, lastEmbedAt: null, lastError: null,
+  }, null, 2)}\n`);
   return {
     schema: "engram.qmd.dirty-mark.v1",
     status: "marked",
     mode: "coordinated",
     workspace: root,
-    indexKey: "f".repeat(64),
+    indexKey,
     generation: 1,
-    collections: ["main-direct-memory"],
+    collections,
+    stateRoot,
+    reason,
+    markedAt,
   };
 }
 
@@ -183,8 +200,9 @@ describe("daily-note canary applicator", () => {
     expect(applicator.listQueue()[0]?.reasonCode).toBe("canonical_applied");
     const traces = readdirSync(join(root, "memory-state", "memory-observation", "v1", "traces", value.traceId.slice(7)));
     expect(traces.length).toBe(1);
-    expect(readFileSync(join(root, "memory-state", "memory-observation", "v1", "traces", value.traceId.slice(7), traces[0]!), "utf8"))
-      .toContain('"stage": "canonical_applied"');
+    const trace = JSON.parse(readFileSync(join(root, "memory-state", "memory-observation", "v1", "traces", value.traceId.slice(7), traces[0]!), "utf8"));
+    expect(trace.stage).toBe("canonical_applied");
+    expect(validateTraceEvent(trace)).toBe(true);
   });
 
   test("recovers after every post-mutation crash without duplicating the Markdown entry", async () => {
@@ -407,7 +425,7 @@ describe("daily-note canary applicator", () => {
     const first = new DailyNoteCanaryApplicator({
       workspace: root,
       resolveActivePolicy: () => policy({ qmdBinding: { collection: "main-direct-memory" } }),
-      dirtyMarker: async (input) => { calls.push(input); return marked(root); },
+      dirtyMarker: async (input) => { calls.push(input); return marked(root, input.reason); },
       fault: (point) => {
         if (!faulted && point === "after_dirty_mark") { faulted = true; throw new Error("crash-after-dirty"); }
       },
@@ -417,7 +435,7 @@ describe("daily-note canary applicator", () => {
     const resumed = new DailyNoteCanaryApplicator({
       workspace: root,
       resolveActivePolicy: () => policy({ qmdBinding: { collection: "main-direct-memory" } }),
-      dirtyMarker: async (input) => { calls.push(input); return marked(root); },
+      dirtyMarker: async (input) => { calls.push(input); return marked(root, input.reason); },
     });
     expect((await resumed.processOne(new Date("2026-08-26T21:33:00.000Z"))).status).toBe("duplicate");
     expect(calls).toHaveLength(2);
@@ -425,6 +443,33 @@ describe("daily-note canary applicator", () => {
     const note = readFileSync(join(root, "memory", "agent-main", "telegram-direct-100000001", "2026-08-27.md"), "utf8");
     expect(count(note, "<!-- engram-entry:sha256:")).toBe(1);
     expect(readdirSync(join(root, "memory-state", "memory-observation", "v1", "traces", value.traceId.slice(7)))).toHaveLength(1);
+    expect(resumed.listQueue()[0]).toMatchObject({ status: "terminal", reasonCode: "duplicate_receipt" });
+  });
+
+  test("does not repeat the QMD dirty mark after a durable index handoff", async () => {
+    const root = workspace();
+    const value = observation({ traceId: sha256("bound-index-handoff-crash") });
+    persist(root, value);
+    let dirtyCalls = 0;
+    let faulted = false;
+    const options = {
+      workspace: root,
+      resolveActivePolicy: () => policy({ qmdBinding: { collection: "main-direct-memory" } }),
+      dirtyMarker: async (input) => { dirtyCalls++; return marked(root, input.reason); },
+    };
+    const first = new DailyNoteCanaryApplicator({
+      ...options,
+      fault: (point: DailyNoteApplicatorFaultPoint) => {
+        if (!faulted && point === "after_index_handoff") { faulted = true; throw new Error("crash-after-index-handoff"); }
+      },
+    });
+    expect((await first.processOne(new Date("2026-08-26T21:32:00.000Z"))).status).toBe("retry");
+    const receipt = first.readReceipt(value.observationId)!;
+    expect(readIndexHandoff(root, receipt.receiptId)?.applyReceiptId).toBe(receipt.receiptId);
+
+    const resumed = new DailyNoteCanaryApplicator(options);
+    expect((await resumed.processOne(new Date("2026-08-26T21:33:00.000Z"))).status).toBe("duplicate");
+    expect(dirtyCalls).toBe(1);
     expect(resumed.listQueue()[0]).toMatchObject({ status: "terminal", reasonCode: "duplicate_receipt" });
   });
 
@@ -436,8 +481,8 @@ describe("daily-note canary applicator", () => {
     const applicator = new DailyNoteCanaryApplicator({
       workspace: root,
       resolveActivePolicy: () => policy({ qmdBinding: { collection: "main-direct-memory" } }),
-      dirtyMarker: async () => shouldMark
-        ? marked(root)
+      dirtyMarker: async (input) => shouldMark
+        ? marked(root, input.reason)
         : { schema: "engram.qmd.dirty-mark.v1", status: "disabled", mode: "legacy", workspace: root },
     });
 
@@ -463,7 +508,7 @@ describe("daily-note canary applicator", () => {
     const first = new DailyNoteCanaryApplicator({
       workspace: root,
       resolveActivePolicy: () => policy({ qmdBinding: { collection: "main-direct-memory" } }),
-      dirtyMarker: async () => marked(root),
+      dirtyMarker: async (input) => marked(root, input.reason),
       fault: (point) => {
         if (!faulted && point === "after_receipt_primary") { faulted = true; throw new Error("crash-after-receipt-primary"); }
       },
@@ -474,7 +519,7 @@ describe("daily-note canary applicator", () => {
     const resumed = new DailyNoteCanaryApplicator({
       workspace: root,
       resolveActivePolicy: () => policy({ qmdBinding: { collection: "main-direct-memory" } }),
-      dirtyMarker: async () => marked(root),
+      dirtyMarker: async (input) => marked(root, input.reason),
     });
     expect((await resumed.processOne(new Date("2026-08-26T21:33:00.000Z"))).status).toBe("duplicate");
     expect(readdirSync(join(root, "memory-state", "memory-observation", "v1", "traces", value.traceId.slice(7)))).toHaveLength(1);
@@ -517,7 +562,7 @@ describe("daily-note canary applicator", () => {
           workspaceRegistryDigest: sha256("workspace-registry"),
         };
       },
-      dirtyMarker: async () => { dirtyCalls += 1; return marked(root); },
+      dirtyMarker: async (input) => { dirtyCalls += 1; return marked(root, input.reason); },
     });
 
     expect((await applicator.processOne(new Date("2026-08-26T21:32:00.000Z"))).status).toBe("qmd_pending");
@@ -577,7 +622,7 @@ describe("daily-note canary applicator", () => {
       },
       dirtyMarker: async (input) => {
         dirtyCollections.push(input.collections ?? []);
-        return { ...marked(root), collections: input.collections, indexKey: "f".repeat(64) };
+        return marked(root, input.reason, input.collections ?? []);
       },
       fault: (point) => {
         if (!faulted && point === "after_receipt_primary") { faulted = true; throw new Error("crash-after-receipt-primary"); }
@@ -636,7 +681,7 @@ describe("daily-note canary applicator", () => {
           ].join("\0")),
         };
       },
-      dirtyMarker: async () => { dirtyCalls += 1; return marked(root); },
+      dirtyMarker: async (input) => { dirtyCalls += 1; return marked(root, input.reason); },
       fault: (point) => {
         if (!faulted && point === "after_receipt") { faulted = true; throw new Error("crash-after-receipt"); }
       },

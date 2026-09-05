@@ -38,6 +38,7 @@ import {
 import { resolveCanaryQmdRuntimeBinding } from "./qmd-binding-preflight.ts";
 import type { MemoryObservationQmdBindingV1, MemoryObservationQmdResolverV1 } from "./projection.ts";
 import { resolveQmdContext } from "../qmd/context.ts";
+import { readIndexHandoff, storeIndexHandoff } from "../qmd/index-provenance.ts";
 
 type DailyNoteObservation = EpisodicObservationV1 | BatchObservationV1;
 export type ResolvedDailyNoteQmdBinding = {
@@ -171,6 +172,7 @@ export type DailyNoteApplicatorFaultPoint =
   | "after_receipt_primary"
   | "after_receipt"
   | "after_dirty_mark"
+  | "after_index_handoff"
   | "after_trace";
 
 const ROOT_SEGMENTS = ["memory-state", "memory-observation", "v1"] as const;
@@ -585,32 +587,51 @@ export class DailyNoteCanaryApplicator {
       if ("resolver" in verifiedPolicy.qmdBinding) throw new DailyNoteApplicatorError("QMD_BINDING_UNAVAILABLE", "QMD resolver was not normalized");
       collection = verifiedPolicy.qmdBinding.collection;
       expectedIndexKey = "indexKey" in verifiedPolicy.qmdBinding ? verifiedPolicy.qmdBinding.indexKey : undefined;
-      let dirty: WorkspaceDirtyMarkResult;
-      try {
-        dirty = await this.dirtyMarker({
-          workspace: this.workspace,
-          reason: "memory-observation:daily-note-handoff",
-          collections: [collection],
-          bm25: true,
-          vectors: true,
-          ...(expectedIndexKey ? { expectedIndexKey } : {}),
-        });
-      } catch (error) {
-        throw new DailyNoteApplicatorError(
-          "QMD_DIRTY_MARK_FAILED",
-          error instanceof Error ? error.message : String(error),
-        );
+      if (!readIndexHandoff(this.workspace, receipt.receiptId)) {
+        let dirty: WorkspaceDirtyMarkResult;
+        try {
+          dirty = await this.dirtyMarker({
+            workspace: this.workspace,
+            reason: `memory-observation:index-handoff:${receipt.receiptId}`,
+            collections: [collection],
+            bm25: true,
+            vectors: true,
+            ...(expectedIndexKey ? { expectedIndexKey } : {}),
+          });
+        } catch (error) {
+          throw new DailyNoteApplicatorError(
+            "QMD_DIRTY_MARK_FAILED",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        if (dirty.status !== "marked"
+          || dirty.collections?.length !== 1
+          || dirty.collections[0] !== collection
+          || (expectedIndexKey !== undefined && dirty.indexKey !== expectedIndexKey)) {
+          throw new DailyNoteApplicatorError(
+            "QMD_DIRTY_MARK_FAILED",
+            dirty.error ?? `dirty marker returned ${dirty.status} for an unexpected collection`,
+          );
+        }
+        this.fault?.("after_dirty_mark");
+        try {
+          storeIndexHandoff({
+            workspace: this.workspace,
+            applyReceipt: receipt,
+            dirtyMark: dirty,
+            ...(verifiedPolicy.qmdBinding && "bindingDigest" in verifiedPolicy.qmdBinding
+              ? { bindingDigest: verifiedPolicy.qmdBinding.bindingDigest }
+              : {}),
+            recordedAt: now.toISOString(),
+          });
+        } catch (error) {
+          throw new DailyNoteApplicatorError(
+            "QMD_DIRTY_MARK_FAILED",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        this.fault?.("after_index_handoff");
       }
-      if (dirty.status !== "marked"
-        || dirty.collections?.length !== 1
-        || dirty.collections[0] !== collection
-        || (expectedIndexKey !== undefined && dirty.indexKey !== expectedIndexKey)) {
-        throw new DailyNoteApplicatorError(
-          "QMD_DIRTY_MARK_FAILED",
-          dirty.error ?? `dirty marker returned ${dirty.status} for an unexpected collection`,
-        );
-      }
-      this.fault?.("after_dirty_mark");
     }
     this.persistCanonicalTrace(receipt, observation);
     this.fault?.("after_trace");
@@ -665,11 +686,7 @@ export class DailyNoteCanaryApplicator {
       recordedAt: receipt.completedAt,
       policyDigest: receipt.policyDigest,
       reasonCode: "daily_note_canary_applied",
-      verification: {
-        source: "deterministic-check",
-        verifierRef: receipt.destinationRef,
-        digest: receipt.readBackDigest,
-      },
+      verification: null,
     };
     const path = join(this.root, "traces", digestKey(traceId), `${digestKey(eventId)}.json`);
     if (!writeImmutable(path, event) && !jsonEqual(readJson(path), event)) {

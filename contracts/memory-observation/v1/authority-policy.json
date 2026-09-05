@@ -52,11 +52,18 @@
       "requiredTrustedInputs": ["approved-rollout-projection", "review-acknowledgement", "apply-time-authority-readback"]
     },
     {
+      "artifactSchema": "engram.memory-index-handoff.v1",
+      "stage": "qmd-index-handoff",
+      "allowedAuthorityClasses": ["applicator"],
+      "allowedProducerIds": ["daily-note-applicator"],
+      "requiredTrustedInputs": ["memory-apply-receipt", "qmd-dirty-mark", "exact-qmd-binding"]
+    },
+    {
       "artifactSchema": "qmd.index-generation.v1",
       "stage": "canonical-index",
       "allowedAuthorityClasses": ["indexer"],
       "allowedProducerIds": ["qmd-indexer"],
-      "requiredTrustedInputs": ["qmd-consumer-policy", "canonical-source-ref", "source-version-digest"]
+      "requiredTrustedInputs": ["memory-index-handoff", "completed-maintenance-generation", "exact-index-readback"]
     },
     {
       "artifactSchema": "engram.memory-trace-event.v1",

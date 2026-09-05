@@ -113,6 +113,11 @@ memory-state/memory-observation/v1/
     admission-gap/  # immutable content-free terminal pre-admission dispositions
     by-operation/   # immutable canonical apply receipts
     by-entry/       # immutable canonical-entry receipt index
+  qmd/
+    index-handoffs/      # immutable apply receipt + dirty-generation joins
+    index-generations/   # immutable exact-index read-back receipts
+    retrieval-receipts/  # reserved; no v1 producer/authority/writer
+    utilization-receipts/# reserved; no v1 producer/authority/writer
   queues/           # source/evaluator queue state
   consumers/        # sink-specific queue state
   locks/            # workspace and destination leases
@@ -143,9 +148,17 @@ or treat KG authority as identity authority.
 - transport reply links: no longer than their referenced raw evidence;
 - envelope and typed observation: 30 days after terminal disposition;
 - content-free terminal admission checkpoints and spools: 180 days;
-- trace events, apply receipts, and admission-gap receipts: 180 days;
+- trace events, apply receipts, admission-gap receipts, index handoffs, and
+  index-generation receipts: 180 days;
+- future retrieval/utilization receipts: 180 days if their separately reviewed
+  producer, authority, consumer, and lifecycle contract is activated;
 - resolved/expired diagnostic records: 90 days;
 - open diagnostics expire after 30 days unless explicitly acknowledged.
+
+The index provenance chain is dependency-retained: an apply receipt or index
+handoff is not purged while a newer linked handoff or generation receipt remains
+inside its 180-day window. This preserves the complete audit join even when QMD
+indexing is delayed.
 
 Purge is an independent lifecycle task and cannot wait for another user turn.
 Legal/privacy deletion follows an operator-authorized purge path and is not

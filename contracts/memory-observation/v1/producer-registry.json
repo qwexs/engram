@@ -56,7 +56,7 @@
       "version": "v1",
       "digest": "sha256:f9e632bc639b5f4240c15f4ac1fffb2ffa1c0b299a380d1432216c9a2c8b7ef5",
       "authorityClass": "applicator",
-      "artifactSchemas": ["engram.memory-apply-receipt.v1", "engram.memory-trace-event.v1"],
+      "artifactSchemas": ["engram.memory-apply-receipt.v1", "engram.memory-index-handoff.v1", "engram.memory-trace-event.v1"],
       "observationClasses": [],
       "capabilities": {
         "mayReadRawEvidence": false,

@@ -279,6 +279,17 @@ describe("Memory Observation Layer PR0 closed registries", () => {
     expect(authorityPolicy.replayReauthorizationRequired).toBe(true);
   });
 
+  test("reserves retrieval and utilization schemas without activating a producer or consumer", () => {
+    const traceWriter = registry.producers.find((entry: any) => entry.id === "memory-trace-writer");
+    expect(traceWriter.artifactSchemas).toEqual(["engram.memory-trace-event.v1"]);
+    expect(authorityPolicy.rules.some((entry: any) => [
+      "engram.memory-retrieval-receipt.v1",
+      "engram.memory-utilization-receipt.v1",
+    ].includes(entry.artifactSchema))).toBe(false);
+    expect(recallTemplate.inputSchemas).not.toContain("engram.memory-retrieval-receipt.v1");
+    expect(recallTemplate.inputSchemas).not.toContain("engram.memory-utilization-receipt.v1");
+  });
+
   test("executes authority and fails closed on an unknown version or missing trusted input", () => {
     const observation = readJson(join(FIXTURE_ROOT, "valid", "observation.json"));
     expect(authorizeObservation(observation)).toEqual({ authorized: true });
@@ -382,8 +393,8 @@ describe("Memory Observation Layer PR0 admission", () => {
     expect(ollTemplate.exactScopeAllowlist).toEqual([]);
   });
 
-  test("allows QMD only canonical references and never raw observation evidence", () => {
-    expect(qmdTemplate.inputSchemas).toEqual(["engram.canonical-record-ref.v1"]);
+  test("allows QMD only canonical references or typed index handoffs and never raw observation evidence", () => {
+    expect(qmdTemplate.inputSchemas).toEqual(["engram.canonical-record-ref.v1", "engram.memory-index-handoff.v1"]);
     expect(qmdTemplate.allowedCanonicalSourceSchemas).toEqual([
       "engram.daily-note-entry.v1",
       "engram.kg-assertion.v3-mvp",

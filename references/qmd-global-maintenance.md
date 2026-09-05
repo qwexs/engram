@@ -70,6 +70,24 @@ The state records:
 8. A write during maintenance is not lost when the earlier generation commits.
 9. A live lease returns `deferred`; an expired lease can be recovered.
 10. QMD's index-scoped embed lock remains the final duplicate-work defense.
+11. After maintenance, source-specific index handoffs are reconciled per owner
+    workspace. A `canonical_indexed` receipt requires the smaller of completed
+    update/embed generations to cover the handoff and an exact physical-index
+    read-back of collection root, document anchor, and canonical digest.
+12. One corrupt or stale handoff is reported without blocking other handoffs;
+    it never becomes proof that indexing completed.
+13. Handoff publication rereads the immutable apply receipt and the exact dirty
+    reason/generation from maintenance state. If a physical index rotates while
+    the canonical collection root remains exact, the new index may satisfy the
+    old handoff only through a fresh exact SQLite document read-back and an
+    exact vector row for that document hash; generations from different
+    physical indexes are never compared as if they shared a counter.
+    A renamed collection is accepted only when the current registry allowlist
+    and SQLite catalog resolve it uniquely to that same canonical root.
+14. Apply receipts and handoffs are dependency-retained while a newer linked
+    index provenance artifact remains inside its 180-day audit window.
+15. Any failed handoff reconciliation makes the coordinator process fail so
+    cron failure alerting cannot mistake a partial provenance pass for success.
 
 Memory Observation family canaries add one gate before rule 1: an exact
 runtime session must resolve through the pinned registry slice to one
@@ -93,6 +111,8 @@ fallback.
 - marks arriving during a run remain pending.
 - clean state launches neither update nor embed.
 - tests use fake QMD and temporary state; production SQLite is never touched.
+- a dirty mark alone never satisfies index provenance; exact generation and
+  SQLite read-back are required.
 - `bun test` and `bun run typecheck` pass.
 
 ## Follow-up rollout

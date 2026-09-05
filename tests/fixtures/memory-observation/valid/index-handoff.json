@@ -1,0 +1,14 @@
+{
+  "schema": "engram.memory-index-handoff.v1",
+  "handoffId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "handoffDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "traceId": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "applyReceiptId": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "canonicalRef": "memory/agent-main/main/2026-09-06.md#engram-entry:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "canonicalDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "scope": { "workspaceId": "main", "runtimeSessionKey": "agent:main:main", "scopeClass": "self", "scopeId": "main" },
+  "producer": { "id": "daily-note-applicator", "version": "v1", "digest": "sha256:f9e632bc639b5f4240c15f4ac1fffb2ffa1c0b299a380d1432216c9a2c8b7ef5" },
+  "policyDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "index": { "indexKey": "1111111111111111111111111111111111111111111111111111111111111111", "collection": "example-memory-main", "canonicalRoot": "/workspaces/alpha/memory/agent-main/main", "generation": 42, "bindingDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222" },
+  "createdAt": "2026-09-06T00:00:00.000Z"
+}

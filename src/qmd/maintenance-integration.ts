@@ -17,6 +17,9 @@ export type WorkspaceDirtyMarkResult = {
   indexKey?: string;
   generation?: number;
   collections?: string[];
+  stateRoot?: string;
+  reason?: string;
+  markedAt?: string;
   error?: string;
 };
 
@@ -198,6 +201,9 @@ export async function markWorkspaceQmdDirty(
       indexKey: context.physicalIndex.key,
       generation: state.generation,
       collections,
+      stateRoot,
+      reason: input.reason,
+      markedAt: state.dirty.reasons.find((entry) => entry.generation === state.generation && entry.reason === input.reason)?.markedAt,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

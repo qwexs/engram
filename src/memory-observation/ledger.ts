@@ -74,10 +74,12 @@ export type TraceEventV1 = {
   schema: "engram.memory-trace-event.v1";
   eventId: Digest;
   traceId: Digest;
-  stage: "source_completed" | "observation_admitted" | "observation_skipped" | "batch_evaluation_terminal";
+  stage: "source_completed" | "observation_admitted" | "observation_skipped" | "batch_evaluation_terminal"
+    | "canonical_applied" | "canonical_indexed" | "retrieved" | "utilized"
+    | "outcome_correct" | "outcome_incorrect" | "abstained";
   scope: ObservationScope;
   producer: ProducerRef;
-  stageRef: { kind: "source-turn" | "observation" | "batch-result"; ref: string; digest: Digest };
+  stageRef: { kind: "source-turn" | "observation" | "batch-result" | "canonical-record" | "index-generation" | "retrieval-result" | "utilization"; ref: string; digest: Digest };
   recordedAt: string;
   policyDigest: Digest;
   reasonCode: string;
@@ -442,6 +444,16 @@ export function purgeMemoryObservationLifecycle(workspace: string, now = new Dat
   return withLifecycleLock(root, () => {
     const cutoff30 = now.getTime() - OBSERVATION_RETENTION_MS;
     const cutoff180 = now.getTime() - TRACE_RECEIPT_RETENTION_MS;
+    const liveIndexGenerationForHandoff = (handoffId: string): boolean => {
+      const generationId = sha256(`qmd.index-generation.v1\0${handoffId}`);
+      const generation = lifecycleJson(join(root, "qmd", "index-generations", `${generationId.slice(7)}.json`));
+      return Boolean(generation && !isExpired(generation.completedAt, cutoff180));
+    };
+    const liveIndexHandoffForReceipt = (receiptId: string): boolean => {
+      const handoffId = sha256(`engram.memory-index-handoff.v1\0${receiptId}`);
+      const handoff = lifecycleJson(join(root, "qmd", "index-handoffs", `${handoffId.slice(7)}.json`));
+      return Boolean(handoff && (!isExpired(handoff.createdAt, cutoff180) || liveIndexGenerationForHandoff(handoffId)));
+    };
     const queueDir = join(root, "queues", "evaluator");
     const queues = new Map<string, Record<string, any>>();
     if (existsSync(queueDir)) for (const name of readdirSync(queueDir).filter((value) => value.endsWith(".json"))) {
@@ -543,7 +555,33 @@ export function purgeMemoryObservationLifecycle(workspace: string, now = new Dat
         const path = join(directory, name);
         const record = lifecycleJson(path);
         const terminalAt = kind === "admission-gap" ? record?.terminalAt : record?.completedAt;
-        if (record && isExpired(terminalAt, cutoff180)) { unlinkSync(path); result.receipts++; changed = true; }
+        const retainedByIndexChain = kind !== "admission-gap"
+          && typeof record?.receiptId === "string"
+          && liveIndexHandoffForReceipt(record.receiptId);
+        if (record && isExpired(terminalAt, cutoff180) && !retainedByIndexChain) { unlinkSync(path); result.receipts++; changed = true; }
+      }
+      if (changed) flushDirectory(directory);
+    }
+    for (const [kind, timestamp] of [
+      ["index-handoffs", "createdAt"],
+      ["index-generations", "completedAt"],
+      ["retrieval-receipts", "retrievedAt"],
+      ["utilization-receipts", "utilizedAt"],
+    ] as const) {
+      const directory = join(root, "qmd", kind);
+      if (!existsSync(directory)) continue;
+      let changed = false;
+      for (const name of readdirSync(directory).filter((value) => value.endsWith(".json"))) {
+        const path = join(directory, name);
+        const record = lifecycleJson(path);
+        const retainedByDependent = kind === "index-handoffs"
+          && typeof record?.handoffId === "string"
+          && liveIndexGenerationForHandoff(record.handoffId);
+        if (record && isExpired(record[timestamp], cutoff180) && !retainedByDependent) {
+          unlinkSync(path);
+          result.receipts++;
+          changed = true;
+        }
       }
       if (changed) flushDirectory(directory);
     }

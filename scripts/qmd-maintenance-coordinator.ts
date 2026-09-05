@@ -1,8 +1,12 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { resolveQmdContext } from "../src/qmd/context.ts";
 import { auditQmdGlobalRegistry, type QmdGlobalRegistry } from "../src/qmd/global-registry.ts";
+import { reconcileIndexHandoffs } from "../src/qmd/index-provenance.ts";
 import { markGlobalQmdBackfill, markGlobalQmdInitialSync, runGlobalQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
+import { resolveQmdMaintenanceStateRoot } from "../src/qmd/maintenance-integration.ts";
+import { readQmdMaintenanceState } from "../src/qmd/maintenance.ts";
 
 type Options = Record<string, string | boolean>;
 
@@ -107,8 +111,35 @@ try {
     allowPartialDirtyScope: options["allow-partial-dirty-scope"] === true,
     trustedCollections,
   });
-  console.log(JSON.stringify({ ...result, ...(backfill ? { backfill } : {}), ...(initialSync ? { initialSync } : {}) }));
-  process.exit(result.status === "error" || result.status === "partial" ? 1 : 0);
+  const context = resolveQmdContext({ value: workspace, source: "explicit" });
+  const maintenanceState = readQmdMaintenanceState(
+    stateRoot ?? resolveQmdMaintenanceStateRoot(),
+    context.physicalIndex.key,
+  );
+  const completedMaintenanceGeneration = Math.min(
+    maintenanceState.updateCompletedGeneration,
+    maintenanceState.embedCompletedGeneration,
+  );
+  const completedAt = new Date().toISOString();
+  const provenance = registry.workspaces.map((entry) => {
+    const ownedCollections = registry.collections
+      .filter((collection) => collection.owner === entry.id && collections.includes(collection.name))
+      .map((collection) => collection.name)
+      .sort();
+    return {
+      workspaceId: entry.id,
+      ...reconcileIndexHandoffs({
+        workspace: entry.path,
+        context,
+        completedMaintenanceGeneration,
+        collections: ownedCollections,
+        completedAt,
+      }),
+    };
+  });
+  console.log(JSON.stringify({ ...result, provenance, ...(backfill ? { backfill } : {}), ...(initialSync ? { initialSync } : {}) }));
+  const provenanceFailed = provenance.some((entry) => entry.failed > 0);
+  process.exit(result.status === "error" || result.status === "partial" || provenanceFailed ? 1 : 0);
 } catch (error) {
   console.error(JSON.stringify({
     schema: "engram.qmd.maintenance-cli-error.v1",

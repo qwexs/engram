@@ -1,0 +1,19 @@
+{
+  "schema": "engram.memory-utilization-receipt.v1",
+  "receiptId": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "receiptDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "utilizationRunId": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "retrievalReceiptId": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "retrievalReceiptDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "traceId": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "indexGenerationId": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "canonicalRef": "memory/a.md#engram-entry:sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "canonicalDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "scope": { "workspaceId": "main", "runtimeSessionKey": "agent:main:main", "scopeClass": "self", "scopeId": "main" },
+  "producer": { "id": "memory-trace-writer", "version": "v1", "digest": "sha256:d570cbed441fe0bb05eff36b09af915b10c410628ca8bdd92a018aae9be6a139" },
+  "policyDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  "promptDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "modelRefDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "attestationSource": { "id": "model-self-report", "version": "v1", "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+  "utilizedAt": "2026-09-06T00:03:00.000Z"
+}

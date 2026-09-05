@@ -5,7 +5,7 @@
   "consumer": "qmd",
   "workspaceId": "template",
   "mode": "disabled",
-  "inputSchemas": ["engram.canonical-record-ref.v1"],
+  "inputSchemas": ["engram.canonical-record-ref.v1", "engram.memory-index-handoff.v1"],
   "allowedProducers": [
     {
       "id": "daily-note-applicator",
@@ -26,7 +26,7 @@
   "allowedObservationClasses": [],
   "allowedCanonicalSourceSchemas": ["engram.daily-note-entry.v1", "engram.kg-assertion.v3-mvp", "engram.domain-document.v1"],
   "exactScopeAllowlist": [],
-  "requiredProvenanceFields": ["canonicalRef", "canonicalDigest", "scope", "producer"],
+  "requiredProvenanceFields": ["canonicalRef", "canonicalDigest", "scope", "producer", "applyReceiptId", "index"],
   "sideEffectClass": "derived-index",
   "soleMutator": "qmd-indexer",
   "rawEvidenceAllowed": false,

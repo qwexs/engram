@@ -10,6 +10,10 @@
     { "$ref": "#/$defs/traceEvent" },
     { "$ref": "#/$defs/applyReceipt" },
     { "$ref": "#/$defs/admissionGapReceipt" },
+    { "$ref": "#/$defs/indexHandoff" },
+    { "$ref": "#/$defs/qmdIndexGeneration" },
+    { "$ref": "#/$defs/retrievalReceipt" },
+    { "$ref": "#/$defs/utilizationReceipt" },
     { "$ref": "#/$defs/producerRegistry" },
     { "$ref": "#/$defs/ollObserverReceiptProducerRegistry" },
     { "$ref": "#/$defs/classRegistry" },
@@ -563,6 +567,150 @@
           "else": { "properties": { "canonicalMutation": { "const": false } } }
         }
       ]
+    },
+    "indexHandoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "handoffId", "handoffDigest", "traceId", "applyReceiptId",
+        "canonicalRef", "canonicalDigest", "scope", "producer", "policyDigest",
+        "index", "createdAt"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-index-handoff.v1" },
+        "handoffId": { "$ref": "#/$defs/digest" },
+        "handoffDigest": { "$ref": "#/$defs/digest" },
+        "traceId": { "$ref": "#/$defs/digest" },
+        "applyReceiptId": { "$ref": "#/$defs/digest" },
+        "canonicalRef": { "type": "string", "pattern": "^memory/[A-Za-z0-9._/-]+\\.md#engram-entry:sha256:[a-f0-9]{64}$", "maxLength": 1000 },
+        "canonicalDigest": { "$ref": "#/$defs/digest" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "producer": { "$ref": "#/$defs/producerRef" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "index": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["indexKey", "collection", "canonicalRoot", "generation", "bindingDigest"],
+          "properties": {
+            "indexKey": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "collection": { "$ref": "#/$defs/token" },
+            "canonicalRoot": { "type": "string", "minLength": 1, "maxLength": 1000 },
+            "generation": { "type": "integer", "minimum": 1 },
+            "bindingDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "createdAt": { "$ref": "#/$defs/instant" }
+      }
+    },
+    "qmdIndexGeneration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "generationId", "generationDigest", "traceId", "handoffId",
+        "applyReceiptId", "canonicalRef", "canonicalDigest", "scope", "producer",
+        "policyDigest", "index", "verification", "completedAt"
+      ],
+      "properties": {
+        "schema": { "const": "qmd.index-generation.v1" },
+        "generationId": { "$ref": "#/$defs/digest" },
+        "generationDigest": { "$ref": "#/$defs/digest" },
+        "traceId": { "$ref": "#/$defs/digest" },
+        "handoffId": { "$ref": "#/$defs/digest" },
+        "applyReceiptId": { "$ref": "#/$defs/digest" },
+        "canonicalRef": { "type": "string", "pattern": "^memory/[A-Za-z0-9._/-]+\\.md#engram-entry:sha256:[a-f0-9]{64}$", "maxLength": 1000 },
+        "canonicalDigest": { "$ref": "#/$defs/digest" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "producer": { "$ref": "#/$defs/producerRef" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "index": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["indexKey", "collection", "canonicalRoot", "generation", "snapshotDigest"],
+          "properties": {
+            "indexKey": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "collection": { "$ref": "#/$defs/token" },
+            "canonicalRoot": { "type": "string", "minLength": 1, "maxLength": 1000 },
+            "generation": { "type": "integer", "minimum": 0 },
+            "snapshotDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "digest"],
+          "properties": {
+            "source": { "const": "deterministic-check" },
+            "digest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "completedAt": { "$ref": "#/$defs/instant" }
+      }
+    },
+    "retrievalReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "receiptId", "receiptDigest", "retrievalRunId", "traceId",
+        "indexGenerationId", "indexGenerationDigest", "canonicalRef", "canonicalDigest",
+        "scope", "producer", "policyDigest", "queryDigest", "operationRecordDigest",
+        "rank", "retrievedAt"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-retrieval-receipt.v1" },
+        "receiptId": { "$ref": "#/$defs/digest" },
+        "receiptDigest": { "$ref": "#/$defs/digest" },
+        "retrievalRunId": { "$ref": "#/$defs/digest" },
+        "traceId": { "$ref": "#/$defs/digest" },
+        "indexGenerationId": { "$ref": "#/$defs/digest" },
+        "indexGenerationDigest": { "$ref": "#/$defs/digest" },
+        "canonicalRef": { "type": "string", "pattern": "^memory/[A-Za-z0-9._/-]+\\.md#engram-entry:sha256:[a-f0-9]{64}$", "maxLength": 1000 },
+        "canonicalDigest": { "$ref": "#/$defs/digest" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "producer": { "$ref": "#/$defs/producerRef" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "queryDigest": { "$ref": "#/$defs/digest" },
+        "operationRecordDigest": { "$ref": "#/$defs/digest" },
+        "rank": { "type": "integer", "minimum": 1 },
+        "retrievedAt": { "$ref": "#/$defs/instant" }
+      }
+    },
+    "utilizationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "receiptId", "receiptDigest", "utilizationRunId", "retrievalReceiptId",
+        "retrievalReceiptDigest", "traceId", "indexGenerationId", "canonicalRef",
+        "canonicalDigest", "scope", "producer", "policyDigest", "promptDigest",
+        "modelRefDigest", "attestationSource", "utilizedAt"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-utilization-receipt.v1" },
+        "receiptId": { "$ref": "#/$defs/digest" },
+        "receiptDigest": { "$ref": "#/$defs/digest" },
+        "utilizationRunId": { "$ref": "#/$defs/digest" },
+        "retrievalReceiptId": { "$ref": "#/$defs/digest" },
+        "retrievalReceiptDigest": { "$ref": "#/$defs/digest" },
+        "traceId": { "$ref": "#/$defs/digest" },
+        "indexGenerationId": { "$ref": "#/$defs/digest" },
+        "canonicalRef": { "type": "string", "pattern": "^memory/[A-Za-z0-9._/-]+\\.md#engram-entry:sha256:[a-f0-9]{64}$", "maxLength": 1000 },
+        "canonicalDigest": { "$ref": "#/$defs/digest" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "producer": { "$ref": "#/$defs/producerRef" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "promptDigest": { "$ref": "#/$defs/digest" },
+        "modelRefDigest": { "$ref": "#/$defs/digest" },
+        "attestationSource": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version", "digest"],
+          "properties": {
+            "id": { "const": "openclaw-final-prompt-builder" },
+            "version": { "const": "v1" },
+            "digest": { "const": "sha256:4e90a62e91fa5cb8b24bace2bdcd2288a37ef3840841b445809648487c131f61" }
+          }
+        },
+        "utilizedAt": { "$ref": "#/$defs/instant" }
+      }
     },
     "producerRegistry": {
       "type": "object",

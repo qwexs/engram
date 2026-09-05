@@ -14,9 +14,15 @@ policy state, and the append-only audit trace.
 3. **Evaluator → observation ledger:** typed advisory output only.
 4. **Observation → consumer:** authority and admission are independently read
    back immediately before any side effect.
-5. **Canonical sink → QMD:** only a canonical reference plus digest crosses;
-   raw evidence and observation text never become index sources.
-6. **Telemetry → outcome:** model self-assessment is untrusted; outcome labels
+5. **Canonical sink → QMD:** only an apply-receipt-bound canonical reference,
+   digest, exact binding, and dirty generation cross; raw evidence and
+   observation text never become index sources.
+6. **QMD → retrieval telemetry (reserved, disabled):** a future adapter must
+   supply a durable exact ranked-result predecessor; none is shipped in v1.
+7. **Final host prompt builder → utilization telemetry (reserved, disabled):**
+   a future host-owned adapter must supply selected retrieval receipt IDs;
+   matching a public producer constant is not authority.
+8. **Telemetry → outcome:** model self-assessment is untrusted; outcome labels
    require a human or deterministic verifier.
 
 ## Threats and mandatory controls
@@ -33,6 +39,10 @@ policy state, and the append-only audit trace.
 | QMD physical index changes after session binding | resolved index key enters the effective consumer policy and `markWorkspaceQmdDirty` verifies it before publishing a generation | stale `expectedIndexKey` invokes no dirty-state mutation |
 | Registry/index changes after note and receipt but before QMD dirty handoff | immutable receipt seals its original concrete QMD binding; retry and Recall Authority accept a new binding only when both resolve to the same canonical session root | different-root or malformed receipt binding remains `qmd_pending`/fails closed and cannot authorize recall from another collection |
 | Crash occurs between the operation and entry receipt aliases | operation receipt is canonical; recovery reads either immutable copy, rejects disagreement, and repairs the missing alias before continuing | no second receipt body is synthesized and the QMD handoff remains retryable |
+| Dirty generation is mistaken for completed indexing | immutable handoff plus completed update/embed generation and exact SQLite collection/root/anchor/digest read-back | stale generation, stale content, wrong root, missing entry, or corrupt handoff emits no `canonical_indexed` receipt |
+| Retrieval claims content never present in its result set | no retrieval writer ships until a durable QMD operation/result artifact exposes exact rank, canonical ref/digest, scope, and generation | caller-supplied rank or opaque operation digest cannot produce a receipt |
+| Model claims it used retrieved memory | no utilization writer ships until a host-owned final-selection callback exposes selected receipt IDs | model self-report, copied producer constants, unknown source, or prompt-text inference cannot produce a receipt |
+| Provenance receipt leaks query, result, or prompt content | strict content-free schemas with refs and digests only | `additionalProperties: false` rejects raw query/result/prompt fields |
 | Replay bypasses a kill switch | apply-time read-back and replay reauthorization | queued item denied after policy disable |
 | Same identity hides changed evidence | stable identity plus digest conflict | changed digest returns `CONTENT_CONFLICT` |
 | Sidecar diverges from Markdown | one journaled apply, opaque entry anchor, read-back digest | mismatch returns `PROVENANCE_UNRESOLVED` |

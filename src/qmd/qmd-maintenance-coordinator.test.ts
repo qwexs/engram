@@ -22,6 +22,16 @@ function manifest(base: string): string {
   return path;
 }
 
+function coordinatedWorkspace(base: string): void {
+  writeFileSync(join(base, "engram.json"), JSON.stringify({
+    qmd: {
+      index: "sample-global",
+      collections: ["test-memory"],
+      maintenance: { mode: "coordinated" },
+    },
+  }));
+}
+
 describe("qmd maintenance coordinator cli", () => {
   test("rejects missing collections and incompatible initial flags", () => {
     const base = root();
@@ -32,5 +42,26 @@ describe("qmd maintenance coordinator cli", () => {
     const incompatible = spawnSync("bun", [script, "--manifest", man, "--workspace", base, "--collections", "test-memory", "--initial-backfill", "--initial-sync"], { encoding: "utf8" });
     expect(incompatible.status).toBe(1);
     expect(incompatible.stderr).toContain("mutually exclusive");
+  });
+
+  test("returns a failing process status when provenance reconciliation fails", () => {
+    const base = root();
+    const man = manifest(base);
+    coordinatedWorkspace(base);
+    const handoffs = join(base, "memory-state", "memory-observation", "v1", "qmd", "index-handoffs");
+    mkdirSync(handoffs, { recursive: true });
+    writeFileSync(join(handoffs, `${"0".repeat(64)}.json`), "{broken\n");
+    const cache = join(base, "cache");
+    const stateRoot = join(base, "maintenance");
+    const run = spawnSync("bun", [
+      script,
+      "--manifest", man,
+      "--workspace", base,
+      "--state-root", stateRoot,
+    ], { encoding: "utf8", env: { ...process.env, XDG_CACHE_HOME: cache } });
+    expect(run.status).toBe(1);
+    const output = JSON.parse(run.stdout);
+    expect(output.status).toBe("clean");
+    expect(output.provenance).toEqual([expect.objectContaining({ workspaceId: "main", failed: 1 })]);
   });
 });

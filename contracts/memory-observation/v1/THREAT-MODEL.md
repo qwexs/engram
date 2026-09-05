@@ -39,6 +39,16 @@ policy state, and the append-only audit trace.
 | Outcome label is self-asserted | verifier source restricted to human/deterministic check | outcome event with null/model verifier rejected |
 | Evidence persists indefinitely | 72-hour max TTL and independent purge owner | purge works with no later user turn |
 | One coordinator accumulates sink powers | per-consumer queues and sole mutators | coordinator has no canonical mutation capability |
+| Process restart silently loses hook correlation | atomic monotonic checkpoint before process-local publication; startup disposition | restart after each checkpoint yields one admission or one immutable gap receipt |
+| Gap receipt leaks conversation content | closed content-free schema with `additionalProperties: false` | content, payload, evidence, and unknown reasons are rejected |
+| One poison admission record blocks recovery | per-record scan and failure isolation | a corrupt record is reported while valid records continue |
+| Terminal spool retains raw evidence | sanitize before first completed spool; erase source after admission/gap | terminal spool and checkpoint contain no source text |
+| Crash after ledger admission creates a second gap | verify envelope, evaluator queue, and source trace under the per-candidate disposition lock before any terminal recovery disposition | `after_admission` plus binding removal/expiry remains admitted with zero gap receipts; `after_envelope` remains repairable |
+| Two reconcilers choose opposite dispositions | one workspace-local cross-process lock per candidate covers receipt check through ledger/gap publication | concurrent lock test proves non-overlap; both paths re-read terminal state while holding it |
+| Crash between gap receipt and checkpoint poisons recovery | first immutable receipt is authoritative and repairs its checkpoint | a different inferred retry reason preserves the original receipt and later records still reconcile |
+| Transient projection failure looks like revocation | distinguish unreadable/digest-stale projection from explicit disable/removal | unavailable binding retains completed spool; explicit revoke terminalizes it |
+| Admission inspection I/O failure looks like identity conflict | only verified `CONTENT_CONFLICT` is terminal; all other inspection failures are unavailable | malformed/unreadable sidecar retains spool and emits no gap |
+| Replay after short terminal retention reopens a candidate | keep content-free checkpoint/spool through the receipt replay window and reject receipt-backed reopen | replay is duplicate/terminal throughout 180 days |
 
 ## Sensitive data classes
 
@@ -56,7 +66,15 @@ before a completion call.
 
 ## Crash and recovery checkpoints
 
-PR1 must test crashes after: envelope durable write, evidence durable write,
+The runtime adapter tests crashes/restarts after `received`, `persisted`,
+`run_attached`, completed-spool publication, ledger admission, and terminal
+disposition. From the first durable checkpoint, recovery must produce exactly
+one ledger admission or one immutable gap receipt. A host crash before the
+plugin receives `message_received` is a residual external boundary; future
+bounded public transcript-SDK discovery may report it, but direct SQLite and
+broad transcript scans are forbidden.
+
+PR1 must also test crashes after: envelope durable write, evidence durable write,
 queue claim, observation write, consumer plan, canonical mutation, sidecar
 write, and trace append. Recovery starts from persisted immutable artifacts,
 never by reclassifying a mutable transcript. A canonical mutation without a

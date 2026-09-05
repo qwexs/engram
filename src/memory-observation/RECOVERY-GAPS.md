@@ -1,8 +1,8 @@
 # Memory Observation recovery gaps and transcript-runtime research backlog
 
-Status: research and remediation backlog
+Status: Stage 1 checkpoint durability implemented; transcript discovery remains report-only backlog
 
-Recorded: 2026-09-01
+Recorded: 2026-09-01; implementation status updated 2026-09-06
 
 Scope: OpenClaw Memory Observation runtime adapter and pre-admission recovery
 
@@ -23,14 +23,22 @@ adjacency alone is not proof of a completed, authorized, user-triggered turn.
 
 ## Findings
 
-### MOG-REC-1 — pre-admission state is volatile (confirmed, high)
+### MOG-REC-1 — host-before-hook state remains outside Engram (partially remediated, high)
 
-`OpenClawObservationRuntimeAdapter` keeps `pending`, `adopted`, `runs`, and
-`completed` correlations in process-local `Map` objects and expires them by
-TTL. A restart or crash before `binding.admit(...)` can therefore lose a turn
-even when OpenClaw has durably persisted the session transcript. The ledger is
-crash-safe after `admit`, but there is no durable reconciler for the earlier
-window.
+The adapter still uses process-local maps for hot correlation, but a successful
+`message_received` handler now commits an atomic workspace-local checkpoint
+before publishing the candidate to those maps. The checkpoint advances through
+`received → persisted → run_attached → completion_observed`; a restarted
+adapter can resume the hook chain, and startup turns any unrecoverable
+checkpoint into one immutable terminal gap receipt. Completed evidence is
+sanitized before spool publication and is removed from the spool after
+admission or terminal disposition.
+
+The crash guarantee begins only after the plugin has received
+`message_received` and durably committed that first checkpoint. A host crash
+before hook invocation creates no Engram identity and remains outside this
+guarantee. Public transcript-SDK discovery is still required to measure that
+residual window; direct SQLite access and broad transcript scans remain denied.
 
 Source anchors:
 
@@ -39,18 +47,33 @@ Source anchors:
 - `integrations/openclaw-memory-observation/index.ts`: hook registration and
   in-process adapter lifecycle.
 
-### MOG-REC-2 — capture gaps have no durable disposition (confirmed, high)
+### MOG-REC-2 — checkpointed gaps have durable disposition (closed for checkpointed candidates)
 
-Hook and admission exceptions fail closed through `safe(...)`, but the failure
-is represented only in runtime logging. There is no durable gap receipt keyed
-to the source/completion identity. Operators cannot prove that every eligible
-completed turn was admitted or explicitly rejected after a restart or hook
-contract mismatch.
+Checkpointed failures are now represented by the content-free typed artifact
+`engram.memory-admission-gap-receipt.v1`. Its identity is derived from the
+candidate identity, its reason is drawn from a closed registry, and immutable
+publication makes repeated recovery idempotent. Terminal checkpoints drop
+source text. A poison checkpoint or spool record is reported separately and
+does not stop reconciliation of valid records.
 
-Required outcome: every discovered eligible completion must end as admitted,
-terminally excluded with a reason, or an explicit gap receipt such as
-`missing`, `pruned`, `digest_mismatch`, `scope_revoked`, or
-`identity_ambiguous`.
+The immutable receipt wins if a crash separates receipt publication from the
+terminal checkpoint update. Recovery repairs the checkpoint with the original
+reason. A per-candidate cross-process lock selects exactly one disposition, and
+a durable ledger envelope+queue+source-trace probe wins over binding removal or
+retry expiry; partial admissions remain repairable instead of being mislabeled,
+so one source cannot be both admitted and terminal-gap. Content-free
+terminal state remains for the same 180-day replay-protection window as the
+receipt. Projection parse/digest failures are retryable; only an absent,
+disabled, or validly removed binding is a scope revocation.
+
+The runtime reader accepts legacy v1 completed spools, validates and sanitizes
+them, and rewrites them as v2 before replay. Because v1 has no candidate
+checkpoint, an unavailable legacy binding retains the spool for operator-safe
+recovery instead of manufacturing a receipt from missing identity evidence.
+
+Current outcome: every checkpointed candidate ends as ledger-admitted or one
+terminal gap receipt. Discovering completions for which the host never invoked
+the first hook remains the transcript-SDK backlog below.
 
 ### MOG-REC-3 — one pre-run slot per runtime session (confirmed, medium)
 

@@ -101,12 +101,18 @@ PR1 may create only this workspace-local root:
 
 ```text
 memory-state/memory-observation/v1/
+  pre-admission/
+    checkpoints/  # mutable monotonic hook checkpoints; terminal payload is content-free
+    *.json         # sealed completed-turn spool awaiting ledger disposition
   envelopes/       # immutable admitted envelopes
   evidence/        # encrypted/permission-bounded TTL evidence
   transport-links/ # immutable same-session reply indexes, TTL-bound to evidence
   observations/    # immutable typed write observations; skips remain typed terminal trace events
   traces/           # append-only stage events
-  receipts/         # terminal/apply receipts, indexed by operation and entry
+  receipts/
+    admission-gap/  # immutable content-free terminal pre-admission dispositions
+    by-operation/   # immutable canonical apply receipts
+    by-entry/       # immutable canonical-entry receipt index
   queues/           # source/evaluator queue state
   consumers/        # sink-specific queue state
   locks/            # workspace and destination leases
@@ -115,6 +121,16 @@ memory-state/memory-observation/v1/
 One workspace coordinator owns source admission, observation queues, evidence
 purge, and trace append ordering. Each consumer keeps a separate queue and sole
 mutator. The coordinator cannot call canonical writers directly.
+
+Admission candidate identity is
+`SHA256("engram.memory-admission-candidate.v1\0" + workspaceId + "\0" +
+runtimeSessionKey + "\0" + channel + "\0" + inboundMessageId)`.
+The single terminal gap receipt identity is
+`SHA256("engram.memory-admission-gap-receipt.v1\0" + candidateId)`;
+`receiptDigest` covers the complete receipt body except `receiptDigest` itself.
+Same identity and content is a duplicate; changed content is a conflict. The
+crash guarantee begins at the successful atomic `received` checkpoint, not
+before the host invokes the plugin hook.
 
 Transport-neutral identity derivation reuses the runtime semantics already
 used for `channel-user:v1`, but its future implementation belongs to a shared
@@ -126,7 +142,8 @@ or treat KG authority as identity authority.
 - raw evidence: 72 hours maximum;
 - transport reply links: no longer than their referenced raw evidence;
 - envelope and typed observation: 30 days after terminal disposition;
-- trace events and apply receipts: 180 days;
+- content-free terminal admission checkpoints and spools: 180 days;
+- trace events, apply receipts, and admission-gap receipts: 180 days;
 - resolved/expired diagnostic records: 90 days;
 - open diagnostics expire after 30 days unless explicitly acknowledged.
 

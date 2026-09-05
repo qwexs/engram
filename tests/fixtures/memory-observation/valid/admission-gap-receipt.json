@@ -1,0 +1,24 @@
+{
+  "schema": "engram.memory-admission-gap-receipt.v1",
+  "receiptId": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "candidateId": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "sourceTurnId": null,
+  "scope": {
+    "workspaceId": "main",
+    "runtimeSessionKey": "agent:main:telegram:direct:100000001",
+    "scopeClass": "self",
+    "scopeId": "telegram:100000001"
+  },
+  "failureStage": "received",
+  "reasonCode": "restart_before_completion",
+  "producer": {
+    "id": "openclaw-runtime",
+    "version": "v1",
+    "digest": "sha256:41580b56cf8dc83fea5f78568092308214f851833a5c6cae537bf1a21b3626bd"
+  },
+  "bindingFingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "checkpointDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "discoveredAt": "2026-09-06T00:00:00.000Z",
+  "terminalAt": "2026-09-06T00:01:00.000Z",
+  "receiptDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+}

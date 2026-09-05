@@ -12,6 +12,7 @@ import {
 import { EpisodicShadowEvaluator } from "../../src/memory-observation/episodic-evaluator.ts";
 import { AutonomousEpisodicRunner } from "../../src/memory-observation/evaluator-runner.ts";
 import { assertResolvedInferenceModel } from "../../src/memory-observation/inference-boundary.ts";
+import { AdmissionStore } from "../../src/memory-observation/admission-store.ts";
 import {
   buildDailyNoteCanaryPolicy,
   DailyNoteCanaryApplicator,
@@ -51,7 +52,7 @@ const RUNTIME_REGISTRY = {
     {
       ...RUNTIME_AUTHORITY,
       authorityClass: "runtime",
-      artifactSchemas: ["engram.memory-observation-job.v1", "engram.memory-trace-event.v1"],
+      artifactSchemas: ["engram.memory-observation-job.v1", "engram.memory-admission-gap-receipt.v1", "engram.memory-trace-event.v1"],
       observationClasses: [],
     },
     {
@@ -151,6 +152,28 @@ function activeWorkspace(api: any, runtimeSessionKey: string): ActiveWorkspace |
   } catch { return null; }
 }
 
+function classifyMissingBinding(api: any, runtimeSessionKey: string): "revoked" | "unavailable" {
+  const agentId = agentIdFromSessionKey(runtimeSessionKey);
+  const config = currentConfig(api);
+  if (!agentId || !config) return "unavailable";
+  const workspace = resolveAgentWorkspace(config, agentId);
+  if (!workspace) return "unavailable";
+  let workspaceId: string;
+  try { workspaceId = readJson(join(workspace, "engram.json"))?.workspace?.id; }
+  catch { return "unavailable"; }
+  if (typeof workspaceId !== "string" || !workspaceId.trim()) return "unavailable";
+  const projectionPath = join(workspace, "memory-state", "memory-observation", "projection.json");
+  if (!existsSync(projectionPath)) return "revoked";
+  let raw: any;
+  try { raw = readJson(projectionPath); }
+  catch { return "unavailable"; }
+  if (raw?.enabled === false) return "revoked";
+  try {
+    const projection = resolveMemoryObservationProjection({ workspace, workspaceId, expectedPluginDigest: PLUGIN_DIGEST });
+    return memoryObservationBinding(projection, runtimeSessionKey) ? "unavailable" : "revoked";
+  } catch { return "unavailable"; }
+}
+
 function ledgerFor(
   active: ActiveWorkspace,
   projection: MemoryObservationProjectionV1,
@@ -220,27 +243,31 @@ function bindingFor(api: any, active: ActiveWorkspace, runtimeSessionKey: string
       ledger.purgeExpiredEvidence(completedAt);
       replyContext.purgeExpired(completedAt);
       const result = ledger.admit(source, completedAt);
-      replyContext.record({
-        scope,
-        channel: transport.channel,
-        transportMessageId: transport.inboundMessageId,
-        messageRole: "user",
-        sourceTurnId: source.sourceTurnId,
-        ...(transport.parentMessageId ? { parentTransportMessageId: transport.parentMessageId } : {}),
-      });
-      if (transport.deliveryMessageId) {
+      try {
         replyContext.record({
           scope,
           channel: transport.channel,
-          transportMessageId: transport.deliveryMessageId,
-          messageRole: "assistant",
+          transportMessageId: transport.inboundMessageId,
+          messageRole: "user",
           sourceTurnId: source.sourceTurnId,
           ...(transport.parentMessageId ? { parentTransportMessageId: transport.parentMessageId } : {}),
         });
-      }
-      if (memoryObservationEvaluationMode(projection) === "immediate"
-        && projection.limits.maxInferenceCalls === 1) {
-        wakeEpisodicEvaluation(api, runtimeSessionKey);
+        if (transport.deliveryMessageId) {
+          replyContext.record({
+            scope,
+            channel: transport.channel,
+            transportMessageId: transport.deliveryMessageId,
+            messageRole: "assistant",
+            sourceTurnId: source.sourceTurnId,
+            ...(transport.parentMessageId ? { parentTransportMessageId: transport.parentMessageId } : {}),
+          });
+        }
+        if (memoryObservationEvaluationMode(projection) === "immediate"
+          && projection.limits.maxInferenceCalls === 1) {
+          wakeEpisodicEvaluation(api, runtimeSessionKey);
+        }
+      } catch {
+        api.logger.warn?.("engram-memory-observation: post-admission side effect failed; durable admission retained");
       }
       return result;
     },
@@ -256,16 +283,23 @@ function adapterFor(api: any, runtimeSessionKey: string): OpenClawObservationRun
     adapter = new OpenClawObservationRuntimeAdapter({
       authority: RUNTIME_AUTHORITY,
       resolveBinding: (key) => bindingFor(api, active, key),
+      classifyMissingBinding: (key) => classifyMissingBinding(api, key),
       spoolRoot: join(active.workspace, "memory-state", "memory-observation", "v1", "pre-admission"),
+      workspace: active.workspace,
     });
     adapters.set(key, adapter);
   }
   return adapter;
 }
 
-function reconcileConfiguredSpools(api: any): void {
+function reconcileConfiguredSpools(api: any, mode: "startup" | "periodic"): void {
   const runtimeSessionKeys = new Set<string>();
   for (const workspace of configuredWorkspaces(api)) {
+    const checkpointScan = new AdmissionStore(workspace, RUNTIME_AUTHORITY).scanCheckpoints();
+    for (const checkpoint of checkpointScan.records) runtimeSessionKeys.add(checkpoint.scope.runtimeSessionKey);
+    if (checkpointScan.corrupt.length > 0) {
+      api.logger.warn?.(`engram-memory-observation: ${checkpointScan.corrupt.length} admission checkpoint record(s) failed validation`);
+    }
     const directory = join(workspace, "memory-state", "memory-observation", "v1", "pre-admission");
     if (!existsSync(directory)) continue;
     for (const name of readdirSync(directory).filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry))) {
@@ -279,14 +313,40 @@ function reconcileConfiguredSpools(api: any): void {
   }
   for (const runtimeSessionKey of runtimeSessionKeys) {
     try {
-      const result = adapterFor(api, runtimeSessionKey)?.reconcileCompleted();
-      if (result && (result.admitted > 0 || result.retained > 0 || result.terminal > 0)) {
-        api.logger.info?.(`engram-memory-observation: admission reconciliation ${JSON.stringify(result)}`);
+      const active = activeWorkspace(api, runtimeSessionKey);
+      const adapter = adapterFor(api, runtimeSessionKey) ?? (active ? null : (() => {
+        const agentId = agentIdFromSessionKey(runtimeSessionKey);
+        const workspace = agentId ? resolveAgentWorkspace(currentConfig(api), agentId) : null;
+        return workspace ? new OpenClawObservationRuntimeAdapter({
+          authority: RUNTIME_AUTHORITY,
+          resolveBinding: (key) => {
+            const candidate = activeWorkspace(api, key);
+            return candidate ? bindingFor(api, candidate, key) : null;
+          },
+          classifyMissingBinding: (key) => classifyMissingBinding(api, key),
+          spoolRoot: join(workspace, "memory-state", "memory-observation", "v1", "pre-admission"),
+          workspace,
+        }) : null;
+      })());
+      if (!adapter) continue;
+      const corruptSpoolCount = adapter.scanSpool().corrupt.length;
+      if (corruptSpoolCount > 0) {
+        api.logger.warn?.(`engram-memory-observation: ${corruptSpoolCount} admission spool record(s) failed validation`);
+      }
+      const completed = adapter.reconcileCompleted();
+      const checkpoints = adapter.reconcileOrphanedCheckpoints(new Date(), mode);
+      if (Object.values(completed).some((count) => count > 0) || Object.values(checkpoints).some((count) => count > 0)) {
+        api.logger.info?.(`engram-memory-observation: admission reconciliation ${JSON.stringify({ completed, checkpoints })}`);
       }
     } catch (error) {
       api.logger.warn?.(`engram-memory-observation: admission reconciliation failed ${String(error)}`);
     }
   }
+}
+
+function runLifecycleMaintenance(api: any, mode: "startup" | "periodic"): void {
+  reconcileConfiguredSpools(api, mode);
+  purgeConfiguredWorkspaces(api);
 }
 
 function supportedChannel(event: any, context: any): "telegram" | "openclaw" | null {
@@ -490,10 +550,9 @@ export default definePluginEntry({
     api.registerService({
       id: "engram-memory-observation-evaluator",
       start: () => {
-        purgeConfiguredWorkspaces(api);
-        reconcileConfiguredSpools(api);
+        runLifecycleMaintenance(api, "startup");
         if (lifecycleTimer) clearInterval(lifecycleTimer);
-        lifecycleTimer = setInterval(() => purgeConfiguredWorkspaces(api), LIFECYCLE_INTERVAL_MS);
+        lifecycleTimer = setInterval(() => runLifecycleMaintenance(api, "periodic"), LIFECYCLE_INTERVAL_MS);
         lifecycleTimer.unref?.();
         for (const runtimeSessionKey of activeSessionKeys(api)) {
           wakeEpisodicEvaluation(api, runtimeSessionKey);
@@ -503,6 +562,7 @@ export default definePluginEntry({
       stop: () => {
         if (lifecycleTimer) clearInterval(lifecycleTimer);
         lifecycleTimer = null;
+        adapters.clear();
         for (const runner of evaluatorRunners.values()) runner.stop();
         evaluatorRunners.clear();
         for (const runner of dailyNoteRunners.values()) runner.stop();

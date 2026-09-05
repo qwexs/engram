@@ -19,6 +19,9 @@ write still retains its exact runtime session scope.
   AWS, Slack, private-key, assignment, and credential-URI forms) and
   fail-closed denial of raw tool outcomes, media, and attachments;
 - crash-safe no-replace publication with idempotent reconciliation;
+- atomic pre-admission checkpoints from the first accepted `message_received`
+  hook, restart-safe correlation across persisted/run/completion stages, and
+  immutable content-free terminal gap receipts for unrecoverable candidates;
 - evaluator queue state with `nextAttemptAt`, bounded retry, one worker lease,
   and due-time selection that avoids head-of-line starvation;
 - high-water limits for jobs, bytes, queue age, and a binary inference gate;
@@ -74,7 +77,9 @@ write still retains its exact runtime session scope.
 - KG canonical mutation and domain consumers;
 - family-wide QMD binding without an exact per-session collection mapping;
 - fleet activation or cross-agent/workspace bindings;
-- automatic pre-admission transcript recovery (tracked below).
+- discovery of host-persisted turns for which `message_received` never reached
+  the plugin; bounded public transcript-SDK recovery remains report-only work
+  tracked below.
 
 Observer-authored Decisions are anchored and receipt-backed. The OLL bridge
 accepts only explicitly allowlisted batch Decisions whose receipt, source
@@ -96,6 +101,34 @@ complete through successful `agent_end`; terminal message-tool replies complete
 through provider-settled `message_sent` carrying exact source-turn correlation. It never imports
 an evaluator or canonical writer. The PR1 ledger remains independently
 callable by a future MCP/API/CLI transport.
+
+For a bound turn, the adapter synchronously writes
+`pre-admission/checkpoints/<candidate>.json` before process-local correlation.
+Checkpoint stages are monotonic: `received → persisted → run_attached →
+completion_observed`. Restart recovery either resumes the sealed completed
+spool, records `ledger_admitted`, or publishes one immutable
+`receipts/admission-gap/<receipt>.json`. Gap receipts carry only identities,
+scope, producer, digests, a closed reason code, and timestamps. They never carry
+user/assistant text, transcript fragments, or tool output. Terminal checkpoints
+and spools erase evidence payloads; lifecycle maintenance retains content-free
+terminal checkpoints, spools, and receipts for the same 180-day replay window.
+The first receipt publication is authoritative if a crash occurs before its
+checkpoint update; reconciliation repairs that checkpoint without changing the
+original reason. A workspace-local per-candidate disposition lock makes ledger
+admission and gap publication mutually exclusive across processes. Before
+issuing any later gap, recovery verifies the immutable ledger envelope, queue,
+and source trace; a partial ledger admission is retained for repair, while a
+complete admission prevents a second terminal outcome. Invalid or digest-stale
+projection reads are retained for retry and are not interpreted as an explicit
+scope revocation. Admission inspection maps only a verified content mismatch to
+identity conflict; read, permission, and malformed-sidecar failures retain the
+spool for diagnosis and retry. Legacy v1 completed spools are validated, sanitized, and
+upgraded to v2 before replay; without an old checkpoint they remain retained if
+their binding is unavailable rather than being terminalized without a receipt.
+
+This guarantee starts after the first checkpoint is durably committed. A host
+failure before hook invocation remains outside the Engram boundary and is not
+silently described as recovered.
 
 When an inbound turn carries trusted `replyToId`, the adapter asks the local
 reply-context store for at most five prior completed pairs. Links for both the

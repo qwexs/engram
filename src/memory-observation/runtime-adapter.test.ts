@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { AdmissionStore, deriveAdmissionGapReceiptId } from "./admission-store.ts";
 import { tmpdir } from "node:os";
-import { MemoryObservationLedger, purgeMemoryObservationLifecycle, sha256, type TrustedCompletedTurn } from "./ledger.ts";
+import {
+  inspectMemoryObservationAdmission,
+  deriveTraceId,
+  MemoryObservationLedger,
+  purgeMemoryObservationLifecycle,
+  sha256,
+  type LedgerFaultPoint,
+  type TrustedCompletedTurn,
+} from "./ledger.ts";
 import {
   OpenClawObservationRuntimeAdapter,
   observationRuntimeAdapterError,
@@ -26,7 +35,7 @@ function workspace(): string {
   return path;
 }
 
-function ledger(root: string): MemoryObservationLedger {
+function ledger(root: string, fault?: (point: LedgerFaultPoint) => void): MemoryObservationLedger {
   return new MemoryObservationLedger({
     workspace: root,
     workspaceId: "fixture-main",
@@ -42,6 +51,7 @@ function ledger(root: string): MemoryObservationLedger {
       claimTtlMs: 30_000,
       maxInferenceCalls: 0,
     },
+    ...(fault ? { fault } : {}),
   });
 }
 
@@ -76,6 +86,8 @@ function adapter(options: {
   now?: () => Date;
   admitted?: TrustedCompletedTurn[];
   spoolRoot?: string;
+  workspaceRoot?: string;
+  classifyMissingBinding?: (runtimeSessionKey: string) => "revoked" | "unavailable";
   fault?: (point: RuntimeAdapterFaultPoint) => void;
 } = {}) {
   const admitted = options.admitted ?? [];
@@ -90,8 +102,10 @@ function adapter(options: {
   return new OpenClawObservationRuntimeAdapter({
     authority: { id: authority.id, version: authority.version, digest: authority.digest },
     resolveBinding: (key) => key === sessionKey ? binding : null,
+    ...(options.classifyMissingBinding ? { classifyMissingBinding: options.classifyMissingBinding } : {}),
     now: options.now ?? (() => new Date("2026-08-24T19:35:00.000Z")),
     ...(options.spoolRoot ? { spoolRoot: options.spoolRoot } : {}),
+    ...(options.workspaceRoot ? { workspace: options.workspaceRoot } : {}),
     ...(options.fault ? { fault: options.fault } : {}),
   });
 }
@@ -113,6 +127,399 @@ function attach(adapterValue: OpenClawObservationRuntimeAdapter) {
 }
 
 describe("OpenClaw PR2 runtime adapter", () => {
+  test("recovers the trusted hook chain from durable checkpoints before completed spool", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    const store = ledger(root);
+    const binding: RuntimeObservationBinding = {
+      workspaceId: "fixture-main",
+      scopeClass: "self",
+      scopeId: "telegram:100000001",
+      requireOwner: true,
+      allowedChannels: ["telegram"],
+      admit: (source, now) => store.admit(source, now),
+    };
+    const fixture = hookFixtures();
+    adapter({ binding, spoolRoot, workspaceRoot: root })
+      .captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
+    adapter({ binding, spoolRoot, workspaceRoot: root })
+      .adoptPersistedUser(fixture.persistedEvent, { sessionKey });
+    adapter({ binding, spoolRoot, workspaceRoot: root })
+      .attachRun({}, { ...fixture.runContext, sessionId: "session-generation-1" });
+    const completed = adapter({ binding, spoolRoot, workspaceRoot: root })
+      .completeAgentEnd(fixture.endEvent, fixture.runContext);
+    expect(completed.status).toBe("admitted");
+    expect(store.listQueue()).toHaveLength(1);
+    const checkpoints = new AdmissionStore(root, authority).scanCheckpoints();
+    expect(checkpoints.corrupt).toHaveLength(0);
+    expect(checkpoints.records).toContainEqual(expect.objectContaining({
+      stage: "ledger_admitted",
+      sourceText: null,
+      runId: "run-1",
+      sessionId: "session-generation-1",
+    }));
+  });
+
+  test("turns every checkpointed pre-completion restart into one durable gap", () => {
+    for (const stage of ["received", "persisted", "run_attached"] as const) {
+      const root = workspace();
+      const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+      const fixture = hookFixtures();
+      const first = adapter({ spoolRoot, workspaceRoot: root });
+      first.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
+      if (stage !== "received") first.adoptPersistedUser(fixture.persistedEvent, { sessionKey });
+      if (stage === "run_attached") first.attachRun({}, fixture.runContext);
+
+      const restarted = adapter({ spoolRoot, workspaceRoot: root });
+      expect(restarted.reconcileOrphanedCheckpoints(new Date("2026-08-24T19:35:00.000Z"), "periodic"))
+        .toMatchObject({ gaps: 0, retained: 1 });
+      expect(restarted.reconcileOrphanedCheckpoints()).toMatchObject({ gaps: 1, corrupt: 0 });
+      const durable = new AdmissionStore(root, authority);
+      expect(durable.scanGapReceipts().records).toContainEqual(expect.objectContaining({
+        failureStage: stage,
+        reasonCode: "restart_before_completion",
+      }));
+      expect(durable.scanCheckpoints().records).toContainEqual(expect.objectContaining({
+        stage: "terminal_gap",
+        sourceText: null,
+      }));
+      expect(restarted.reconcileOrphanedCheckpoints()).toMatchObject({ gaps: 0 });
+    }
+  });
+
+  test("accounts for overlapping inbound turns without displacing the first candidate", () => {
+    const root = workspace();
+    const runtime = adapter({ workspaceRoot: root });
+    const fixture = hookFixtures();
+    expect(runtime.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext).status).toBe("captured");
+    expect(() => runtime.captureMessageReceived(
+      { ...fixture.receivedEvent, messageId: "43" },
+      { ...fixture.receivedContext, messageId: "43" },
+    )).toThrow("multiple inbound turns");
+
+    const durable = new AdmissionStore(root, authority);
+    expect(durable.scanCheckpoints().records.map((entry) => entry.stage).sort()).toEqual(["received", "terminal_gap"]);
+    expect(durable.scanGapReceipts().records).toContainEqual(expect.objectContaining({
+      failureStage: "received",
+      reasonCode: "identity_ambiguous",
+    }));
+    expect(runtime.stateCounts()).toEqual({ pending: 1, adopted: 0, runs: 0 });
+  });
+
+  test("terminalizes same-candidate identity drift instead of merging it", () => {
+    const root = workspace();
+    const runtime = adapter({ workspaceRoot: root });
+    const fixture = hookFixtures();
+    runtime.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
+    expect(() => runtime.captureMessageReceived(
+      { ...fixture.receivedEvent, senderId: "different-actor" },
+      { ...fixture.receivedContext, senderId: "different-actor" },
+    )).toThrow("candidate identity changed");
+
+    const durable = new AdmissionStore(root, authority);
+    expect(durable.scanCheckpoints().records).toContainEqual(expect.objectContaining({ stage: "terminal_gap", sourceText: null }));
+    expect(durable.scanGapReceipts().records).toContainEqual(expect.objectContaining({ reasonCode: "identity_conflict" }));
+    expect(runtime.stateCounts()).toEqual({ pending: 0, adopted: 0, runs: 0 });
+  });
+
+  test("treats a reordered received hook as a duplicate after durable progress", () => {
+    const root = workspace();
+    const runtime = adapter({ workspaceRoot: root });
+    const fixture = hookFixtures();
+    runtime.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
+    runtime.adoptPersistedUser(fixture.persistedEvent, { sessionKey });
+    expect(runtime.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext))
+      .toEqual({ status: "duplicate", sourceTurnId });
+    runtime.attachRun({}, fixture.runContext);
+    const restarted = adapter({ workspaceRoot: root });
+    expect(restarted.adoptPersistedUser(fixture.persistedEvent, { sessionKey }))
+      .toEqual({ status: "duplicate", sourceTurnId });
+    expect(restarted.attachRun({}, fixture.runContext))
+      .toEqual({ status: "duplicate", sourceTurnId });
+    expect(new AdmissionStore(root, authority).scanGapReceipts().records).toHaveLength(0);
+  });
+
+  test("sanitizes completed spool evidence and strips it after terminal admission", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    const fixture = hookFixtures();
+    fixture.persistedEvent.message.content = [{ type: "text", text: "api_key=super-secret-value" }];
+    fixture.endEvent.messages[0] = { role: "user", idempotencyKey: sourceTurnId, content: "api_key=super-secret-value" };
+    let injected = false;
+    const crashing = adapter({ workspaceRoot: root, spoolRoot, fault: (point) => {
+      if (!injected && point === "after_completed_spool") { injected = true; throw new Error("fault:after_completed_spool"); }
+    } });
+    crashing.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
+    crashing.adoptPersistedUser(fixture.persistedEvent, { sessionKey });
+    crashing.attachRun({}, fixture.runContext);
+    expect(() => crashing.completeAgentEnd(fixture.endEvent, fixture.runContext)).toThrow("fault:after_completed_spool");
+    expect(JSON.stringify(crashing.listSpool())).not.toContain("super-secret-value");
+    const recovered = adapter({ workspaceRoot: root, spoolRoot });
+    expect(recovered.reconcileCompleted().admitted).toBe(1);
+    expect(recovered.listSpool()).toContainEqual(expect.objectContaining({ status: "admitted", source: null }));
+  });
+
+  test("terminalizes an expired admission retry and removes retained evidence", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    const failingBinding: RuntimeObservationBinding = {
+      workspaceId: "fixture-main",
+      scopeClass: "self",
+      scopeId: "telegram:100000001",
+      requireOwner: true,
+      allowedChannels: ["telegram"],
+      admit: () => { throw new Error("temporary admission failure"); },
+    };
+    expect(() => complete(adapter({ binding: failingBinding, workspaceRoot: root, spoolRoot })))
+      .toThrow("temporary admission failure");
+
+    const expired = adapter({
+      binding: failingBinding,
+      workspaceRoot: root,
+      spoolRoot,
+      now: () => new Date("2026-08-27T20:00:00.000Z"),
+    });
+    expect(expired.reconcileCompleted()).toEqual({ admitted: 0, retained: 0, terminal: 1 });
+    expect(expired.listSpool()).toContainEqual(expect.objectContaining({
+      status: "terminal",
+      source: null,
+      reasonCode: "admission_retry_expired",
+    }));
+    expect(new AdmissionStore(root, authority).scanGapReceipts().records)
+      .toContainEqual(expect.objectContaining({ reasonCode: "evidence_invalid", failureStage: "completion_observed" }));
+  });
+
+  test("isolates a corrupt spool record while recovering valid completed work", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    let injected = false;
+    const crashing = adapter({ workspaceRoot: root, spoolRoot, fault: (point) => {
+      if (!injected && point === "after_completed_spool") { injected = true; throw new Error("fault:after_completed_spool"); }
+    } });
+    expect(() => complete(crashing)).toThrow("fault:after_completed_spool");
+    writeFileSync(join(spoolRoot, `${"f".repeat(64)}.json`), "{broken", "utf8");
+    const recovered = adapter({ workspaceRoot: root, spoolRoot });
+    expect(recovered.scanSpool().corrupt).toHaveLength(1);
+    expect(recovered.reconcileCompleted()).toEqual({ admitted: 1, retained: 0, terminal: 0 });
+  });
+
+  test("isolates a poison receipt while reconciling the next valid checkpoint", () => {
+    const root = workspace();
+    const fixture = hookFixtures();
+    adapter({ workspaceRoot: root }).captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
+    adapter({ workspaceRoot: root }).captureMessageReceived(
+      { ...fixture.receivedEvent, messageId: "43" },
+      { ...fixture.receivedContext, messageId: "43" },
+    );
+    const store = new AdmissionStore(root, authority);
+    const poisoned = store.scanCheckpoints().records.find((entry) => entry.inboundMessageId === "42")!;
+    const receiptId = deriveAdmissionGapReceiptId(poisoned.candidateId);
+    const receiptDir = join(root, "memory-state", "memory-observation", "v1", "receipts", "admission-gap");
+    mkdirSync(receiptDir, { recursive: true });
+    writeFileSync(join(receiptDir, `${receiptId.slice(7)}.json`), "{broken", "utf8");
+
+    expect(adapter({ workspaceRoot: root }).reconcileOrphanedCheckpoints()).toMatchObject({
+      gaps: 1,
+      errors: 1,
+      corrupt: 0,
+    });
+    expect(store.scanGapReceipts()).toMatchObject({ records: [{ reasonCode: "restart_before_completion" }], corrupt: [{ path: expect.any(String) }] });
+  });
+
+  test("treats an immutable gap receipt as authoritative over a completed spool", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    let injected = false;
+    const crashing = adapter({ workspaceRoot: root, spoolRoot, fault: (point) => {
+      if (!injected && point === "after_completed_spool") { injected = true; throw new Error("fault:after_completed_spool"); }
+    } });
+    expect(() => complete(crashing)).toThrow("fault:after_completed_spool");
+    const store = new AdmissionStore(root, authority);
+    const checkpoint = store.scanCheckpoints().records[0]!;
+    store.publishGapReceipt({
+      checkpoint,
+      failureStage: "completion_observed",
+      reasonCode: "evidence_invalid",
+      terminalAt: new Date("2026-08-24T19:36:00.000Z"),
+    });
+
+    const admitted: TrustedCompletedTurn[] = [];
+    const recovered = adapter({ admitted, workspaceRoot: root, spoolRoot });
+    expect(recovered.reconcileCompleted()).toEqual({ admitted: 0, retained: 0, terminal: 1 });
+    expect(admitted).toHaveLength(0);
+    expect(recovered.listSpool()).toContainEqual(expect.objectContaining({
+      status: "terminal",
+      source: null,
+      reasonCode: "admission_gap_evidence_invalid",
+    }));
+  });
+
+  test("terminalizes completed work when the exact binding is removed", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    let injected = false;
+    const crashing = adapter({ workspaceRoot: root, spoolRoot, fault: (point) => {
+      if (!injected && point === "after_completed_spool") { injected = true; throw new Error("fault:after_completed_spool"); }
+    } });
+    expect(() => complete(crashing)).toThrow("fault:after_completed_spool");
+    const disabled = adapter({ binding: null, workspaceRoot: root, spoolRoot });
+    expect(disabled.reconcileCompleted()).toEqual({ admitted: 0, retained: 0, terminal: 1 });
+    expect(disabled.listSpool()).toContainEqual(expect.objectContaining({ status: "terminal", source: null }));
+    expect(new AdmissionStore(root, authority).scanGapReceipts().records)
+      .toContainEqual(expect.objectContaining({ reasonCode: "scope_revoked", failureStage: "completion_observed" }));
+  });
+
+  test("retains completed work while binding resolution is transiently unavailable", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    let injected = false;
+    const crashing = adapter({ workspaceRoot: root, spoolRoot, fault: (point) => {
+      if (!injected && point === "after_completed_spool") { injected = true; throw new Error("fault:after_completed_spool"); }
+    } });
+    expect(() => complete(crashing)).toThrow("fault:after_completed_spool");
+    const unavailable = adapter({
+      binding: null,
+      workspaceRoot: root,
+      spoolRoot,
+      classifyMissingBinding: () => "unavailable",
+    });
+    expect(unavailable.reconcileCompleted()).toEqual({ admitted: 0, retained: 1, terminal: 0 });
+    expect(new AdmissionStore(root, authority).scanGapReceipts().records).toHaveLength(0);
+  });
+
+  test("retains completed work when durable admission inspection is unavailable", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    let injected = false;
+    const crashing = adapter({ workspaceRoot: root, spoolRoot, fault: (point) => {
+      if (!injected && point === "after_completed_spool") { injected = true; throw new Error("fault:after_completed_spool"); }
+    } });
+    expect(() => complete(crashing)).toThrow("fault:after_completed_spool");
+    const source = crashing.listSpool()[0]!.source!;
+    const traceId = deriveTraceId(source.scope.workspaceId, source.scope.runtimeSessionKey, source.sourceTurnId);
+    const envelopeDir = join(root, "memory-state", "memory-observation", "v1", "envelopes");
+    mkdirSync(envelopeDir, { recursive: true });
+    writeFileSync(join(envelopeDir, `${traceId.slice(7)}.json`), "{broken", "utf8");
+
+    const recovered = adapter({ binding: null, workspaceRoot: root, spoolRoot });
+    expect(recovered.reconcileCompleted()).toEqual({ admitted: 0, retained: 1, terminal: 0 });
+    expect(new AdmissionStore(root, authority).scanGapReceipts().records).toHaveLength(0);
+  });
+
+  test("recognizes durable admission before a later binding removal or retry expiry", () => {
+    for (const recoveryAt of ["2026-08-24T19:35:00.000Z", "2026-08-27T20:00:00.000Z"]) {
+      const root = workspace();
+      const store = ledger(root);
+      const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+      const binding: RuntimeObservationBinding = {
+        workspaceId: "fixture-main",
+        scopeClass: "self",
+        scopeId: "telegram:100000001",
+        requireOwner: true,
+        allowedChannels: ["telegram"],
+        admit: (source, now) => store.admit(source, now),
+      };
+      const crashing = adapter({
+        binding,
+        workspaceRoot: root,
+        spoolRoot,
+        fault: (point) => { if (point === "after_admission") throw new Error("fault:after_admission"); },
+      });
+      expect(() => complete(crashing)).toThrow("fault:after_admission");
+      expect(store.listQueue()).toHaveLength(1);
+
+      const recovered = adapter({
+        binding: null,
+        workspaceRoot: root,
+        spoolRoot,
+        now: () => new Date(recoveryAt),
+      });
+      expect(recovered.reconcileCompleted()).toEqual({ admitted: 1, retained: 0, terminal: 0 });
+      expect(recovered.listSpool()).toContainEqual(expect.objectContaining({
+        status: "admitted",
+        source: null,
+        reasonCode: "ledger_admission_confirmed_after_recovery",
+      }));
+      expect(new AdmissionStore(root, authority).scanGapReceipts().records).toHaveLength(0);
+    }
+  });
+
+  test("retains a partial ledger admission until an active binding repairs queue and trace", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    const interruptedLedger = ledger(root, (point) => {
+      if (point === "after_envelope") throw new Error("fault:after_envelope");
+    });
+    const binding: RuntimeObservationBinding = {
+      workspaceId: "fixture-main",
+      scopeClass: "self",
+      scopeId: "telegram:100000001",
+      requireOwner: true,
+      allowedChannels: ["telegram"],
+      admit: (source, now) => interruptedLedger.admit(source, now),
+    };
+    const interrupted = adapter({ binding, workspaceRoot: root, spoolRoot });
+    expect(() => complete(interrupted)).toThrow("fault:after_envelope");
+    const source = interrupted.listSpool()[0]!.source!;
+    expect(inspectMemoryObservationAdmission(root, source)).toBe("partial");
+
+    const disabled = adapter({ binding: null, workspaceRoot: root, spoolRoot });
+    expect(disabled.reconcileCompleted()).toEqual({ admitted: 0, retained: 1, terminal: 0 });
+    expect(new AdmissionStore(root, authority).scanGapReceipts().records).toHaveLength(0);
+
+    const healthyLedger = ledger(root);
+    const healthyBinding: RuntimeObservationBinding = { ...binding, admit: (value, now) => healthyLedger.admit(value, now) };
+    expect(adapter({ binding: healthyBinding, workspaceRoot: root, spoolRoot }).reconcileCompleted())
+      .toEqual({ admitted: 1, retained: 0, terminal: 0 });
+    expect(inspectMemoryObservationAdmission(root, source)).toBe("admitted");
+  });
+
+  test("reuses the first durable completion timestamp on a later duplicate completion", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    let injected = false;
+    const first = adapter({ workspaceRoot: root, spoolRoot, fault: (point) => {
+      if (!injected && point === "after_completed_spool") { injected = true; throw new Error("fault:after_completed_spool"); }
+    } });
+    const fixture = attach(first);
+    expect(() => first.completeAgentEnd(fixture.endEvent, fixture.runContext)).toThrow("fault:after_completed_spool");
+
+    const admitted: TrustedCompletedTurn[] = [];
+    const later = adapter({
+      admitted,
+      workspaceRoot: root,
+      spoolRoot,
+      now: () => new Date("2026-08-24T20:35:00.000Z"),
+    });
+    expect(later.completeAgentEnd(fixture.endEvent, fixture.runContext).status).toBe("admitted");
+    expect(admitted[0]!.sourceCompletedAt).toBe("2026-08-24T19:35:00.000Z");
+  });
+
+  test("migrates a legacy v1 completed spool before recovery", () => {
+    const root = workspace();
+    const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
+    let injected = false;
+    const crashing = adapter({ workspaceRoot: root, spoolRoot, fault: (point) => {
+      if (!injected && point === "after_completed_spool") { injected = true; throw new Error("fault:after_completed_spool"); }
+    } });
+    expect(() => complete(crashing)).toThrow("fault:after_completed_spool");
+    const path = join(spoolRoot, `${"a".repeat(64)}.json`);
+    const current = JSON.parse(readFileSync(path, "utf8"));
+    current.schema = "engram.memory-runtime-admission-spool.v1";
+    delete current.candidateId;
+    delete current.sealedPayloadDigest;
+    writeFileSync(path, `${JSON.stringify(current, null, 2)}\n`, "utf8");
+
+    const recovered = adapter({ workspaceRoot: root, spoolRoot });
+    expect(recovered.reconcileCompleted()).toEqual({ admitted: 1, retained: 0, terminal: 0 });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
+      schema: "engram.memory-runtime-admission-spool.v2",
+      candidateId: expect.stringMatching(/^sha256:/),
+      sealedPayloadDigest: expect.stringMatching(/^sha256:/),
+      source: null,
+    });
+  });
+
   test("recovers a completed source across crashes on both sides of ledger admission", () => {
     for (const faultPoint of ["after_completed_spool", "after_admission"] as const) {
       const root = workspace();
@@ -168,13 +575,13 @@ describe("OpenClaw PR2 runtime adapter", () => {
     expect(conflicting.listSpool()).toContainEqual(expect.objectContaining({ status: "completed", sourceTurnId }));
   });
 
-  test("retains incomplete recovery work and purges only old terminal spool records", () => {
+  test("retains terminal spool replay protection for 180 days", () => {
     const root = workspace();
     const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
     const completed = adapter({ spoolRoot });
     expect(complete(completed).status).toBe("admitted");
     expect(completed.listSpool()).toHaveLength(1);
-    expect(purgeMemoryObservationLifecycle(root, new Date("2026-09-24T19:35:00.001Z"))).toMatchObject({ preAdmission: 1 });
+    expect(purgeMemoryObservationLifecycle(root, new Date("2027-02-21T19:35:00.001Z"))).toMatchObject({ preAdmission: 1 });
     expect(completed.listSpool()).toHaveLength(0);
   });
 
@@ -457,6 +864,32 @@ describe("OpenClaw PR2 runtime adapter", () => {
 
     expect(() => adapter().captureMessageReceived(fixture.receivedEvent, { ...fixture.receivedContext, messageId: "different" }))
       .toThrow("differs across runtime surfaces");
+  });
+
+  test("rejects changed persisted or terminal source content under the same identity", () => {
+    const persistedRoot = workspace();
+    const persisted = adapter({ workspaceRoot: persistedRoot });
+    const fixture = hookFixtures();
+    persisted.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
+    persisted.adoptPersistedUser(fixture.persistedEvent, { sessionKey });
+    expect(() => persisted.adoptPersistedUser({
+      ...fixture.persistedEvent,
+      message: { ...fixture.persistedEvent.message, content: "changed persisted content" },
+    }, { sessionKey })).toThrow("source identity changed after durable progress");
+    expect(new AdmissionStore(persistedRoot, authority).scanGapReceipts().records)
+      .toContainEqual(expect.objectContaining({ reasonCode: "identity_conflict", failureStage: "persisted" }));
+
+    const terminalRoot = workspace();
+    const terminal = adapter({ workspaceRoot: terminalRoot });
+    const attached = attach(terminal);
+    expect(() => terminal.completeAgentEnd({
+      ...attached.endEvent,
+      messages: attached.endEvent.messages.map((message) => message.role === "user"
+        ? { ...message, content: "changed terminal source content" }
+        : message),
+    }, attached.runContext)).toThrow("source content changed");
+    expect(new AdmissionStore(terminalRoot, authority).scanGapReceipts().records)
+      .toContainEqual(expect.objectContaining({ reasonCode: "identity_conflict", failureStage: "run_attached" }));
   });
 
   test("rechecks the complete exact binding immediately before admission", () => {

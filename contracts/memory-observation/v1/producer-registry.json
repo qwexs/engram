@@ -8,7 +8,7 @@
       "version": "v1",
       "digest": "sha256:41580b56cf8dc83fea5f78568092308214f851833a5c6cae537bf1a21b3626bd",
       "authorityClass": "runtime",
-      "artifactSchemas": ["engram.memory-observation-job.v1", "engram.memory-trace-event.v1"],
+      "artifactSchemas": ["engram.memory-observation-job.v1", "engram.memory-admission-gap-receipt.v1", "engram.memory-trace-event.v1"],
       "observationClasses": [],
       "capabilities": {
         "mayReadRawEvidence": true,

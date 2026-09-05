@@ -264,6 +264,56 @@ export function deriveSourceDigest(sourceTurnId: string, scope: ObservationScope
   return sha256({ sourceTurnId, scope, sourceCompletedAt } as unknown as JsonValue);
 }
 
+export function inspectMemoryObservationAdmission(
+  workspace: string,
+  source: TrustedCompletedTurn,
+): "absent" | "partial" | "admitted" {
+  const traceId = deriveTraceId(source.scope.workspaceId, source.scope.runtimeSessionKey, source.sourceTurnId);
+  const path = join(resolve(workspace), ...ROOT_SEGMENTS, "envelopes", `${digestKey(traceId)}.json`);
+  if (!existsSync(path)) return "absent";
+  const envelope = readJson<ObservationJobV1>(path);
+  const evidenceDigest = sha256({
+    schema: "engram.memory-evidence-envelope.v1",
+    traceId,
+    scope: source.scope,
+    payload: sanitizeEvidence(source.redactedEvidence),
+  } as unknown as JsonValue);
+  const sourceDigest = deriveSourceDigest(source.sourceTurnId, source.scope, source.sourceCompletedAt);
+  if (envelope.schema !== SOURCE_SCHEMA
+    || envelope.traceId !== traceId
+    || envelope.sourceTurnId !== source.sourceTurnId
+    || !jsonEqual(envelope.scope, source.scope)
+    || envelope.sourceCompletedAt !== source.sourceCompletedAt
+    || envelope.sourceDigest !== sourceDigest
+    || envelope.evidenceDigest !== evidenceDigest
+    || !jsonEqual(envelope.evidenceRefs, source.evidenceRefs)
+    || !jsonEqual(envelope.authority, source.authority)) {
+    throw new ObservationLedgerError("CONTENT_CONFLICT", "durable source admission has different content");
+  }
+  const queuePath = join(resolve(workspace), ...ROOT_SEGMENTS, "queues", "evaluator", `${digestKey(traceId)}.json`);
+  const traceEventId = deriveTraceEventId(traceId, "source_completed", sourceDigest);
+  const tracePath = join(resolve(workspace), ...ROOT_SEGMENTS, "traces", digestKey(traceId), `${digestKey(traceEventId)}.json`);
+  if (!existsSync(queuePath) || !existsSync(tracePath)) return "partial";
+  const queue = readJson<LedgerQueueRecordV1>(queuePath);
+  const trace = readJson<TraceEventV1>(tracePath);
+  if (queue.schema !== "engram.memory-observation-ledger-queue.v1"
+    || queue.traceId !== traceId
+    || queue.queueClass !== "evaluator"
+    || trace.schema !== "engram.memory-trace-event.v1"
+    || trace.eventId !== traceEventId
+    || trace.traceId !== traceId
+    || trace.stage !== "source_completed"
+    || !jsonEqual(trace.scope, source.scope)
+    || !jsonEqual(trace.producer, source.authority)
+    || !jsonEqual(trace.stageRef, { kind: "source-turn", ref: source.sourceTurnId, digest: sourceDigest })
+    || trace.recordedAt !== envelope.admittedAt
+    || trace.policyDigest !== envelope.policyDigest
+    || trace.reasonCode !== "trusted_source_completed") {
+    throw new ObservationLedgerError("CONTENT_CONFLICT", "durable source admission sidecars have different content");
+  }
+  return "admitted";
+}
+
 export function deriveTraceEventId(traceId: Digest, stage: string, stageRefDigest: Digest): Digest {
   return sha256(`engram.memory-trace-event.v1\0${traceId}\0${stage}\0${stageRefDigest}`);
 }
@@ -427,11 +477,21 @@ export function purgeMemoryObservationLifecycle(workspace: string, now = new Dat
       const path = join(preAdmissionDir, name);
       const record = lifecycleJson(path);
       const completed = record?.status === "admitted"
-        ? isExpired(record.admittedAt, cutoff30)
-        : record?.status === "terminal" && isExpired(record.terminalAt, cutoff30);
+        ? isExpired(record.admittedAt, cutoff180)
+        : record?.status === "terminal" && isExpired(record.terminalAt, cutoff180);
       if (completed) { unlinkSync(path); result.preAdmission++; preAdmissionChanged = true; }
     }
     if (preAdmissionChanged) flushDirectory(preAdmissionDir);
+    const checkpointDir = join(preAdmissionDir, "checkpoints");
+    let checkpointChanged = false;
+    if (existsSync(checkpointDir)) for (const name of readdirSync(checkpointDir).filter((value) => value.endsWith(".json"))) {
+      const path = join(checkpointDir, name);
+      const record = lifecycleJson(path);
+      const terminal = (record?.stage === "ledger_admitted" || record?.stage === "terminal_gap")
+        && isExpired(record.updatedAt, cutoff180);
+      if (terminal) { unlinkSync(path); result.preAdmission++; checkpointChanged = true; }
+    }
+    if (checkpointChanged) flushDirectory(checkpointDir);
     const envelopeDir = join(root, "envelopes");
     let envelopesChanged = false;
     if (existsSync(envelopeDir)) for (const name of readdirSync(envelopeDir).filter((value) => value.endsWith(".json"))) {
@@ -475,14 +535,15 @@ export function purgeMemoryObservationLifecycle(workspace: string, now = new Dat
         if (readdirSync(directory).length === 0) { rmSync(directory, { recursive: false, force: true }); flushDirectory(tracesDir); }
       } catch { /* retain unexpected entries */ }
     }
-    for (const kind of ["by-operation", "by-entry"] as const) {
+    for (const kind of ["by-operation", "by-entry", "admission-gap"] as const) {
       const directory = join(root, "receipts", kind);
       if (!existsSync(directory)) continue;
       let changed = false;
       for (const name of readdirSync(directory).filter((value) => value.endsWith(".json"))) {
         const path = join(directory, name);
         const record = lifecycleJson(path);
-        if (record && isExpired(record.completedAt, cutoff180)) { unlinkSync(path); result.receipts++; changed = true; }
+        const terminalAt = kind === "admission-gap" ? record?.terminalAt : record?.completedAt;
+        if (record && isExpired(terminalAt, cutoff180)) { unlinkSync(path); result.receipts++; changed = true; }
       }
       if (changed) flushDirectory(directory);
     }

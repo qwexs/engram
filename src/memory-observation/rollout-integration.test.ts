@@ -45,6 +45,10 @@ describe("memory observation shadow and daily-note canary rollout integration", 
       "memory-observation:daily-note-handoff",
       "qmd_pending",
       "nextDueAt",
+      "classifyMissingBinding",
+      "ledger_admission_confirmed_after_recovery",
+      "admission-gap",
+      "withCandidateDisposition",
     ]) expect(bundle).toContain(marker);
     for (const forbidden of [
       "runEmbeddedAgent",

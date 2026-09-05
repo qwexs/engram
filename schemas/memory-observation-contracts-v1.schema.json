@@ -9,6 +9,7 @@
     { "$ref": "#/$defs/batchObservation" },
     { "$ref": "#/$defs/traceEvent" },
     { "$ref": "#/$defs/applyReceipt" },
+    { "$ref": "#/$defs/admissionGapReceipt" },
     { "$ref": "#/$defs/producerRegistry" },
     { "$ref": "#/$defs/ollObserverReceiptProducerRegistry" },
     { "$ref": "#/$defs/classRegistry" },
@@ -471,6 +472,42 @@
           "else": { "properties": { "verification": { "type": "null" } } }
         }
       ]
+    },
+    "admissionGapReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "receiptId", "candidateId", "sourceTurnId", "scope",
+        "failureStage", "reasonCode", "producer", "bindingFingerprint",
+        "checkpointDigest", "discoveredAt", "terminalAt", "receiptDigest"
+      ],
+      "properties": {
+        "schema": { "const": "engram.memory-admission-gap-receipt.v1" },
+        "receiptId": { "$ref": "#/$defs/digest" },
+        "candidateId": { "$ref": "#/$defs/digest" },
+        "sourceTurnId": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^channel-user:v1:[a-f0-9]{64}$" }
+          ]
+        },
+        "scope": { "$ref": "#/$defs/scope" },
+        "failureStage": { "enum": ["received", "persisted", "run_attached", "completion_observed"] },
+        "reasonCode": {
+          "enum": [
+            "restart_before_completion", "expired_before_completion",
+            "identity_ambiguous", "identity_conflict", "scope_revoked",
+            "run_failed", "delivery_failed", "evidence_missing",
+            "evidence_invalid"
+          ]
+        },
+        "producer": { "$ref": "#/$defs/producerRef" },
+        "bindingFingerprint": { "$ref": "#/$defs/digest" },
+        "checkpointDigest": { "$ref": "#/$defs/digest" },
+        "discoveredAt": { "$ref": "#/$defs/instant" },
+        "terminalAt": { "$ref": "#/$defs/instant" },
+        "receiptDigest": { "$ref": "#/$defs/digest" }
+      }
     },
     "applyReceipt": {
       "type": "object",

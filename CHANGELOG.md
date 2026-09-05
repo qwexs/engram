@@ -2,12 +2,29 @@
 
 ## Unreleased
 
+- **fix(memory): make checkpointed runtime admission crash-accountable.**
+  The runtime adapter now persists a monotonic checkpoint before publishing
+  process-local correlation, resumes the trusted hook chain across adapter
+  restart, and emits one immutable content-free gap receipt when a checkpointed
+  candidate cannot reach ledger admission. Completed spool evidence is
+  sanitized before publication and stripped after terminal disposition;
+  content-free terminal state shares the 180-day replay-protection window, and
+  the first immutable receipt repairs an interrupted checkpoint update. A
+  per-candidate cross-process lock and full envelope+queue+trace probe prevent
+  a post-admission crash from producing a second gap, partial ledger admission
+  remains repairable, reordered hooks reuse the original completion timestamp,
+  legacy v1 spools are sanitized and upgraded before replay, and
+  transient projection failures retain work for retry. Corrupt records no
+  longer block valid recovery. The guarantee deliberately
+  begins at the first accepted `message_received` checkpoint—host failures
+  before hook invocation remain a bounded transcript-SDK research item.
+
 - **fix(memory): recognize live batch dispositions in shadow campaign baselines.**
   Campaign snapshots preserve `write`, `skip`, and bounded `defer` semantics
   from current batch terminal reason codes, keep technical failures distinct,
   and require an exact validated batch observation for every historical write.
 
-- **fix(memory): make admission and family-batch recovery crash-complete.**
+- **fix(memory): make completed-spool and family-batch recovery crash-complete.**
   Completed runtime turns are durably spooled before ledger admission and
   reconciled on plugin startup; replay after either side of the admission
   boundary remains idempotent and rejects identity drift. Exact-scope workers

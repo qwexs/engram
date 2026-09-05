@@ -27,6 +27,7 @@ function validator(definition: string) {
 const validateBundle = ajv.getSchema(schema.$id)!;
 const validateObservation = validator("observation");
 const validateApplyReceipt = validator("applyReceipt");
+const validateAdmissionGapReceipt = validator("admissionGapReceipt");
 
 const registry = readJson(join(CONTRACT_ROOT, "producer-registry.json"));
 const classRegistry = readJson(join(CONTRACT_ROOT, "class-registry.json"));
@@ -196,6 +197,28 @@ describe("Memory Observation Layer PR0 schema bundle", () => {
     });
     const { sourceProvenance: _removed, ...withoutSourceProvenance } = receipt;
     expect(validateApplyReceipt(withoutSourceProvenance)).toBe(false);
+  });
+
+  test("keeps admission gap receipts content-free with closed terminal reasons", () => {
+    const fixture = readJson(join(FIXTURE_ROOT, "valid", "admission-gap-receipt.json"));
+    const reasonCodes = [
+      "restart_before_completion",
+      "expired_before_completion",
+      "identity_ambiguous",
+      "identity_conflict",
+      "scope_revoked",
+      "run_failed",
+      "delivery_failed",
+      "evidence_missing",
+      "evidence_invalid",
+    ];
+    for (const reasonCode of reasonCodes) {
+      expect(validateAdmissionGapReceipt({ ...fixture, reasonCode }), reasonCode).toBe(true);
+    }
+    expect(validateAdmissionGapReceipt({ ...fixture, reasonCode: "unknown" })).toBe(false);
+    for (const field of ["content", "payload", "evidence"]) {
+      expect(validateAdmissionGapReceipt({ ...fixture, [field]: "forbidden" }), field).toBe(false);
+    }
   });
 
   test("validates registries and every default-deny consumer policy", () => {

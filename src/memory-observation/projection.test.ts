@@ -251,6 +251,11 @@ describe("memory observation rollout projection", () => {
           timezone: "Europe/Moscow",
           allowedObservationClasses: ["episodic.event", "episodic.decision"],
           maxAppliesPerWake: 1,
+          qmdBinding: {
+            resolver: "exact-session-registry",
+            manifestPath: "/workspace/ops/qmd-migration.json",
+            workspaceRegistryDigest: `sha256:${"e".repeat(64)}`,
+          },
         },
       },
       captureOwnership: {
@@ -265,7 +270,7 @@ describe("memory observation rollout projection", () => {
     expect(memoryObservationBinding(active, topicKey)?.runtimeSessionKey).toBe(topicKey);
     expect(memoryObservationBinding(active, topicKey)?.scopeId).toBe("workspace:main");
     expect(memoryObservationCaptureOwner(active, topicKey, new Date(effectiveAfter))).toBe("observer");
-    expect(active.consumers?.dailyNote.qmdBinding).toBeUndefined();
+    expect(active.consumers?.dailyNote.qmdBinding).toMatchObject({ resolver: "exact-session-registry" });
     expect(memoryObservationBinding(active, "agent:company:telegram:group:-1")).toBeNull();
 
     writeProjection(root, { ...family, schema: MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2 });
@@ -281,5 +286,22 @@ describe("memory observation rollout projection", () => {
       },
     });
     expect(() => resolveMemoryObservationProjection({ workspace: root, workspaceId: "main" })).toThrow("projection is invalid");
+
+    const { qmdBinding: _requiredResolver, ...dailyNoteWithoutResolver } = family.consumers!.dailyNote;
+    writeProjection(root, { ...family, consumers: { dailyNote: dailyNoteWithoutResolver } });
+    expect(() => resolveMemoryObservationProjection({ workspace: root, workspaceId: "main" })).toThrow("projection is invalid");
+
+    for (const qmdBinding of [
+      { resolver: "exact-session-registry", manifestPath: "ops/qmd.json", workspaceRegistryDigest: `sha256:${"e".repeat(64)}` },
+      { resolver: "exact-session-registry", manifestPath: "/workspace/ops/qmd.json", workspaceRegistryDigest: "unknown" },
+      { resolver: "prefix-guess", manifestPath: "/workspace/ops/qmd.json", workspaceRegistryDigest: `sha256:${"e".repeat(64)}` },
+      { resolver: "exact-session-registry", manifestPath: "/workspace/ops/qmd.json", workspaceRegistryDigest: `sha256:${"e".repeat(64)}`, collection: "fallback" },
+    ]) {
+      writeProjection(root, {
+        ...family,
+        consumers: { dailyNote: { ...family.consumers!.dailyNote, qmdBinding } },
+      });
+      expect(() => resolveMemoryObservationProjection({ workspace: root, workspaceId: "main" })).toThrow("projection is invalid");
+    }
   });
 });

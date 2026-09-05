@@ -536,6 +536,19 @@
         "canonicalMutation": { "type": "boolean" },
         "readBackDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
         "policyDigest": { "$ref": "#/$defs/digest" },
+        "qmdBinding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["collection", "bindingDigest", "canonicalRoot", "indexName", "indexKey", "workspaceRegistryDigest"],
+          "properties": {
+            "collection": { "$ref": "#/$defs/token" },
+            "bindingDigest": { "$ref": "#/$defs/digest" },
+            "canonicalRoot": { "type": "string", "minLength": 1, "maxLength": 1000 },
+            "indexName": { "$ref": "#/$defs/token" },
+            "indexKey": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "workspaceRegistryDigest": { "$ref": "#/$defs/digest" }
+          }
+        },
         "completedAt": { "$ref": "#/$defs/instant" }
       },
       "allOf": [

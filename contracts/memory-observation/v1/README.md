@@ -191,8 +191,15 @@ later product/authority contract and is not a hidden PR1 deliverable.
   The shipped registry cannot admit live input because both its exact-scope
   and evaluator-policy allowlists are empty; runtime activation is a separate
   reviewed config and rollout step. Exact-session canaries may perform a
-  durable QMD dirty handoff. Family canaries reject a single ambiguous QMD
-  binding until per-session collection mapping exists.
+  durable QMD dirty handoff. A family canary requires the
+  `exact-session-registry` resolver: it pins only its workspace registry slice,
+  then resolves each exact runtime session to one owned/readable `*.md`
+  collection and its physical index key. Missing, broad, ambiguous, symlinked,
+  or drifted mappings remain `qmd_pending` and cannot fall back to a primary or
+  aggregate collection. An applied receipt seals the concrete binding used at
+  write time. Recovery after registry/index rotation may use a newly resolved
+  binding only for the same canonical session root; Recall Authority rejects a
+  receipt that cannot prove that root continuity.
 - Independent blocker review completed with a targeted-rework verdict. This
   pack must remain an isolated repository commit and pass ordinary review
   before any runtime may pin its digest.

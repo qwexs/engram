@@ -71,6 +71,22 @@ bun scripts/watchdog.js --workspace /path/to/main \
   --qmd-registry /path/to/registry.json --json
 ```
 
+## Memory Observation family resolver
+
+A bounded `agent:<id>:*` canary is an admission selector, not a QMD scope. Its
+required `exact-session-registry` resolver pins a digest of the current
+workspace entry, named index, and all collections owned by that workspace.
+Changes to another workspace do not invalidate this digest; any relevant local
+mapping change requires a new reviewed rollout projection.
+
+For each concrete runtime session, the resolver canonicalizes
+`memory/agent-<id>/<session-segment>` and requires exactly one registry
+collection whose owner matches, root is exactly equal, mask is `*.md`, and name
+is present in both owned and readable QMD policy. The physical index must exist
+and its path-derived key is included in the resolved binding. Wildcards,
+aggregate roots, prefixes, primary-collection defaults, adjacent sessions,
+symlinks and duplicate matches are rejected without fallback.
+
 ## Migration planner
 
 Deployment manifests contain absolute paths, workspace identifiers and exact

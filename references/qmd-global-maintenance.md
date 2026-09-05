@@ -71,6 +71,15 @@ The state records:
 9. A live lease returns `deferred`; an expired lease can be recovered.
 10. QMD's index-scoped embed lock remains the final duplicate-work defense.
 
+Memory Observation family canaries add one gate before rule 1: an exact
+runtime session must resolve through the pinned registry slice to one
+owned/readable `*.md` collection. The applicator resolves before canonical
+write and rechecks at apply time. `markWorkspaceQmdDirty` receives the resolved
+`expectedIndexKey` and compares it with the current context before calling
+`markDirty`; a mismatch therefore creates no generation. Missing or transient
+resolution stays durably `qmd_pending` and is retried without a collection
+fallback.
+
 ## Acceptance criteria
 
 - 100 dirty marks coalesce into one maintenance pass.

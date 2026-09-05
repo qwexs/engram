@@ -65,8 +65,9 @@ write still retains its exact runtime session scope.
   user or assistant actor; reply-context citations are supporting evidence only;
 - crash-safe bounded terminal recovery with staged authorization, exact
   evidence snapshots, and stale-owner lock recovery;
-- exact-session QMD dirty handoff with durable retry; family projections reject
-  a single ambiguous QMD binding;
+- exact-session QMD dirty handoff with durable retry; family canaries require
+  a pinned registry-slice resolver that maps each exact runtime session to
+  exactly one owned/readable `*.md` collection and rejects every fallback;
 - read-only Recall Authority compilation for immediate and multi-assertion
   batch receipts;
 - receipt-joined Decision-to-OLL admission gated by exact producer, scope,
@@ -75,7 +76,8 @@ write still retains its exact runtime session scope.
 ## Deliberately absent
 
 - KG canonical mutation and domain consumers;
-- family-wide QMD binding without an exact per-session collection mapping;
+- aggregate or name-derived family-wide QMD binding without an exact
+  per-session collection mapping;
 - fleet activation or cross-agent/workspace bindings;
 - discovery of host-persisted turns for which `message_received` never reached
   the plugin; bounded public transcript-SDK recovery remains report-only work
@@ -151,8 +153,18 @@ excludes every consumer. `canary`
 adds the daily-note applicator and requires a forward-only `applyAfter`. Its
 baseline mode remains event-only; the separately acknowledged ownership mode
 admits events and decisions and disables foreground daily-note capture after
-the same exact boundary. QMD handoff is available only for exact-session
-bindings; observer Decisions reach OLL only through the receipt-joined bridge.
+the same exact boundary. QMD handoff uses either a preflighted exact-session
+binding or a family resolver pinned to the current workspace's registry slice.
+The resolver rechecks the exact canonical session root, `*.md` mask, owner,
+readability, named physical index and index key before any note mutation and
+again before publishing a dirty generation. Missing, ambiguous, broad-mask,
+symlinked or drifted mappings remain recoverable as `qmd_pending`; no primary,
+prefix or aggregate-root fallback exists. Observer Decisions reach OLL only
+through the receipt-joined bridge. Each immutable apply receipt also seals the
+concrete QMD binding used at write time. If the registry or physical index is
+rotated after the receipt, retry may use the newly authorized binding only when
+its canonical session root is identical; Recall Authority verifies the same
+continuity before compiling a retrieval manifest.
 KG canonical mutation and recall telemetry remain off.
 
 Known pre-admission recovery gaps and the public transcript-runtime research

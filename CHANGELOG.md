@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **fix(memory): resolve family QMD handoff by exact runtime session.**
+  A v3 family canary must now pin its workspace registry slice and resolve each
+  concrete runtime session to exactly one owned/readable `*.md` collection.
+  The effective consumer policy records the canonical root, collection,
+  registry digest and physical index key; resolution runs before canonical
+  mutation and is rechecked at apply time. Missing, ambiguous, broad-mask,
+  symlinked or drifted mappings remain recoverable as `qmd_pending` without a
+  primary/name-prefix fallback. Dirty publication verifies `expectedIndexKey`
+  before mutating coordinator state. The immutable apply receipt preserves the
+  concrete binding used for the canonical write; a retry may adopt a newer
+  registry/index revision only when both bindings prove the same exact
+  canonical session root, and Recall Authority verifies that proof. Receipt
+  lookup treats the operation record as canonical and repairs a missing entry
+  alias after a crash between the two immutable publications.
+
 - **fix(memory): make checkpointed runtime admission crash-accountable.**
   The runtime adapter now persists a monotonic checkpoint before publishing
   process-local correlation, resumes the trusted hook chain across adapter

@@ -49,6 +49,9 @@ describe("memory observation shadow and daily-note canary rollout integration", 
       "ledger_admission_confirmed_after_recovery",
       "admission-gap",
       "withCandidateDisposition",
+      "exact-session-registry",
+      "workspaceRegistryDigest",
+      "expectedIndexKey",
     ]) expect(bundle).toContain(marker);
     for (const forbidden of [
       "runEmbeddedAgent",
@@ -84,6 +87,8 @@ describe("memory observation shadow and daily-note canary rollout integration", 
     expect(rolloutSource).toContain("plugins.entries.${PLUGIN_ID}.llm.allowedModels");
     expect(rolloutSource).toContain("hasExactInferenceModelAuthorization");
     expect(rolloutSource).toContain("deriveBatchEvaluationPolicyDigest");
+    expect(rolloutSource).toContain("defineCanaryQmdRuntimeResolver");
+    expect(rolloutSource).toContain("family canary QMD handoff requires only --qmd-manifest");
     expect(rolloutSource).toContain("pluginDigest: bundle.digest");
     expect(rolloutSource).not.toContain("inference model must match the configured default main agent model");
     const registry = JSON.parse(readFileSync(join(repository, "contracts", "memory-observation", "v1", "producer-registry.json"), "utf8"));

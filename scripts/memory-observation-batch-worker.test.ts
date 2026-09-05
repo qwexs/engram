@@ -88,7 +88,7 @@ describe("memory observation batch worker CLI", () => {
       inference: { provider: "openai", model: "openai/gpt-5.6-terra", evaluateAfter: "2026-09-02T11:28:00.000Z" },
       evaluation: { mode: "batch-cron", policyDigest: sha256("current-batch-policy"), batch: { sourcePolicyDigest: sha256("source-policy"), inactivityGapSeconds: 300, maxTurns: 8, maxEvidenceBytes: 262144, maxAgeSeconds: 900, maxInferenceCallsPerRun: 1, schedulerId: "engram-memory-batch-main" } },
       limits: { evidenceTtlHours: 72, maxJobs: 1000, maxBytes: 67108864, maxQueueAgeHours: 168, maxAttempts: 2, claimTtlSeconds: 300, maxInferenceCalls: 1 },
-      consumers: { dailyNote: { mode: "canary", applyAfter: "2026-09-03T19:26:12.000Z", timezone: "Europe/Moscow", allowedObservationClasses: ["episodic.event", "episodic.decision"], maxAppliesPerWake: 1 } },
+      consumers: { dailyNote: { mode: "canary", applyAfter: "2026-09-03T19:26:12.000Z", timezone: "Europe/Moscow", allowedObservationClasses: ["episodic.event", "episodic.decision"], maxAppliesPerWake: 1, qmdBinding: { resolver: "exact-session-registry", manifestPath: join(workspace, "ops", "qmd-migration.json"), workspaceRegistryDigest: sha256("workspace-registry") } } },
       captureOwnership: { owner: "observer", effectiveAfter: "2026-09-03T19:26:12.000Z", foregroundDailyNoteCapture: "disabled" },
       approvedBy: "operator", approvedAt: "2026-09-03T19:26:12.000Z",
     }));

@@ -158,7 +158,7 @@ function marked(root: string): WorkspaceDirtyMarkResult {
     status: "marked",
     mode: "coordinated",
     workspace: root,
-    indexKey: "named:sample-global",
+    indexKey: "f".repeat(64),
     generation: 1,
     collections: ["main-direct-memory"],
   };
@@ -188,7 +188,7 @@ describe("daily-note canary applicator", () => {
   });
 
   test("recovers after every post-mutation crash without duplicating the Markdown entry", async () => {
-    for (const point of ["after_note_write", "after_receipt", "after_trace"] as DailyNoteApplicatorFaultPoint[]) {
+    for (const point of ["after_note_write", "after_receipt_primary", "after_receipt", "after_trace"] as DailyNoteApplicatorFaultPoint[]) {
       const root = workspace();
       const value = observation({ traceId: sha256(`trace-${point}`) });
       persist(root, value);
@@ -465,7 +465,7 @@ describe("daily-note canary applicator", () => {
       resolveActivePolicy: () => policy({ qmdBinding: { collection: "main-direct-memory" } }),
       dirtyMarker: async () => marked(root),
       fault: (point) => {
-        if (!faulted && point === "after_receipt") { faulted = true; throw new Error("crash-after-receipt"); }
+        if (!faulted && point === "after_receipt_primary") { faulted = true; throw new Error("crash-after-receipt-primary"); }
       },
     });
     expect((await first.processOne(new Date("2026-08-26T21:32:00.000Z"))).status).toBe("retry");
@@ -490,5 +490,163 @@ describe("daily-note canary applicator", () => {
     });
     expect((await applicator.processOne(new Date("2026-08-26T21:32:00.000Z"))).status).toBe("qmd_pending");
     expect(applicator.listQueue()[0]).toMatchObject({ status: "qmd_pending", reasonCode: "qmd_dirty_mark_failed", terminalAt: null });
+  });
+
+  test("retains an unresolved family binding as QMD pending and resolves it again on retry", async () => {
+    const root = workspace();
+    const value = observation({ traceId: sha256("qmd-runtime-resolver-retry") });
+    persist(root, value);
+    let available = false;
+    let dirtyCalls = 0;
+    const resolver = {
+      resolver: "exact-session-registry" as const,
+      manifestPath: join(root, "ops", "qmd-migration.json"),
+      workspaceRegistryDigest: sha256("pinned-manifest"),
+    };
+    const applicator = new DailyNoteCanaryApplicator({
+      workspace: root,
+      resolveActivePolicy: () => policy({ qmdBinding: resolver }),
+      qmdBindingResolver: () => {
+        if (!available) throw new Error("registry temporarily unavailable");
+        return {
+          collection: "main-direct-memory",
+          indexKey: "f".repeat(64),
+          indexName: "sample-global",
+          canonicalRoot: join(root, "memory", "agent-main", "telegram-direct-100000001"),
+          bindingDigest: sha256("resolved-binding"),
+          workspaceRegistryDigest: sha256("workspace-registry"),
+        };
+      },
+      dirtyMarker: async () => { dirtyCalls += 1; return marked(root); },
+    });
+
+    expect((await applicator.processOne(new Date("2026-08-26T21:32:00.000Z"))).status).toBe("qmd_pending");
+    expect(dirtyCalls).toBe(0);
+    expect(applicator.readReceipt(value.observationId)).toBeNull();
+    expect(existsSync(join(root, "memory", "agent-main", "telegram-direct-100000001", "2026-08-27.md"))).toBe(false);
+    expect(existsSync(join(root, "memory-state", "memory-observation", "v1", "traces", value.traceId.slice(7)))).toBe(false);
+    const pending = applicator.listQueue()[0]!;
+    expect(pending).toMatchObject({ status: "qmd_pending", reasonCode: "qmd_binding_unavailable", terminalAt: null });
+
+    available = true;
+    expect((await applicator.processOne(new Date(pending.nextAttemptAt!))).status).toBe("applied");
+    expect(dirtyCalls).toBe(1);
+    expect(applicator.listQueue()[0]).toMatchObject({ status: "terminal", reasonCode: "canonical_applied" });
+    expect(readdirSync(join(root, "memory-state", "memory-observation", "v1", "traces", value.traceId.slice(7)))).toHaveLength(1);
+    const note = readFileSync(join(root, "memory", "agent-main", "telegram-direct-100000001", "2026-08-27.md"), "utf8");
+    expect(count(note, "<!-- engram-entry:sha256:")).toBe(1);
+  });
+
+  test("resumes a receipt-backed QMD handoff across an exact-root binding change", async () => {
+    const root = workspace();
+    const value = observation({ traceId: sha256("qmd-receipt-binding-drift") });
+    persist(root, value);
+    const canonicalRoot = join(root, "memory", "agent-main", "telegram-direct-100000001");
+    const descriptor = {
+      resolver: "exact-session-registry" as const,
+      manifestPath: join(root, "ops", "qmd-migration.json"),
+      workspaceRegistryDigest: sha256("workspace-registry"),
+    };
+    let revision = 1;
+    let faulted = false;
+    const dirtyCollections: string[][] = [];
+    const applicator = new DailyNoteCanaryApplicator({
+      workspace: root,
+      resolveActivePolicy: () => policy({ qmdBinding: descriptor }),
+      qmdBindingResolver: () => {
+        const collection = revision === 1 ? "main-direct-memory" : "main-direct-memory-v2";
+        const indexKey = "f".repeat(64);
+        const indexName = "sample-global";
+        const workspaceRegistryDigest = sha256(`workspace-registry-${revision}`);
+        return {
+          collection,
+          indexKey,
+          indexName,
+          canonicalRoot,
+          workspaceRegistryDigest,
+          bindingDigest: sha256([
+            "engram.memory-observation-qmd-binding.v1",
+            workspaceRegistryDigest,
+            indexName,
+            indexKey,
+            collection,
+            canonicalRoot,
+            runtimeSessionKey,
+          ].join("\0")),
+        };
+      },
+      dirtyMarker: async (input) => {
+        dirtyCollections.push(input.collections ?? []);
+        return { ...marked(root), collections: input.collections, indexKey: "f".repeat(64) };
+      },
+      fault: (point) => {
+        if (!faulted && point === "after_receipt_primary") { faulted = true; throw new Error("crash-after-receipt-primary"); }
+      },
+    });
+
+    expect((await applicator.processOne(new Date("2026-08-26T21:32:00.000Z"))).status).toBe("retry");
+    expect(applicator.readReceipt(value.observationId)?.qmdBinding?.collection).toBe("main-direct-memory");
+    expect(dirtyCollections).toHaveLength(0);
+
+    revision = 2;
+    expect((await applicator.processOne(new Date("2026-08-26T21:33:00.000Z"))).status).toBe("duplicate");
+    expect(dirtyCollections).toEqual([["main-direct-memory-v2"]]);
+    expect(applicator.listQueue()[0]).toMatchObject({ status: "terminal", reasonCode: "duplicate_receipt" });
+    expect(applicator.readReceipt(value.observationId)?.qmdBinding?.collection).toBe("main-direct-memory");
+    const note = readFileSync(join(canonicalRoot, "2026-08-27.md"), "utf8");
+    expect(count(note, "<!-- engram-entry:sha256:")).toBe(1);
+  });
+
+  test("keeps a receipt-backed QMD handoff pending when the resolved session root changes", async () => {
+    const root = workspace();
+    const value = observation({ traceId: sha256("qmd-receipt-root-drift") });
+    persist(root, value);
+    const originalRoot = join(root, "memory", "agent-main", "telegram-direct-100000001");
+    const descriptor = {
+      resolver: "exact-session-registry" as const,
+      manifestPath: join(root, "ops", "qmd-migration.json"),
+      workspaceRegistryDigest: sha256("workspace-registry"),
+    };
+    let revision = 1;
+    let faulted = false;
+    let dirtyCalls = 0;
+    const applicator = new DailyNoteCanaryApplicator({
+      workspace: root,
+      resolveActivePolicy: () => policy({ qmdBinding: descriptor }),
+      qmdBindingResolver: () => {
+        const canonicalRoot = revision === 1 ? originalRoot : join(root, "memory", "agent-main", "other-session");
+        const collection = revision === 1 ? "main-direct-memory" : "other-memory";
+        const indexKey = "f".repeat(64);
+        const indexName = "sample-global";
+        const workspaceRegistryDigest = sha256(`workspace-registry-${revision}`);
+        return {
+          collection,
+          indexKey,
+          indexName,
+          canonicalRoot,
+          workspaceRegistryDigest,
+          bindingDigest: sha256([
+            "engram.memory-observation-qmd-binding.v1",
+            workspaceRegistryDigest,
+            indexName,
+            indexKey,
+            collection,
+            canonicalRoot,
+            runtimeSessionKey,
+          ].join("\0")),
+        };
+      },
+      dirtyMarker: async () => { dirtyCalls += 1; return marked(root); },
+      fault: (point) => {
+        if (!faulted && point === "after_receipt") { faulted = true; throw new Error("crash-after-receipt"); }
+      },
+    });
+
+    expect((await applicator.processOne(new Date("2026-08-26T21:32:00.000Z"))).status).toBe("retry");
+    revision = 2;
+    expect((await applicator.processOne(new Date("2026-08-26T21:33:00.000Z"))).status).toBe("qmd_pending");
+    expect(dirtyCalls).toBe(0);
+    expect(applicator.listQueue()[0]).toMatchObject({ status: "qmd_pending", reasonCode: "qmd_binding_unavailable", terminalAt: null });
+    expect(applicator.readReceipt(value.observationId)?.qmdBinding?.canonicalRoot).toBe(originalRoot);
   });
 });

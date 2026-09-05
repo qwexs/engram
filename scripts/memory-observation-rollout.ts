@@ -26,7 +26,10 @@ import {
 } from "../src/memory-observation/projection.ts";
 import { hasExactInferenceModelAuthorization } from "../src/memory-observation/inference-boundary.ts";
 import { deriveBatchEvaluationPolicyDigest } from "../src/memory-observation/batch-evaluation-policy.ts";
-import { preflightCanaryQmdBinding } from "../src/memory-observation/qmd-binding-preflight.ts";
+import {
+  defineCanaryQmdRuntimeResolver,
+  preflightCanaryQmdBinding,
+} from "../src/memory-observation/qmd-binding-preflight.ts";
 import { resolveQmdContext } from "../src/qmd/context.ts";
 
 const PLUGIN_ID = "engram-memory-observation";
@@ -260,7 +263,7 @@ Common:
   --workspace <absolute path>
   --session-key <full agent session key or agent:<id>:* for a v3 family canary>
   --qmd-collection <collection>   Optional exact canary QMD binding collection
-  --qmd-manifest <path>           Registry/manifest file for canary preflight
+  --qmd-manifest <path>           Registry/manifest file; alone enables the family exact-session resolver
   --scope-id <canonical exact scope>
   --approved-by <authority>
   --approved-at <ISO instant>
@@ -494,20 +497,33 @@ if (canaryCommand) {
 
 const qmdCollection = typeof options["qmd-collection"] === "string" ? String(options["qmd-collection"]).trim() : "";
 const qmdManifestPath = typeof options["qmd-manifest"] === "string" ? String(options["qmd-manifest"]).trim() : "";
+if (canaryCommand && sessionKey.endsWith(":*") && !qmdManifestPath) {
+  throw new Error("family canary requires --qmd-manifest for exact-session QMD coverage");
+}
 if (canaryCommand && (qmdCollection || qmdManifestPath)) {
-  if (!qmdCollection || !qmdManifestPath) throw new Error("--qmd-collection and --qmd-manifest must be paired for canary commands");
   const context = resolveQmdContext({ value: workspace, source: "explicit" });
-  const manifest = json(qmdManifestPath);
-  const binding = preflightCanaryQmdBinding({
-    workspace,
-    runtimeSessionKey: sessionKey,
-    qmdCollection,
-    timezone: projection.consumers!.dailyNote.timezone,
-    applyAfter: projection.consumers!.dailyNote.applyAfter,
-    manifest,
-    context,
-  });
-  projection.consumers!.dailyNote.qmdBinding = { collection: binding.collection };
+  if (sessionKey.endsWith(":*")) {
+    if (qmdCollection || !qmdManifestPath) throw new Error("family canary QMD handoff requires only --qmd-manifest");
+    projection.consumers!.dailyNote.qmdBinding = defineCanaryQmdRuntimeResolver({
+      workspace,
+      workspaceId,
+      manifestPath: qmdManifestPath,
+      context,
+    });
+  } else {
+    if (!qmdCollection || !qmdManifestPath) throw new Error("--qmd-collection and --qmd-manifest must be paired for an exact canary");
+    const manifest = json(qmdManifestPath);
+    const binding = preflightCanaryQmdBinding({
+      workspace,
+      runtimeSessionKey: sessionKey,
+      qmdCollection,
+      timezone: projection.consumers!.dailyNote.timezone,
+      applyAfter: projection.consumers!.dailyNote.applyAfter,
+      manifest,
+      context,
+    });
+    projection.consumers!.dailyNote.qmdBinding = { collection: binding.collection };
+  }
 }
 
 if (command === "plan" || command === "plan-canary" || command === "plan-ownership" || command === "plan-batch-canary") {

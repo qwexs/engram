@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { preflightCanaryQmdBinding } from "./qmd-binding-preflight.ts";
+import {
+  defineCanaryQmdRuntimeResolver,
+  preflightCanaryQmdBinding,
+  resolveCanaryQmdRuntimeBinding,
+} from "./qmd-binding-preflight.ts";
 
 const roots: string[] = [];
 function root(): string {
@@ -25,9 +30,12 @@ function manifest(base: string, overrides: Partial<any> = {}) {
 }
 
 function input(base: string, overrides: Partial<any> = {}) {
+  const physicalPath = join(base, ".qmd", "index.sqlite");
+  mkdirSync(join(base, ".qmd"), { recursive: true });
+  if (!existsSync(physicalPath)) writeFileSync(physicalPath, "");
   const context = overrides.context ?? {
     workspace: base,
-    physicalIndex: { path: join(base, ".qmd", "index.sqlite"), key: "engram-global", exists: true },
+    physicalIndex: { path: physicalPath, key: createHash("sha256").update(physicalPath).digest("hex"), exists: true },
     selector: { kind: "named", name: "engram-global" },
     policy: { ownedCollections: ["main-direct-memory"], readableCollections: ["main-direct-memory"] },
   };
@@ -83,5 +91,117 @@ describe("canary QMD binding preflight", () => {
     mkdirSync(join(base, "memory", "agent-main"), { recursive: true });
     symlinkSync(target, collectionPath);
     expect(() => preflightCanaryQmdBinding(input(base))).toThrow("symlink root escape");
+  });
+
+  test("resolves one pinned exact-session collection for a family canary", () => {
+    const base = root();
+    const value = manifest(base);
+    const manifestPath = join(base, "ops", "qmd-migration.json");
+    mkdirSync(join(base, "ops"), { recursive: true });
+    writeFileSync(manifestPath, `${JSON.stringify({ registry: value })}\n`);
+    const source = input(base);
+    const resolver = defineCanaryQmdRuntimeResolver({
+      workspace: base,
+      workspaceId: "main",
+      manifestPath,
+      context: source.context,
+    });
+    const result = resolveCanaryQmdRuntimeBinding({
+      workspace: base,
+      runtimeSessionKey: source.runtimeSessionKey,
+      timezone: source.timezone,
+      destinationAt: source.applyAfter,
+      resolver,
+      context: source.context,
+    });
+    expect(result.collection).toBe("main-direct-memory");
+    expect(result.bindingDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(result.destinationDir).toBe(join(base, "memory", "agent-main", "telegram-direct-100000001"));
+  });
+
+  test("fails closed on manifest drift, a broad mask, or a missing physical index", () => {
+    const base = root();
+    const value = manifest(base);
+    const manifestPath = join(base, "ops", "qmd-migration.json");
+    mkdirSync(join(base, "ops"), { recursive: true });
+    writeFileSync(manifestPath, `${JSON.stringify(value)}\n`);
+    const source = input(base);
+    const resolver = defineCanaryQmdRuntimeResolver({
+      workspace: base,
+      workspaceId: "main",
+      manifestPath,
+      context: source.context,
+    });
+    writeFileSync(manifestPath, `${JSON.stringify({ ...value, collections: value.collections.map((entry) => ({ ...entry, mask: "**/*.md" })) })}\n`);
+    expect(() => resolveCanaryQmdRuntimeBinding({
+      workspace: base,
+      runtimeSessionKey: source.runtimeSessionKey,
+      timezone: source.timezone,
+      destinationAt: source.applyAfter,
+      resolver,
+      context: source.context,
+    })).toThrow("workspace registry digest mismatch");
+
+    writeFileSync(manifestPath, `${JSON.stringify(value)}\n`);
+    const broadResolver = defineCanaryQmdRuntimeResolver({ workspace: base, workspaceId: "main", manifestPath, context: source.context });
+    const broad = { ...value, collections: value.collections.map((entry) => ({ ...entry, mask: "**/*.md" })) };
+    writeFileSync(manifestPath, `${JSON.stringify(broad)}\n`);
+    const pinnedBroad = defineCanaryQmdRuntimeResolver({ workspace: base, workspaceId: "main", manifestPath, context: source.context });
+    expect(() => resolveCanaryQmdRuntimeBinding({
+      workspace: base,
+      runtimeSessionKey: source.runtimeSessionKey,
+      timezone: source.timezone,
+      destinationAt: source.applyAfter,
+      resolver: pinnedBroad,
+      context: source.context,
+    })).toThrow("missing exact-session collection");
+    expect(broadResolver.workspaceRegistryDigest).not.toBe(pinnedBroad.workspaceRegistryDigest);
+
+    expect(() => preflightCanaryQmdBinding(input(base, {
+      context: { ...source.context, physicalIndex: { ...source.context.physicalIndex, exists: false } },
+    }))).toThrow("wrong physical index");
+  });
+
+  test("pins only the current workspace registry slice and rejects wildcard runtime keys", () => {
+    const base = root();
+    const adjacent = root();
+    const adjacentOne = join(adjacent, "memory", "agent-adjacent", "main");
+    const adjacentTwo = join(adjacent, "memory", "agent-adjacent", "direct");
+    mkdirSync(adjacentOne, { recursive: true });
+    mkdirSync(adjacentTwo, { recursive: true });
+    const value = manifest(base);
+    value.workspaces.push({ id: "adjacent", path: adjacent, kind: "technical", parents: [], readableCollections: ["adjacent-memory"] });
+    value.collections.push({ name: "adjacent-memory", owner: "adjacent", path: adjacentOne, mask: "*.md" });
+    const manifestPath = join(base, "ops", "qmd-migration.json");
+    mkdirSync(join(base, "ops"), { recursive: true });
+    writeFileSync(manifestPath, `${JSON.stringify(value)}\n`);
+    const source = input(base);
+    const resolver = defineCanaryQmdRuntimeResolver({ workspace: base, workspaceId: "main", manifestPath, context: source.context });
+    const changed = {
+      ...value,
+      workspaces: value.workspaces.map((entry) => entry.id === "adjacent"
+        ? { ...entry, readableCollections: ["adjacent-new"] }
+        : entry),
+      collections: value.collections.map((entry) => entry.owner === "adjacent"
+        ? { ...entry, name: "adjacent-new", path: adjacentTwo }
+        : entry),
+    };
+    writeFileSync(manifestPath, `${JSON.stringify(changed)}\n`);
+    expect(resolveCanaryQmdRuntimeBinding({
+      workspace: base,
+      runtimeSessionKey: source.runtimeSessionKey,
+      timezone: source.timezone,
+      destinationAt: source.applyAfter,
+      resolver,
+      context: source.context,
+    }).collection).toBe("main-direct-memory");
+    expect(() => resolveCanaryQmdRuntimeBinding({
+      workspace: base,
+      runtimeSessionKey: "agent:main:*",
+      timezone: source.timezone,
+      destinationAt: source.applyAfter,
+      resolver,
+      context: source.context,
+    })).toThrow("must be exact");
   });
 });

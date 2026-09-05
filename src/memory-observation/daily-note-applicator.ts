@@ -35,8 +35,19 @@ import {
   validateBatchObservation,
   type BatchObservationV1,
 } from "./batch-observation.ts";
+import { resolveCanaryQmdRuntimeBinding } from "./qmd-binding-preflight.ts";
+import type { MemoryObservationQmdBindingV1, MemoryObservationQmdResolverV1 } from "./projection.ts";
+import { resolveQmdContext } from "../qmd/context.ts";
 
 type DailyNoteObservation = EpisodicObservationV1 | BatchObservationV1;
+export type ResolvedDailyNoteQmdBinding = {
+  collection: string;
+  bindingDigest: Digest;
+  canonicalRoot: string;
+  indexName: string;
+  indexKey: string;
+  workspaceRegistryDigest: Digest;
+};
 
 export const SINGLE_TURN_EVALUATOR_AUTHORITY: ProducerRef = {
   id: "post-turn-observer",
@@ -62,7 +73,7 @@ export type DailyNoteCanaryPolicy = {
   maxAppliesPerWake: 1;
   policyDigest: Digest;
   allowedBatchEvaluationPolicyDigest?: Digest;
-  qmdBinding?: { collection: string };
+  qmdBinding?: MemoryObservationQmdBindingV1 | MemoryObservationQmdResolverV1 | ResolvedDailyNoteQmdBinding;
 };
 
 export function buildDailyNoteCanaryPolicy(input: Omit<DailyNoteCanaryPolicy, "policyDigest">): DailyNoteCanaryPolicy {
@@ -143,6 +154,7 @@ export type MemoryApplyReceiptV1 = {
   canonicalMutation: true;
   readBackDigest: Digest;
   policyDigest: Digest;
+  qmdBinding?: ResolvedDailyNoteQmdBinding;
   completedAt: string;
 };
 
@@ -156,6 +168,7 @@ export type DailyNoteApplicatorFaultPoint =
   | "after_queue"
   | "after_claim"
   | "after_note_write"
+  | "after_receipt_primary"
   | "after_receipt"
   | "after_dirty_mark"
   | "after_trace";
@@ -170,6 +183,13 @@ const QMD_RETRY_BASE_MS = 30_000;
 const QMD_RETRY_MAX_MS = 30 * 60_000;
 
 type DirtyMarker = (input: MarkWorkspaceQmdDirtyInput) => Promise<WorkspaceDirtyMarkResult>;
+type QmdBindingResolver = (input: {
+  workspace: string;
+  runtimeSessionKey: string;
+  timezone: string;
+  destinationAt: string;
+  resolver: MemoryObservationQmdResolverV1;
+}) => ResolvedDailyNoteQmdBinding;
 
 export class DailyNoteApplicatorError extends Error {
   constructor(readonly code: string, message: string) {
@@ -335,18 +355,24 @@ export class DailyNoteCanaryApplicator {
   private readonly resolveActivePolicy: () => DailyNoteCanaryPolicy | null;
   private readonly fault?: (point: DailyNoteApplicatorFaultPoint) => void;
   private readonly dirtyMarker: DirtyMarker;
+  private readonly qmdBindingResolver: QmdBindingResolver;
 
   constructor(options: {
     workspace: string;
     resolveActivePolicy: () => DailyNoteCanaryPolicy | null;
     fault?: (point: DailyNoteApplicatorFaultPoint) => void;
     dirtyMarker?: DirtyMarker;
+    qmdBindingResolver?: QmdBindingResolver;
   }) {
     this.workspace = resolve(options.workspace);
     this.root = join(this.workspace, ...ROOT_SEGMENTS);
     this.resolveActivePolicy = options.resolveActivePolicy;
     this.fault = options.fault;
     this.dirtyMarker = options.dirtyMarker ?? markWorkspaceQmdDirty;
+    this.qmdBindingResolver = options.qmdBindingResolver ?? ((input) => resolveCanaryQmdRuntimeBinding({
+      ...input,
+      context: resolveQmdContext({ value: input.workspace, source: "explicit" }),
+    }));
   }
 
   reconcile(now = new Date()): number {
@@ -420,8 +446,15 @@ export class DailyNoteCanaryApplicator {
 
   readReceipt(observationId: Digest): MemoryApplyReceiptV1 | null {
     const destinationEntryId = this.destinationEntryId(observationId);
-    const path = this.receiptByEntryPath(destinationEntryId);
-    return existsSync(path) ? readJson<MemoryApplyReceiptV1>(path) : null;
+    const operationId = sha256(`engram.memory-apply.v1\0daily-note\0${observationId}\0${destinationEntryId}`);
+    const operationPath = this.receiptByOperationPath(operationId);
+    const entryPath = this.receiptByEntryPath(destinationEntryId);
+    const byOperation = existsSync(operationPath) ? readJson<MemoryApplyReceiptV1>(operationPath) : null;
+    const byEntry = existsSync(entryPath) ? readJson<MemoryApplyReceiptV1>(entryPath) : null;
+    if (byOperation && byEntry && !jsonEqual(byOperation, byEntry)) {
+      throw new DailyNoteApplicatorError("CONTENT_CONFLICT", "receipt aliases contain different content");
+    }
+    return byOperation ?? byEntry;
   }
 
   listQueue(): DailyNoteConsumerQueueRecordV1[] {
@@ -434,34 +467,42 @@ export class DailyNoteCanaryApplicator {
   private async applyClaimed(claimed: DailyNoteConsumerQueueRecordV1, leaseToken: string, now: Date): Promise<DailyNoteApplicatorResult> {
     const observation = this.readObservation(claimed);
     validateDailyNoteObservation(observation);
-    const policy = this.resolveActivePolicy();
-    if (!policy) return this.requeue(claimed, "kill_switch_open", now);
-    if (Date.parse(observation.completedAt) < Date.parse(policy.applyAfter)
-      || !sameScope(observation.scope, policy.exactScope)
-      || !allowsObservationClass(policy, observation.observationClass)
-      || !allowsObservationPolicy(policy, observation)) {
+    const activePolicy = this.resolveActivePolicy();
+    if (!activePolicy) return this.requeue(claimed, "kill_switch_open", now);
+    if (Date.parse(observation.completedAt) < Date.parse(activePolicy.applyAfter)
+      || !sameScope(observation.scope, activePolicy.exactScope)
+      || !allowsObservationClass(activePolicy, observation.observationClass)
+      || !allowsObservationPolicy(activePolicy, observation)) {
       throw new DailyNoteApplicatorError("POLICY_DENIED", "observation is outside the current apply-time policy");
     }
+    const policy = this.resolveEffectivePolicy(activePolicy, observation);
 
     const split = splitCanonicalSessionKey(observation.scope.runtimeSessionKey);
     if (!split) throw new DailyNoteApplicatorError("SESSION_INVALID", "runtime session key cannot map to a daily-note partition");
     const destinationDate = dateInTimezone(observation.sourceCompletedAt, policy.timezone);
     const notePath = join(this.workspace, "memory", `agent-${split.agentId}`, split.sessionKey, `${destinationDate}.md`);
+    if (policy.qmdBinding && "bindingDigest" in policy.qmdBinding
+      && resolve(dirname(notePath)) !== resolve(policy.qmdBinding.canonicalRoot)) {
+      throw new DailyNoteApplicatorError("QMD_BINDING_UNAVAILABLE", "canonical destination is outside the exact QMD binding root");
+    }
     const destinationEntryId = this.destinationEntryId(observation.observationId);
     const operationId = sha256(`engram.memory-apply.v1\0daily-note\0${observation.observationId}\0${destinationEntryId}`);
     const existingReceipt = this.readReceipt(observation.observationId);
     if (existingReceipt) {
       this.validateReceipt(existingReceipt, observation, operationId, destinationEntryId, policy);
+      this.persistReceipt(existingReceipt);
       await this.completeAfterReceipt(claimed, observation, existingReceipt, policy, now, "duplicate_receipt");
       return { status: "duplicate", traceId: primaryTraceId(observation), receipt: existingReceipt };
     }
 
     return withDailyNoteLock(notePath, async () => {
       this.assertLease(leaseToken, now);
-      const currentPolicy = this.resolveActivePolicy();
-      if (!currentPolicy || currentPolicy.policyDigest !== policy.policyDigest) {
+      const currentActivePolicy = this.resolveActivePolicy();
+      if (!currentActivePolicy) {
         return this.requeue(claimed, "kill_switch_or_policy_changed", now);
       }
+      const currentPolicy = this.resolveEffectivePolicy(currentActivePolicy, observation);
+      if (currentPolicy.policyDigest !== policy.policyDigest) return this.requeue(claimed, "kill_switch_or_policy_changed", now);
       const rendered = renderDailyNoteEntry(observation, destinationEntryId);
       const currentContent = existsSync(notePath) ? readFileSync(notePath, "utf8") : noteTemplate(destinationDate);
       const anchor = `<!-- engram-entry:${destinationEntryId} -->`;
@@ -508,6 +549,9 @@ export class DailyNoteCanaryApplicator {
         canonicalMutation: true as const,
         readBackDigest,
         policyDigest: policy.policyDigest,
+        ...(policy.qmdBinding && "bindingDigest" in policy.qmdBinding
+          ? { qmdBinding: policy.qmdBinding }
+          : {}),
         completedAt: now.toISOString(),
       };
       const receipt: MemoryApplyReceiptV1 = {
@@ -529,15 +573,27 @@ export class DailyNoteCanaryApplicator {
     now: Date,
     terminalReason: "canonical_applied" | "duplicate_receipt",
   ): Promise<void> {
-    if (policy.qmdBinding) {
+    const activePolicy = this.resolveActivePolicy();
+    if (!activePolicy) throw new DailyNoteApplicatorError("QMD_BINDING_UNAVAILABLE", "daily-note policy became unavailable before QMD handoff");
+    const verifiedPolicy = this.resolveEffectivePolicy(activePolicy, observation);
+    if (verifiedPolicy.policyDigest !== policy.policyDigest) {
+      throw new DailyNoteApplicatorError("QMD_BINDING_UNAVAILABLE", "exact-session QMD binding changed before handoff");
+    }
+    if (verifiedPolicy.qmdBinding) {
+      let collection: string;
+      let expectedIndexKey: string | undefined;
+      if ("resolver" in verifiedPolicy.qmdBinding) throw new DailyNoteApplicatorError("QMD_BINDING_UNAVAILABLE", "QMD resolver was not normalized");
+      collection = verifiedPolicy.qmdBinding.collection;
+      expectedIndexKey = "indexKey" in verifiedPolicy.qmdBinding ? verifiedPolicy.qmdBinding.indexKey : undefined;
       let dirty: WorkspaceDirtyMarkResult;
       try {
         dirty = await this.dirtyMarker({
           workspace: this.workspace,
           reason: "memory-observation:daily-note-handoff",
-          collections: [policy.qmdBinding.collection],
+          collections: [collection],
           bm25: true,
           vectors: true,
+          ...(expectedIndexKey ? { expectedIndexKey } : {}),
         });
       } catch (error) {
         throw new DailyNoteApplicatorError(
@@ -547,7 +603,8 @@ export class DailyNoteCanaryApplicator {
       }
       if (dirty.status !== "marked"
         || dirty.collections?.length !== 1
-        || dirty.collections[0] !== policy.qmdBinding.collection) {
+        || dirty.collections[0] !== collection
+        || (expectedIndexKey !== undefined && dirty.indexKey !== expectedIndexKey)) {
         throw new DailyNoteApplicatorError(
           "QMD_DIRTY_MARK_FAILED",
           dirty.error ?? `dirty marker returned ${dirty.status} for an unexpected collection`,
@@ -560,11 +617,37 @@ export class DailyNoteCanaryApplicator {
     this.finishQueue(claimed, terminalReason, now);
   }
 
+  private resolveEffectivePolicy(policy: DailyNoteCanaryPolicy, observation: DailyNoteObservation): DailyNoteCanaryPolicy {
+    if (!policy.qmdBinding || !("resolver" in policy.qmdBinding)) return policy;
+    let resolvedBinding: ResolvedDailyNoteQmdBinding;
+    try {
+      resolvedBinding = this.qmdBindingResolver({
+        workspace: this.workspace,
+        runtimeSessionKey: observation.scope.runtimeSessionKey,
+        timezone: policy.timezone,
+        destinationAt: observation.sourceCompletedAt,
+        resolver: policy.qmdBinding,
+      });
+    } catch {
+      throw new DailyNoteApplicatorError("QMD_BINDING_UNAVAILABLE", "exact-session QMD binding is unavailable");
+    }
+    const { policyDigest: _oldDigest, ...base } = policy;
+    return buildDailyNoteCanaryPolicy({
+      ...base,
+      qmdBinding: { ...resolvedBinding },
+    });
+  }
+
   private persistReceipt(receipt: MemoryApplyReceiptV1): void {
-    for (const path of [this.receiptByOperationPath(receipt.operationId), this.receiptByEntryPath(receipt.destinationEntryId)]) {
-      if (!writeImmutable(path, receipt) && !jsonEqual(readJson<MemoryApplyReceiptV1>(path), receipt)) {
-        throw new DailyNoteApplicatorError("CONTENT_CONFLICT", "apply receipt identity has different content");
-      }
+    const operationPath = this.receiptByOperationPath(receipt.operationId);
+    const operationPublished = writeImmutable(operationPath, receipt);
+    if (!operationPublished && !jsonEqual(readJson<MemoryApplyReceiptV1>(operationPath), receipt)) {
+      throw new DailyNoteApplicatorError("CONTENT_CONFLICT", "apply receipt identity has different content");
+    }
+    if (operationPublished) this.fault?.("after_receipt_primary");
+    const entryPath = this.receiptByEntryPath(receipt.destinationEntryId);
+    if (!writeImmutable(entryPath, receipt) && !jsonEqual(readJson<MemoryApplyReceiptV1>(entryPath), receipt)) {
+      throw new DailyNoteApplicatorError("CONTENT_CONFLICT", "apply receipt identity has different content");
     }
   }
 
@@ -601,19 +684,41 @@ export class DailyNoteCanaryApplicator {
     destinationEntryId: Digest,
     policy: DailyNoteCanaryPolicy,
   ): void {
+    const destinationPath = resolve(this.workspace, receipt.destinationRef.split("#", 1)[0]!);
+    const currentBinding = policy.qmdBinding && "bindingDigest" in policy.qmdBinding ? policy.qmdBinding : null;
+    const receiptBinding = receipt.qmdBinding ?? null;
+    const validReceiptBinding = Boolean(receiptBinding
+      && receiptBinding.bindingDigest === sha256([
+        "engram.memory-observation-qmd-binding.v1",
+        receiptBinding.workspaceRegistryDigest,
+        receiptBinding.indexName,
+        receiptBinding.indexKey,
+        receiptBinding.collection,
+        receiptBinding.canonicalRoot,
+        observation.scope.runtimeSessionKey,
+      ].join("\0"))
+      && resolve(receiptBinding.canonicalRoot) === resolve(dirname(destinationPath)));
+    if ((receiptBinding && !validReceiptBinding) || (currentBinding && !receiptBinding)) {
+      throw new DailyNoteApplicatorError("CONTENT_CONFLICT", "persisted apply receipt has an invalid QMD binding");
+    }
+    const driftRecoveryAllowed = Boolean(currentBinding
+      && validReceiptBinding
+      && resolve(currentBinding.canonicalRoot) === resolve(receiptBinding!.canonicalRoot));
+    if (receipt.policyDigest !== policy.policyDigest && currentBinding && validReceiptBinding && !driftRecoveryAllowed) {
+      throw new DailyNoteApplicatorError("QMD_BINDING_UNAVAILABLE", "persisted apply receipt belongs to a different exact QMD root");
+    }
     if (receipt.schema !== RECEIPT_SCHEMA
       || receipt.traceId !== primaryTraceId(observation)
       || receipt.sourceObservationRef !== observation.observationId
       || receipt.operationId !== operationId
       || receipt.destinationEntryId !== destinationEntryId
-      || receipt.policyDigest !== policy.policyDigest
+      || (receipt.policyDigest !== policy.policyDigest && !driftRecoveryAllowed)
       || receipt.status !== "applied"
       || receipt.canonicalMutation !== true
       || receipt.readBackDigest !== sha256(renderDailyNoteEntry(observation, destinationEntryId))
       || receipt.receiptId !== sha256(`engram.memory-apply-receipt.v1\0${operationId}`)) {
       throw new DailyNoteApplicatorError("CONTENT_CONFLICT", "persisted apply receipt is invalid");
     }
-    const destinationPath = resolve(this.workspace, receipt.destinationRef.split("#", 1)[0]!);
     if (!destinationPath.startsWith(`${this.workspace}/`)
       || !existsSync(destinationPath)
       || !readFileSync(destinationPath, "utf8").includes(renderDailyNoteEntry(observation, destinationEntryId))) {
@@ -722,7 +827,7 @@ export class DailyNoteCanaryApplicator {
 
   private failClaim(claimed: DailyNoteConsumerQueueRecordV1, error: unknown, now: Date): DailyNoteApplicatorResult {
     const reason = error instanceof DailyNoteApplicatorError ? error.code : "APPLY_FAILED";
-    if (reason === "QMD_DIRTY_MARK_FAILED") {
+    if (reason === "QMD_DIRTY_MARK_FAILED" || reason === "QMD_BINDING_UNAVAILABLE") {
       const qmdAttempt = (claimed.qmdAttempt ?? 0) + 1;
       const delayMs = Math.min(QMD_RETRY_BASE_MS * (2 ** Math.min(qmdAttempt - 1, 10)), QMD_RETRY_MAX_MS);
       const nextAttemptAt = new Date(now.getTime() + delayMs).toISOString();
@@ -733,7 +838,7 @@ export class DailyNoteCanaryApplicator {
         claimedAt: null,
         claimToken: null,
         terminalAt: null,
-        reasonCode: "qmd_dirty_mark_failed",
+        reasonCode: reason === "QMD_BINDING_UNAVAILABLE" ? "qmd_binding_unavailable" : "qmd_dirty_mark_failed",
         phase: "qmd",
         qmdAttempt,
         nextAttemptAt,

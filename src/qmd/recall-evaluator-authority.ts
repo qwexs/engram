@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { contextError } from "../cli/errors.ts";
 import {
   DAILY_NOTE_APPLICATOR,
@@ -7,6 +7,7 @@ import {
   renderDailyNoteEntry,
   validateDailyNoteObservation,
   type MemoryApplyReceiptV1,
+  type ResolvedDailyNoteQmdBinding,
 } from "../memory-observation/daily-note-applicator.ts";
 import {
   deriveSourceDigest,
@@ -27,7 +28,9 @@ import {
   memoryObservationBinding,
   resolveMemoryObservationProjection,
 } from "../memory-observation/projection.ts";
+import { resolveCanaryQmdRuntimeBinding } from "../memory-observation/qmd-binding-preflight.ts";
 import { splitCanonicalSessionKey } from "../session-key.ts";
+import { resolveQmdContext } from "./context.ts";
 import type { RecallApprovedEpisode } from "./recall-evaluator-baseline.ts";
 import type { RecallExactScope } from "./recall-evaluator-contracts.ts";
 
@@ -363,6 +366,7 @@ function validateReceipt(options: {
   exactScope: RecallExactScope;
   effectiveAfter: string;
   timezone: string;
+  currentQmdBinding?: ResolvedDailyNoteQmdBinding;
 }): { receipt: MemoryApplyReceiptV1; observation: RecallObservation } {
   const receipt = options.receipt as MemoryApplyReceiptV1;
   if (!receipt || receipt.schema !== "engram.memory-apply-receipt.v1" || receipt.status !== "applied"
@@ -408,6 +412,24 @@ function validateReceipt(options: {
   const destinationPath = join(options.workspace, "memory", `agent-${split.agentId}`, split.sessionKey, `${destinationDate}.md`);
   const destinationRef = `${relative(options.workspace, destinationPath)}#engram-entry:${destinationEntryId}`;
   const rendered = renderDailyNoteEntry(observation, destinationEntryId);
+  const receiptQmdBinding = receipt.qmdBinding;
+  if (options.currentQmdBinding) {
+    const receiptBindingDigest = receiptQmdBinding && sha256([
+      "engram.memory-observation-qmd-binding.v1",
+      receiptQmdBinding.workspaceRegistryDigest,
+      receiptQmdBinding.indexName,
+      receiptQmdBinding.indexKey,
+      receiptQmdBinding.collection,
+      receiptQmdBinding.canonicalRoot,
+      receipt.scope.runtimeSessionKey,
+    ].join("\0"));
+    if (!receiptQmdBinding
+      || receiptQmdBinding.bindingDigest !== receiptBindingDigest
+      || resolve(receiptQmdBinding.canonicalRoot) !== resolve(dirname(destinationPath))
+      || resolve(receiptQmdBinding.canonicalRoot) !== resolve(options.currentQmdBinding.canonicalRoot)) {
+      fail("RECEIPT_QMD_BINDING_INVALID", "apply receipt is not bound to the current exact-session QMD root.");
+    }
+  }
   if (receipt.destinationEntryId !== destinationEntryId || receipt.operationId !== operationId || receipt.receiptId !== receiptId
     || receipt.destinationDate !== destinationDate || receipt.destinationRef !== destinationRef
     || receipt.readBackDigest !== sha256(rendered)
@@ -440,6 +462,26 @@ export function compileRecallAuthorityManifest(options: {
   }
   const binding = memoryObservationBinding(projection, options.runtimeSessionKey);
   if (!binding) fail("SCOPE_NOT_BOUND", "runtime session is not bound by the active projection.");
+  const projectedQmdBinding = projection.consumers.dailyNote.qmdBinding;
+  let qmdCollection: string;
+  let currentQmdBinding: ResolvedDailyNoteQmdBinding | undefined;
+  if ("resolver" in projectedQmdBinding) {
+    try {
+      currentQmdBinding = resolveCanaryQmdRuntimeBinding({
+        workspace,
+        runtimeSessionKey: binding.runtimeSessionKey,
+        timezone: projection.consumers.dailyNote.timezone,
+        destinationAt: compiledAt,
+        resolver: projectedQmdBinding,
+        context: resolveQmdContext({ value: workspace, source: "explicit" }),
+      });
+      qmdCollection = currentQmdBinding.collection;
+    } catch {
+      fail("PROJECTION_NOT_READY", "exact-session QMD binding is unavailable.");
+    }
+  } else {
+    qmdCollection = projectedQmdBinding.collection;
+  }
   const exactScope: RecallExactScope = {
     workspaceId: projection.workspaceId,
     runtimeSessionKey: binding.runtimeSessionKey,
@@ -478,6 +520,7 @@ export function compileRecallAuthorityManifest(options: {
       exactScope,
       effectiveAfter,
       timezone: projection.consumers.dailyNote.timezone,
+      ...(currentQmdBinding ? { currentQmdBinding } : {}),
     });
     if (receiptByObservation.has(receipt.sourceObservationRef)) fail("DUPLICATE_RECEIPT", "multiple post-cutover receipts share one source observation.");
     receiptByObservation.set(receipt.sourceObservationRef, receipt);
@@ -623,7 +666,7 @@ export function compileRecallAuthorityManifest(options: {
       effectiveAfter,
       approvedBy: projection.approvedBy,
       approvedAt: projection.approvedAt,
-      qmdCollection: projection.consumers.dailyNote.qmdBinding.collection,
+      qmdCollection,
     },
     captureFrame: { id: frame.frame.id, digest: frame.frame.digest, counts, turns: captureTurns },
     receiptPolicyDigest: receiptPolicyDigests.size === 1 ? [...receiptPolicyDigests][0]! : null,

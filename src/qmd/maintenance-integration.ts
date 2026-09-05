@@ -27,6 +27,7 @@ export type MarkWorkspaceQmdDirtyInput = {
   collectionRole?: "primary" | "knowledge-graph";
   bm25?: boolean;
   vectors?: boolean;
+  expectedIndexKey?: string;
 };
 
 export type QmdMaintenanceIntegrationRuntime = QmdContextRuntime & {
@@ -146,6 +147,12 @@ export async function markWorkspaceQmdDirty(
     }
 
     const context = resolveQmdContext({ value: workspace, source: "explicit" }, runtime);
+    if (input.expectedIndexKey !== undefined && context.physicalIndex.key !== input.expectedIndexKey) {
+      throw contextError("QMD dirty mark physical index changed after binding resolution.", {
+        expectedIndexKey: input.expectedIndexKey,
+        actualIndexKey: context.physicalIndex.key,
+      });
+    }
     const defaultCollections = input.collectionRole === "knowledge-graph"
       ? [knowledgeGraphCollection(config)]
       : (primaryCollection(config) ? [primaryCollection(config)!] : []);

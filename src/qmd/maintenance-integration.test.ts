@@ -133,6 +133,23 @@ describe("QMD maintenance integration", () => {
     expect(warnings).toHaveLength(1);
   });
 
+  test("rejects physical-index drift before publishing a dirty generation", async () => {
+    const root = workspace("coordinated");
+    const warnings: string[] = [];
+    const rt = runtime(stateDirectory(), warnings);
+    let marks = 0;
+    rt.markDirty = async () => { marks += 1; throw new Error("must not run"); };
+    const result = await markWorkspaceQmdDirty({
+      workspace: root,
+      collections: ["alpha-memory"],
+      reason: "exact-session-note",
+      expectedIndexKey: "stale-index-key",
+    }, rt);
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("physical index changed");
+    expect(marks).toBe(0);
+  });
+
   test("fails open when state persistence fails", async () => {
     const root = workspace("shadow");
     const warnings: string[] = [];

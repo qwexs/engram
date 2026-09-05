@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 export const MEMORY_OBSERVATION_PROJECTION_SCHEMA = "engram.memory-observation-rollout.v1" as const;
 export const MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2 = "engram.memory-observation-rollout.v2" as const;
@@ -7,6 +7,12 @@ export const MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3 = "engram.memory-observatio
 
 export type MemoryObservationQmdBindingV1 = {
   collection: string;
+};
+
+export type MemoryObservationQmdResolverV1 = {
+  resolver: "exact-session-registry";
+  manifestPath: string;
+  workspaceRegistryDigest: `sha256:${string}`;
 };
 
 export type MemoryObservationBindingV1 = {
@@ -60,7 +66,7 @@ export type MemoryObservationProjectionV1 = {
       timezone: string;
       allowedObservationClasses: ["episodic.event"] | ["episodic.event", "episodic.decision"];
       maxAppliesPerWake: 1;
-      qmdBinding?: MemoryObservationQmdBindingV1;
+      qmdBinding?: MemoryObservationQmdBindingV1 | MemoryObservationQmdResolverV1;
     };
   };
   captureOwnership?: {
@@ -130,11 +136,23 @@ function validDailyNoteCanary(value: unknown): boolean {
         && dailyNote.allowedObservationClasses[0] === "episodic.event"
         && dailyNote.allowedObservationClasses[1] === "episodic.decision")
     && dailyNote.maxAppliesPerWake === 1
-    && (dailyNote.qmdBinding === undefined
-      || (dailyNote.qmdBinding
-        && typeof dailyNote.qmdBinding === "object"
-        && !Array.isArray(dailyNote.qmdBinding)
-        && token(dailyNote.qmdBinding.collection, 300)));
+    && (dailyNote.qmdBinding === undefined || validQmdBinding(dailyNote.qmdBinding));
+}
+
+function validQmdBinding(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const binding = value as Partial<MemoryObservationQmdBindingV1 & MemoryObservationQmdResolverV1>;
+  const keys = Object.keys(binding).sort();
+  if (keys.length === 1 && keys[0] === "collection") return token(binding.collection, 300);
+  return keys.length === 3
+    && keys[0] === "manifestPath"
+    && keys[1] === "resolver"
+    && keys[2] === "workspaceRegistryDigest"
+    && binding.resolver === "exact-session-registry"
+    && typeof binding.manifestPath === "string"
+    && binding.manifestPath.trim() === binding.manifestPath
+    && isAbsolute(binding.manifestPath)
+    && DIGEST_RE.test(binding.workspaceRegistryDigest ?? "");
 }
 
 function validCaptureOwnership(value: unknown): boolean {
@@ -213,7 +231,8 @@ export function resolveMemoryObservationProjection(options: {
     || (projection.mode === "shadow" && projection.captureOwnership !== undefined)
     || (projection.evaluation?.mode === "batch-cron" && limits.maxInferenceCalls !== 1)
     || (projection.bindings.some((binding) => binding.runtimeSessionKey.endsWith(":*"))
-      && projection.consumers?.dailyNote.qmdBinding !== undefined)
+      && (projection.consumers?.dailyNote.qmdBinding === undefined
+        || "collection" in projection.consumers.dailyNote.qmdBinding))
     || (projection.mode === "canary"
       && (!projection.consumers
         || projection.bindings.length !== 1

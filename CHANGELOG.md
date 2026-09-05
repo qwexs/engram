@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **fix(memory): recognize live batch dispositions in shadow campaign baselines.**
+  Campaign snapshots preserve `write`, `skip`, and bounded `defer` semantics
+  from current batch terminal reason codes, keep technical failures distinct,
+  and require an exact validated batch observation for every historical write.
+
 - **fix(memory): make admission and family-batch recovery crash-complete.**
   Completed runtime turns are durably spooled before ledger admission and
   reconciled on plugin startup; replay after either side of the admission

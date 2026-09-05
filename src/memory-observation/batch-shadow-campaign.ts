@@ -22,6 +22,11 @@ import {
   type BatchSourceFrameV1,
 } from "./batch-compiler.ts";
 import {
+  BATCH_OBSERVATION_SCHEMA,
+  validateBatchObservation,
+  type BatchObservationV1,
+} from "./batch-observation.ts";
+import {
   openClawGatewayModelRunProvider,
   openClawRawModelRunProvider,
 } from "./batch-shadow-openclaw-provider.ts";
@@ -68,7 +73,7 @@ export type BatchShadowCampaignConfig = BatchShadowCampaignConfigV1 | BatchShado
 export type HistoricalDecisionV1 = {
   traceId: Digest;
   sourceCompletedAt: string;
-  decision: "write" | "skip" | "failed";
+  decision: "write" | "skip" | "defer" | "failed";
   reasonCode: string;
   observationId: Digest | null;
 };
@@ -102,6 +107,7 @@ export type BatchShadowCampaignManifestV1 = {
   historical: {
     write: number;
     skip: number;
+    defer: number;
     failed: number;
     reasonCodes: Record<string, number>;
     decisions: HistoricalDecisionV1[];
@@ -233,6 +239,30 @@ function exactScope(partition: BatchPartitionV1): ObservationScope {
   };
 }
 
+function batchObservationForSource(root: string, entry: BatchSourceFrameEntryV1): BatchObservationV1 | null {
+  const directory = join(root, "observations", "batch");
+  if (!existsSync(directory)) return null;
+  for (const name of readdirSync(directory).filter((value) => /^[a-f0-9]{64}\.json$/.test(value)).sort()) {
+    const candidate = row(readJson(join(directory, name)));
+    if (!candidate || candidate.schema !== BATCH_OBSERVATION_SCHEMA || !Array.isArray(candidate.sourceRefs)
+      || !candidate.sourceRefs.some((source) => row(source)?.traceId === entry.envelope.traceId)) continue;
+    let observation: BatchObservationV1;
+    try {
+      observation = validateBatchObservation(candidate as unknown as BatchObservationV1);
+    } catch {
+      continue;
+    }
+    const source = observation.sourceRefs.find((value) => value.traceId === entry.envelope.traceId);
+    if (fileName(observation.observationId) === name && source
+      && same(observation.scope, entry.envelope.scope)
+      && source.sourceTurnId === entry.envelope.sourceTurnId
+      && source.sourceDigest === entry.envelope.sourceDigest
+      && source.evidenceDigest === entry.envelope.evidenceDigest
+      && source.sourceCompletedAt === entry.envelope.sourceCompletedAt) return observation;
+  }
+  return null;
+}
+
 function historicalDecision(root: string, entry: BatchSourceFrameEntryV1): HistoricalDecisionV1 {
   const traceId = entry.envelope.traceId;
   const queue = row(readJson(join(root, "queues", "evaluator", fileName(traceId))));
@@ -242,21 +272,33 @@ function historicalDecision(root: string, entry: BatchSourceFrameEntryV1): Histo
     fail("NON_TERMINAL_BASELINE", `historical evaluator record is not terminal for ${traceId}`);
   }
   const reasonCode = queue.reasonCode as string;
-  if (reasonCode === "semantic_write") {
-    const observation = row(readJson(join(root, "observations", "typed", fileName(traceId))));
-    if (!observation || observation.schema !== "engram.memory-observation.v1" || observation.traceId !== traceId
-      || !validDigest(observation.observationId) || !same(observation.scope, entry.envelope.scope)) {
-      fail("INVALID_BASELINE_WRITE", `historical write has no exact typed observation for ${traceId}`);
+  if (reasonCode === "semantic_write" || reasonCode === "semantic_batch_write") {
+    let observationId: Digest;
+    if (reasonCode === "semantic_write") {
+      const observation = row(readJson(join(root, "observations", "typed", fileName(traceId))));
+      if (!observation || observation.schema !== "engram.memory-observation.v1" || observation.traceId !== traceId
+        || !validDigest(observation.observationId) || !same(observation.scope, entry.envelope.scope)) {
+        fail("INVALID_BASELINE_WRITE", `historical write has no exact typed observation for ${traceId}`);
+      }
+      observationId = observation.observationId;
+    } else {
+      const observation = batchObservationForSource(root, entry);
+      if (!observation) fail("INVALID_BASELINE_WRITE", `historical write has no exact batch observation for ${traceId}`);
+      observationId = observation.observationId;
     }
     return {
       traceId,
       sourceCompletedAt: entry.envelope.sourceCompletedAt,
       decision: "write",
       reasonCode,
-      observationId: observation.observationId as Digest,
+      observationId,
     };
   }
-  const decision = reasonCode.startsWith("semantic_skip_") ? "skip" : "failed";
+  const decision = reasonCode.startsWith("semantic_skip_")
+    || reasonCode === "semantic_batch_skip"
+    || reasonCode === "semantic_batch_grouped_no_assertion"
+    ? "skip"
+    : reasonCode === "semantic_batch_defer" ? "defer" : "failed";
   return { traceId, sourceCompletedAt: entry.envelope.sourceCompletedAt, decision, reasonCode, observationId: null };
 }
 
@@ -375,6 +417,7 @@ function buildManifest(
     historical: {
       write: snapshot.historical.filter((entry) => entry.decision === "write").length,
       skip: snapshot.historical.filter((entry) => entry.decision === "skip").length,
+      defer: snapshot.historical.filter((entry) => entry.decision === "defer").length,
       failed: snapshot.historical.filter((entry) => entry.decision === "failed").length,
       reasonCodes: counts(snapshot.historical.map((entry) => entry.reasonCode)),
       decisions: snapshot.historical,

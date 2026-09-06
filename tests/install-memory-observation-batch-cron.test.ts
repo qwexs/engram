@@ -68,26 +68,27 @@ describe("memory observation batch scheduler installer", () => {
     expect(JSON.parse(readFileSync(env.statePath, "utf8"))).toEqual(env.initial);
   });
 
-  test("installs nested exec validation, preserves scheduler controls, and rolls back", async () => {
+  test("installs direct exec validation, preserves scheduler controls, and rolls back", async () => {
     const env = environment();
     const installed = run(env, ["--action", "install", "--ack-scheduler"]);
     expect(installed.status).toBe(0);
     const result = JSON.parse(installed.stdout);
     const current = JSON.parse(readFileSync(env.statePath, "utf8"));
-    expect(current.payload.script).toContain('tools.call("exec"');
-    expect(current.payload.script).toContain("call?.result?.details");
+    expect(current.payload.script).toContain('await exec(');
+    expect(current.payload.script).not.toContain("tools.");
+    expect(current.payload.script).toContain("timeoutSeconds: 300");
     expect(current.payload.script).toContain('execution.status !== "completed"');
     expect(current.payload.script).toContain("!Number.isInteger(execution.exitCode)");
     expect(current.payload.script).toContain("execution.exitCode !== 0");
     expect({ ...current, payload: env.initial.payload }).toEqual(env.initial);
 
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-    const execute = new AsyncFunction("tools", current.payload.script);
-    await expect(execute({ call: async () => ({ result: { details: { status: "completed", exitCode: 7, aggregated: "worker failed" } } }) }))
+    const execute = new AsyncFunction("exec", current.payload.script);
+    await expect(execute(async () => ({ status: "completed", exitCode: 7, aggregated: "worker failed" })))
       .rejects.toThrow("Engram batch worker exited 7: worker failed");
-    await expect(execute({ call: async () => ({ result: { details: { status: "running", aggregated: "" } } }) }))
+    await expect(execute(async () => ({ status: "running", aggregated: "" })))
       .rejects.toThrow("did not return a completed exit status");
-    expect(await execute({ call: async () => ({ result: { details: { status: "completed", exitCode: 0, aggregated: "ok" } } }) }))
+    expect(await execute(async () => ({ status: "completed", exitCode: 0, aggregated: "ok" })))
       .toEqual({ state: { workerResult: "ok" } });
 
     const rolledBack = run(env, ["--action", "rollback", "--backup-path", result.backupPath, "--ack-scheduler-rollback"]);

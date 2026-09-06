@@ -72,7 +72,7 @@ describe("PR 7 OpenClaw scheduler deployment boundary", () => {
     expect(JSON.parse(readFileSync(env.statePath, "utf8")).payload).toEqual(env.initial.payload);
   });
 
-  test("backs up exact command payload, installs exact script digest, and restores the old payload with read-back", () => {
+  test("backs up exact command payload, installs exact script digest, and restores the old payload with read-back", async () => {
     const env = environment();
     const installed = run(env, ["--action", "install", "--ack-scheduler"]);
     expect(installed.status).toBe(0);
@@ -86,17 +86,33 @@ describe("PR 7 OpenClaw scheduler deployment boundary", () => {
     expect(scriptPayload.script).toContain("SCRIPT_DEADLINE_MS");
     expect(scriptPayload.script).toContain("RUNTIME_SOURCE_REVISION");
     expect(scriptPayload.toolsAllow).toEqual(["exec", "process", "sessions_spawn", "message"]);
-    expect(scriptPayload.script).toContain('tools.callValue("process", { action: "poll", sessionId');
+    expect(scriptPayload.script).toContain('process({ action: "poll", sessionId');
     expect(scriptPayload.script).toContain('value?.status === "running"');
     expect(scriptPayload.script).toContain("existing.spawnedCwd ?? existing.spawnedWorkspaceDir");
     expect(scriptPayload.script).toContain("JSON.stringify(encodeURIComponent(dispatchError))");
-    expect(scriptPayload.script).toContain('tools.callValue("message", args)');
+    expect(scriptPayload.script).toContain('message(args)');
     expect(scriptPayload.script).toContain('target: delivery.target');
     expect(scriptPayload.script).toContain('rule notification delivery has no target');
     expect(scriptPayload.script).not.toContain('chatId: delivery.chatId');
     expect(scriptPayload.script).toContain("oll-rule-notifications.ts");
     expect(scriptPayload.script).toContain("--scheduler-declaration");
     expect(scriptPayload.script).toContain('\\"--allowed-root\\"');
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const execute = new AsyncFunction("exec", "process", "sessions_spawn", "message", scriptPayload.script);
+    let calls = 0;
+    const exec = async (args: any) => {
+      expect(args.timeout).toBeUndefined();
+      expect(args.timeoutSeconds).toBeGreaterThan(0);
+      calls++;
+      if (calls === 1) return { status: "running", sessionId: "fixture-process" };
+      return { status: "completed", exitCode: 0, aggregated: JSON.stringify(calls === 2 ? { status: "completed", report: { status: "completed" } } : { deliveries: [] }) };
+    };
+    const poll = async (args: any) => {
+      expect(args).toMatchObject({ action: "poll", sessionId: "fixture-process" });
+      return { status: "completed", exitCode: 0, aggregated: JSON.stringify({ errors: 0, workspaces: [] }) };
+    };
+    const unexpected = () => { throw new Error("unexpected side effect"); };
+    expect((await execute(exec, poll, unexpected, unexpected)).state).toMatchObject({ dispatches: 0, notificationsDelivered: 0, batchStatus: "completed" });
     const rolledBack = run(env, ["--action", "rollback", "--backup-path", result.backupPath, "--ack-scheduler-rollback"]);
     expect(rolledBack.status).toBe(0);
     expect(JSON.parse(rolledBack.stdout).status).toBe("rolled_back");

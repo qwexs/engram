@@ -132,11 +132,11 @@ const remaining = (cap) => {
 };
 const execText = async (command, yieldMs, timeout) => {
   const detail = (value) => value?.result?.details ?? value?.details ?? value;
-  let value = detail(await tools.callValue("exec", { command, workdir: WORKSPACE, yieldMs, timeout }));
+  let value = detail(await exec({ command, workdir: WORKSPACE, yieldMs, timeoutSeconds: timeout }));
   while (value?.status === "running") {
     const sessionId = value?.sessionId ?? value?.session_id;
     if (!sessionId) throw new Error("nightly exec yielded without a session id");
-    value = detail(await tools.callValue("process", { action: "poll", sessionId, timeout: Math.min(30000, remaining(30) * 1000) }));
+    value = detail(await process({ action: "poll", sessionId, timeout: Math.min(30000, remaining(30) * 1000) }));
   }
   const exitCode = value?.exitCode ?? value?.code ?? (value?.status === "failed" ? 1 : 0);
   if (exitCode !== 0) {
@@ -169,7 +169,7 @@ while (step.status === "spawn_required") {
       accepted = resolvedModel === request.model;
       if (!accepted) dispatchError = "existing runtime label model drift";
     } else {
-      const spawned = await tools.callValue("sessions_spawn", { task: request.task, label: request.runtimeLabel, model: request.model, cleanup: "delete", cwd: request.workspacePath, runTimeoutSeconds: request.runTimeoutSeconds });
+      const spawned = await sessions_spawn({ task: request.task, label: request.runtimeLabel, model: request.model, cleanup: "delete", cwd: request.workspacePath, runTimeoutSeconds: request.runTimeoutSeconds });
       dispatchRef = String(spawned?.sessionKey ?? spawned?.sessionId ?? spawned?.id ?? request.runtimeLabel);
       const observedModel = spawned?.modelProvider && spawned?.model ? spawned.modelProvider + "/" + spawned.model : (spawned?.resolvedModel ?? spawned?.model ?? request.model);
       resolvedModel = String(observedModel);
@@ -192,7 +192,7 @@ for (const delivery of notificationBatch.deliveries ?? []) {
   if (typeof delivery.target !== "string" || !delivery.target) throw new Error("rule notification delivery has no target");
   const args = { action: "send", target: delivery.target, message: delivery.message };
   if (delivery.threadId) args.threadId = delivery.threadId;
-  const sent = await tools.callValue("message", args);
+  const sent = await message(args);
   const messageId = String(sent?.messageId ?? sent?.message_id ?? sent?.id ?? sent?.result?.messageId ?? sent?.result?.message_id ?? "");
   if (!messageId) throw new Error("rule notification delivery returned no message id");
   const ack = ${q(notificationAckPrefix)} + " --workspace " + JSON.stringify(delivery.workspace)

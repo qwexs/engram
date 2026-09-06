@@ -69,7 +69,10 @@ function buildScript() {
 const WORKSPACE = ${js(workspace)};
 const AGENT_ID = ${js(agentId)};
 const execText = async (command, yieldMs) => {
-  const value = await tools.callValue("exec", { command, workdir: WORKSPACE, yieldMs, timeout: 420 });
+  const value = await exec({ command, workdir: WORKSPACE, yieldMs, timeoutSeconds: 420 });
+  if (value?.status !== "completed" || !Number.isInteger(value.exitCode) || value.exitCode !== 0) {
+    throw new Error("Engram heartbeat exec did not complete successfully: " + JSON.stringify(value).slice(-4000));
+  }
   return String(value?.aggregated ?? value?.stdout ?? value?.output ?? "");
 };
 const parseClaim = (text) => text.split(/\\r?\\n/).flatMap((line) => {
@@ -79,7 +82,7 @@ const dispatch = async (text) => {
   const records = parseClaim(text); let spawned = 0; const errors = [];
   for (const record of records) {
     try {
-      const result = await tools.callValue("sessions_spawn", { task: record.task, label: record.runtimeLabel || record.label, model: record.model, cleanup: "delete", cwd: WORKSPACE });
+      const result = await sessions_spawn({ task: record.task, label: record.runtimeLabel || record.label, model: record.model, cleanup: "delete", cwd: WORKSPACE });
       const dispatchRef = encodeURIComponent(String(result?.sessionKey ?? result?.sessionId ?? result?.id ?? record.runId));
       await execText("bun ./skills/engram/scripts/spawn-ack.js --workspace " + JSON.stringify(WORKSPACE) + " --run-id " + record.runId + " --accepted true --dispatch-ref-uri " + dispatchRef + " --json", 60000);
       spawned += 1;

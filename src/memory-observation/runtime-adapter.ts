@@ -248,6 +248,11 @@ export class OpenClawObservationRuntimeAdapter {
     const event = row(eventValue) ?? {};
     const context = row(contextValue) ?? {};
     const runtimeSessionKey = sharedToken("sessionKey", event.sessionKey, context.sessionKey);
+    // Native command routing is not a conversational source turn. Do not wait
+    // for a persisted user/completion pair that this transport never promises.
+    if (/^agent:[^:]+:telegram:slash:[^:]+$/.test(runtimeSessionKey)) {
+      return { status: "ignored", reason: "native_command_session" };
+    }
     const binding = this.options.resolveBinding(runtimeSessionKey);
     if (!binding) return { status: "ignored", reason: "scope_disabled" };
     const runtimeChannel = channel(context.channelId ?? event.channel);
@@ -513,10 +518,9 @@ export class OpenClawObservationRuntimeAdapter {
         const text = extractText(message, 50_000);
         if (text) assistantText = text;
       }
-      if (!assistantText) {
-        this.publishBoundGap(bound, "run_attached", "evidence_missing", now);
-        throw new RuntimeAdapterError("INVALID_TURN", "successful run has no terminal assistant text");
-      }
+      // Successful runtime completion and the exact persisted user source have
+      // already been verified. A tool-delivered/non-text reply need not appear
+      // in this transcript. Preserve the source without inventing an outcome.
       const completionCheckpoint = this.recordCheckpoint(bound, "completion_observed", now);
       const completionAt = completionCheckpoint ? new Date(completionCheckpoint.updatedAt) : now;
       const result = this.admitCompletedTurn({ bound, binding, runtimeSessionKey, assistantText, now: completionAt });
@@ -1035,7 +1039,8 @@ export class OpenClawObservationRuntimeAdapter {
           ...(params.bound.replyToId && params.bound.replyToId !== params.binding.topicDomain?.topicId
             ? { replyToMessageId: params.bound.replyToId } : {}),
           ...(params.binding.topicDomain ? { actorId: params.bound.actorId, attribution: "speaker-only" } : {}) },
-        outcome: { role: "assistant", text: params.assistantText },
+        outcome: { role: "assistant", text: params.assistantText,
+          ...(!params.assistantText ? { status: "unknown", reasonCode: "assistant_text_unavailable" } : {}) },
         ...(replyContext ? { replyContext } : {}),
       } as unknown as JsonValue),
       trustedInputs: [

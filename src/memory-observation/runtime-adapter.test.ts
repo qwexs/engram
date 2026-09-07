@@ -127,6 +127,62 @@ function attach(adapterValue: OpenClawObservationRuntimeAdapter) {
 }
 
 describe("OpenClaw PR2 runtime adapter", () => {
+  test("ignores the trusted native command contour without creating admission gaps", () => {
+    const root = workspace();
+    const runtime = adapter({ workspaceRoot: root });
+    const fixture = hookFixtures();
+    expect(runtime.captureMessageReceived(fixture.receivedEvent, {
+      ...fixture.receivedContext, sessionKey: "agent:fixture-main:telegram:slash:100000001",
+    })).toEqual({ status: "ignored", reason: "native_command_session" });
+    expect(new AdmissionStore(root, authority).scanCheckpoints().records).toHaveLength(0);
+    // Slash-shaped content in an ordinary conversation is not a routing signal.
+    expect(runtime.captureMessageReceived({ ...fixture.receivedEvent, content: "/my-document" },
+      fixture.receivedContext)).toEqual({ status: "captured" });
+  });
+
+  test("preserves verified user evidence when successful completion has no assistant text", () => {
+    const root = workspace(), observed = ledger(root);
+    const runtime = adapter({ workspaceRoot: root, spoolRoot: join(root, "spool"),
+      binding: { workspaceId: "fixture-main", scopeClass: "self", scopeId: "telegram:100000001",
+        requireOwner: true, allowedChannels: ["telegram"],
+        admit: (source, now) => observed.admit(source, now) } });
+    const fixture = attach(runtime);
+    const result = runtime.completeAgentEnd({ ...fixture.endEvent,
+      messages: [fixture.endEvent.messages[0], { role: "assistant", content: [{ type: "image", url: "unread" }] }],
+    }, fixture.runContext);
+    expect(result.status).toBe("admitted");
+    expect(new AdmissionStore(root, authority).scanCheckpoints().records[0]?.stage).toBe("ledger_admitted");
+    expect(runtime.completeAgentEnd(fixture.endEvent, fixture.runContext).status).toBe("ignored");
+  });
+
+  test("marks absent assistant outcome unknown, without extracting tool arguments as text", () => {
+    const admitted: TrustedCompletedTurn[] = [];
+    const runtime = adapter({ admitted });
+    const fixture = attach(runtime);
+    runtime.completeAgentEnd({ ...fixture.endEvent, messages: [fixture.endEvent.messages[0],
+      { role: "assistant", content: [{ type: "toolCall", name: "message", arguments: { message: "unverified" } }] },
+    ] }, fixture.runContext);
+    expect(admitted[0]?.redactedEvidence).toMatchObject({
+      source: { text: "Принято: запускаем PR2 runtime adapter" },
+      outcome: { text: "", status: "unknown", reasonCode: "assistant_text_unavailable" },
+    });
+  });
+
+  test("missing assistant text does not relax completion or exact source checks", () => {
+    for (const kind of ["failed", "missing-source", "changed-source"] as const) {
+      const admitted: TrustedCompletedTurn[] = [], root = workspace();
+      const runtime = adapter({ admitted, workspaceRoot: root });
+      const fixture = attach(runtime);
+      const event = { ...fixture.endEvent, success: kind !== "failed",
+        messages: kind === "missing-source" ? [] : [{ ...fixture.endEvent.messages[0],
+          ...(kind === "changed-source" ? { content: "Different source" } : {}) }] };
+      if (kind === "failed") expect(runtime.completeAgentEnd(event, fixture.runContext).status).toBe("ignored");
+      else expect(() => runtime.completeAgentEnd(event, fixture.runContext)).toThrow();
+      expect(admitted).toHaveLength(0);
+      expect(new AdmissionStore(root, authority).scanCheckpoints().records[0]?.stage).toBe("terminal_gap");
+    }
+  });
+
   test("group evidence preserves each trusted speaker across restart, not identities claimed in text", () => {
     const root = workspace(), admitted: TrustedCompletedTurn[] = [];
     const topicKey = "agent:fixture-main:telegram:group:-100123:topic:2";

@@ -9,6 +9,7 @@ import { compileBatchFrame, BATCH_CONFIG_SCHEMA, BATCH_FRAME_SCHEMA } from "./ba
 import { BATCH_EVALUATOR_AUTHORITY, deriveBatchObservationId } from "./batch-observation.ts";
 import { DAILY_NOTE_APPLICATOR, renderDailyNoteEntry } from "./daily-note-applicator.ts";
 import { deriveSourceDigest, sha256 } from "./ledger.ts";
+import { restoreLegacyDefer } from "./batch-terminal-recovery.ts";
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(p => rmSync(p, { recursive: true, force: true })));
 const put = (p: string, v: unknown) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, typeof v === "string" ? v : JSON.stringify(v)); };
@@ -113,4 +114,38 @@ test("expired evidence and tampered receipt fail before any note mutation", asyn
   await expect(restoreAppliedSourceQuote({ ...f.options, apply: true, now: new Date("2026-09-11T00:00:00.000Z") })).rejects.toThrow();
   const receipt = JSON.parse(read(f.receiptPath)); receipt.readBackDigest = sha256("tampered"); put(f.receiptPath, receipt);
   await expect(restoreAppliedSourceQuote({ ...f.options, apply: true })).rejects.toThrow("receipt/note join failed"); expect(read(f.notePath)).toBe(before);
+});
+
+async function deferFixture() {
+  const f = await fixture(), bundle = JSON.parse(read(f.options.bundleFile)).bundle;
+  const jobId = sha256("legacy-defer-job"), traceId = bundle.sourceRefs[0].traceId;
+  const storeRoot = join(f.workspace, "memory-state/memory-observation/batch-live-store"), batchRoot = join(storeRoot, "memory-batch-live/v1");
+  const stateRoot = join(f.workspace, "memory-state/memory-observation/v1");
+  const terminalBase = { schema: "engram.memory-batch-live-terminal.v1", jobId, bundleId: bundle.bundleId,
+    dispositions: [{ traceId, decision: "defer", reasonCode: "semantic_batch_defer", observationRefs: [] }] };
+  const donePath = join(batchRoot, "done", jobId.slice(7) + ".json");
+  put(donePath, { ...terminalBase, terminalId: sha256(terminalBase) });
+  put(join(batchRoot, "jobs", jobId.slice(7) + ".json"), { schema: "engram.memory-batch-live-job.v1", jobId, bundle, partition: bundle.partition });
+  const evidencePath = join(stateRoot, "evidence", traceId.slice(7) + ".json");
+  put(evidencePath, { traceId, scope: f.observation.scope, payload: bundle.inputs[0].evidence, expiresAt: "2026-09-10T12:00:00.000Z" });
+  const queuePath = join(stateRoot, "queues/evaluator", traceId.slice(7) + ".json");
+  put(queuePath, { traceId, status: "terminal", attempt: 2, claimToken: null, terminalAt: "2026-09-07T12:00:00.000Z", reasonCode: "semantic_batch_defer" });
+  const options = { workspace: f.workspace, storeRoot, jobId, traceId, now: f.options.now, authorizedBy: "operator", authorizedAt: f.options.authorizedAt, reason: "restore legacy waiting state" };
+  return { ...f, options, queuePath, donePath, evidencePath };
+}
+for (const faultAt of [undefined, "after_authorization", "after_queue_requeue"] as const) test("legacy defer restores waiting idempotently: " + faultAt, async () => {
+  const f = await deferFixture(), original = read(f.queuePath), done = read(f.donePath);
+  expect(restoreLegacyDefer(f.options).status).toBe("planned"); expect(read(f.queuePath)).toBe(original);
+  if (faultAt) expect(() => restoreLegacyDefer({ ...f.options, apply: true, faultAt })).toThrow("fault injection");
+  expect(restoreLegacyDefer({ ...f.options, apply: true }).status).toBe("waiting_context");
+  const waiting = read(f.queuePath); expect(JSON.parse(waiting)).toMatchObject({ status: "queued", attempt: 0, reasonCode: "semantic_batch_defer", terminalAt: null });
+  expect(restoreLegacyDefer({ ...f.options, apply: true }).inferenceRun).toBe(false);
+  expect(read(f.queuePath)).toBe(waiting); expect(read(f.donePath)).toBe(done);
+});
+test("legacy defer refuses expired source and changed queue, without erasing history", async () => {
+  const f = await deferFixture();
+  expect(() => restoreLegacyDefer({ ...f.options, apply: true, now: new Date("2026-09-11T00:00:00.000Z") })).toThrow("retained exact-scope");
+  expect(() => restoreLegacyDefer({ ...f.options, apply: true, faultAt: "after_authorization" })).toThrow("fault injection");
+  put(f.queuePath, { ...JSON.parse(read(f.queuePath)), attempt: 3 });
+  expect(() => restoreLegacyDefer({ ...f.options, apply: true })).toThrow("defer queue changed");
 });

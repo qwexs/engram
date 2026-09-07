@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
-import { recoverTerminalBatch } from "../src/memory-observation/batch-terminal-recovery.ts";
+import { recoverTerminalBatch, restoreLegacyDefer } from "../src/memory-observation/batch-terminal-recovery.ts";
 import type { Digest } from "../src/memory-observation/ledger.ts";
 
 function args(argv: string[]): Record<string, string | boolean> {
@@ -24,7 +24,7 @@ function required(options: Record<string, string | boolean>, name: string): stri
 const options = args(process.argv);
 const workspace = resolve(required(options, "workspace"));
 const storeRoot = resolve(required(options, "store-root"));
-const result = recoverTerminalBatch({
+const common = {
   workspace,
   storeRoot,
   jobId: required(options, "job-id") as Digest,
@@ -32,5 +32,8 @@ const result = recoverTerminalBatch({
   authorizedAt: required(options, "authorized-at"),
   reason: required(options, "reason"),
   apply: options.apply === true,
-});
+};
+const result = options["restore-defer-trace"]
+  ? restoreLegacyDefer({ ...common, traceId: required(options, "restore-defer-trace") as Digest })
+  : recoverTerminalBatch(common);
 console.log(JSON.stringify(result, null, 2));

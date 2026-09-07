@@ -22,6 +22,7 @@ import {
   type BatchLiveJobV1,
 } from "./batch-live-worker.ts";
 import { sha256, type Digest, type JsonValue, type LedgerQueueRecordV1 } from "./ledger.ts";
+import { memoryObservationBinding, resolveMemoryObservationProjection } from "./projection.ts";
 
 export const BATCH_TERMINAL_RECOVERY_SCHEMA = "engram.memory-batch-terminal-recovery.v1" as const;
 const BATCH_TERMINAL_RECOVERY_AUTHORIZATION_SCHEMA = "engram.memory-batch-terminal-recovery-authorization.v1" as const;
@@ -195,6 +196,69 @@ function recoveredQueue(queue: LedgerQueueRecordV1, authorizedAt: string): Ledge
     terminalAt: null,
     reasonCode: "operator_recovery_requeued",
   };
+}
+
+/** Migrate one legacy terminal defer to waiting, without inference or deleting history. */
+export function restoreLegacyDefer(options: {
+  workspace: string; storeRoot: string; jobId: Digest; traceId: Digest;
+  authorizedBy: string; authorizedAt: string; reason: string; apply?: boolean;
+  now?: Date; faultAt?: "after_authorization" | "after_queue_requeue";
+}) {
+  const now = options.now ?? new Date();
+  if (!options.authorizedBy.trim() || !options.reason.trim() || !instant(options.authorizedAt)
+    || Date.parse(options.authorizedAt) > now.getTime()) fail("INVALID_AUTHORIZATION", "explicit operator authorization is required");
+  const workspace = resolve(options.workspace), root = join(workspace, "memory-state/memory-observation/v1");
+  if (resolve(options.storeRoot) !== join(workspace, "memory-state/memory-observation/batch-live-store")) fail("SCOPE_MISMATCH", "expected workspace-owned batch store");
+  const batchRoot = join(options.storeRoot, "memory-batch-live/v1"), jobKey = digestKey(options.jobId), traceKey = digestKey(options.traceId);
+  const job = readJson<BatchLiveJobV1>(join(batchRoot, "jobs", jobKey + ".json"));
+  const done: any = readJson(join(batchRoot, "done", jobKey + ".json"));
+  const { terminalId, ...terminalBase } = done;
+  if (job.schema !== BATCH_LIVE_JOB_SCHEMA || job.jobId !== options.jobId || done.jobId !== options.jobId
+    || done.schema !== "engram.memory-batch-live-terminal.v1" || terminalId !== valueDigest(terminalBase)
+    || done.bundleId !== job.bundle.bundleId || !job.bundle.sourceRefs.some(s => s.traceId === options.traceId)
+    || done.dispositions.filter((d: any) => d.traceId === options.traceId).length !== 1
+    || !done.dispositions.some((d: any) => d.traceId === options.traceId && d.decision === "defer"
+      && d.reasonCode === "semantic_batch_defer" && d.observationRefs.length === 0)) fail("DEFER_INVALID", "exact completed defer required");
+  const workspaceId = readJson<any>(join(workspace, "engram.json")).workspace.id;
+  const projection = resolveMemoryObservationProjection({ workspace, workspaceId });
+  const binding = memoryObservationBinding(projection, job.partition.runtimeSessionKey);
+  if (!projection.enabled || !binding || job.partition.workspaceId !== workspaceId
+    || binding.scopeId !== job.partition.scopeId || binding.scopeClass !== job.partition.scopeClass) fail("SCOPE_MISMATCH", "defer scope is not active");
+  const recoveryId = valueDigest({ schema: "engram.legacy-defer-recovery.v1", jobId: options.jobId, traceId: options.traceId,
+    authorizedBy: options.authorizedBy, authorizedAt: options.authorizedAt, reason: options.reason });
+  const path = join(batchRoot, "recoveries", jobKey, digestKey(recoveryId));
+  const authorizationPath = join(path, "authorization.json"), completionPath = join(path, "completed.json");
+  const plan = { schema: "engram.legacy-defer-recovery.v1", recoveryId, jobId: options.jobId, traceId: options.traceId,
+    authorizedBy: options.authorizedBy, authorizedAt: options.authorizedAt, reason: options.reason, status: "waiting_context", inferenceRun: false };
+  if (existsSync(completionPath)) {
+    if (!sameValue(readJson(completionPath), plan)) fail("COMPLETION_CONFLICT", "defer recovery completion mismatch");
+    return plan;
+  }
+  const release = acquireRecoveryLock(join(root, "locks/evaluator.worker"), recoveryId);
+  try {
+    const evidence: any = readJson(join(root, "evidence", traceKey + ".json"));
+    if (evidence.traceId !== options.traceId || !instant(evidence.expiresAt) || Date.parse(evidence.expiresAt) <= now.getTime()
+      || evidence.scope.workspaceId !== workspaceId || evidence.scope.runtimeSessionKey !== job.partition.runtimeSessionKey
+      || evidence.scope.scopeId !== binding.scopeId || evidence.scope.scopeClass !== binding.scopeClass
+      || !sameValue(job.bundle.inputs.find(i => i.traceId === options.traceId)?.evidence, evidence.payload)) fail("SOURCE_MISSING", "retained exact-scope evidence required");
+    const queuePath = join(root, "queues/evaluator", traceKey + ".json");
+    const current = readJson<LedgerQueueRecordV1>(queuePath);
+    const original = existsSync(authorizationPath) ? readJson<any>(authorizationPath).original : current;
+    if (original.traceId !== options.traceId || original.status !== "terminal" || original.reasonCode !== "semantic_batch_defer"
+      || original.claimToken !== null || original.terminalAt === null) fail("QUEUE_INELIGIBLE", "only legacy terminal defer is eligible");
+    const waiting = { ...recoveredQueue(original, options.authorizedAt), reasonCode: "semantic_batch_defer" };
+    const authorization = { ...plan, original, waiting, evidenceDigest: valueDigest(evidence), doneDigest: valueDigest(done) };
+    if (existsSync(authorizationPath) && !sameValue(readJson(authorizationPath), authorization)) fail("AUTHORIZATION_CONFLICT", "defer recovery authorization changed");
+    if (!sameValue(current, original) && !sameValue(current, waiting)) fail("QUEUE_STATE_DIVERGED", "defer queue changed");
+    if (!options.apply) return { ...plan, status: "planned" };
+    if (!sameValue(resolveMemoryObservationProjection({ workspace, workspaceId }), projection)) fail("SCOPE_MISMATCH", "projection changed");
+    writeImmutableExact(authorizationPath, authorization);
+    injectFault(options, "after_authorization");
+    if (sameValue(current, original)) writeAtomic(queuePath, waiting);
+    injectFault(options, "after_queue_requeue");
+    writeImmutableExact(completionPath, plan);
+    return plan;
+  } finally { release(); }
 }
 
 function validateFailure(job: BatchLiveJobV1, failure: BatchLiveFailureV1, done: BatchLiveFailureV1): void {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -13,7 +13,9 @@ function environment() {
   const statePath = join(root, "job.json");
   const registry = join(root, "registry-snapshot.json");
   const declaration = join(root, "scheduler-declaration.json");
-  const workspace = resolve(process.cwd(), "..", "..");
+  const workspace = join(root, "workspace");
+  mkdirSync(join(workspace, "skills"), { recursive: true });
+  symlinkSync(resolve(import.meta.dir, ".."), join(workspace, "skills/engram"));
   writeFileSync(registry, JSON.stringify({
     schema: "oll.workspace-registry-snapshot.v1", capturedAt: "2026-01-01T00:00:00.000Z",
     entries: [{ workspaceId: "workspace-a", workspacePath: join(root, "workspace-a"), registryRevision: 1, registryDigest: "sha256:registry", configDigest: "sha256:config" }],

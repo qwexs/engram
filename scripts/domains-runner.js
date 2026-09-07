@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { observerOwnsDomainProjection } from "./_lib/observer-daily-ownership.ts";
 
 const EXPECTED_FILES_BY_TYPE = {
   "dev-project": ["decisions.md", "workflow.md", "status.md", "changelog.md"],
@@ -599,6 +600,9 @@ export async function applyDomainWriteHandoff(handoff, {
   if (!runId) throw new Error("Run-Id is required");
   if (selectedDomain && domain !== selectedDomain) throw new Error("Handoff domain does not match selected domain");
 
+  if (observerOwnsDomainProjection(root, domain)) {
+    return { ok: true, status: "noop", domain, runId, changed: false, reason: "observer-domain-consumer-owns-projection" };
+  }
   const config = registry.domains?.[domain];
   if (!config) throw new Error("Domain not registered: " + domain);
   if (!isEnabled(config)) throw new Error("Domain is disabled: " + domain);
@@ -959,8 +963,11 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
       suppressedByLastCheckedAt = checkedAgeDays < effectiveCadenceDays;
     }
 
+    const observerOwned = observerOwnsDomainProjection(root, name, new Date(nowMs));
+    if (observerOwned) { due = false; overdue = false; }
     const domain = {
       name,
+      ...(observerOwned ? { projectionOwner: "observer" } : {}),
       enabled,
       type: config?.type ?? null,
       subagentLabel: config?.subagentLabel ?? null,
@@ -989,7 +996,7 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
       dryRun: true,
     });
     domain.wouldArchive = archiveResult.archived === false && archiveResult.archivePath && archiveResult.ageDays >= (numberFromConfig(config, ["staleAfterDays", "statusStaleDays"]) ?? 60);
-    domain.archiveCandidate = !config?.archived && config?.type === "topic-thread" && archiveResult.archivePath ? archiveResult.archivePath : null;
+    domain.archiveCandidate = !observerOwned && !config?.archived && config?.type === "topic-thread" && archiveResult.archivePath ? archiveResult.archivePath : null;
     domain.ageDays = archiveResult.ageDays ?? null;
     domains.push(domain);
 
@@ -1001,7 +1008,7 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
   // Phase D: archive stale topic-thread domains (only if archiveMode && !dryRun)
   if (archiveMode && !dryRun) {
     for (const domain of domains) {
-      if (domain.type !== "topic-thread") continue;
+      if (domain.type !== "topic-thread" || domain.projectionOwner === "observer") continue;
       if (domain.archived) continue;
       const config = registry.domains[domain.name] || {};
       const result = archiveTopicThreadDomain({

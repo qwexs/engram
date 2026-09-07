@@ -1,3 +1,4 @@
+import { groupAssertionAttribution } from "./group-attribution.ts";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -369,7 +370,7 @@ function observationFromAssertion(options: {
     targetConsumer: "daily-note" as const,
     payload: {
       section: options.section,
-      text: options.text,
+      text: groupAssertionAttribution(options.job.bundle, options.actorRef, options.citations) + options.text,
       actorRef: options.actorRef,
       outcomeStatus: options.outcomeStatus,
     },

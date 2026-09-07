@@ -1,9 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
+import { assertTopicDomainRegistry, validTopicBinding, type TopicDomainBinding } from "./topic-bindings.ts";
+
 export const MEMORY_OBSERVATION_PROJECTION_SCHEMA = "engram.memory-observation-rollout.v1" as const;
 export const MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2 = "engram.memory-observation-rollout.v2" as const;
 export const MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3 = "engram.memory-observation-rollout.v3" as const;
+
+export const MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 = "engram.memory-observation-rollout.v4" as const;
 
 export type MemoryObservationQmdBindingV1 = {
   collection: string;
@@ -20,13 +24,15 @@ export type MemoryObservationBindingV1 = {
   scopeClass: "self" | "managers" | "company" | "project";
   scopeId: string;
   requireOwner: boolean;
+  topicDomain?: TopicDomainBinding;
   allowedChannels: ("telegram" | "openclaw")[];
 };
 
 export type MemoryObservationProjectionV1 = {
   schema: typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA
     | typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2
-    | typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3;
+    | typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3
+    | typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4;
   workspaceId: string;
   enabled: boolean;
   mode: "shadow" | "canary";
@@ -113,6 +119,8 @@ function validBinding(
   const agentFamily = schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3
     && /^agent:[A-Za-z0-9._-]+:\*$/.test(binding.runtimeSessionKey);
   return (exactSession || agentFamily)
+    && (schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4
+      ? validTopicBinding(binding) : binding.topicDomain === undefined)
     && ["self", "managers", "company", "project"].includes(binding.scopeClass)
     && token(binding.scopeId, 512)
     && typeof binding.requireOwner === "boolean"
@@ -201,7 +209,7 @@ export function resolveMemoryObservationProjection(options: {
   const projection = value as MemoryObservationProjectionV1;
   const limits = projection.limits;
   const inference = projection.inference;
-  if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3].includes(projection.schema as any)
+  if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4].includes(projection.schema as any)
     || projection.workspaceId !== options.workspaceId
     || projection.enabled !== true
     || !["shadow", "canary"].includes(projection.mode)
@@ -235,7 +243,7 @@ export function resolveMemoryObservationProjection(options: {
         || "collection" in projection.consumers.dailyNote.qmdBinding))
     || (projection.mode === "canary"
       && (!projection.consumers
-        || projection.bindings.length !== 1
+        || (projection.schema !== MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 && projection.bindings.length !== 1)
         || Object.keys(projection.consumers).length !== 1
         || !validDailyNoteCanary(projection.consumers.dailyNote)
         || (projection.captureOwnership !== undefined
@@ -246,6 +254,15 @@ export function resolveMemoryObservationProjection(options: {
   }
   if (options.expectedPluginDigest && projection.pluginDigest !== options.expectedPluginDigest) {
     throw new MemoryObservationProjectionError("memory observation plugin digest mismatch");
+  }
+  if (projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4) {
+    if (projection.mode !== "canary" || projection.evaluation?.mode !== "batch-cron"
+      || !projection.captureOwnership || !projection.consumers?.dailyNote.qmdBinding
+      || !("resolver" in projection.consumers.dailyNote.qmdBinding)) {
+      throw new MemoryObservationProjectionError("topic projection requires batch ownership and exact-session QMD resolver");
+    }
+    try { assertTopicDomainRegistry(options.workspace, options.workspaceId, projection.bindings); }
+    catch (error) { throw new MemoryObservationProjectionError(`topic registry authorization failed: ${String(error)}`); }
   }
   return projection;
 }
@@ -282,6 +299,6 @@ export function memoryObservationCaptureOwner(
 ): "observer" | "foreground" {
   const ownership = projection.captureOwnership;
   if (!projection.enabled || projection.mode !== "canary" || !ownership) return "foreground";
-  if (projection.bindings.length !== 1 || !memoryObservationBinding(projection, runtimeSessionKey)) return "foreground";
+  if ((projection.schema !== MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 && projection.bindings.length !== 1) || !memoryObservationBinding(projection, runtimeSessionKey)) return "foreground";
   return Date.parse(ownership.effectiveAfter) <= now.getTime() ? "observer" : "foreground";
 }

@@ -21,6 +21,7 @@ import {
   MEMORY_OBSERVATION_PROJECTION_SCHEMA,
   MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2,
   MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3,
+  MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4,
   memoryObservationProjectionPath,
   type MemoryObservationProjectionV1,
 } from "../src/memory-observation/projection.ts";
@@ -29,9 +30,12 @@ import { deriveBatchEvaluationPolicyDigest } from "../src/memory-observation/bat
 import {
   defineCanaryQmdRuntimeResolver,
   preflightCanaryQmdBinding,
+  resolveCanaryQmdRuntimeBinding,
 } from "../src/memory-observation/qmd-binding-preflight.ts";
 import { resolveQmdContext } from "../src/qmd/context.ts";
 import { personalBatchBinding, runtimeSourcePolicyDigest } from "./_lib/memory-observation-rollout-policy.ts";
+
+import { configuredTopicBindings, assertTopicHostRoutes } from "../src/memory-observation/topic-bindings.ts";
 
 const PLUGIN_ID = "engram-memory-observation";
 const DEFAULT_INFERENCE_MODEL = "openai/gpt-5.6-sol";
@@ -138,6 +142,13 @@ function hostInferenceBoundary(marker: MemoryObservationProjectionV1 | null): {
   const foregroundModel = agentId ? configuredAgentModel(agentId) : null;
   const expectedModel = marker?.inference?.model ?? null;
   const pluginLlmPolicy = configuredPluginLlmPolicy();
+  let topicAuthorized = false;
+  if (marker?.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4) {
+    try {
+      assertTopicHostRoutes(configuredTopicRoutes(), workspace, workspaceId, marker.bindings);
+      topicAuthorized = true;
+    } catch { /* Changed host routes revoke group activation. */ }
+  }
   let personalAuthorized = false;
   if (marker && agentId !== "main" && marker.evaluation?.mode === "batch-cron") {
     try {
@@ -146,7 +157,7 @@ function hostInferenceBoundary(marker: MemoryObservationProjectionV1 | null): {
     } catch { /* Missing or changed route is not activation authority. */ }
   }
   return {
-    active: Boolean((agentId === "main" || personalAuthorized) && expectedModel
+    active: Boolean((agentId === "main" || personalAuthorized || topicAuthorized) && expectedModel
       && hasExactInferenceModelAuthorization(pluginLlmPolicy, expectedModel)),
     agentId,
     foregroundModel,
@@ -160,6 +171,11 @@ function configuredPersonalRoutes(): any {
     agents: { entries: parsedConfigValue(runOpenClaw(["config", "get", "agents.entries"])) },
     bindings: parsedConfigValue(runOpenClaw(["config", "get", "bindings"])),
   };
+}
+
+function configuredTopicRoutes(): any {
+  return { agents: { entries: parsedConfigValue(runOpenClaw(["config", "get", "agents.entries"])) },
+    channels: { telegram: { groups: parsedConfigValue(runOpenClaw(["config", "get", "channels.telegram.groups"])) } } };
 }
 
 async function buildPlugin(repository: string) {
@@ -279,6 +295,7 @@ disable       Immediate local projection kill switch (--ack-rollback)
 Common:
   --workspace <absolute path>
   --session-key <full agent session key or agent:<id>:* for a v3 family canary>
+  --topic-domains <slug,...>     v4 exact group topics (instead of session-key/scope-id)
   --qmd-collection <collection>   Optional exact canary QMD binding collection
   --qmd-manifest <path>           Registry/manifest file; alone enables the family exact-session resolver
   --scope-id <canonical exact scope>
@@ -366,7 +383,7 @@ if (command === "status") {
       && plugin.digest === bundle.digest && marker?.enabled === true && marker?.pluginDigest === bundle.digest
       && (marker?.limits?.maxInferenceCalls !== 1
         || hostBoundary.active)
-      && (marker?.mode !== "canary" || (marker?.bindings?.length === 1
+      && (marker?.mode !== "canary" || ((marker?.bindings?.length === 1 || marker?.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4)
         && dailyNoteReadBack(marker)
         && (marker?.captureOwnership === undefined || ownershipReadBack(marker))))),
     state: stateCounts(workspace),
@@ -395,15 +412,18 @@ if (!["plan", "plan-canary", "plan-ownership", "plan-batch-canary", "enable-shad
 const batchCommand = batchCommandRequested;
 const ownershipCommand = batchCommand || command === "plan-ownership" || command === "enable-ownership";
 const canaryCommand = ownershipCommand || command === "plan-canary" || command === "enable-canary";
-const sessionKey = required(options, "session-key");
+const topicNames = typeof options["topic-domains"] === "string" ? String(options["topic-domains"]).split(",").map(s => s.trim()) : null;
+const topicBindings = topicNames ? configuredTopicBindings(configuredTopicRoutes(), workspace, workspaceId, topicNames) : null;
+if (topicBindings && (!batchCommand || options["session-key"] || options["scope-id"])) throw new Error("topic domains require batch mode without session-key/scope-id overrides");
+const sessionKey = topicBindings ? topicBindings.map(b => b.runtimeSessionKey).join(",") : required(options, "session-key");
 if (!sessionKey.startsWith("agent:")) throw new Error("--session-key must be a full canonical agent session key");
-const personalBinding = !sessionKey.startsWith("agent:main:")
+const personalBinding = !topicBindings && !sessionKey.startsWith("agent:main:")
   ? personalBatchBinding(configuredPersonalRoutes(), workspace, workspaceId, sessionKey) : null;
 if (personalBinding && !batchCommand) throw new Error("non-main personal activation requires the batch evaluator");
 if (sessionKey.includes("*") && sessionKey !== "agent:main:*") {
   throw new Error("the only supported family selector is agent:main:*");
 }
-const scopeId = required(options, "scope-id");
+const scopeId = topicBindings ? `workspace:${workspaceId}:topics` : required(options, "scope-id");
 if (personalBinding && scopeId !== personalBinding.scopeId) throw new Error("personal scope must match the configured direct peer");
 const approvedBy = required(options, "approved-by");
 const approvedAt = required(options, "approved-at");
@@ -419,13 +439,13 @@ const projection: MemoryObservationProjectionV1 = {
   workspaceId,
   enabled: true,
   mode: "shadow",
-  bindings: personalBinding ? [personalBinding] : [{
+  bindings: topicBindings ?? (personalBinding ? [personalBinding] : [{
     runtimeSessionKey: sessionKey,
     scopeClass: "self",
     scopeId,
     requireOwner: true,
     allowedChannels: sessionKey === "agent:main:*" ? ["telegram", "openclaw"] : ["telegram"],
-  }],
+  }]),
   pluginDigest: bundle.digest,
   inference: {
     provider: inferenceModel.split("/", 1)[0]!,
@@ -469,7 +489,7 @@ if (batchCommand) {
   if (batch.maxAgeSeconds < batch.inactivityGapSeconds) {
     throw new Error("--batch-max-age-seconds cannot be below --batch-inactivity-gap-seconds");
   }
-  projection.schema = sessionKey === "agent:main:*"
+  projection.schema = topicBindings ? MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 : sessionKey === "agent:main:*"
     ? MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3
     : MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2;
   projection.evaluation = {
@@ -516,12 +536,12 @@ if (canaryCommand) {
 
 const qmdCollection = typeof options["qmd-collection"] === "string" ? String(options["qmd-collection"]).trim() : "";
 const qmdManifestPath = typeof options["qmd-manifest"] === "string" ? String(options["qmd-manifest"]).trim() : "";
-if (canaryCommand && sessionKey.endsWith(":*") && !qmdManifestPath) {
+if (canaryCommand && (topicBindings || sessionKey.endsWith(":*")) && !qmdManifestPath) {
   throw new Error("family canary requires --qmd-manifest for exact-session QMD coverage");
 }
 if (canaryCommand && (qmdCollection || qmdManifestPath)) {
   const context = resolveQmdContext({ value: workspace, source: "explicit" });
-  if (sessionKey.endsWith(":*")) {
+  if (topicBindings || sessionKey.endsWith(":*")) {
     if (qmdCollection || !qmdManifestPath) throw new Error("family canary QMD handoff requires only --qmd-manifest");
     projection.consumers!.dailyNote.qmdBinding = defineCanaryQmdRuntimeResolver({
       workspace,
@@ -529,6 +549,11 @@ if (canaryCommand && (qmdCollection || qmdManifestPath)) {
       manifestPath: qmdManifestPath,
       context,
     });
+    if (topicBindings) for (const binding of topicBindings) {
+      resolveCanaryQmdRuntimeBinding({ workspace, runtimeSessionKey: binding.runtimeSessionKey,
+        timezone: projection.consumers!.dailyNote.timezone, destinationAt: effectiveAfter,
+        resolver: projection.consumers!.dailyNote.qmdBinding as any, context });
+    }
   } else {
     if (!qmdCollection || !qmdManifestPath) throw new Error("--qmd-collection and --qmd-manifest must be paired for an exact canary");
     const manifest = json(qmdManifestPath);

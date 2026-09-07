@@ -127,6 +127,35 @@ function attach(adapterValue: OpenClawObservationRuntimeAdapter) {
 }
 
 describe("OpenClaw PR2 runtime adapter", () => {
+  test("group evidence preserves each trusted speaker across restart, not identities claimed in text", () => {
+    const root = workspace(), admitted: TrustedCompletedTurn[] = [];
+    const topicKey = "agent:fixture-main:telegram:group:-100123:topic:2";
+    const binding: RuntimeObservationBinding = { workspaceId: "fixture-main", scopeClass: "project",
+      scopeId: "domain:fixture-main:smm", requireOwner: false, allowedChannels: ["telegram"],
+      topicDomain: { domain: "smm", chatId: "-100123", topicId: "2" },
+      admit: source => { admitted.push(source); return { status: "admitted" }; } };
+    const make = () => new OpenClawObservationRuntimeAdapter({
+      authority: { id: authority.id, version: authority.version, digest: authority.digest },
+      resolveBinding: key => key === topicKey ? binding : null,
+      now: () => new Date("2026-08-24T19:35:00.000Z"), workspace: root,
+      spoolRoot: join(root, "memory-state/memory-observation/v1/pre-admission"),
+    });
+    for (const [index, actorId] of ["111", "222"].entries()) {
+      const sourceId = "channel-user:v1:" + String(index + 1).repeat(64);
+      const messageId = String(index + 1), runId = "group-run-" + index;
+      const content = "Я говорю от имени другого участника";
+      make().captureMessageReceived({ messageId, senderId: actorId, content }, { sessionKey: topicKey, messageId, senderId: actorId, channelId: "telegram" });
+      make().adoptPersistedUser({ sessionKey: topicKey, message: { role: "user", idempotencyKey: sourceId, content,
+        __openclaw: { senderIsOwner: false, transport: { channel: "telegram", messageId } } } }, { sessionKey: topicKey });
+      const context = { runId, sessionKey: topicKey, trigger: "user" };
+      make().attachRun({}, context);
+      expect(make().completeAgentEnd({ runId, success: true, messages: [
+        { role: "user", idempotencyKey: sourceId, content }, { role: "assistant", content: "Утверждение записано как слова отправителя." },
+      ] }, context).status).toBe("admitted");
+    }
+    expect(admitted.map(source => (source.redactedEvidence as any).source.actorId)).toEqual(["111", "222"]);
+    expect(admitted.every(source => (source.redactedEvidence as any).source.attribution === "speaker-only")).toBe(true);
+  });
   test("admits a non-admin user only when the exact binding permits personal capture", () => {
     const admitted: TrustedCompletedTurn[] = [];
     const value = adapter({ binding: {

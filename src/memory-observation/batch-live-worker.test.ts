@@ -159,6 +159,52 @@ function admit(ledger: MemoryObservationLedger, index: number, completedAt: stri
 }
 
 describe("durable live micro-batch worker", () => {
+  test("group batch materializes separately attributed decisions from two participants into only its topic", async () => {
+    const { workspace, policy } = setup();
+    const scope: ObservationScope = { workspaceId: "project", runtimeSessionKey: "agent:project:telegram:group:-100123:topic:2",
+      scopeClass: "project", scopeId: "domain:project:smm" };
+    const groupLedger = new MemoryObservationLedger({ workspace, workspaceId: "project", exactSessionKeys: [scope.runtimeSessionKey],
+      producerRegistry: REGISTRY, authorityPolicy: AUTHORITY,
+      limits: { evidenceTtlMs: 72 * 3600000, maxJobs: 100, maxBytes: 10000000, maxQueueAgeMs: 7 * 86400000,
+        maxAttempts: 2, claimTtlMs: 300000, maxInferenceCalls: 1 }, evaluatorEnabled: true, evaluationStartedAt: "2026-08-31T20:00:00.000Z" });
+    for (const [index, actorId] of ["111", "222"].entries()) {
+      const sourceTurnId = "channel-user:v1:" + String(index + 1).repeat(64);
+      groupLedger.admit({ sourceTurnId, scope, sourceCompletedAt: "2026-08-31T20:0" + (index + 1) + ":00.000Z", authority: RUNTIME,
+        evidenceRefs: [{ kind: "source-turn", ref: sourceTurnId, digest: sha256("speaker-" + actorId) }],
+        redactedEvidence: { source: { role: "user", actorId, attribution: "speaker-only", text: "Согласовал свой срок." },
+          outcome: { role: "assistant", text: "Принято как решение участника." } },
+        trustedInputs: ["completed-source-turn", "runtime-session-key", "workspace-binding", "source-completion-time"],
+      }, new Date("2026-08-31T20:03:00.000Z"));
+    }
+    const now = () => new Date("2026-08-31T20:20:00.000Z");
+    const groupPolicy = { ...policy, workspaceId: "project", exactScope: scope };
+    const worker = new BatchLiveWorker({ workspace, ledger: groupLedger, policy: groupPolicy, storeRoot: join(workspace, "group-state"), now,
+      complete: async request => {
+        const prompt = JSON.parse(request.prompt);
+        expect(prompt.instructions).toContain("exactly ONE actorId");
+        return { resolvedModel: "openai/gpt-5.6-terra", output: JSON.stringify({
+          schema: "engram.memory-batch-shadow-output.v1",
+          groups: prompt.task.sources.map((source: any, index: number) => ({ groupId: "speaker-" + index, decision: "write",
+            sourceRefs: [source.sourceRef.traceId], assertions: [{ section: "decisions", text: "Согласовал свой срок.", actorRef: "user",
+              outcomeStatus: "decided", confidence: 1, reasonCodes: ["explicit_decision"],
+              citations: [{ traceId: source.sourceRef.traceId, evidenceRef: source.evidenceRefs[0] }] }] })),
+        }) };
+      } });
+    expect((await worker.processOne()).status).toBe("completed");
+    const applicator = new DailyNoteCanaryApplicator({ workspace, resolveActivePolicy: () => buildDailyNoteCanaryPolicy({
+      workspaceId: "project", exactScope: scope, applyAfter: "2026-08-31T20:00:00.000Z", timezone: "UTC",
+      allowedObservationClasses: ["episodic.event", "episodic.decision"], maxAppliesPerWake: 1,
+      allowedBatchEvaluationPolicyDigest: groupPolicy.evaluationPolicyDigest,
+    }) });
+    expect((await applicator.processOne(now())).status).toBe("applied");
+    expect((await applicator.processOne(now())).status).toBe("applied");
+    expect((await applicator.processOne(now())).status).toBe("idle");
+    const topicRoot = join(workspace, "memory/agent-project");
+    expect(readdirSync(topicRoot)).toEqual(["telegram-group--100123-topic-2"]);
+    const text = readFileSync(join(topicRoot, "telegram-group--100123-topic-2/2026-08-31.md"), "utf8");
+    expect(text).toContain("Участник Telegram 111 (собственное высказывание)");
+    expect(text).toContain("Участник Telegram 222 (собственное высказывание)");
+  });
   test("selects pending jobs by exact scope instead of blocking another family session", async () => {
     const { workspace, ledger, policy } = setup();
     const topicScope: ObservationScope = {

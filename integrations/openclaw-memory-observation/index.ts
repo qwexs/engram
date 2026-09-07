@@ -1,3 +1,4 @@
+import { assertTopicHostRoutes } from "../../src/memory-observation/topic-bindings.ts";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -213,6 +214,10 @@ function bindingFor(api: any, active: ActiveWorkspace, runtimeSessionKey: string
   } catch { return null; }
   const binding = memoryObservationBinding(projection, runtimeSessionKey);
   if (!binding) return null;
+  if (binding.topicDomain) {
+    try { assertTopicHostRoutes(currentConfig(api), active.workspace, active.workspaceId, [binding]); }
+    catch { return null; }
+  }
   const ledger = ledgerFor(active, projection, runtimeSessionKey);
   const replyContext = new ReplyContextStore({
     workspace: active.workspace,
@@ -230,6 +235,7 @@ function bindingFor(api: any, active: ActiveWorkspace, runtimeSessionKey: string
     scopeClass: binding.scopeClass,
     scopeId: binding.scopeId,
     requireOwner: binding.requireOwner,
+    ...(binding.topicDomain ? { topicDomain: binding.topicDomain } : {}),
     allowedChannels: binding.allowedChannels,
     resolveReplyContext: (params) => replyContext.resolve(params),
     recordTransportLink: (params) => replyContext.record({
@@ -392,7 +398,11 @@ function currentDailyNotePolicy(api: any, runtimeSessionKey: string): {
   if (!active) return null;
   const dailyNote = memoryObservationDailyNoteCanary(active.projection);
   const binding = memoryObservationBinding(active.projection, runtimeSessionKey);
-  if (!dailyNote || !binding || active.projection.bindings.length !== 1) return null;
+  if (!dailyNote || !binding) return null;
+  if (binding.topicDomain) {
+    try { assertTopicHostRoutes(currentConfig(api), active.workspace, active.workspaceId, [binding]); }
+    catch { return null; }
+  }
   const exactScope = {
     workspaceId: active.workspaceId,
     runtimeSessionKey,

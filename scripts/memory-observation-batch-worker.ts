@@ -1,4 +1,9 @@
 #!/usr/bin/env bun
+import { tmpdir } from "node:os";
+import { acquireProcessLease } from "../src/memory-observation/process-lease.ts";
+import { spawnSync } from "node:child_process";
+import { consumeTopicDomainReceipts } from "../src/memory-observation/domain-consumer.ts";
+import { assertTopicHostRoutes } from "../src/memory-observation/topic-bindings.ts";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -12,6 +17,7 @@ import { MemoryObservationLedger, purgeMemoryObservationLifecycle, sha256, type 
 import {
   MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2,
   MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3,
+  MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4,
   memoryObservationBinding,
   memoryObservationDailyNoteCanary,
   memoryObservationEvaluationMode,
@@ -64,14 +70,22 @@ if (!existsSync(projectionPath) || readJson(projectionPath)?.enabled !== true) {
 const repository = resolve(import.meta.dir, "..");
 const expectedPluginDigest = await sourcePluginDigest(repository);
 const projection = resolveMemoryObservationProjection({ workspace, workspaceId, expectedPluginDigest });
-if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3].includes(projection.schema as any)
+if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4].includes(projection.schema as any)
   || projection.mode !== "canary"
   || memoryObservationEvaluationMode(projection) !== "batch-cron"
-  || projection.bindings.length !== 1
   || projection.limits.maxInferenceCalls !== 1
   || !projection.evaluation?.batch) {
   process.stdout.write(`${JSON.stringify({ status: "disabled", reason: "batch_canary_inactive", workspaceId })}\n`);
   process.exit(0);
+}
+if (projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4) {
+  const get = (path: string) => {
+    const result = spawnSync("openclaw", ["config", "get", path], { encoding: "utf8" });
+    if (result.status !== 0) throw new Error("topic host route read-back failed");
+    return JSON.parse(result.stdout);
+  };
+  assertTopicHostRoutes({ agents: { entries: get("agents.entries") },
+    channels: { telegram: { groups: get("channels.telegram.groups") } } }, workspace, workspaceId, projection.bindings);
 }
 const batch = projection.evaluation.batch;
 const dailyNote = memoryObservationDailyNoteCanary(projection);
@@ -228,7 +242,7 @@ function currentProjectionForScope(scope: ObservationScope) {
   const binding = memoryObservationBinding(current, scope.runtimeSessionKey);
   const currentDaily = memoryObservationDailyNoteCanary(current);
   if (current.mode !== "canary" || memoryObservationEvaluationMode(current) !== "batch-cron"
-    || current.bindings.length !== 1 || current.limits.maxInferenceCalls !== 1 || !current.evaluation?.batch
+    || current.limits.maxInferenceCalls !== 1 || !current.evaluation?.batch
     || !currentDaily || current.captureOwnership?.owner !== "observer"
     || current.captureOwnership.effectiveAfter !== currentDaily.applyAfter || !binding
     || !sameScope(scope, { workspaceId, runtimeSessionKey: scope.runtimeSessionKey, scopeClass: binding.scopeClass, scopeId: binding.scopeId })) {
@@ -252,7 +266,9 @@ function applicatorFor(scope: ObservationScope): DailyNoteCanaryApplicator {
 let evaluation: Awaited<ReturnType<BatchLiveWorker["processOne"]>> = { status: "idle" };
 let evaluationScope: ObservationScope | null = null;
 const rawComplete = openClawRawModelRunProvider({ cwd: workspace });
-for (const candidate of collectScopes()) {
+const releaseInference = acquireProcessLease(join(tmpdir(), "engram-memory-batch-inference-" + (process.getuid?.() ?? "user")));
+try {
+for (const candidate of releaseInference ? collectScopes() : []) {
   const current = currentProjectionForScope(candidate.scope);
   const workerPolicy = livePolicy(candidate.scope, current);
   const policyDigest = sha256(workerPolicy as unknown as JsonValue);
@@ -277,6 +293,10 @@ for (const candidate of collectScopes()) {
   }
 }
 
+} finally { releaseInference?.(); }
+
+const applications: any[] = [];
+for (let turn = 0; turn < (projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 ? 50 : 1); turn++) {
 const dueApplicators = collectScopes().map((candidate) => {
   const applicator = applicatorFor(candidate.scope);
   applicator.reconcile();
@@ -286,12 +306,21 @@ const dueApplicators = collectScopes().map((candidate) => {
     || left.scope.runtimeSessionKey.localeCompare(right.scope.runtimeSessionKey));
 const applyTarget = dueApplicators[0] ?? null;
 const apply = applyTarget ? await applyTarget.applicator.processOne() : { status: "idle" as const };
+applications.push({ result: apply, scope: applyTarget?.scope ?? null });
+if (!applyTarget || ["idle", "busy", "disabled"].includes(apply.status)) break;
+}
+const apply = applications[0]?.result ?? { status: "idle" }, applyScope = applications[0]?.scope ?? null;
+const domains = projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4
+  ? await consumeTopicDomainReceipts({ workspace, workspaceId, expectedPluginDigest }) : null;
+if (domains?.indexedPending) process.exitCode = 1;
 process.stdout.write(`${JSON.stringify({
   schema: "engram.memory-batch-live-run.v1",
   workspaceId,
   schedulerId: batch.schedulerId,
   evaluation,
   evaluationScope,
+  domains,
   apply,
-  applyScope: applyTarget?.scope ?? null,
+  applyScope,
+  ...(projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 ? { applications } : {}),
 })}\n`);

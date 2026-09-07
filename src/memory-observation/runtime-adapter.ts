@@ -1,3 +1,4 @@
+import type { TopicDomainBinding } from "./topic-bindings.ts";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -31,6 +32,7 @@ export type RuntimeObservationBinding = {
   scopeClass: "self" | "managers" | "company" | "project";
   scopeId: string;
   requireOwner: boolean;
+  topicDomain?: TopicDomainBinding;
   allowedChannels: readonly ("telegram" | "openclaw")[];
   admit: (
     source: TrustedCompletedTurn,
@@ -991,7 +993,8 @@ export class OpenClawObservationRuntimeAdapter {
         })) ?? []),
       ],
       redactedEvidence: sanitizeEvidence({
-        source: { role: "user", text: params.bound.userText },
+        source: { role: "user", text: params.bound.userText,
+          ...(params.binding.topicDomain ? { actorId: params.bound.actorId, attribution: "speaker-only" } : {}) },
         outcome: { role: "assistant", text: params.assistantText },
         ...(replyContext ? { replyContext } : {}),
       } as unknown as JsonValue),
@@ -1207,6 +1210,7 @@ export class OpenClawObservationRuntimeAdapter {
       scopeClass: binding.scopeClass,
       scopeId: binding.scopeId,
       requireOwner: binding.requireOwner,
+      ...(binding.topicDomain ? { topicDomain: binding.topicDomain } : {}),
       allowedChannels: [...binding.allowedChannels].sort(),
     });
   }

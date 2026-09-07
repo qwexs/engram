@@ -20,3 +20,15 @@ export function observerOwnsDailyCapture(workspace: string, agentId: string, ses
         && splitCanonicalSessionKey(binding.runtimeSessionKey)?.sessionKey === segment));
   } catch { return false; }
 }
+
+/** Only v4 group domains transfer their derived changelog/status projection. */
+export function observerOwnsDomainProjection(workspace: string, domain: string, now = new Date()): boolean {
+  try {
+    const config = JSON.parse(readFileSync(join(workspace, "engram.json"), "utf8"));
+    const projection = resolveMemoryObservationProjection({ workspace, workspaceId: config.workspace?.id });
+    return projection.schema === "engram.memory-observation-rollout.v4"
+      && projection.captureOwnership?.owner === "observer"
+      && Date.parse(projection.captureOwnership.effectiveAfter) <= now.getTime()
+      && projection.bindings.some(binding => binding.topicDomain?.domain === domain);
+  } catch { return false; }
+}

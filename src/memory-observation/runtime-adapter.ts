@@ -100,6 +100,7 @@ type LegacyRuntimeAdmissionSpoolRecordV1 = Omit<RuntimeAdmissionSpoolRecordV1, "
 export type RuntimeAdapterFaultPoint = "after_completed_spool" | "after_admission";
 
 type PendingTurn = {
+  runId?: string;
   candidateId: Digest;
   runtimeSessionKey: string;
   messageId: string;
@@ -255,6 +256,7 @@ export class OpenClawObservationRuntimeAdapter {
       ?? sharedOptionalToken("replyToId", event.replyToId, context.replyToId);
     const messageId = sharedToken("messageId", event.messageId, context.messageId);
     const actorId = sharedToken("senderId", event.senderId, context.senderId);
+    const inboundRunId = sharedOptionalToken("runId", event.runId, context.runId);
     const bindingFingerprint = this.bindingFingerprint(binding);
     const scope: TrustedCompletedTurn["scope"] = {
       workspaceId: binding.workspaceId,
@@ -279,7 +281,7 @@ export class OpenClawObservationRuntimeAdapter {
         actorId,
         replyToId: replyToId ?? null,
         sourceTurnId: null,
-        runId: null,
+        runId: inboundRunId ?? null,
         sessionId: null,
         sourceText: null,
         stage: "received",
@@ -295,8 +297,7 @@ export class OpenClawObservationRuntimeAdapter {
         const current = this.admissionStore?.readCheckpoint(candidateId);
         if (current) {
           this.publishGap(current, this.failureStage(current), "identity_conflict", now);
-          this.pending.delete(runtimeSessionKey);
-          this.adopted.delete(runtimeSessionKey);
+          this.clearCandidate(candidateId);
           for (const [runId, run] of this.runs) if (run.candidateId === candidateId) this.runs.delete(runId);
         }
       }
@@ -306,6 +307,7 @@ export class OpenClawObservationRuntimeAdapter {
       return { status: "duplicate", ...(checkpoint?.sourceTurnId ? { sourceTurnId: checkpoint.sourceTurnId } : {}) };
     }
     const candidate: PendingTurn = {
+      ...(inboundRunId ? { runId: inboundRunId } : {}),
       candidateId,
       runtimeSessionKey,
       messageId,
@@ -315,17 +317,13 @@ export class OpenClawObservationRuntimeAdapter {
       observedAt: timestamp(event.timestamp, now.getTime()),
       bindingFingerprint,
     };
-    const current = this.pending.get(runtimeSessionKey);
+    const current = this.pending.get(candidateId) ?? this.adopted.get(candidateId);
     if (current) {
       if (this.samePending(current, candidate)) return { status: "duplicate" };
-      if (checkpoint) this.publishGap(checkpoint, "received", "identity_ambiguous", now);
-      throw new RuntimeAdapterError("AMBIGUOUS_TURN", "multiple inbound turns compete for one runtime session");
+      if (checkpoint) this.publishGap(checkpoint, "received", "identity_conflict", now);
+      throw new RuntimeAdapterError("IDENTITY_CONFLICT", "inbound message identity changed");
     }
-    if (this.adopted.has(runtimeSessionKey)) {
-      if (checkpoint) this.publishGap(checkpoint, "received", "identity_ambiguous", now);
-      throw new RuntimeAdapterError("AMBIGUOUS_TURN", "an adopted turn is already waiting for a run");
-    }
-    this.pending.set(runtimeSessionKey, candidate);
+    this.pending.set(candidateId, candidate);
     return { status: "captured" };
   }
 
@@ -380,7 +378,9 @@ export class OpenClawObservationRuntimeAdapter {
       this.publishGap(durableProgressed[0], this.failureStage(durableProgressed[0]), "identity_conflict", now);
       throw new RuntimeAdapterError("IDENTITY_CONFLICT", "persisted source identity changed after durable progress");
     }
-    const current = this.adopted.get(runtimeSessionKey);
+    const candidateId = deriveAdmissionCandidateId({ workspaceId: binding.workspaceId,
+      runtimeSessionKey, channel: transportChannel, inboundMessageId: messageId });
+    const current = this.adopted.get(candidateId);
     if (current) {
       if (current.sourceTurnId === sourceTurnId
         && current.messageId === messageId
@@ -394,11 +394,11 @@ export class OpenClawObservationRuntimeAdapter {
     }
     const durablePending = this.admissionStore?.findOpenBySession(runtimeSessionKey, ["received"])
       .filter((entry) => entry.channel === transportChannel && entry.inboundMessageId === messageId) ?? [];
-    if (!this.pending.has(runtimeSessionKey) && durablePending.length > 1) {
+    if (!this.pending.has(candidateId) && durablePending.length > 1) {
       for (const entry of durablePending) this.publishGap(entry, "received", "identity_ambiguous", now);
       throw new RuntimeAdapterError("AMBIGUOUS_TURN", "multiple durable inbound turns match one persisted turn");
     }
-    const pending = this.pending.get(runtimeSessionKey) ?? (durablePending[0] ? this.pendingFromCheckpoint(durablePending[0]) : null);
+    const pending = this.pending.get(candidateId) ?? (durablePending[0] ? this.pendingFromCheckpoint(durablePending[0]) : null);
     if (!pending) throw new RuntimeAdapterError("TURN_NOT_FOUND", "persisted user turn has no trusted inbound capture");
     if (pending.channel !== transportChannel || pending.messageId !== messageId) {
       this.publishBoundGap(pending, "received", "identity_conflict", now);
@@ -417,8 +417,8 @@ export class OpenClawObservationRuntimeAdapter {
       bindingFingerprint: pending.bindingFingerprint,
     };
     this.recordCheckpoint(adopted, "persisted", now);
-    this.pending.delete(runtimeSessionKey);
-    this.adopted.set(runtimeSessionKey, adopted);
+    this.pending.delete(candidateId);
+    this.adopted.set(candidateId, adopted);
     return { status: "adopted", sourceTurnId };
   }
 
@@ -444,13 +444,23 @@ export class OpenClawObservationRuntimeAdapter {
       return { status: "duplicate", ...(progressedRuns[0].sourceTurnId ? { sourceTurnId: progressedRuns[0].sourceTurnId } : {}) };
     }
     const durableAdopted = this.admissionStore?.findOpenBySession(runtimeSessionKey, ["persisted"]) ?? [];
-    if (!this.adopted.has(runtimeSessionKey) && durableAdopted.length > 1) {
-      for (const entry of durableAdopted) this.publishGap(entry, "persisted", "identity_ambiguous", now);
-      throw new RuntimeAdapterError("AMBIGUOUS_TURN", "multiple durable persisted turns compete for one run");
+    const candidates = new Map([...this.adopted.values()]
+      .filter(turn => turn.runtimeSessionKey === runtimeSessionKey).map(turn => [turn.candidateId, turn]));
+    for (const checkpoint of durableAdopted) candidates.set(checkpoint.candidateId, this.adoptedFromCheckpoint(checkpoint));
+    const exactRunCandidates = [...candidates.values()].filter(turn => turn.runId === runId);
+    if (exactRunCandidates.length === 1) {
+      candidates.clear(); candidates.set(exactRunCandidates[0]!.candidateId, exactRunCandidates[0]!);
+    } else {
+      for (const [id, turn] of candidates) if (turn.runId && turn.runId !== runId) candidates.delete(id);
     }
-    const adopted = this.adopted.get(runtimeSessionKey) ?? (durableAdopted[0] ? this.adoptedFromCheckpoint(durableAdopted[0]) : null);
+    if (candidates.size > 1) {
+      // The host does not identify the triggering source here. Never guess by recency.
+      for (const turn of candidates.values()) this.publishBoundGap(turn, "persisted", "identity_ambiguous", now);
+      throw new RuntimeAdapterError("AMBIGUOUS_TURN", "multiple persisted turns compete for one run");
+    }
+    const adopted = [...candidates.values()][0];
     if (!adopted) throw new RuntimeAdapterError("TURN_NOT_FOUND", "run has no adopted trusted user turn");
-    this.adopted.delete(runtimeSessionKey);
+    this.adopted.delete(adopted.candidateId);
     const bound = {
       ...adopted,
       runId,
@@ -596,11 +606,19 @@ export class OpenClawObservationRuntimeAdapter {
     const event = row(eventValue) ?? {};
     const context = row(contextValue) ?? {};
     if (event.success !== true) return { status: "ignored", reason: "delivery_failed" };
-    const runId = sharedToken("runId", event.runId, context.runId);
+    const runId = sharedOptionalToken("runId", event.runId, context.runId);
+    if (!runId) return { status: "ignored", reason: "delivery_run_id_missing" };
     const runtimeSessionKey = sharedToken("sessionKey", event.sessionKey, context.sessionKey);
     const messageId = optionalToken("messageId", event.messageId);
     if (!messageId) return { status: "ignored", reason: "delivery_message_id_missing" };
-    const completed = this.completed.get(runId);
+    const completed = this.completed.get(runId) ?? (() => {
+      const matches = this.admissionStore?.findOpenByRun(runId, ["ledger_admitted"])
+        .filter(entry => entry.scope.runtimeSessionKey === runtimeSessionKey) ?? [];
+      if (matches.length !== 1 || !matches[0]!.sourceTurnId) return undefined;
+      const checkpoint = matches[0]!;
+      return { runtimeSessionKey, sourceTurnId: checkpoint.sourceTurnId!, channel: checkpoint.channel,
+        replyToId: checkpoint.replyToId ?? undefined, bindingFingerprint: checkpoint.bindingFingerprint };
+    })();
     if (!completed) return { status: "ignored", reason: "unbound_completed_run" };
     if (completed.runtimeSessionKey !== runtimeSessionKey) {
       throw new RuntimeAdapterError("IDENTITY_CONFLICT", "delivered message crossed runtime sessions");
@@ -778,6 +796,10 @@ export class OpenClawObservationRuntimeAdapter {
   private sweep(nowMs: number): void {
     const cutoff = nowMs - this.stateTtlMs();
     const now = new Date(nowMs);
+    if (this.admissionStore) for (const turn of [...this.pending.values(), ...this.adopted.values()]) {
+      const durable = this.admissionStore.readCheckpoint(turn.candidateId);
+      if (durable && ["terminal_gap", "ledger_admitted"].includes(durable.stage)) this.clearCandidate(turn.candidateId);
+    }
     for (const [key, value] of this.pending) if (value.observedAt < cutoff) {
       this.publishBoundGap(value, "received", "expired_before_completion", now);
       this.pending.delete(key);
@@ -796,6 +818,7 @@ export class OpenClawObservationRuntimeAdapter {
   private pendingFromCheckpoint(checkpoint: AdmissionCheckpointV1): PendingTurn {
     return {
       candidateId: checkpoint.candidateId,
+      ...(checkpoint.runId ? { runId: checkpoint.runId } : {}),
       runtimeSessionKey: checkpoint.scope.runtimeSessionKey,
       messageId: checkpoint.inboundMessageId,
       actorId: checkpoint.actorId,
@@ -889,10 +912,20 @@ export class OpenClawObservationRuntimeAdapter {
     now: Date,
   ): void {
     this.publishCheckpointGap(turn.candidateId, failureStage, reasonCode, now);
+    if (!this.admissionStore) this.clearCandidate(turn.candidateId);
+  }
+
+  private clearCandidate(candidateId: Digest): void {
+    this.pending.delete(candidateId);
+    this.adopted.delete(candidateId);
+    for (const [runId, run] of this.runs) if (run.candidateId === candidateId) this.runs.delete(runId);
   }
 
   private publishGap(checkpoint: AdmissionCheckpointV1, failureStage: AdmissionFailureStage, reasonCode: AdmissionGapReasonCode, now: Date): void {
-    if (!this.admissionStore || checkpoint.stage === "ledger_admitted" || checkpoint.stage === "terminal_gap") return;
+    if (!this.admissionStore) { this.clearCandidate(checkpoint.candidateId); return; }
+    if (checkpoint.stage === "ledger_admitted" || checkpoint.stage === "terminal_gap") {
+      this.clearCandidate(checkpoint.candidateId); return;
+    }
     this.admissionStore.withCandidateDisposition(checkpoint.candidateId, () => {
       this.publishGapLocked(checkpoint, failureStage, reasonCode, now);
     });
@@ -901,7 +934,10 @@ export class OpenClawObservationRuntimeAdapter {
   private publishGapLocked(checkpoint: AdmissionCheckpointV1, failureStage: AdmissionFailureStage, reasonCode: AdmissionGapReasonCode, now: Date): void {
     if (!this.admissionStore) return;
     const current = this.admissionStore.readCheckpoint(checkpoint.candidateId);
-    if (!current || current.stage === "ledger_admitted" || current.stage === "terminal_gap") return;
+    if (!current) return;
+    if (current.stage === "ledger_admitted" || current.stage === "terminal_gap") {
+      this.clearCandidate(checkpoint.candidateId); return;
+    }
     const spool = this.scanSpool().records.find((record) => record.candidateId === checkpoint.candidateId && record.status === "completed");
     if (spool?.source) {
       const admission = this.durableAdmissionState(spool.source);
@@ -918,6 +954,7 @@ export class OpenClawObservationRuntimeAdapter {
       reasonCode,
       terminalAt: now,
     });
+    this.clearCandidate(checkpoint.candidateId);
   }
 
   private failureStage(checkpoint: AdmissionCheckpointV1): AdmissionFailureStage {
@@ -958,7 +995,7 @@ export class OpenClawObservationRuntimeAdapter {
       scopeClass: params.binding.scopeClass,
       scopeId: params.binding.scopeId,
     };
-    const replyContext = params.bound.replyToId
+    const replyContext = params.bound.replyToId && params.bound.replyToId !== params.binding.topicDomain?.topicId
       ? params.binding.resolveReplyContext?.({
         scope,
         channel: params.bound.channel,
@@ -994,6 +1031,9 @@ export class OpenClawObservationRuntimeAdapter {
       ],
       redactedEvidence: sanitizeEvidence({
         source: { role: "user", text: params.bound.userText,
+          messageId: params.bound.messageId,
+          ...(params.bound.replyToId && params.bound.replyToId !== params.binding.topicDomain?.topicId
+            ? { replyToMessageId: params.bound.replyToId } : {}),
           ...(params.binding.topicDomain ? { actorId: params.bound.actorId, attribution: "speaker-only" } : {}) },
         outcome: { role: "assistant", text: params.assistantText },
         ...(replyContext ? { replyContext } : {}),

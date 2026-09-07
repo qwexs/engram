@@ -234,23 +234,64 @@ describe("OpenClaw PR2 runtime adapter", () => {
     }
   });
 
-  test("accounts for overlapping inbound turns without displacing the first candidate", () => {
-    const root = workspace();
-    const runtime = adapter({ workspaceRoot: root });
-    const fixture = hookFixtures();
-    expect(runtime.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext).status).toBe("captured");
-    expect(() => runtime.captureMessageReceived(
-      { ...fixture.receivedEvent, messageId: "43" },
-      { ...fixture.receivedContext, messageId: "43" },
-    )).toThrow("multiple inbound turns");
+  test("independent inbound messages survive overlap and one candidate conflict", () => {
+    const root = workspace(), runtime = adapter({ workspaceRoot: root }), fixture = hookFixtures();
+    runtime.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
+    expect(runtime.captureMessageReceived({ ...fixture.receivedEvent, messageId: "43" },
+      { ...fixture.receivedContext, messageId: "43" }).status).toBe("captured");
+    expect(runtime.stateCounts().pending).toBe(2);
+    expect(() => runtime.captureMessageReceived({ ...fixture.receivedEvent, senderId: "bad" },
+      { ...fixture.receivedContext, senderId: "bad" })).toThrow();
+    expect(runtime.stateCounts().pending).toBe(1);
+    const persisted = structuredClone(fixture.persistedEvent);
+    persisted.message.__openclaw.transport.messageId = "43";
+    expect(runtime.adoptPersistedUser(persisted, { sessionKey }).status).toBe("adopted");
+    expect(runtime.attachRun({}, fixture.runContext).status).toBe("attached");
+    expect(runtime.completeAgentEnd(fixture.endEvent, fixture.runContext).status).toBe("admitted");
+    expect(runtime.captureMessageReceived({ ...fixture.receivedEvent, messageId: "44" },
+      { ...fixture.receivedContext, messageId: "44" }).status).toBe("captured");
+    expect(new AdmissionStore(root, authority).scanGapReceipts().records).toHaveLength(1);
+  });
 
-    const durable = new AdmissionStore(root, authority);
-    expect(durable.scanCheckpoints().records.map((entry) => entry.stage).sort()).toEqual(["received", "terminal_gap"]);
-    expect(durable.scanGapReceipts().records).toContainEqual(expect.objectContaining({
-      failureStage: "received",
-      reasonCode: "identity_ambiguous",
-    }));
-    expect(runtime.stateCounts()).toEqual({ pending: 1, adopted: 0, runs: 0 });
+  test("trusted inbound run IDs disambiguate concurrent persisted messages across restart", () => {
+    const root = workspace(), admitted: TrustedCompletedTurn[] = [], first = adapter({ workspaceRoot: root, admitted });
+    const fixtures = [hookFixtures(), hookFixtures()];
+    fixtures[1]!.receivedEvent.messageId = "43";
+    fixtures[1]!.receivedContext.messageId = "43";
+    fixtures[1]!.persistedEvent.message.__openclaw.transport.messageId = "43";
+    fixtures[1]!.persistedEvent.message.idempotencyKey = "channel-user:v1:" + "b".repeat(64);
+    fixtures[1]!.runContext.runId = "run-2";
+    fixtures[1]!.endEvent.runId = "run-2";
+    (fixtures[1]!.endEvent.messages[0] as any).idempotencyKey = fixtures[1]!.persistedEvent.message.idempotencyKey;
+    for (const f of fixtures) {
+      first.captureMessageReceived({ ...f.receivedEvent, runId: f.runContext.runId }, f.receivedContext);
+      first.adoptPersistedUser(f.persistedEvent, { sessionKey });
+    }
+    const restarted = adapter({ workspaceRoot: root, admitted });
+    for (const f of fixtures.reverse()) {
+      expect(restarted.attachRun({}, f.runContext).status).toBe("attached");
+      expect(restarted.completeAgentEnd(f.endEvent, f.runContext).status).toBe("admitted");
+    }
+    expect(admitted.map(source => (source.redactedEvidence as any).source.messageId)).toEqual(["43", "42"]);
+  });
+
+  test("outbound event without run identity never guesses the latest completed image", () => {
+    const runtime = adapter(); complete(runtime);
+    expect(runtime.recordMessageSent({ success: true, messageId: "100", content: "" }, { sessionKey })).toEqual({
+      status: "ignored", reason: "delivery_run_id_missing",
+    });
+  });
+
+  test("persisted reply conflict clears only its candidate without waiting for TTL", () => {
+    const root = workspace(), runtime = adapter({ workspaceRoot: root }), fixture = hookFixtures();
+    runtime.captureMessageReceived({ ...fixture.receivedEvent, replyToId: "10" }, fixture.receivedContext);
+    expect(() => runtime.adoptPersistedUser({ ...fixture.persistedEvent, message: {
+      ...fixture.persistedEvent.message, __openclaw: { senderIsOwner: true,
+        transport: { channel: "telegram", messageId: "42", replyToId: "11" } },
+    } }, { sessionKey })).toThrow("reply target");
+    expect(runtime.stateCounts()).toEqual({ pending: 0, adopted: 0, runs: 0 });
+    expect(runtime.captureMessageReceived({ ...fixture.receivedEvent, messageId: "43" },
+      { ...fixture.receivedContext, messageId: "43" }).status).toBe("captured");
   });
 
   test("terminalizes same-candidate identity drift instead of merging it", () => {
@@ -644,7 +685,7 @@ describe("OpenClaw PR2 runtime adapter", () => {
       scopeId: "telegram:100000001",
     });
     expect(admitted[0]!.redactedEvidence).toEqual({
-      source: { role: "user", text: "Принято: запускаем PR2 runtime adapter" },
+      source: { role: "user", text: "Принято: запускаем PR2 runtime adapter", messageId: "42" },
       outcome: { role: "assistant", text: "PR2 runtime adapter реализован" },
     });
     expect(admitted[0]!.trustedInputs).toEqual(["completed-source-turn", "runtime-session-key", "workspace-binding", "source-completion-time"]);
@@ -849,8 +890,8 @@ describe("OpenClaw PR2 runtime adapter", () => {
 
     const conflict = adapter();
     conflict.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
-    expect(() => conflict.captureMessageReceived({ ...fixture.receivedEvent, messageId: "43" }, { ...fixture.receivedContext, messageId: "43" }))
-      .toThrow("multiple inbound turns");
+    expect(conflict.captureMessageReceived({ ...fixture.receivedEvent, messageId: "43" }, { ...fixture.receivedContext, messageId: "43" }).status)
+      .toBe("captured");
 
     const nonOwner = adapter();
     nonOwner.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);

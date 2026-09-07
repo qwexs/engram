@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { memoryWorkerHealth } from "../src/memory-observation/worker-health.ts";
 import { tmpdir } from "node:os";
 import { memoryBatchIsIdle } from "../src/memory-observation/idle-preflight.ts";
 import { acquireProcessLease } from "../src/memory-observation/process-lease.ts";
@@ -87,14 +88,15 @@ if (!dailyNote || projection.captureOwnership?.owner !== "observer") {
 const topicWorkspace = projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4;
 if (memoryBatchIsIdle(workspace, topicWorkspace)) {
   const idle = { status: "idle" };
+  const health = memoryWorkerHealth(workspace);
   process.stdout.write(`${JSON.stringify({
     schema: "engram.memory-batch-live-run.v1", workspaceId, schedulerId: batch.schedulerId,
-    fastPath: "no_pending_work", evaluation: idle, evaluationScope: null,
+    health, fastPath: "no_pending_work", evaluation: idle, evaluationScope: null,
     apply: idle, applyScope: null,
     domains: topicWorkspace ? { status: "idle", applied: 0, indexedPending: 0 } : null,
     ...(topicWorkspace ? { applications: [{ result: idle, scope: null }] } : {}),
   })}\n`);
-  process.exit(0);
+  process.exit(health.status === "degraded" ? 1 : 0);
 }
 if (topicWorkspace) {
   const get = (path: string) => {
@@ -148,13 +150,17 @@ function collectScopes(): ScopeCandidate[] {
     const current = candidates.get(key);
     if (!current || firstAt < current.firstAt) candidates.set(key, { scope, firstAt });
   };
+  const evaluatorQueue = join(workspace, "memory-state/memory-observation/v1/queues/evaluator");
+  const pendingTraces = new Map(existsSync(evaluatorQueue) ? readdirSync(evaluatorQueue).filter(name => name.endsWith(".json"))
+    .map(name => readJson(join(evaluatorQueue, name))).filter(value => value.status !== "terminal")
+    .map(value => [value.traceId, value]) : []);
   const envelopeDirectory = join(workspace, "memory-state", "memory-observation", "v1", "envelopes");
   if (existsSync(envelopeDirectory)) {
     for (const name of readdirSync(envelopeDirectory).filter((entry) => entry.endsWith(".json"))) {
       const value = readJson(join(envelopeDirectory, name));
-      if (value?.policyDigest === batch.sourcePolicyDigest
+      if ((pendingTraces.has(value?.traceId) || !existsSync(join(evaluatorQueue, name))) && value?.policyDigest === batch.sourcePolicyDigest
         && Date.parse(value?.admittedAt) >= Date.parse(projection.inference.evaluateAfter)) {
-        add(admittedScope(value), value.sourceCompletedAt);
+        add(admittedScope(value), pendingTraces.get(value.traceId)?.nextAttemptAt ?? value.sourceCompletedAt);
       }
     }
   }
@@ -169,7 +175,7 @@ function collectScopes(): ScopeCandidate[] {
   if (existsSync(observationDirectory)) {
     for (const name of readdirSync(observationDirectory).filter((entry) => entry.endsWith(".json"))) {
       const value = readJson(join(observationDirectory, name));
-      if (value?.evaluationPolicyDigest === projection.evaluation!.policyDigest
+      if ((!existsSync(join(dailyQueueDirectory, name)) || pendingDailyObservationIds.has(value?.observationId)) && value?.evaluationPolicyDigest === projection.evaluation!.policyDigest
         && Date.parse(value?.completedAt) >= Date.parse(dailyNote.applyAfter)) {
         add(admittedScope(value), value.completedAt);
       } else if (pendingDailyObservationIds.has(value?.observationId)) {
@@ -278,10 +284,18 @@ function applicatorFor(scope: ObservationScope): DailyNoteCanaryApplicator {
 
 let evaluation: Awaited<ReturnType<BatchLiveWorker["processOne"]>> = { status: "idle" };
 let evaluationScope: ObservationScope | null = null;
+const evaluations: { result: any; scope: ObservationScope }[] = [];
+// Bounded sequential drain; processOne still has one inference allowance.
+const maxBatchesPerWake = 3;
+const drainStarted = Date.now();
+
 const rawComplete = openClawRawModelRunProvider({ cwd: workspace });
 const releaseInference = acquireProcessLease(join(tmpdir(), "engram-memory-batch-inference-" + (process.getuid?.() ?? "user")));
 try {
-for (const candidate of releaseInference ? collectScopes() : []) {
+for (let round = 0; releaseInference && round < maxBatchesPerWake; round++) {
+const priorCount = evaluations.length;
+for (const candidate of collectScopes()) {
+  if (evaluations.length >= maxBatchesPerWake || Date.now() - drainStarted >= 90_000) break;
   const current = currentProjectionForScope(candidate.scope);
   const workerPolicy = livePolicy(candidate.scope, current);
   const policyDigest = sha256(workerPolicy as unknown as JsonValue);
@@ -302,14 +316,16 @@ for (const candidate of releaseInference ? collectScopes() : []) {
   if (result.status !== "idle") {
     evaluation = result;
     evaluationScope = candidate.scope;
-    break;
+    evaluations.push({ result, scope: candidate.scope });
   }
 }
 
+if (evaluations.length === priorCount || evaluations.length >= maxBatchesPerWake || Date.now() - drainStarted >= 90_000) break;
+}
 } finally { releaseInference?.(); }
 
 const applications: any[] = [];
-for (let turn = 0; turn < (projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 ? 50 : 1); turn++) {
+for (let turn = 0; turn < 50; turn++) {
 const dueApplicators = collectScopes().map((candidate) => {
   const applicator = applicatorFor(candidate.scope);
   applicator.reconcile();
@@ -325,15 +341,19 @@ if (!applyTarget || ["idle", "busy", "disabled"].includes(apply.status)) break;
 const apply = applications[0]?.result ?? { status: "idle" }, applyScope = applications[0]?.scope ?? null;
 const domains = projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4
   ? await consumeTopicDomainReceipts({ workspace, workspaceId, expectedPluginDigest }) : null;
-if (domains?.indexedPending) process.exitCode = 1;
+const health = memoryWorkerHealth(workspace);
+if (domains?.indexedPending || health.status === "degraded" || evaluations.some(entry => ["retry", "terminal_failure"].includes(entry.result.status))) process.exitCode = 1;
 process.stdout.write(`${JSON.stringify({
   schema: "engram.memory-batch-live-run.v1",
   workspaceId,
   schedulerId: batch.schedulerId,
   evaluation,
   evaluationScope,
+  evaluations,
+  health,
+  maxBatchesPerWake,
   domains,
   apply,
   applyScope,
-  ...(projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 ? { applications } : {}),
+  applications,
 })}\n`);

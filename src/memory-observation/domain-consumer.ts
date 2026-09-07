@@ -158,7 +158,7 @@ async function consumeLocked(options: DomainConsumerOptions) {
       options.fault?.("after_changelog");
       const recent = [...changelog.matchAll(/<!-- engram-domain-entry:sha256:[a-f0-9]{64} -->\n(- [^\n]*(?:\n  [^\n]*)*)/g)]
         .map(match => match[1]!).sort().slice(-20).join("\n");
-      const managed = STATUS_START + "\n## Последние подтверждённые записи\n\n" + recent + "\n" + STATUS_END;
+      const managed = STATUS_START + "\n## Последние сохранённые записи\n\n" + recent + "\n" + STATUS_END;
       const status = safeFile(statusPath);
       const starts = status.split(STATUS_START).length - 1, ends = status.split(STATUS_END).length - 1;
       if (starts !== ends || starts > 1) throw new Error("domain status managed block is ambiguous");

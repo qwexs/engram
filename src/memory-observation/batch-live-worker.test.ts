@@ -428,7 +428,7 @@ describe("durable live micro-batch worker", () => {
     expect((await applicator.processOne(now())).status).toBe("idle");
     const note = join(workspace, "memory", "agent-main", "telegram-direct-100000001", "2026-08-31.md");
     for (const text of [
-      "Bounded multi-assertion contract approved.",
+      "request-30",
       "Rollback verification passed.",
       "Canary was restored.",
     ]) {
@@ -442,7 +442,7 @@ describe("durable live micro-batch worker", () => {
     expect(readdirSync(observationDirectory)).toHaveLength(3);
   });
 
-  test("keeps semantic defer ordered, retry-neutral, and terminal on unchanged reconsideration", async () => {
+  test("keeps semantic defer queued without repeated inference on unchanged evidence", async () => {
     const { workspace, ledger, policy } = setup();
     admit(ledger, 3, "2026-08-31T20:01:00.000Z");
     admit(ledger, 4, "2026-08-31T20:02:00.000Z");
@@ -476,19 +476,14 @@ describe("durable live micro-batch worker", () => {
     expect(ledger.peekDueEvaluationEvidence(now())).toHaveLength(0);
     expect(existsSync(join(workspace, "memory-state", "memory-observation", "v1", "observations", "batch"))).toBe(false);
     current = new Date("2026-08-31T20:26:00.000Z");
-    expect((await worker.processOne()).status).toBe("duplicate");
-    const queueDirectory = join(ledger.root, "queues", "evaluator");
-    const queue = readdirSync(queueDirectory).map((name) => JSON.parse(readFileSync(join(queueDirectory, name), "utf8")));
-    expect(queue.map((record) => [record.status, record.attempt, record.reasonCode])).toEqual([
-      ["terminal", 1, "semantic_batch_defer"],
-      ["terminal", 1, "semantic_batch_defer"],
+    expect(await worker.processOne()).toEqual({ status: "idle", reason: "waiting_context" });
+    expect(ledger.listQueue().map(record => [record.status, record.attempt, record.reasonCode])).toEqual([
+      ["queued", 0, "semantic_batch_defer"], ["queued", 0, "semantic_batch_defer"],
     ]);
-    expect(ledger.peekDueEvaluationEvidence(now())).toHaveLength(0);
-    expect(queue.flatMap((record) => ledger.readTrace(record.traceId))
-      .filter((entry) => entry.stage === "batch_evaluation_terminal")).toHaveLength(2);
+    expect(ledger.peekDueEvaluationEvidence(now())).toHaveLength(2);
   });
 
-  test("drains a fresh successor cohort after one bounded deferred replay", async () => {
+  test("reconsiders deferred evidence only with a fresh successor even across inactivity gaps", async () => {
     const { workspace, ledger, policy } = setup();
     admit(ledger, 40, "2026-08-31T20:01:00.000Z");
     admit(ledger, 41, "2026-08-31T20:02:00.000Z");
@@ -536,13 +531,11 @@ describe("durable live micro-batch worker", () => {
     admit(ledger, 42, "2026-08-31T20:21:00.000Z");
 
     current = new Date("2026-08-31T20:26:00.000Z");
-    expect((await worker.processOne()).status).toBe("duplicate");
-    expect(calls).toBe(1);
-
-    current = new Date("2026-08-31T20:40:00.000Z");
-    expect((await worker.processOne()).status).toBe("completed");
+    expect(await worker.processOne()).toMatchObject({ status: "completed", sourceCount: 3 });
     expect(calls).toBe(2);
     expect(ledger.peekDueEvaluationEvidence(now())).toHaveLength(0);
+    expect((await worker.processOne()).status).toBe("idle");
+    expect(calls).toBe(2);
   });
 
   test("does not consume the defer window when resuming before its queue effect", async () => {
@@ -580,12 +573,12 @@ describe("durable live micro-batch worker", () => {
     expect(calls).toBe(1);
 
     current = new Date("2026-08-31T20:26:00.000Z");
-    expect((await resumed.processOne()).status).toBe("duplicate");
-    expect(ledger.listQueue()[0]).toMatchObject({ status: "terminal", attempt: 1, reasonCode: "semantic_batch_defer" });
+    expect(await resumed.processOne()).toEqual({ status: "idle", reason: "waiting_context" });
+    expect(ledger.listQueue()[0]).toMatchObject({ status: "queued", attempt: 0, reasonCode: "semantic_batch_defer" });
     expect(calls).toBe(1);
   });
 
-  test("names a replayed deferred bundle by the active evaluation policy", async () => {
+  test("does not wake an unchanged deferred bundle merely because policy changed", async () => {
     const { workspace, ledger, policy } = setup();
     admit(ledger, 31, "2026-08-31T20:01:00.000Z");
     admit(ledger, 32, "2026-08-31T20:02:00.000Z");
@@ -609,10 +602,9 @@ describe("durable live micro-batch worker", () => {
     current = new Date("2026-08-31T20:26:00.000Z");
     const nextPolicy = { ...policy, evaluationPolicyDigest: `sha256:${"8".repeat(64)}` as const };
     const replay = new BatchLiveWorker({ workspace, ledger, policy: nextPolicy, storeRoot: join(workspace, "state"), complete, now });
-    expect((await replay.processOne()).status).toBe("duplicate");
-    expect(readdirSync(join(workspace, "state", "memory-batch-live", "v1", "jobs"))).toHaveLength(2);
-    expect(readdirSync(join(workspace, "state", "memory-batch-live", "v1", "terminals"))).toHaveLength(2);
-    expect(readdirSync(join(workspace, "state", "memory-batch-live", "v1", "done"))).toHaveLength(2);
+    expect(await replay.processOne()).toEqual({ status: "idle", reason: "waiting_context" });
+    expect(readdirSync(join(workspace, "state", "memory-batch-live", "v1", "jobs"))).toHaveLength(1);
+    expect(ledger.listQueue().every(record => record.status === "queued")).toBe(true);
   });
 
   test("counts invalid model output as a bounded attempt and seals terminal failure", async () => {

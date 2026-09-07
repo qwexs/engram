@@ -370,7 +370,7 @@ function safe(api: any, stage: string, operation: () => unknown): void {
     else api.logger.debug?.(`engram-memory-observation: ${stage} ${result?.status ?? "ignored"}`);
   } catch (error) {
     const diagnostic = observationRuntimeAdapterError(error);
-    api.logger.debug?.(`engram-memory-observation: ${stage} fail-closed ${diagnostic.code}: ${diagnostic.message}`);
+    api.logger.warn?.(`engram-memory-observation: ${stage} fail-closed ${diagnostic.code}: ${diagnostic.message}`);
   }
 }
 

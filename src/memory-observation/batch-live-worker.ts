@@ -143,6 +143,7 @@ export type BatchLiveFailureV1 = {
   maxAttempts: number;
   traceIds: Digest[];
   failedAt: string;
+  diagnostics?: { outputLength: number; outputDigest: Digest; framing: string };
 };
 
 export type BatchLiveRunResult =
@@ -357,6 +358,12 @@ function observationFromAssertion(options: {
     observationClass,
     evaluationPolicyDigest: options.job.evaluationPolicyDigest,
   });
+  const quoted = options.reasonCodes.includes("source_quote") || options.reasonCodes.includes("source_excerpt");
+  const sourceInputs = options.job.bundle.inputs.filter(input => cited.has(input.traceId));
+  const replyIds = [...new Set(sourceInputs.map(input => (input.evidence as any)?.source?.replyToMessageId)
+    .filter((id): id is string => typeof id === "string" && /^[0-9]+$/.test(id)))];
+  const label = quoted ? (options.reasonCodes.includes("source_excerpt") ? "Фрагмент слов пользователя: «" : "Слова пользователя: «") : "";
+  const rendered = quoted ? label + options.text + "»" + (replyIds.length ? " (ответ на №" + replyIds.join(", №") + ")" : "") : options.text;
   const base = {
     schema: BATCH_OBSERVATION_SCHEMA,
     observationId,
@@ -370,7 +377,7 @@ function observationFromAssertion(options: {
     targetConsumer: "daily-note" as const,
     payload: {
       section: options.section,
-      text: groupAssertionAttribution(options.job.bundle, options.actorRef, options.citations) + options.text,
+      text: groupAssertionAttribution(options.job.bundle, options.actorRef, options.citations) + rendered,
       actorRef: options.actorRef,
       outcomeStatus: options.outcomeStatus,
     },
@@ -422,9 +429,18 @@ export class BatchLiveWorker {
         if (retryNotDue) return { status: "idle", reason: "pending_retry_not_due" };
       }
       if (!job) {
-        const candidate = selectCandidate(this.options.ledger.peekDueEvaluationEvidence(now), this.options.policy, now);
+        const waiting = new Set(this.options.ledger.listQueue().filter(record => record.reasonCode === "semantic_batch_defer").map(record => record.traceId));
+        const due = this.options.ledger.peekDueEvaluationEvidence(now).filter(entry => sameScope(entry.envelope.scope, this.options.policy.exactScope));
+        const fresh = due.filter(entry => !waiting.has(entry.envelope.traceId));
+        if (!fresh.length && due.some(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context" };
+        // Reconsider waiting evidence with new text, reserving a slot for a fresh
+        // source so cached results cannot endlessly reprocess a deferred batch.
+        const reconsider = this.options.policy.maxTurns > 1 ? due.filter(entry => waiting.has(entry.envelope.traceId)).slice(-(this.options.policy.maxTurns - 1)) : [];
+        const selectionPolicy = reconsider.length ? { ...this.options.policy, inactivityGapMs: this.options.policy.evidenceTtlMs } : this.options.policy;
+        const candidate = selectCandidate(reconsider.length ? [...reconsider, ...fresh] : fresh, selectionPolicy, now);
+        if (candidate.length && candidate.every(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context_budget" };
         if (candidate.length === 0) return { status: "idle", reason: "flush_not_due" };
-        job = makeJob(candidate, this.options.policy, now);
+        job = makeJob(candidate, selectionPolicy, now);
         job = persistOrReuseJob(this.jobPath(job.jobId), job);
         this.options.fault?.("after_job");
       }
@@ -434,12 +450,19 @@ export class BatchLiveWorker {
       }
       this.authorizeCurrentBatchEffects();
       let run: Awaited<ReturnType<typeof runBatchShadow>>;
+      let diagnostics: BatchLiveFailureV1["diagnostics"];
       try {
         run = await runBatchShadow({
           bundle: job.bundle,
           config: this.options.policy.runner,
           storeRoot: resolve(this.options.storeRoot),
-          complete: this.options.complete,
+          complete: async request => {
+            const response = await this.options.complete(request);
+            const output = typeof response.output === "string" ? response.output : "";
+            diagnostics = { outputLength: output.length, outputDigest: sha256(output),
+              framing: output.trim().startsWith("```") ? "fenced" : output.trim().startsWith("{") ? "object" : output.trim() ? "other" : "empty" };
+            return response;
+          },
           now: this.options.now,
         });
       } catch (error) {
@@ -469,6 +492,7 @@ export class BatchLiveWorker {
             maxAttempts: Math.max(...retried.map((record) => record.maxAttempts)),
             traceIds: job.bundle.sourceRefs.map((source) => source.traceId),
             failedAt: failedAt.toISOString(),
+            ...(diagnostics ? { diagnostics } : {}),
           };
           const failure: BatchLiveFailureV1 = {
             ...failureBase,
@@ -557,10 +581,7 @@ export class BatchLiveWorker {
       writeImmutable(this.terminalPath(job.jobId), terminal as unknown as JsonValue);
       this.options.fault?.("after_terminal");
 
-      const previouslyDeferred = new Set(this.options.ledger.listQueue()
-        .filter((record) => record.status === "queued" && record.reasonCode === "semantic_batch_defer")
-        .map((record) => record.traceId));
-      const claimed = this.options.ledger.claimBatchExact(
+        const claimed = this.options.ledger.claimBatchExact(
         ownerToken,
         dispositions.map((entry) => entry.traceId),
         this.options.now?.() ?? new Date(),
@@ -570,7 +591,7 @@ export class BatchLiveWorker {
       for (const disposition of dispositions) {
         const record = claimedByTrace.get(disposition.traceId)!;
         if (record.status !== "claimed") continue;
-        if (disposition.decision === "defer" && !previouslyDeferred.has(disposition.traceId)) {
+        if (disposition.decision === "defer") {
           this.options.ledger.deferBatchClaim(
             ownerToken,
             record,

@@ -1,3 +1,4 @@
+import { sourceBackedOutput } from "./source-backed-output.ts";
 import { isGroupTopicBundle, groupAssertionAttribution } from "./group-attribution.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -24,7 +25,7 @@ type Row = Record<string, unknown>;
 
 export const BATCH_SHADOW_OUTPUT_SCHEMA = "engram.memory-batch-shadow-output.v1" as const;
 export const BATCH_SHADOW_RESULT_SCHEMA = "engram.memory-batch-shadow-result.v1" as const;
-export const BATCH_SHADOW_PROMPT_VERSION = "memory-batch-shadow-prompt-v9" as const;
+export const BATCH_SHADOW_PROMPT_VERSION = "memory-batch-shadow-prompt-v10" as const;
 export const MAX_ASSERTIONS_PER_WRITE_GROUP = 8;
 
 export type BatchScopedCitationV1 = {
@@ -348,6 +349,10 @@ const SYSTEM_PROMPT = [
   "Keep independent status reports, architecture findings, implementation completions, user preferences, approvals, and corrections in separate groups.",
   "If no later turn explicitly refers to, accepts, corrects, or completes the same exact work item, keep the turns separate.",
   "Choose write only for a durable completed result, explicit decision or preference, material correction, verified diagnosis, or accepted plan that will matter after the current operational moment.",
+  "For user assertions copy the complete source wording when short, otherwise an exact self-contained excerpt; never translate or paraphrase it. Preserve negation, comparison, modality, and the object of the remark.",
+  "User corrections of a specific image and actionable requests are worth recording as utterances/open requests, even without completion. Missing visual context is not a reason to invent a rule or drop the correction.",
+  "Images are not visible in this text bundle. A reply message ID identifies a target, not its visual properties. Never claim to have compared images.",
+  "Assistant text is a reported outcome, not user acceptance or independent verification. Preserve the source language.",
   "Choose skip for acknowledgements, routine restart or health confirmations, transient queue or percentage status, intermediate progress, and proposals that were not accepted and produced no durable result.",
   "Choose defer when a potentially durable case is still in progress and its outcome is not visible in this bundle.",
   "An explicit user decision, correction, or durable preference with sufficient evidence must not be skipped.",
@@ -493,8 +498,12 @@ export function parseBatchShadowOutput(value: unknown, bundleValue: unknown, now
   const bundle = validateCompiledBatchBundle(bundleValue, now);
   let parsed = value;
   if (typeof parsed === "string") {
-    if (parsed.length < 2 || parsed.length > 131_072 || parsed.trim() !== parsed) fail("INVALID_OUTPUT", "model output is empty, padded, or unbounded");
-    try { parsed = JSON.parse(parsed); } catch { fail("INVALID_JSON", "model output is not strict JSON"); }
+    if (parsed.length < 2 || parsed.length > 131_072) fail("INVALID_OUTPUT", "model output is empty, padded, or unbounded");
+    try {
+      let text = parsed.trim();
+      if (/^```(?:json)?\s*\n[\s\S]*\n```$/i.test(text)) text = text.replace(/^```(?:json)?\s*\n/i, "").replace(/\n```$/, "").trim();
+      parsed = JSON.parse(text);
+    } catch { fail("INVALID_JSON", "model output is not strict JSON"); }
   }
   const output = row(parsed);
   if (!output || !exactKeys(output, OUTPUT_KEYS) || output.schema !== BATCH_SHADOW_OUTPUT_SCHEMA
@@ -734,7 +743,11 @@ export async function runBatchShadow(options: {
   }
   const latencyMs = completion.latencyMs ?? null;
   if (latencyMs !== null && (!Number.isFinite(latencyMs) || latencyMs < 0)) fail("INVALID_LATENCY", "provider latency read-back is invalid");
-  const output = parseBatchShadowOutput(completion.output, bundle, options.now?.() ?? new Date());
+  const parsedOutput = parseBatchShadowOutput(completion.output, bundle, options.now?.() ?? new Date());
+  let output: BatchShadowOutputV1;
+  try { output = sourceBackedOutput(parsedOutput, bundle); }
+  catch { fail("SOURCE_QUOTE_MISMATCH", "user assertion is not backed by a literal source excerpt"); }
+  parseBatchShadowOutput(output, bundle, options.now?.() ?? new Date());
   const completedAt = (options.now?.() ?? new Date()).toISOString();
   const result: BatchShadowResultV1 = {
     schema: BATCH_SHADOW_RESULT_SCHEMA,

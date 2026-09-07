@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
 import { tmpdir } from "os";
-import { chmodSync, existsSync, lstatSync, mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { spawnSync } from "child_process";
 
 const SKILL_DIR = join(import.meta.dir, "..");
@@ -411,6 +411,47 @@ process.exit(0);
     expect(exitCode).toBe(0);
     expect(existsSync(join(memDir, "existing-file.txt"))).toBe(true);
     expect(existsSync(join(workspace, "memory", "agent-main"))).toBe(true);
+  });
+
+  test("repeated init preserves customized capture rules and files byte-for-byte", async () => {
+    expect((await runInit(workspace)).exitCode).toBe(0);
+    const rules = "# Local rules\n\n<!-- engram:rules:start -->\nEvents/Decisions belong to Memory Worker. Do not duplicate.\n<!-- engram:rules:end -->\n\nKeep other project instructions.\n";
+    writeFileSync(join(workspace, "AGENTS.md"), rules);
+    const memory = readFileSync(join(workspace, "MEMORY.md"), "utf8");
+    const rerun = await runInit(workspace);
+    expect(rerun.exitCode).toBe(0);
+    expect(readFileSync(join(workspace, "AGENTS.md"), "utf8")).toBe(rules);
+    expect(readFileSync(join(workspace, "MEMORY.md"), "utf8")).toBe(memory);
+  });
+
+  test("init fails without rewriting ambiguous rule markers", async () => {
+    const rules = "# Project rules\n<!-- engram:rules:start -->\nUnclosed local rules.\n";
+    writeFileSync(join(workspace, "AGENTS.md"), rules);
+    const result = await runInit(workspace);
+    expect(result.exitCode).not.toBe(0);
+    expect(readFileSync(join(workspace, "AGENTS.md"), "utf8")).toBe(rules);
+  });
+
+  test("fresh init reports that worker rollout is not part of scaffolding", async () => {
+    const result = await runInit(workspace);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Memory Worker: not provisioned by init");
+    expect(existsSync(join(workspace, "memory-state/memory-observation/projection.json"))).toBe(false);
+  });
+
+  test("worker workspace with unmarked custom rules never receives foreground defaults", async () => {
+    expect((await runInit(workspace)).exitCode).toBe(0);
+    const rules = "# Site-owned capture rules\nWorker owns Events/Decisions; no inline duplication.\n";
+    writeFileSync(join(workspace, "AGENTS.md"), rules);
+    const root = join(workspace, "memory-state/memory-observation"); mkdirSync(root, { recursive: true });
+    // Deliberately incomplete: init must preserve, not manufacture or attest activation.
+    const projection = '{"enabled":false,"disabledBy":"operator"}\n';
+    writeFileSync(join(root, "projection.json"), projection);
+    const result = await runInit(workspace);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("runtime activation is not verified by init");
+    expect(readFileSync(join(root, "projection.json"), "utf8")).toBe(projection);
+    expect(readFileSync(join(workspace, "AGENTS.md"), "utf8")).toBe(rules);
   });
 
   test("init --force preserves an explicit disabled or rolled-back OLL state", async () => {

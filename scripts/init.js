@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // engram/scripts/init.js
-// Initialize the complete memory system from scratch
+// Initialize the workspace foundation; Memory Worker rollout is separate.
 // Usage: bun skills/engram/scripts/init.js [--agent-id main] [--qmd-variant auto|local|jina|ollama] [--force] [--help]
 
 import { parseArgs } from 'node:util';
@@ -38,7 +38,7 @@ const { values: args } = parseArgs({
 
 if (args.help) {
   console.log(`
-engram init - Initialize complete memory system
+engram init - Initialize the memory workspace foundation
 
 Usage:
   bun skills/engram/scripts/init.js [options]
@@ -96,6 +96,11 @@ What it does:
   9. Runs backfill-domain-agents for topic-thread domains (optional)
   10. Runs validate.js --quality to verify integrity
 
+Memory Worker is a separate rollout: init does not install its extension,
+activate exact session/topic bindings, or provision its batch scheduler.
+Existing AGENTS.md managed rules and Memory Worker projections are preserved,
+including with --force. Rule migrations are separate from workspace init.
+
 Examples:
   bun skills/engram/scripts/init.js
   bun skills/engram/scripts/init.js --agent-id work --qmd-variant jina
@@ -136,6 +141,7 @@ const REQUIRED_OLL_HOOKS = ['engram-rule-context-load', 'engram-rule-rollback'];
 const INITIAL_ENGRAM_CONFIG_PATH = join(WORKSPACE, 'engram.json');
 const INITIAL_OLL_STATE_PATH = join(WORKSPACE, 'memory-state', 'oll', 'state.json');
 const FRESH_OLL_INSTALL = !existsSync(INITIAL_ENGRAM_CONFIG_PATH) && !existsSync(INITIAL_OLL_STATE_PATH);
+const HAS_MEMORY_OBSERVATION_STATE = existsSync(join(WORKSPACE, 'memory-state', 'memory-observation', 'projection.json'));
 const EXISTING_OLL_ROLLOUT_REQUIRED = config?.oll?.nightly?.enabled === true || config?.oll?.adaptation?.mode === 'active';
 
 // A JavaScript override is useful for hermetic tests and local wrappers. Unix
@@ -1147,6 +1153,13 @@ const today = new Date().toISOString().split('T')[0];
 const replacements = { AGENT_ID: agentId, DATE: today, SESSION_KEY: 'main', NOW: new Date().toISOString() };
 
 console.log('\nCopying templates...');
+if (HAS_MEMORY_OBSERVATION_STATE) {
+  console.log('  Memory Worker: existing projection preserved; runtime activation is not verified by init.');
+  recordSkip('memory-worker', 'projection', 'preserved; init is not a worker rollout');
+} else {
+  console.log('  Memory Worker: not provisioned by init (extension, exact bindings, QMD handoff and batch scheduler require rollout).');
+  recordWarn('Memory Worker is not provisioned by init');
+}
 ensureWorkspaceSkillLink();
 copyTemplate('MEMORY.md', 'MEMORY.md', replacements);
 copyTemplate('memory-readme.md', 'memory/README.md', replacements);
@@ -1245,10 +1258,16 @@ function detectDefaultModel() {
       const startIdx = agents.indexOf(START_MARKER);
       const endIdx = agents.indexOf(END_MARKER);
 
-      if (startIdx !== -1 && endIdx !== -1) {
-        agents = agents.slice(0, startIdx) + snippet + agents.slice(endIdx + END_MARKER.length);
-        if (!dryRun) writeFileSync(agentsPath, agents);
-        recordCreate('AGENTS.md', 'engram rules updated (replaced existing block)');
+      if (startIdx !== -1 && endIdx > startIdx
+        && agents.indexOf(START_MARKER, startIdx + START_MARKER.length) === -1
+        && agents.indexOf(END_MARKER, endIdx + END_MARKER.length) === -1) {
+        // Init is additive, not a rule migration. Replacing this block used to
+        // restore foreground recording over an observer-owned deployment.
+        recordSkip('AGENTS.md', 'existing engram rules', 'preserved; explicit rule migration required');
+      } else if (startIdx !== -1 || endIdx !== -1) {
+        recordError('AGENTS.md has ambiguous engram rule markers; existing file preserved');
+      } else if (HAS_MEMORY_OBSERVATION_STATE) {
+        recordSkip('AGENTS.md', 'existing worker workspace rules', 'preserved; do not append foreground defaults');
       } else {
         agents = agents.trimEnd() + '\n\n' + snippet + '\n';
         if (!dryRun) writeFileSync(agentsPath, agents);

@@ -318,8 +318,8 @@ if (command === "install") {
     writeFileSync(join(packageDirectory, "index.js"), bundle.bytes, { mode: 0o600 });
     writeFileSync(join(packageDirectory, "package.json"), readFileSync(join(repository, "integrations", "openclaw-memory-observation", "package.json")));
     writeFileSync(join(packageDirectory, "openclaw.plugin.json"), readFileSync(join(repository, "integrations", "openclaw-memory-observation", "openclaw.plugin.json")));
-    runOpenClaw(["plugins", "install", "--force", packageDirectory]);
-    runOpenClaw(["plugins", "enable", PLUGIN_ID]);
+    runOpenClaw(["plugins", "install", "--force", "--accept-capabilities", packageDirectory]);
+    runOpenClaw(["plugins", "enable", PLUGIN_ID, "--accept-capabilities"]);
     runOpenClaw(["config", "set", `plugins.entries.${PLUGIN_ID}.hooks.allowConversationAccess`, "true", "--strict-json"]);
     runOpenClaw(["config", "set", `plugins.entries.${PLUGIN_ID}.llm.allowModelOverride`, "true", "--strict-json"]);
     runOpenClaw(["config", "set", `plugins.entries.${PLUGIN_ID}.llm.allowedModels`, JSON.stringify([inferenceModel]), "--strict-json"]);

@@ -1,3 +1,4 @@
+import { RUNTIME_AUTHORITY, EVALUATOR_AUTHORITY, RUNTIME_REGISTRY, RUNTIME_POLICY } from "../../src/memory-observation/runtime-authority.ts";
 import { assertTopicHostRoutes } from "../../src/memory-observation/topic-bindings.ts";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -21,7 +22,7 @@ import {
   type DailyNoteCanaryPolicy,
 } from "../../src/memory-observation/daily-note-applicator.ts";
 import { AutonomousDailyNoteCanaryRunner } from "../../src/memory-observation/daily-note-runner.ts";
-import { MemoryObservationLedger, purgeMemoryObservationLifecycle, type ProducerRef } from "../../src/memory-observation/ledger.ts";
+import { MemoryObservationLedger, purgeMemoryObservationLifecycle } from "../../src/memory-observation/ledger.ts";
 import {
   OpenClawObservationRuntimeAdapter,
   observationRuntimeAdapterError,
@@ -38,54 +39,6 @@ import {
 
 const ENTRY_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_DIGEST = `sha256:${createHash("sha256").update(readFileSync(ENTRY_PATH)).digest("hex")}` as const;
-const RUNTIME_AUTHORITY: ProducerRef = {
-  id: "openclaw-runtime",
-  version: "v1",
-  digest: "sha256:41580b56cf8dc83fea5f78568092308214f851833a5c6cae537bf1a21b3626bd",
-};
-const EVALUATOR_AUTHORITY: ProducerRef = {
-  id: "post-turn-observer",
-  version: "v1",
-  digest: "sha256:d4f0bf349ea08594fbd3a72f1e6f05ea5dda32800422c1e2cefbc434552cd406",
-};
-const RUNTIME_REGISTRY = {
-  schema: "engram.memory-producer-registry.v1",
-  producers: [
-    {
-      ...RUNTIME_AUTHORITY,
-      authorityClass: "runtime",
-      artifactSchemas: ["engram.memory-observation-job.v1", "engram.memory-admission-gap-receipt.v1", "engram.memory-trace-event.v1"],
-      observationClasses: [],
-    },
-    {
-      ...EVALUATOR_AUTHORITY,
-      authorityClass: "evaluator",
-      artifactSchemas: ["engram.memory-observation.v1"],
-      observationClasses: ["episodic.event", "episodic.decision"],
-    },
-  ],
-};
-const RUNTIME_POLICY = {
-  schema: "engram.memory-authority-policy.v1",
-  policyVersion: "memory-observation-authority-v1",
-  rules: [
-    {
-      artifactSchema: "engram.memory-observation-job.v1",
-      stage: "source-admission",
-      allowedAuthorityClasses: ["runtime"],
-      allowedProducerIds: ["openclaw-runtime"],
-      requiredTrustedInputs: ["completed-source-turn", "runtime-session-key", "workspace-binding", "source-completion-time"],
-    },
-    {
-      artifactSchema: "engram.memory-observation.v1",
-      stage: "advisory-evaluation",
-      allowedAuthorityClasses: ["evaluator"],
-      allowedProducerIds: ["post-turn-observer"],
-      requiredTrustedInputs: ["observation-job", "ttl-evidence-store", "producer-registry"],
-    },
-  ],
-  defaultDecision: "deny",
-};
 
 type ActiveWorkspace = {
   workspace: string;

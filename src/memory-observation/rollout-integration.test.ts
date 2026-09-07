@@ -19,6 +19,9 @@ describe("memory observation shadow and daily-note canary rollout integration", 
     expect(result.success).toBe(true);
     expect(result.outputs).toHaveLength(1);
     const bundle = await result.outputs[0]!.text();
+    const registry = JSON.parse(readFileSync(join(repository, "contracts", "memory-observation", "v1", "producer-registry.json"), "utf8"));
+    const runtime = registry.producers.find((producer: any) => producer.id === "openclaw-runtime");
+    expect(bundle).toContain(runtime.digest);
     for (const marker of [
       "engram-memory-observation",
       "message_received",
@@ -91,9 +94,6 @@ describe("memory observation shadow and daily-note canary rollout integration", 
     expect(rolloutSource).toContain("family canary QMD handoff requires only --qmd-manifest");
     expect(rolloutSource).toContain("pluginDigest: bundle.digest");
     expect(rolloutSource).not.toContain("inference model must match the configured default main agent model");
-    const registry = JSON.parse(readFileSync(join(repository, "contracts", "memory-observation", "v1", "producer-registry.json"), "utf8"));
-    const runtime = registry.producers.find((producer: any) => producer.id === "openclaw-runtime");
-    expect(source).toContain(runtime.digest);
   });
 
   test("requires exact plugin model authorization for immediate and batch evaluators", () => {

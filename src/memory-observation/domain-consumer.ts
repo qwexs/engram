@@ -1,3 +1,4 @@
+import { renderRecentDomainStatus } from "./domain-recent.ts";
 import { acquireProcessLease } from "./process-lease.ts";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -12,8 +13,6 @@ import { validateBatchObservation, type BatchObservationV1 } from "./batch-obser
 import { DAILY_NOTE_APPLICATOR, renderDailyNoteEntry, type MemoryApplyReceiptV1 } from "./daily-note-applicator.ts";
 import { sha256, type JsonValue, type Digest } from "./ledger.ts";
 
-const STATUS_START = "<!-- engram-domain-recent:start -->";
-const STATUS_END = "<!-- engram-domain-recent:end -->";
 const digest = (value: unknown) => sha256(value as JsonValue);
 const json = (path: string) => JSON.parse(readFileSync(path, "utf8"));
 const key = (hash: string) => { if (!/^sha256:[a-f0-9]{64}$/.test(hash)) throw new Error("invalid domain receipt identity"); return hash.slice(7); };
@@ -156,17 +155,11 @@ async function consumeLocked(options: DomainConsumerOptions) {
       if (changelog.includes(marker) && !changelog.includes(block)) throw new Error("domain entry content conflict");
       if (!changelog.includes(marker)) { changelog = changelog.trimEnd() + "\n\n" + block; durableWrite(changelogPath, changelog); }
       options.fault?.("after_changelog");
-      const recent = [...changelog.matchAll(/<!-- engram-domain-entry:sha256:[a-f0-9]{64} -->\n(- [^\n]*(?:\n  [^\n]*)*)/g)]
-        .map(match => match[1]!).sort().slice(-20).join("\n");
-      const managed = STATUS_START + "\n## Последние сохранённые записи\n\n" + recent + "\n" + STATUS_END;
       const status = safeFile(statusPath);
-      const starts = status.split(STATUS_START).length - 1, ends = status.split(STATUS_END).length - 1;
-      if (starts !== ends || starts > 1) throw new Error("domain status managed block is ambiguous");
-      const updated = starts ? status.replace(/<!-- engram-domain-recent:start -->[\s\S]*?<!-- engram-domain-recent:end -->/, () => managed)
-        : status.trimEnd() + "\n\n" + managed + "\n";
+      const updated = renderRecentDomainStatus(status, changelog);
       if (updated !== status) durableWrite(statusPath, updated);
       options.fault?.("after_status");
-      if (!safeFile(changelogPath).includes(block) || !safeFile(statusPath).includes(managed)) throw new Error("domain destination read-back failed");
+      if (!safeFile(changelogPath).includes(block) || safeFile(statusPath) !== updated) throw new Error("domain destination read-back failed");
       immutableJson(applyPath, { schema: "engram.domain-apply-receipt.v1", operationId: receipt.operationId, sourceReceiptId: receipt.receiptId,
         sourceObservationId: observation.observationId, sourceObservationDigest: observation.observationDigest, scope: receipt.scope,
         domain, destination: "memory/domains/" + domain + "/changelog.md#" + marker, entryDigest: sha256(block),

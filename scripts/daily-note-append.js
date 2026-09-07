@@ -47,6 +47,20 @@ if (opts.workspace && !isAbsolute(opts.workspace)) {
 }
 const workspace = resolve(opts.workspace || WORKSPACE);
 
+// Explicit historical source repair, not foreground Events/Decisions capture.
+// No --text replacement is accepted: the quotation is copied from verified evidence.
+if (opts["restore-source-of"]) {
+  const allowed = new Set(["workspace", "session", "restore-source-of", "bundle-file", "authorized-by", "authorized-at", "apply"]);
+  if (Object.keys(opts).some(key => !allowed.has(key)) || !opts.workspace || !opts.session) {
+    throw new Error("source repair requires explicit --workspace and --session; arbitrary text/section options are forbidden");
+  }
+  const { restoreAppliedSourceQuote } = await import("../src/memory-observation/source-quote-correction.ts");
+  const result = await restoreAppliedSourceQuote({ workspace, session: opts.session, observationId: opts["restore-source-of"],
+    bundleFile: opts["bundle-file"], authorizedBy: opts["authorized-by"], authorizedAt: opts["authorized-at"], apply: opts.apply === true });
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(0);
+}
+
 // --- Валидация ---
 if (!opts.session) {
   console.error("❌ Требуется --session (например: main, telegram-12345)");

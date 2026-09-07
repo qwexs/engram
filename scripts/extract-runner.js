@@ -13,6 +13,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { loadEngramConfig } from "./config.js";
 import { parseHandoff } from "./process-handoff-core.js";
+import { observerOwnsDailyCapture } from "./_lib/observer-daily-ownership.ts";
 
 function parseArgs(argv) {
   const opts = {};
@@ -38,6 +39,10 @@ const config = loadEngramConfig(workspace);
 const agentId = String(opts["agent-id"] || config.agent.replace(/^agent-/, "") || "main").replace(/^agent-/, "");
 const agentDir = "agent-" + agentId;
 const session = opts.session || "main";
+if (observerOwnsDailyCapture(workspace, agentId, session)) {
+  console.log(JSON.stringify({ status: "skipped", reason: "observer_owns_capture" }));
+  process.exit(0);
+}
 const tz = process.env.ENGRAM_TZ || process.env.TZ || "Europe/Moscow";
 const date = opts.date || new Date().toLocaleDateString("sv-SE", { timeZone: tz });
 const noWrite = Boolean(opts["no-write"]);

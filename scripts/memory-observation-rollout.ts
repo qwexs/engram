@@ -31,6 +31,7 @@ import {
   preflightCanaryQmdBinding,
 } from "../src/memory-observation/qmd-binding-preflight.ts";
 import { resolveQmdContext } from "../src/qmd/context.ts";
+import { personalBatchBinding, runtimeSourcePolicyDigest } from "./_lib/memory-observation-rollout-policy.ts";
 
 const PLUGIN_ID = "engram-memory-observation";
 const DEFAULT_INFERENCE_MODEL = "openai/gpt-5.6-sol";
@@ -137,13 +138,27 @@ function hostInferenceBoundary(marker: MemoryObservationProjectionV1 | null): {
   const foregroundModel = agentId ? configuredAgentModel(agentId) : null;
   const expectedModel = marker?.inference?.model ?? null;
   const pluginLlmPolicy = configuredPluginLlmPolicy();
+  let personalAuthorized = false;
+  if (marker && agentId !== "main" && marker.evaluation?.mode === "batch-cron") {
+    try {
+      const binding = personalBatchBinding(configuredPersonalRoutes(), workspace, workspaceId, sessionKey!);
+      personalAuthorized = JSON.stringify(marker.bindings) === JSON.stringify([binding]);
+    } catch { /* Missing or changed route is not activation authority. */ }
+  }
   return {
-    active: Boolean(agentId === "main" && expectedModel
+    active: Boolean((agentId === "main" || personalAuthorized) && expectedModel
       && hasExactInferenceModelAuthorization(pluginLlmPolicy, expectedModel)),
     agentId,
     foregroundModel,
     expectedModel,
     pluginLlmPolicy,
+  };
+}
+
+function configuredPersonalRoutes(): any {
+  return {
+    agents: { entries: parsedConfigValue(runOpenClaw(["config", "get", "agents.entries"])) },
+    bindings: parsedConfigValue(runOpenClaw(["config", "get", "bindings"])),
   };
 }
 
@@ -224,7 +239,8 @@ function ownershipReadBack(marker: any): boolean {
 
 function latestSourcePolicyDigest(workspace: string, runtimeSessionKey: string): `sha256:${string}` {
   const directory = join(workspace, "memory-state", "memory-observation", "v1", "envelopes");
-  if (!existsSync(directory)) throw new Error("no admitted source envelopes are available for batch policy sealing");
+  const sourceDigest = runtimeSourcePolicyDigest(json(join(repository, "contracts", "memory-observation", "v1", "authority-policy.json")));
+  if (!existsSync(directory)) return sourceDigest;
   const candidates = readdirSync(directory).filter((name) => /^[a-f0-9]{64}\.json$/.test(name))
     .map((name) => json(join(directory, name)))
     .filter((value) => (runtimeSessionKey.endsWith(":*")
@@ -233,7 +249,8 @@ function latestSourcePolicyDigest(workspace: string, runtimeSessionKey: string):
       && typeof value?.sourceCompletedAt === "string"
       && /^sha256:[a-f0-9]{64}$/.test(value?.policyDigest))
     .sort((left, right) => right.sourceCompletedAt.localeCompare(left.sourceCompletedAt));
-  if (candidates.length === 0) throw new Error("exact batch contour has no source policy digest to seal");
+  if (candidates.length === 0) return sourceDigest;
+  if (candidates[0].policyDigest !== sourceDigest) throw new Error("admitted source policy differs from the installed runtime contract");
   return candidates[0].policyDigest;
 }
 
@@ -348,7 +365,6 @@ if (command === "status") {
     activeReadBack: Boolean(plugin.installed && plugin.enabled && plugin.status === "loaded"
       && plugin.digest === bundle.digest && marker?.enabled === true && marker?.pluginDigest === bundle.digest
       && (marker?.limits?.maxInferenceCalls !== 1
-        || marker?.evaluation?.mode === "batch-cron"
         || hostBoundary.active)
       && (marker?.mode !== "canary" || (marker?.bindings?.length === 1
         && dailyNoteReadBack(marker)
@@ -381,11 +397,14 @@ const ownershipCommand = batchCommand || command === "plan-ownership" || command
 const canaryCommand = ownershipCommand || command === "plan-canary" || command === "enable-canary";
 const sessionKey = required(options, "session-key");
 if (!sessionKey.startsWith("agent:")) throw new Error("--session-key must be a full canonical agent session key");
-if (!sessionKey.startsWith("agent:main:")) throw new Error("this evaluator release is restricted to the configured default main agent");
+const personalBinding = !sessionKey.startsWith("agent:main:")
+  ? personalBatchBinding(configuredPersonalRoutes(), workspace, workspaceId, sessionKey) : null;
+if (personalBinding && !batchCommand) throw new Error("non-main personal activation requires the batch evaluator");
 if (sessionKey.includes("*") && sessionKey !== "agent:main:*") {
   throw new Error("the only supported family selector is agent:main:*");
 }
 const scopeId = required(options, "scope-id");
+if (personalBinding && scopeId !== personalBinding.scopeId) throw new Error("personal scope must match the configured direct peer");
 const approvedBy = required(options, "approved-by");
 const approvedAt = required(options, "approved-at");
 if (!Number.isFinite(Date.parse(approvedAt))) throw new Error("--approved-at must be an ISO instant");
@@ -400,7 +419,7 @@ const projection: MemoryObservationProjectionV1 = {
   workspaceId,
   enabled: true,
   mode: "shadow",
-  bindings: [{
+  bindings: personalBinding ? [personalBinding] : [{
     runtimeSessionKey: sessionKey,
     scopeClass: "self",
     scopeId,

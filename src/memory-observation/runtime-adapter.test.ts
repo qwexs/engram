@@ -127,6 +127,24 @@ function attach(adapterValue: OpenClawObservationRuntimeAdapter) {
 }
 
 describe("OpenClaw PR2 runtime adapter", () => {
+  test("admits a non-admin user only when the exact binding permits personal capture", () => {
+    const admitted: TrustedCompletedTurn[] = [];
+    const value = adapter({ binding: {
+      workspaceId: "fixture-main", scopeClass: "self", scopeId: "telegram:100000001",
+      requireOwner: false, allowedChannels: ["telegram"],
+      admit: (source) => { admitted.push(source); return { status: "admitted" }; },
+    } });
+    const fixture = hookFixtures();
+    fixture.persistedEvent.message.__openclaw.senderIsOwner = false;
+    value.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
+    expect(value.adoptPersistedUser(fixture.persistedEvent, { sessionKey }).status).toBe("adopted");
+    value.attachRun({}, fixture.runContext);
+    expect(value.completeAgentEnd(fixture.endEvent, fixture.runContext).status).toBe("admitted");
+    expect(admitted).toHaveLength(1);
+    expect(value.captureMessageReceived(fixture.receivedEvent, {
+      ...fixture.receivedContext, sessionKey: "agent:another:telegram:direct:100000001",
+    }).status).toBe("ignored");
+  });
   test("recovers the trusted hook chain from durable checkpoints before completed spool", () => {
     const root = workspace();
     const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");

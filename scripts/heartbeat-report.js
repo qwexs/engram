@@ -16,6 +16,7 @@
 
 import { join } from "path";
 import { getAgentDir } from "./config.js";
+import { observerOwnsDailyCapture } from "./_lib/observer-daily-ownership.ts";
 
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
 const AGENT_DIR = getAgentDir(WORKSPACE);
@@ -30,6 +31,10 @@ function getArg(name) {
 
 const date    = getArg("date")    ?? new Date().toLocaleDateString("sv-SE");
 const session = getArg("session") ?? "main";
+if (observerOwnsDailyCapture(WORKSPACE, AGENT_DIR.replace(/^agent-/, ""), session)) {
+  console.log(JSON.stringify({ status: "skipped", reason: "observer_owns_capture" }));
+  process.exit(0);
+}
 
 const provided = {
   extraction:  getArg("extraction"),

@@ -3,6 +3,7 @@
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { withDailyNoteLock } from "../src/daily-note-lock.ts";
 import { getAgentDir, isLegacyOllAdmissionEnabled } from "./config.js";
 import { applyDomainWriteHandoff } from "./domains-runner.js";
 
@@ -181,8 +182,10 @@ async function updateReport(ctx, flag, value) {
   return await runScript(ctx, "heartbeat-report.js", ["--session", ctx.session, "--date", ctx.date, `--${flag}`, value]);
 }
 function appendToDailyNote(ctx, text) {
-  mkdirSync(dirname(ctx.notePath), { recursive: true });
-  appendFileSync(ctx.notePath, text, "utf-8");
+  return withDailyNoteLock(ctx.notePath, () => {
+    mkdirSync(dirname(ctx.notePath), { recursive: true });
+    appendFileSync(ctx.notePath, text, "utf-8");
+  });
 }
 async function processTensions(ctx, tensions) {
   if (!Array.isArray(tensions) || !tensions.length) return 0;

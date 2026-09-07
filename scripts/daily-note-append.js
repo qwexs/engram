@@ -10,6 +10,7 @@ import { loadEngramConfig } from "./config.js";
 import { withDailyNoteLock } from "../src/daily-note-lock.ts";
 import { markWorkspaceQmdDirty } from "../src/qmd/maintenance-integration.ts";
 import { normalizeSessionSegment, splitCanonicalSessionKey } from "../src/session-key.ts";
+import { observerOwnsDailyCapture } from "./_lib/observer-daily-ownership.ts";
 
 // Т.к. скрипт в skills/engram/scripts/, workspace на 3 уровня выше
 const WORKSPACE = process.env.ENGRAM_WORKSPACE || process.cwd() || join(import.meta.dir, "..", "..", "..");
@@ -79,6 +80,10 @@ if (session && RUNTIME_UUID_RE.test(session)) {
 }
 if (!session) {
   console.error(`❌ Небезопасный или пустой --session: "${opts.session}"`);
+  process.exit(1);
+}
+if ((sectionKey === "events" || sectionKey === "decisions") && observerOwnsDailyCapture(workspace, agentId, session)) {
+  console.error("Observer owns Events/Decisions in this partition; foreground capture is disabled.");
   process.exit(1);
 }
 const sectionTitle = SECTION_MAP[sectionKey];

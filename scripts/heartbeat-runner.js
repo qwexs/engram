@@ -25,6 +25,7 @@ import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerived
 import { runtimeSpawnLabel, transitionSpawnRecord } from "./spawn-lifecycle.js";
 import { runWorkspaceQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
 import { legacyKgMutationState } from "./_lib/kg-v3-authority.ts";
+import { observerOwnsDailyCapture } from "./_lib/observer-daily-ownership.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -671,6 +672,7 @@ function dailyTemplate(date) {
 }
 
 async function ensureDailyNote(targetSession = session) {
+  if (observerOwnsDailyCapture(workspace, agentId, targetSession)) return;
   const noteDir = noteDirFor(targetSession);
   const notePath = notePathFor(targetSession);
   mkdirSync(noteDir, { recursive: true });
@@ -696,6 +698,7 @@ function setExtractionPhase(targetSession, value) {
 }
 
 async function runExtraction(targetSession = session) {
+  if (observerOwnsDailyCapture(workspace, agentId, targetSession)) return "skipped (observer owns capture)";
   const state = await readJson(statePath, DEFAULT_STATE);
   const args = [
     scriptPath("extract-runner.js"),
@@ -1520,6 +1523,7 @@ async function maybeAutoSeedFromValidate(validateResult) {
 }
 
 async function writeReport(targetSession = session, extractionText = summary.extraction) {
+  if (observerOwnsDailyCapture(workspace, agentId, targetSession)) return;
   const result = run("bun", [
     scriptPath("heartbeat-report.js"),
     "--session", targetSession,

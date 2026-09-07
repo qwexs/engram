@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { tmpdir } from "node:os";
+import { memoryBatchIsIdle } from "../src/memory-observation/idle-preflight.ts";
 import { acquireProcessLease } from "../src/memory-observation/process-lease.ts";
 import { spawnSync } from "node:child_process";
 import { consumeTopicDomainReceipts } from "../src/memory-observation/domain-consumer.ts";
@@ -78,7 +79,24 @@ if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCH
   process.stdout.write(`${JSON.stringify({ status: "disabled", reason: "batch_canary_inactive", workspaceId })}\n`);
   process.exit(0);
 }
-if (projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4) {
+const batch = projection.evaluation.batch;
+const dailyNote = memoryObservationDailyNoteCanary(projection);
+if (!dailyNote || projection.captureOwnership?.owner !== "observer") {
+  throw new Error("batch canary binding, daily-note consumer, or observer ownership is unavailable");
+}
+const topicWorkspace = projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4;
+if (memoryBatchIsIdle(workspace, topicWorkspace)) {
+  const idle = { status: "idle" };
+  process.stdout.write(`${JSON.stringify({
+    schema: "engram.memory-batch-live-run.v1", workspaceId, schedulerId: batch.schedulerId,
+    fastPath: "no_pending_work", evaluation: idle, evaluationScope: null,
+    apply: idle, applyScope: null,
+    domains: topicWorkspace ? { status: "idle", applied: 0, indexedPending: 0 } : null,
+    ...(topicWorkspace ? { applications: [{ result: idle, scope: null }] } : {}),
+  })}\n`);
+  process.exit(0);
+}
+if (topicWorkspace) {
   const get = (path: string) => {
     const result = spawnSync("openclaw", ["config", "get", path], { encoding: "utf8" });
     if (result.status !== 0) throw new Error("topic host route read-back failed");
@@ -86,11 +104,6 @@ if (projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4) {
   };
   assertTopicHostRoutes({ agents: { entries: get("agents.entries") },
     channels: { telegram: { groups: get("channels.telegram.groups") } } }, workspace, workspaceId, projection.bindings);
-}
-const batch = projection.evaluation.batch;
-const dailyNote = memoryObservationDailyNoteCanary(projection);
-if (!dailyNote || projection.captureOwnership?.owner !== "observer") {
-  throw new Error("batch canary binding, daily-note consumer, or observer ownership is unavailable");
 }
 const contracts = join(repository, "contracts", "memory-observation", "v1");
 const producerRegistry = readJson(join(contracts, "producer-registry.json"));

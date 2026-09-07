@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { BATCH_EVALUATOR_AUTHORITY, deriveBatchObservationId } from "../src/memory-observation/batch-observation.ts";
 import { sha256, type JsonValue } from "../src/memory-observation/ledger.ts";
+import { configuredTopicBindings } from "../src/memory-observation/topic-bindings.ts";
 
 const roots: string[] = [];
 const repository = resolve(import.meta.dir, "..");
@@ -28,6 +29,41 @@ async function sourcePluginDigest(): Promise<`sha256:${string}`> {
 }
 
 describe("memory observation batch worker CLI", () => {
+  test("empty topics skip host calls, but unfinished work still checks host routes", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "memory-batch-worker-idle-topic-")); roots.push(workspace);
+    const put = (relative: string, value: unknown) => {
+      const path = join(workspace, relative); mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(value));
+    };
+    put("engram.json", { workspace: { id: "project" } });
+    put("memory/domains/registry.json", { domains: { smm: { type: "topic-thread", topic: { chatId: "-100123", topicId: "2" } } } });
+    mkdirSync(join(workspace, "memory/domains/smm"), { recursive: true });
+    const bindings = configuredTopicBindings({ agents: { entries: { project: { workspace } } },
+      channels: { telegram: { groups: { "-100123": { enabled: true, topics: { "2": { enabled: true, agentId: "project" } } } } } } }, workspace, "project", ["smm"]);
+    const hash = sha256("policy"), at = "2026-09-01T00:00:00.000Z";
+    put("memory-state/memory-observation/projection.json", {
+      schema: "engram.memory-observation-rollout.v4", workspaceId: "project", enabled: true, mode: "canary", bindings,
+      pluginDigest: await sourcePluginDigest(), inference: { provider: "openai", model: "openai/gpt-5.6-terra", evaluateAfter: at },
+      evaluation: { mode: "batch-cron", policyDigest: hash, batch: { sourcePolicyDigest: hash, inactivityGapSeconds: 300,
+        maxTurns: 8, maxEvidenceBytes: 262144, maxAgeSeconds: 900, maxInferenceCallsPerRun: 1, schedulerId: "group-worker" } },
+      limits: { evidenceTtlHours: 72, maxJobs: 1000, maxBytes: 67108864, maxQueueAgeHours: 168, maxAttempts: 2, claimTtlSeconds: 300, maxInferenceCalls: 1 },
+      consumers: { dailyNote: { mode: "canary", applyAfter: at, timezone: "UTC", allowedObservationClasses: ["episodic.event", "episodic.decision"],
+        maxAppliesPerWake: 1, qmdBinding: { resolver: "exact-session-registry", manifestPath: join(workspace, "manifest.json"), workspaceRegistryDigest: hash } } },
+      captureOwnership: { owner: "observer", effectiveAfter: at, foregroundDailyNoteCapture: "disabled" }, approvedBy: "operator", approvedAt: at,
+    });
+    // Fail any host config or inference invocation. The empty path must not call it.
+    const bin = join(workspace, "bin"); mkdirSync(bin);
+    writeFileSync(join(bin, "openclaw"), "#!/bin/sh\nexit 91\n", { mode: 0o755 });
+    const run = () => Bun.spawnSync([process.execPath, join(repository, "scripts/memory-observation-batch-worker.ts"), "--workspace", workspace],
+      { cwd: repository, env: { ...process.env, PATH: bin + ":" + process.env.PATH } });
+    const idle = run(); expect(idle.exitCode).toBe(0);
+    expect(JSON.parse(idle.stdout.toString())).toMatchObject({ fastPath: "no_pending_work", evaluation: { status: "idle" } });
+    put("memory-state/memory-observation/v1/queues/evaluator/" + "a".repeat(64) + ".json",
+      { schema: "engram.memory-observation-ledger-queue.v1", status: "queued" });
+    const pending = run(); expect(pending.exitCode).not.toBe(0);
+    expect(pending.stderr.toString()).toContain("topic host route read-back failed");
+  });
+
   test("treats an absent or disabled projection as an idle rollback state", () => {
     for (const projection of [null, { enabled: false }]) {
       const workspace = mkdtempSync(join(tmpdir(), "memory-batch-worker-disabled-"));

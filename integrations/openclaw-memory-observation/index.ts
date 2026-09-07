@@ -13,6 +13,7 @@ import { EpisodicShadowEvaluator } from "../../src/memory-observation/episodic-e
 import { AutonomousEpisodicRunner } from "../../src/memory-observation/evaluator-runner.ts";
 import { assertResolvedInferenceModel } from "../../src/memory-observation/inference-boundary.ts";
 import { AdmissionStore } from "../../src/memory-observation/admission-store.ts";
+import { configuredMemoryAgentIds } from "../../src/memory-observation/configured-agents.ts";
 import {
   buildDailyNoteCanaryPolicy,
   DailyNoteCanaryApplicator,
@@ -495,10 +496,7 @@ function wakeDailyNoteCanary(api: any, runtimeSessionKey: string): void {
 
 function activeSessionKeys(api: any): string[] {
   const config = currentConfig(api);
-  const agentIds = new Set<string>(["main"]);
-  const entries = config?.agents?.entries;
-  if (Array.isArray(entries)) for (const entry of entries) if (typeof entry?.id === "string") agentIds.add(entry.id);
-  else if (entries && typeof entries === "object") for (const id of Object.keys(entries)) agentIds.add(id);
+  const agentIds = configuredMemoryAgentIds(config);
   const sessionKeys = new Set<string>();
   for (const agentId of agentIds) {
     const workspace = resolveAgentWorkspace(config, agentId);
@@ -519,10 +517,7 @@ function activeSessionKeys(api: any): string[] {
 
 function configuredWorkspaces(api: any): string[] {
   const config = currentConfig(api);
-  const agentIds = new Set<string>(["main"]);
-  const entries = config?.agents?.entries;
-  if (Array.isArray(entries)) for (const entry of entries) if (typeof entry?.id === "string") agentIds.add(entry.id);
-  else if (entries && typeof entries === "object") for (const id of Object.keys(entries)) agentIds.add(id);
+  const agentIds = configuredMemoryAgentIds(config);
   const workspaces = new Set<string>();
   for (const agentId of agentIds) {
     const workspace = resolveAgentWorkspace(config, agentId);

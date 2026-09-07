@@ -25,7 +25,7 @@ type Row = Record<string, unknown>;
 
 export const BATCH_SHADOW_OUTPUT_SCHEMA = "engram.memory-batch-shadow-output.v1" as const;
 export const BATCH_SHADOW_RESULT_SCHEMA = "engram.memory-batch-shadow-result.v1" as const;
-export const BATCH_SHADOW_PROMPT_VERSION = "memory-batch-shadow-prompt-v10" as const;
+export const BATCH_SHADOW_PROMPT_VERSION = "memory-batch-shadow-prompt-v11" as const;
 export const MAX_ASSERTIONS_PER_WRITE_GROUP = 8;
 
 export type BatchScopedCitationV1 = {
@@ -350,8 +350,16 @@ const SYSTEM_PROMPT = [
   "If no later turn explicitly refers to, accepts, corrects, or completes the same exact work item, keep the turns separate.",
   "Choose write only for a durable completed result, explicit decision or preference, material correction, verified diagnosis, or accepted plan that will matter after the current operational moment.",
   "For user assertions copy the complete source wording when short, otherwise an exact self-contained excerpt; never translate or paraphrase it. Preserve negation, comparison, modality, and the object of the remark.",
-  "User corrections of a specific image and actionable requests are worth recording as utterances/open requests, even without completion. Missing visual context is not a reason to invent a rule or drop the correction.",
-  "Images are not visible in this text bundle. A reply message ID identifies a target, not its visual properties. Never claim to have compared images.",
+  "User comments on a specific object (document, image, table, message, or decision) and actionable corrections are worth recording as utterances/open requests, even without completion. Missing object content is not a reason to invent a rule or drop the correction.",
+  "A reply message ID identifies a target, not its contents or version. Use only explicit object links in the evidence; never choose the latest object by time or claim to have read unseen attachments. Keep unresolved links or interpretation explicitly unknown.",
+  "citations is an array inside EACH assertion: close that array before closing the assertion object. Return valid JSON, not JavaScript or a schema description.",
+  "The following is a JSON syntax example ONLY; replace all example values with evidence-backed values, never copy example facts or identifiers: " + JSON.stringify({
+    schema: BATCH_SHADOW_OUTPUT_SCHEMA,
+    groups: [{ groupId: "example", decision: "write", sourceRefs: ["TRACE_FROM_BUNDLE"], assertions: [{
+      section: "events", text: "EXACT_SOURCE_WORDS", actorRef: "user", outcomeStatus: "unknown", confidence: 0.9,
+      reasonCodes: ["user-comment"], citations: [{ traceId: "TRACE_FROM_BUNDLE", evidenceRef: { kind: "source-turn", ref: "REF_FROM_BUNDLE", digest: "DIGEST_FROM_BUNDLE" } }],
+    }] }],
+  }),
   "Assistant text is a reported outcome, not user acceptance or independent verification. Preserve the source language.",
   "Choose skip for acknowledgements, routine restart or health confirmations, transient queue or percentage status, intermediate progress, and proposals that were not accepted and produced no durable result.",
   "Choose defer when a potentially durable case is still in progress and its outcome is not visible in this bundle.",

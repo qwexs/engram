@@ -581,13 +581,8 @@ export class OpenClawObservationRuntimeAdapter {
       const assistantText = typeof event.content === "string"
         ? event.content.slice(0, 50_000).trim()
         : "";
-      if (!assistantText) {
-        this.publishBoundGap(bound, "run_attached", "evidence_missing", now);
-        throw new RuntimeAdapterError(
-          "INVALID_TURN",
-          "delivered source reply has no assistant text",
-        );
-      }
+      // A provider-settled final delivery may contain only an attachment.
+      // The verified source remains useful even when no reply text is exposed.
       const deliveryMessageId = optionalToken("messageId", event.messageId);
       const completionCheckpoint = this.recordCheckpoint(bound, "completion_observed", now);
       const completionAt = completionCheckpoint ? new Date(completionCheckpoint.updatedAt) : now;

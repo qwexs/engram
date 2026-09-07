@@ -794,6 +794,24 @@ describe("OpenClaw PR2 runtime adapter", () => {
     });
   });
 
+  test("preserves source for an exact final non-text delivery, not a failed or foreign delivery", () => {
+    for (const kind of ["ok", "failed", "foreign"] as const) {
+      const admitted: TrustedCompletedTurn[] = [];
+      const runtime = adapter({ admitted });
+      const fixture = attach(runtime);
+      const event = { success: kind !== "failed", sessionKey, runId: fixture.runContext.runId,
+        sourceReply: { sourceTurnId: kind === "foreign" ? `channel-user:v1:${"b".repeat(64)}` : sourceTurnId,
+          toolCallId: "attachment-final", final: true } };
+      if (kind === "foreign") expect(() => runtime.completeMessageSent(event, fixture.runContext)).toThrow();
+      else expect(runtime.completeMessageSent(event, fixture.runContext).status).toBe(kind === "ok" ? "admitted" : "ignored");
+      expect(admitted).toHaveLength(kind === "ok" ? 1 : 0);
+      if (kind === "ok") expect(admitted[0]?.redactedEvidence).toMatchObject({
+        source: { text: "Принято: запускаем PR2 runtime adapter" },
+        outcome: { text: "", status: "unknown", reasonCode: "assistant_text_unavailable" },
+      });
+    }
+  });
+
   test("adds up to five resolved reply pairs and records the delivered parent link", () => {
     const admitted: TrustedCompletedTurn[] = [];
     const deliveries: unknown[] = [];

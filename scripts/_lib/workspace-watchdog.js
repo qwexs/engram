@@ -1895,7 +1895,7 @@ export function auditWorkspace(workspaceInput, options = {}) {
   findings.push(...archiveFindings.map(f => ({ ...f, area: "archive", fixable: false })));
   findings.push(...auditKgV3({ workspace, workspaceId: engram.workspace?.id || getAgentId(workspace) })
     .map(f => ({ ...f, level: f.level === "warning" ? "warn" : f.level, fixable: false })));
-  findings.push(...auditMemoryObservation(workspace, { now: options.now }));
+  findings.push(...auditMemoryObservation(workspace, { now: options.now, expectedPluginDigest: options.runtime?.plugin?.installedDigest ?? undefined }));
   checkOllState(workspace, findings, engram);
   checkSkillGeneratedArtifacts(findings, options);
   if (options.qmd !== false) {

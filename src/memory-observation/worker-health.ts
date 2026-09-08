@@ -28,7 +28,7 @@ export function memoryWorkerSnapshot(workspace: string) {
   const root = join(workspace, "memory-state/memory-observation");
   const errors: WorkerReadError[] = [];
   const read = (path: string) => readWorkerRows(join(root, path), errors);
-  return { root, observed: existsSync(root), errors,
+  return { root, observed: existsSync(root), captureObserved: existsSync(join(root, "v1")) || existsSync(join(root, "batch-live-store/memory-batch-live/v1")), errors,
     evaluator: read("v1/queues/evaluator"), daily: read("v1/consumers/daily-note/queue"),
     admission: read("v1/pre-admission/checkpoints"),
     jobs: read("batch-live-store/memory-batch-live/v1/jobs"), done: read("batch-live-store/memory-batch-live/v1/done") };
@@ -106,7 +106,7 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
     && Number.isFinite(Date.parse(row.value.claimedAt)) && now.getTime() - Date.parse(row.value.claimedAt) > claimTtlSeconds * 1000).length;
   const stalled = Object.values(stages).some(stage => stage.stale || stage.overdue);
   const totalPending = pending.length + dailyPending.length + admissionPending.length + batchPending.length;
-  return { status: !snapshot.observed ? "not_observed" : failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims ? "degraded" : waiting.length ? "waiting_context" : totalPending ? "pending" : "ok",
+  return { status: failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending ? "pending" : "ok",
     pending: pending.length, totalPending, waitingContext: waiting.length, terminalFailures: failures.length, admissionGaps: gaps.length,
     recoveredAdmissionGaps: recovered.length, historicalAdmissionGaps: historicalGaps.length,
     dailyPending: dailyPending.length, qmdPending: dailyPending.filter(row => row.value.status === "qmd_pending" || row.value.phase === "qmd").length,

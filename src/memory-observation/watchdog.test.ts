@@ -31,6 +31,7 @@ test("valid empty ownership remains capture-unverified and all audit reads are i
   const f = fixture(), before = hashes(f.root), report = f.audit();
   expect(report.some(row => row.code === "WD-MW-005")).toBe(false);
   expect(report.some(row => row.code === "WD-MW-020")).toBe(true);
+  expect(report.some(row => row.code === "WD-MW-006" && row.message.endsWith("not_observed"))).toBe(true);
   expect(hashes(f.root)).toEqual(before);
 });
 test("intentional disable is not an invalid projection; unfinished work remains visible", () => {

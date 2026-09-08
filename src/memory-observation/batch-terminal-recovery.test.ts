@@ -14,7 +14,7 @@ function write(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function fixture() {
+function fixture(errorCode = "batch_invalid_json") {
   const workspace = mkdtempSync(join(tmpdir(), "batch-recovery-workspace-"));
   const storeRoot = mkdtempSync(join(tmpdir(), "batch-recovery-store-"));
   roots.push(workspace, storeRoot);
@@ -33,7 +33,7 @@ function fixture() {
     schema: BATCH_LIVE_FAILURE_SCHEMA,
     jobId,
     bundleId,
-    errorCode: "batch_invalid_json",
+    errorCode,
     attempt: 2,
     maxAttempts: 2,
     traceIds: [traceId],
@@ -48,7 +48,7 @@ function fixture() {
   write(join(stateRoot, "queues", "evaluator", `${traceId.slice(7)}.json`), {
     schema: "engram.memory-observation-ledger-queue.v1", traceId, queueClass: "evaluator", status: "terminal",
     attempt: 2, maxAttempts: 2, nextAttemptAt: "2026-09-03T10:00:00.000Z", createdAt: "2026-09-03T10:00:00.000Z",
-    updatedAt: "2026-09-03T10:05:00.000Z", claimedAt: null, claimToken: null, terminalAt: "2026-09-03T10:05:00.000Z", reasonCode: "batch_invalid_json",
+    updatedAt: "2026-09-03T10:05:00.000Z", claimedAt: null, claimToken: null, terminalAt: "2026-09-03T10:05:00.000Z", reasonCode: errorCode,
   });
   write(join(stateRoot, "evidence", `${traceId.slice(7)}.json`), { traceId, expiresAt: "2026-09-06T10:00:00.000Z" });
   return { workspace, storeRoot, jobId, traceId };
@@ -78,6 +78,21 @@ describe("bounded terminal batch recovery", () => {
     const queue = JSON.parse(readFileSync(join(input.workspace, "memory-state", "memory-observation", "v1", "queues", "evaluator", `${input.traceId.slice(7)}.json`), "utf8"));
     expect(queue).toMatchObject({ status: "queued", attempt: 0, terminalAt: null, reasonCode: "operator_recovery_requeued" });
     expect(recoverTerminalBatch({ ...common, apply: true })).toEqual(applied);
+  });
+
+  test("requeues an authorized assertion-format failure with unchanged history", () => {
+    const input = fixture("batch_invalid_assertion");
+    const original = readFileSync(join(input.storeRoot, "memory-batch-live", "v1", "failures", `${input.jobId.slice(7)}.json`), "utf8");
+    const common = recoveryInput(input);
+    expect(recoverTerminalBatch(common).status).toBe("planned");
+    const result = recoverTerminalBatch({ ...common, apply: true });
+    expect(result.status).toBe("requeued");
+    expect(readFileSync(result.archivedFailureRef, "utf8")).toBe(original);
+    expect(recoverTerminalBatch({ ...common, apply: true })).toEqual(result);
+  });
+
+  test("does not admit arbitrary failure codes", () => {
+    expect(() => recoverTerminalBatch(recoveryInput(fixture("unknown_failure")))).toThrow(/not eligible/);
   });
 
   for (const faultAt of FAULT_POINTS) {

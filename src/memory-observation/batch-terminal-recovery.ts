@@ -26,7 +26,7 @@ import { memoryObservationBinding, resolveMemoryObservationProjection } from "./
 
 export const BATCH_TERMINAL_RECOVERY_SCHEMA = "engram.memory-batch-terminal-recovery.v1" as const;
 const BATCH_TERMINAL_RECOVERY_AUTHORIZATION_SCHEMA = "engram.memory-batch-terminal-recovery-authorization.v1" as const;
-const ALLOWED_FAILURES = new Set(["batch_provider_failure", "batch_invalid_json"]);
+const ALLOWED_FAILURES = new Set(["batch_provider_failure", "batch_invalid_json", "batch_invalid_assertion"]);
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 
 export type BatchTerminalRecoveryFaultPoint =

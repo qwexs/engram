@@ -304,6 +304,9 @@ function archiveTopicThreadDomain({ name, config, domainsRoot, nowMs, dryRun = t
   if (config.archived === true) {
     return { archived: false, reason: "already archived" };
   }
+  if (config.pending === true) {
+    return { archived: false, reason: "pending activation" };
+  }
   const domainDir = join(domainsRoot, name);
   if (!existsSync(domainDir)) {
     return { archived: false, reason: "domain dir missing" };
@@ -456,7 +459,7 @@ export function newestContentDateMs(content) {
 }
 
 function isEnabled(config) {
-  return config?.enabled !== false && config?.disabled !== true;
+  return config?.enabled !== false && config?.disabled !== true && config?.pending !== true;
 }
 
 function safeDomainName(name) {
@@ -605,6 +608,7 @@ export async function applyDomainWriteHandoff(handoff, {
   }
   const config = registry.domains?.[domain];
   if (!config) throw new Error("Domain not registered: " + domain);
+  if (config.pending === true) throw new Error("Domain is pending activation: " + domain);
   if (!isEnabled(config)) throw new Error("Domain is disabled: " + domain);
   const workerLabel = parseHandoffField(handoff.body, "Subagent-Label");
   if (workerLabel && config.subagentLabel && workerLabel !== config.subagentLabel) {
@@ -967,6 +971,7 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
     if (observerOwned) { due = false; overdue = false; }
     const domain = {
       name,
+      ...(config?.pending === true ? { pending: true } : {}),
       ...(observerOwned ? { projectionOwner: "observer" } : {}),
       enabled,
       type: config?.type ?? null,
@@ -1008,7 +1013,7 @@ export function scanDomains({ workspace, now = new Date(), staleDays = DEFAULT_S
   // Phase D: archive stale topic-thread domains (only if archiveMode && !dryRun)
   if (archiveMode && !dryRun) {
     for (const domain of domains) {
-      if (domain.type !== "topic-thread" || domain.projectionOwner === "observer") continue;
+      if (domain.type !== "topic-thread" || domain.projectionOwner === "observer" || domain.pending) continue;
       if (domain.archived) continue;
       const config = registry.domains[domain.name] || {};
       const result = archiveTopicThreadDomain({

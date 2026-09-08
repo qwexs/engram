@@ -59,6 +59,29 @@ function setupRegistry(): string {
   return domain;
 }
 
+test("pending domains cannot be scheduled or written before promotion", async () => {
+  const domain = setupRegistry();
+  const registryPath = join(workspace, "memory/domains/registry.json");
+  const registry = JSON.parse(readFileSync(registryPath, "utf8"));
+  registry.domains[domain].pending = true;
+  writeFileSync(registryPath, JSON.stringify(registry));
+  const status = join(workspace, "memory/domains", domain, "status.md");
+  const before = readFileSync(status, "utf8");
+  const { createHash } = await import("node:crypto");
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  const baseHashes = { "status.md": sha(before), "changelog.md": sha(readFileSync(join(workspace, "memory/domains", domain, "changelog.md"), "utf8")) };
+  const scan = scanDomains({ workspace, dryRun: true });
+  expect(scan.domains[0].due).toBe(false);
+  expect(scan.domains[0].overdue).toBe(false);
+  await expect(applyDomainWriteHandoff(handoff({ baseHashes, statusContent: "Should not apply" }), { workspace })).rejects.toThrow("pending");
+  expect(readFileSync(status, "utf8")).toBe(before);
+  registry.domains[domain].pending = false;
+  writeFileSync(registryPath, JSON.stringify(registry));
+  expect(scanDomains({ workspace, dryRun: true }).domains[0].due).toBe(true);
+  expect((await applyDomainWriteHandoff(handoff({ baseHashes, statusContent: "Promoted" }), { workspace })).ok).toBe(true);
+  expect(readFileSync(status, "utf8")).toContain("Promoted");
+});
+
 function handoff(opts: {
   runId?: string;
   baseHashes?: { "status.md": string | null; "changelog.md": string | null };

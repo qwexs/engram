@@ -25,7 +25,7 @@ import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerived
 import { runtimeSpawnLabel, transitionSpawnRecord } from "./spawn-lifecycle.js";
 import { runWorkspaceQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
 import { legacyKgMutationState } from "./_lib/kg-v3-authority.ts";
-import { observerOwnsDailyCapture } from "./_lib/observer-daily-ownership.ts";
+import { observerOwnsDailyCapture, observerOwnsDomainProjection } from "./_lib/observer-daily-ownership.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -1731,8 +1731,8 @@ async function runSilentThreadCheck(activeSessions) {
 // Маркер `<!-- auto-derived ... -->` — критичный invariant:
 //   - Agent-curated status.md → НЕТ маркера → никогда не перетирается
 //   - Auto-derived → ЕСТЬ маркер → обновляется при drift
-async function refreshAutoDerivedStatus() {
-  const registryPath = join(workspace, "memory", "domains", "registry.json");
+export async function refreshAutoDerivedStatus({ root = workspace, workspaceAgentId = agentId } = {}) {
+  const registryPath = join(root, "memory", "domains", "registry.json");
   const registry = await readJsonIfExists(registryPath, { domains: {} });
   let refreshed = 0;
   let skipped = 0;
@@ -1741,8 +1741,10 @@ async function refreshAutoDerivedStatus() {
 
   for (const [slug, entry] of Object.entries(registry.domains || {})) {
     if (!entry || entry.type !== "topic-thread" || !entry.topic) continue;
+    if (entry.pending === true || entry.enabled === false || entry.disabled === true || entry.archived === true
+      || observerOwnsDomainProjection(root, slug)) { skipped++; continue; }
 
-    const statusPath = join(workspace, "memory", "domains", slug, "status.md");
+    const statusPath = join(root, "memory", "domains", slug, "status.md");
     if (!existsSync(statusPath)) {
       skipped++;
       continue;
@@ -1768,7 +1770,7 @@ async function refreshAutoDerivedStatus() {
     // Compute sessionDir из registry binding.
     const absChatId = String(entry.topic.chatId).replace(/^-/, "");
     const sessionKey = "telegram-group--" + absChatId + "-topic-" + entry.topic.topicId;
-    const sessionDir = join(workspace, "memory", "agent-" + agentId, sessionKey);
+    const sessionDir = join(root, "memory", "agent-" + workspaceAgentId, sessionKey);
 
     const latest = findLatestDailyNoteWithContent(sessionDir);
     if (!latest) {
@@ -1797,6 +1799,8 @@ async function refreshAutoDerivedStatus() {
       const latestContent = await readFile(latest.path, "utf-8");
       const sections = parseMarkdownSections(latestContent);
       const derived = buildAutoDerivedStatus(slug, latest.date, today, sections);
+      // Ownership may change while reading the daily note during cutover.
+      if (observerOwnsDomainProjection(root, slug)) { skipped++; continue; }
       await atomicWrite(statusPath, derived);
       refreshed++;
       detail.push({ slug, source: latest.date, size: latest.size });

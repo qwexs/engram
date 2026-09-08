@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { consumeTopicDomainReceipts, type DomainConsumerOptions } from "./domain-consumer.ts";
@@ -8,6 +8,7 @@ import { DAILY_NOTE_APPLICATOR, renderDailyNoteEntry } from "./daily-note-applic
 import { sha256 } from "./ledger.ts";
 import { configuredTopicBindings } from "./topic-bindings.ts";
 import { scanDomains, applyDomainWriteHandoff } from "../../scripts/domains-runner.js";
+import { refreshAutoDerivedStatus } from "../../scripts/heartbeat-runner.js";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
@@ -62,6 +63,24 @@ function fixture() {
       indexKey: "index-key", generation: dirtyCalls, collections: input.collections }; } };
   return { workspace, domainDir, options, receipt, receiptPath, dirtyCalls: () => dirtyCalls };
 }
+
+test("legacy auto-derived refresh respects domain ownership and resumes after rollback", async () => {
+  const f = fixture(), status = join(f.domainDir, "status.md");
+  const original = "<!-- auto-derived from 2026-09-01.md at 2026-09-01 -->\n# Сохраненный контекст\n";
+  put(status, original); utimesSync(status, 1, 1);
+  expect((await refreshAutoDerivedStatus({ root: f.workspace, workspaceAgentId: "project" })).refreshed).toBe(0);
+  expect(readFileSync(status, "utf8")).toBe(original);
+  const p = join(f.workspace, "memory-state/memory-observation/projection.json");
+  const projection = JSON.parse(readFileSync(p, "utf8")); put(p, { ...projection, enabled: false });
+  const registryPath = join(f.workspace, "memory/domains/registry.json");
+  const registry = JSON.parse(readFileSync(registryPath, "utf8"));
+  registry.domains.smm.pending = true; put(registryPath, registry);
+  expect((await refreshAutoDerivedStatus({ root: f.workspace, workspaceAgentId: "project" })).refreshed).toBe(0);
+  expect(readFileSync(status, "utf8")).toBe(original);
+  registry.domains.smm.pending = false; put(registryPath, registry);
+  expect((await refreshAutoDerivedStatus({ root: f.workspace, workspaceAgentId: "project" })).refreshed).toBe(1);
+  expect(readFileSync(status, "utf8")).toContain("Согласовал срок");
+});
 
 test("delayed source dates reach their exact domain once without replacing handover", async () => {
   const f = fixture(); expect((await consumeTopicDomainReceipts(f.options)).applied).toBe(1);

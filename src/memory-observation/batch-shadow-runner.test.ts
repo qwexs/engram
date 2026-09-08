@@ -62,12 +62,12 @@ const measuredPromptConfig: BatchShadowRunnerConfigV3 = {
   gatewayAgentId: "managers",
 };
 
-function entry(index: number): BatchSourceFrameEntryV1 {
+function entry(index: number, sourceText?: string): BatchSourceFrameEntryV1 {
   const traceId = sha256(`trace-${index}`);
   const sourceTurnId = `channel-user:v1:${index.toString(16).padStart(64, "0")}`;
   const sourceCompletedAt = `2026-08-31T20:0${index}:00.000Z`;
   const payload = {
-    source: { role: "user", text: index === 1 ? "PRIVATE-EVIDENCE-ALPHA" : "PRIVATE-EVIDENCE-BETA" },
+    source: { role: "user", text: sourceText ?? (index === 1 ? "PRIVATE-EVIDENCE-ALPHA" : "PRIVATE-EVIDENCE-BETA") },
     outcome: { role: "assistant", text: `completed-${index}` },
   };
   const evidenceIdentity = { schema: "engram.memory-evidence-envelope.v1" as const, traceId, scope, payload };
@@ -97,12 +97,12 @@ function entry(index: number): BatchSourceFrameEntryV1 {
   };
 }
 
-function bundle() {
+function bundle(sourceText?: string) {
   return compileBatchFrame({
     schema: BATCH_FRAME_SCHEMA,
     partition: { ...scope, producerEpoch: "runtime-v1", policyDigest },
     sealedAt: "2026-08-31T20:10:00.000Z",
-    sources: [entry(1), entry(2)],
+    sources: [entry(1, sourceText), entry(2)],
   }, compilerConfig).bundles[0];
 }
 
@@ -138,6 +138,25 @@ function expectCode(callback: () => unknown, code: string): void {
 }
 
 describe("Terra paired shadow runner", () => {
+  test("grounds a literal multiline user comment before enforcing stored text shape", async () => {
+    const original = "Сохрани размер.\nНе уменьшай заголовок.\nПоставь подпись сверху.";
+    const compiled = bundle(original);
+    const output = validOutput();
+    const assertion = (output.groups[0] as any).assertions[0];
+    Object.assign(assertion, { actorRef: "user", text: original, outcomeStatus: "unknown",
+      citations: [{traceId: compiled.inputs[0]!.traceId, evidenceRef: compiled.inputs[0]!.evidenceRefs[0]}] });
+    const root = mkdtempSync(join(tmpdir(), "engram-multiline-quote-"));
+    try {
+      const run = await runBatchShadow({bundle: compiled, config: singlePromptConfig, storeRoot: root,
+        now: () => new Date("2026-08-31T20:11:00.000Z"),
+        complete: async () => ({output: JSON.stringify(output), resolvedModel: singlePromptConfig.requestedModel})});
+      expect((run.result.groups[0] as any).assertions[0]).toMatchObject({
+        text: original.replace(/\s+/gu, " "), actorRef: "user", outcomeStatus: "unknown"});
+      expect((run.result.groups[0] as any).assertions[0].reasonCodes).toContain("source_quote");
+      assertion.actorRef = "assistant";
+      expectCode(() => parseBatchShadowOutput(output, compiled, new Date("2026-08-31T20:11:00.000Z")), "INVALID_ASSERTION");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   test("freezes a tool-free exact-model request and validates scoped citations", () => {
     const compiled = bundle();
     const first = batchShadowPrompt(compiled, runnerConfig, new Date("2026-08-31T20:11:00.000Z"));

@@ -559,7 +559,10 @@ export function parseBatchShadowOutput(value: unknown, bundleValue: unknown, now
       if (!assertion || !exactKeys(assertion, ASSERTION_KEYS)
         || (assertion.section !== "events" && assertion.section !== "decisions")
         || typeof assertion.text !== "string" || assertion.text.trim() !== assertion.text || assertion.text.length < 1 || assertion.text.length > 1_000
-        || assertion.text.split(/\r?\n/).length > 2
+        // User text is normalized against the cited source by sourceBackedOutput
+        // before persistence. Do not reject a literal multi-line quotation here.
+        // Keep the short-line constraint for ungrounded assistant prose.
+        || (assertion.actorRef !== "user" && assertion.text.split(/\r?\n/).length > 2)
         || typeof assertion.actorRef !== "string" || !ACTORS.has(assertion.actorRef)
         || typeof assertion.outcomeStatus !== "string" || !OUTCOMES.has(assertion.outcomeStatus)
         || typeof assertion.confidence !== "number" || !Number.isFinite(assertion.confidence) || assertion.confidence < 0 || assertion.confidence > 1

@@ -1,3 +1,4 @@
+import { groupDomainOf } from "./group-bindings.ts";
 /** Explicit operator repair of ONE applied short user quotation. No inference,
  * arbitrary replacement text, new event capture, KG writes or receipt rewrites. */
 import { randomUUID } from "node:crypto";
@@ -85,7 +86,7 @@ export async function restoreAppliedSourceQuote(o: SourceQuoteCorrectionOptions)
     || hash(receipt.scope) !== hash(observation.scope) || !/^\d{4}-\d{2}-\d{2}$/.test(receipt.destinationDate)
     || resolve(workspace, receipt.destinationRef.split("#")[0]!) !== notePath || receipt.readBackDigest !== sha256(original)
     || text(notePath).split(original).length !== 2) throw new Error("applied source receipt/note join failed");
-  const domain = binding.topicDomain?.domain ?? null, domainDir = domain ? join(workspace, "memory/domains", domain) : null;
+  const domain = groupDomainOf(binding)?.domain ?? null, domainDir = domain ? join(workspace, "memory/domains", domain) : null;
   const correctionId = hash({ schema: "engram.source-quote-correction.v1", observationId: observation.observationId, correctedText });
   const correctionDir = join(root, "corrections/source-quote", key(observation.observationId));
   const intent = { schema: "engram.source-quote-correction.v1", correctionId, scope: observation.scope,

@@ -1,3 +1,4 @@
+import { configuredGroupDirectBindings } from "../src/memory-observation/group-bindings.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -43,6 +44,55 @@ describe("memory observation batch worker CLI", () => {
     const hash = sha256("policy"), at = "2026-09-01T00:00:00.000Z";
     put("memory-state/memory-observation/projection.json", {
       schema: "engram.memory-observation-rollout.v4", workspaceId: "project", enabled: true, mode: "canary", bindings,
+      pluginDigest: await sourcePluginDigest(), inference: { provider: "openai", model: "openai/gpt-5.6-terra", evaluateAfter: at },
+      evaluation: { mode: "batch-cron", policyDigest: hash, batch: { sourcePolicyDigest: hash, inactivityGapSeconds: 300,
+        maxTurns: 8, maxEvidenceBytes: 262144, maxAgeSeconds: 900, maxInferenceCallsPerRun: 1, schedulerId: "group-worker" } },
+      limits: { evidenceTtlHours: 72, maxJobs: 1000, maxBytes: 67108864, maxQueueAgeHours: 168, maxAttempts: 2, claimTtlSeconds: 300, maxInferenceCalls: 1 },
+      consumers: { dailyNote: { mode: "canary", applyAfter: at, timezone: "UTC", allowedObservationClasses: ["episodic.event", "episodic.decision"],
+        maxAppliesPerWake: 1, qmdBinding: { resolver: "exact-session-registry", manifestPath: join(workspace, "manifest.json"), workspaceRegistryDigest: hash } } },
+      captureOwnership: { owner: "observer", effectiveAfter: at, foregroundDailyNoteCapture: "disabled" }, approvedBy: "operator", approvedAt: at,
+    });
+    // Fail any host config or inference invocation. The empty path must not call it.
+    const bin = join(workspace, "bin"); mkdirSync(bin);
+    writeFileSync(join(bin, "openclaw"), "#!/bin/sh\nexit 91\n", { mode: 0o755 });
+    const run = () => Bun.spawnSync([process.execPath, join(repository, "scripts/memory-observation-batch-worker.ts"), "--workspace", workspace],
+      { cwd: repository, env: { ...process.env, PATH: bin + ":" + process.env.PATH } });
+    const idle = run(); expect(idle.exitCode).toBe(0);
+    expect(JSON.parse(idle.stdout.toString())).toMatchObject({ fastPath: "no_pending_work", evaluation: { status: "idle" } });
+    // The same unresolved historical gap must remain visible without making
+    // every empty pass fail and eventually auto-disabling the entire fleet.
+    const gapPath = "memory-state/memory-observation/v1/pre-admission/checkpoints/" + "b".repeat(64) + ".json";
+    put(gapPath, { stage: "terminal_gap", createdAt: "2026-08-01T00:00:00.000Z" });
+    const gapBefore = readFileSync(join(workspace, gapPath), "utf8");
+    for (let pass = 0; pass < 2; pass++) {
+      const historical = run(); expect(historical.exitCode).toBe(0);
+      expect(JSON.parse(historical.stdout.toString())).toMatchObject({
+        fastPath: "no_pending_work", health: { status: "degraded", admissionGaps: 1 },
+        execution: { status: "ok", exitCode: 0, errors: [] },
+      });
+    }
+    expect(readFileSync(join(workspace, gapPath), "utf8")).toBe(gapBefore);
+    put("memory-state/memory-observation/v1/queues/evaluator/" + "a".repeat(64) + ".json",
+      { schema: "engram.memory-observation-ledger-queue.v1", status: "queued" });
+    const pending = run(); expect(pending.exitCode).not.toBe(0);
+    expect(pending.stderr.toString()).toContain("topic host route read-back failed");
+  });
+
+  test("empty group-direct shares the worker fast path, but unfinished work still checks host routes", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "memory-batch-worker-idle-group-")); roots.push(workspace);
+    const put = (relative: string, value: unknown) => {
+      const path = join(workspace, relative); mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(value));
+    };
+    put("engram.json", { workspace: { id: "project" } });
+    put("memory/domains/registry.json", { domains: { smm: { type: "group-direct", group: { chatId: "-100123" } } } });
+    mkdirSync(join(workspace, "memory/domains/smm"), { recursive: true });
+    const bindings = configuredGroupDirectBindings({ agents: { entries: { project: { workspace } } },
+      channels: { telegram: { groups: { "-100123": { enabled: true } } } },
+      bindings: [{ type: "route", agentId: "project", match: { channel: "telegram", peer: { kind: "group", id: "-100123" } } }] }, workspace, "project", ["smm"]);
+    const hash = sha256("policy"), at = "2026-09-01T00:00:00.000Z";
+    put("memory-state/memory-observation/projection.json", {
+      schema: "engram.memory-observation-rollout.v5", workspaceId: "project", enabled: true, mode: "canary", bindings,
       pluginDigest: await sourcePluginDigest(), inference: { provider: "openai", model: "openai/gpt-5.6-terra", evaluateAfter: at },
       evaluation: { mode: "batch-cron", policyDigest: hash, batch: { sourcePolicyDigest: hash, inactivityGapSeconds: 300,
         maxTurns: 8, maxEvidenceBytes: 262144, maxAgeSeconds: 900, maxInferenceCallsPerRun: 1, schedulerId: "group-worker" } },

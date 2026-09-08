@@ -2,7 +2,7 @@ import type { CompiledBatchBundleV1 } from "./batch-compiler.ts";
 
 export function isGroupTopicBundle(bundle: CompiledBatchBundleV1): boolean {
   return bundle.partition.scopeClass !== "self"
-    && /^agent:[^:]+:telegram:group:-[1-9][0-9]*:topic:[1-9][0-9]*$/.test(bundle.partition.runtimeSessionKey);
+    && /^agent:[^:]+:telegram:group:-[1-9][0-9]*(?::topic:[1-9][0-9]*)?$/.test(bundle.partition.runtimeSessionKey);
 }
 
 /** Identity comes from trusted runtime evidence, never the model's prose. */

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { isGroupProjectionSchema } from "../src/memory-observation/group-bindings.ts";
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -22,7 +23,7 @@ try {
   const results = await runFleetEntries(manifest.workspaces, async (entry: any) => {
       if (typeof entry.path !== "string" || realpathSync(entry.path) !== entry.path || typeof entry.id !== "string") throw new Error("noncanonical fleet workspace");
       const projection = resolveMemoryObservationProjection({ workspace: entry.path, workspaceId: entry.id });
-      if (projection.schema !== "engram.memory-observation-rollout.v4" || projection.evaluation?.batch?.schedulerId !== manifest.schedulerId) throw new Error("group fleet projection/scheduler mismatch");
+      if (!isGroupProjectionSchema(projection.schema) || projection.evaluation?.batch?.schedulerId !== manifest.schedulerId) throw new Error("group fleet projection/scheduler mismatch");
       const result = await runFleetCommand([process.execPath, join(import.meta.dir, "memory-observation-batch-worker.ts"), "--workspace", entry.path], entry.path, 300_000);
       // Keep long sequential passes alive under the scheduler's no-output timeout.
       console.error(JSON.stringify({ workspaceId: entry.id, exitCode: result.exitCode, timedOut: result.timedOut }));

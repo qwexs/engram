@@ -46,7 +46,7 @@ function checkSource(inventory: GapSourceInventory, row: GapSourceInventory['rec
   checkHistory(row.source, 'user');
   const s = row.source, m = s.__openclaw, t = m.transport;
   const sourceId = s.idempotencyKey;
-  const route = /^agent:([^:]+):telegram:(?:group:(-?\d+):topic:(\d+)|direct:(\d+))$/.exec(inventory.sessionKey);
+  const route = /^agent:([^:]+):telegram:(?:group:(-?\d+)(?::topic:(\d+))?|direct:(\d+))$/.exec(inventory.sessionKey);
   if (!route || route[1] !== cp.scope.workspaceId || !/^channel-user:v1:[a-f0-9]{64}$/.test(sourceId)
     || m.idempotencyKey !== sourceId || t?.channel !== 'telegram' || cp.channel !== 'telegram'
     || t.messageId !== row.messageId || cp.inboundMessageId !== row.messageId || m.senderId !== cp.actorId
@@ -95,7 +95,8 @@ export function recoverAdmissionGap(options: GapRecoveryOptions) {
   const prepare = () => {
     const cp = store.readCheckpoint(candidateId), gap = store.readGapReceiptForCandidate(candidateId);
     const fingerprint = digest({ workspaceId, scopeClass: binding.scopeClass, scopeId: binding.scopeId,
-      requireOwner: binding.requireOwner, ...(binding.topicDomain ? { topicDomain: binding.topicDomain } : {}), allowedChannels: [...binding.allowedChannels].sort() });
+      requireOwner: binding.requireOwner, ...(binding.topicDomain ? { topicDomain: binding.topicDomain } : {}),
+      ...(binding.groupDomain ? { groupDomain: binding.groupDomain } : {}), allowedChannels: [...binding.allowedChannels].sort() });
     if (!cp || !gap || cp.stage !== 'terminal_gap' || cp.bindingFingerprint !== fingerprint || gap.bindingFingerprint !== fingerprint
       || cp.scope.scopeId !== binding.scopeId || cp.scope.scopeClass !== binding.scopeClass || digest(gap.scope) !== digest(cp.scope)
       || !['identity_ambiguous', 'identity_conflict', 'evidence_missing', 'restart_before_completion', 'expired_before_completion'].includes(gap.reasonCode)) {

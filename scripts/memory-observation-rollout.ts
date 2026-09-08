@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { configuredGroupDirectBindings } from "../src/memory-observation/group-bindings.ts";
+import { isGroupProjectionSchema, assertGroupHostRoutes } from "../src/memory-observation/group-bindings.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
@@ -22,6 +24,7 @@ import {
   MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2,
   MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3,
   MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4,
+  MEMORY_OBSERVATION_PROJECTION_SCHEMA_V5,
   memoryObservationProjectionPath,
   type MemoryObservationProjectionV1,
 } from "../src/memory-observation/projection.ts";
@@ -35,7 +38,7 @@ import {
 import { resolveQmdContext } from "../src/qmd/context.ts";
 import { personalBatchBinding, runtimeSourcePolicyDigest } from "./_lib/memory-observation-rollout-policy.ts";
 
-import { configuredTopicBindings, assertTopicHostRoutes } from "../src/memory-observation/topic-bindings.ts";
+import { configuredTopicBindings } from "../src/memory-observation/topic-bindings.ts";
 
 const PLUGIN_ID = "engram-memory-observation";
 const DEFAULT_INFERENCE_MODEL = "openai/gpt-5.6-sol";
@@ -143,9 +146,9 @@ function hostInferenceBoundary(marker: MemoryObservationProjectionV1 | null): {
   const expectedModel = marker?.inference?.model ?? null;
   const pluginLlmPolicy = configuredPluginLlmPolicy();
   let topicAuthorized = false;
-  if (marker?.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4) {
+  if (isGroupProjectionSchema(marker?.schema)) {
     try {
-      assertTopicHostRoutes(configuredTopicRoutes(), workspace, workspaceId, marker.bindings);
+      assertGroupHostRoutes(configuredTopicRoutes(), workspace, workspaceId, marker.bindings);
       topicAuthorized = true;
     } catch { /* Changed host routes revoke group activation. */ }
   }
@@ -175,6 +178,7 @@ function configuredPersonalRoutes(): any {
 
 function configuredTopicRoutes(): any {
   return { agents: { entries: parsedConfigValue(runOpenClaw(["config", "get", "agents.entries"])) },
+    bindings: parsedConfigValue(runOpenClaw(["config", "get", "bindings"])),
     channels: { telegram: { groups: parsedConfigValue(runOpenClaw(["config", "get", "channels.telegram.groups"])) } } };
 }
 
@@ -295,6 +299,7 @@ disable       Immediate local projection kill switch (--ack-rollback)
 Common:
   --workspace <absolute path>
   --session-key <full agent session key or agent:<id>:* for a v3 family canary>
+  --group-domains <slug,...>     v5 exact groups without topics (same fleet worker)
   --topic-domains <slug,...>     v4 exact group topics (instead of session-key/scope-id)
   --qmd-collection <collection>   Optional exact canary QMD binding collection
   --qmd-manifest <path>           Registry/manifest file; alone enables the family exact-session resolver
@@ -383,7 +388,7 @@ if (command === "status") {
       && plugin.digest === bundle.digest && marker?.enabled === true && marker?.pluginDigest === bundle.digest
       && (marker?.limits?.maxInferenceCalls !== 1
         || hostBoundary.active)
-      && (marker?.mode !== "canary" || ((marker?.bindings?.length === 1 || marker?.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4)
+      && (marker?.mode !== "canary" || ((marker?.bindings?.length === 1 || isGroupProjectionSchema(marker?.schema))
         && dailyNoteReadBack(marker)
         && (marker?.captureOwnership === undefined || ownershipReadBack(marker))))),
     state: stateCounts(workspace),
@@ -413,7 +418,10 @@ const batchCommand = batchCommandRequested;
 const ownershipCommand = batchCommand || command === "plan-ownership" || command === "enable-ownership";
 const canaryCommand = ownershipCommand || command === "plan-canary" || command === "enable-canary";
 const topicNames = typeof options["topic-domains"] === "string" ? String(options["topic-domains"]).split(",").map(s => s.trim()) : null;
-const topicBindings = topicNames ? configuredTopicBindings(configuredTopicRoutes(), workspace, workspaceId, topicNames) : null;
+const groupNames = typeof options["group-domains"] === "string" ? String(options["group-domains"]).split(",").map(s => s.trim()) : null;
+if (topicNames && groupNames) throw new Error("choose topic-domains or group-domains, not both");
+const topicBindings = groupNames ? configuredGroupDirectBindings(configuredTopicRoutes(), workspace, workspaceId, groupNames)
+  : topicNames ? configuredTopicBindings(configuredTopicRoutes(), workspace, workspaceId, topicNames) : null;
 if (topicBindings && (!batchCommand || options["session-key"] || options["scope-id"])) throw new Error("topic domains require batch mode without session-key/scope-id overrides");
 const sessionKey = topicBindings ? topicBindings.map(b => b.runtimeSessionKey).join(",") : required(options, "session-key");
 if (!sessionKey.startsWith("agent:")) throw new Error("--session-key must be a full canonical agent session key");
@@ -489,7 +497,7 @@ if (batchCommand) {
   if (batch.maxAgeSeconds < batch.inactivityGapSeconds) {
     throw new Error("--batch-max-age-seconds cannot be below --batch-inactivity-gap-seconds");
   }
-  projection.schema = topicBindings ? MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 : sessionKey === "agent:main:*"
+  projection.schema = groupNames ? MEMORY_OBSERVATION_PROJECTION_SCHEMA_V5 : topicBindings ? MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 : sessionKey === "agent:main:*"
     ? MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3
     : MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2;
   projection.evaluation = {

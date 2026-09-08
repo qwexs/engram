@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { isGroupProjectionSchema, assertGroupHostRoutes } from "../src/memory-observation/group-bindings.ts";
 import { memoryWorkerHealth } from "../src/memory-observation/worker-health.ts";
 import { memoryWorkerRunResult } from "../src/memory-observation/worker-run-result.ts";
 import { tmpdir } from "node:os";
@@ -6,7 +7,6 @@ import { memoryBatchIsIdle } from "../src/memory-observation/idle-preflight.ts";
 import { acquireProcessLease } from "../src/memory-observation/process-lease.ts";
 import { spawnSync } from "node:child_process";
 import { consumeTopicDomainReceipts } from "../src/memory-observation/domain-consumer.ts";
-import { assertTopicHostRoutes } from "../src/memory-observation/topic-bindings.ts";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -74,7 +74,7 @@ if (!existsSync(projectionPath) || readJson(projectionPath)?.enabled !== true) {
 const repository = resolve(import.meta.dir, "..");
 const expectedPluginDigest = await sourcePluginDigest(repository);
 const projection = resolveMemoryObservationProjection({ workspace, workspaceId, expectedPluginDigest });
-if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4].includes(projection.schema as any)
+if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4, "engram.memory-observation-rollout.v5"].includes(projection.schema as any)
   || projection.mode !== "canary"
   || memoryObservationEvaluationMode(projection) !== "batch-cron"
   || projection.limits.maxInferenceCalls !== 1
@@ -87,7 +87,7 @@ const dailyNote = memoryObservationDailyNoteCanary(projection);
 if (!dailyNote || projection.captureOwnership?.owner !== "observer") {
   throw new Error("batch canary binding, daily-note consumer, or observer ownership is unavailable");
 }
-const topicWorkspace = projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4;
+const topicWorkspace = isGroupProjectionSchema(projection.schema);
 if (memoryBatchIsIdle(workspace, topicWorkspace)) {
   const idle = { status: "idle" };
   const health = memoryWorkerHealth(workspace);
@@ -107,8 +107,8 @@ if (topicWorkspace) {
     if (result.status !== 0) throw new Error("topic host route read-back failed");
     return JSON.parse(result.stdout);
   };
-  assertTopicHostRoutes({ agents: { entries: get("agents.entries") },
-    channels: { telegram: { groups: get("channels.telegram.groups") } } }, workspace, workspaceId, projection.bindings);
+  assertGroupHostRoutes({ agents: { entries: get("agents.entries") },
+    bindings: get("bindings"), channels: { telegram: { groups: get("channels.telegram.groups") } } }, workspace, workspaceId, projection.bindings);
 }
 const contracts = join(repository, "contracts", "memory-observation", "v1");
 const producerRegistry = readJson(join(contracts, "producer-registry.json"));
@@ -342,7 +342,7 @@ applications.push({ result: apply, scope: applyTarget?.scope ?? null });
 if (!applyTarget || ["idle", "busy", "disabled"].includes(apply.status)) break;
 }
 const apply = applications[0]?.result ?? { status: "idle" }, applyScope = applications[0]?.scope ?? null;
-const domains = projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4
+const domains = isGroupProjectionSchema(projection.schema)
   ? await consumeTopicDomainReceipts({ workspace, workspaceId, expectedPluginDigest }) : null;
 const health = memoryWorkerHealth(workspace);
 const execution = memoryWorkerRunResult({ evaluations: evaluations.map(entry => entry.result),

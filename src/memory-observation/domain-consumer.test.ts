@@ -6,6 +6,7 @@ import { consumeTopicDomainReceipts, type DomainConsumerOptions } from "./domain
 import { BATCH_EVALUATOR_AUTHORITY, deriveBatchObservationId } from "./batch-observation.ts";
 import { DAILY_NOTE_APPLICATOR, renderDailyNoteEntry } from "./daily-note-applicator.ts";
 import { sha256 } from "./ledger.ts";
+import { configuredGroupDirectBindings } from "./group-bindings.ts";
 import { configuredTopicBindings } from "./topic-bindings.ts";
 import { scanDomains, applyDomainWriteHandoff } from "../../scripts/domains-runner.js";
 import { refreshAutoDerivedStatus } from "../../scripts/heartbeat-runner.js";
@@ -13,20 +14,22 @@ import { refreshAutoDerivedStatus } from "../../scripts/heartbeat-runner.js";
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
 function put(path: string, value: unknown) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, typeof value === "string" ? value : JSON.stringify(value)); }
-function fixture() {
+function fixture(groupDirect = false) {
   const workspace = mkdtempSync(join(tmpdir(), "engram-domain-consumer-")); roots.push(workspace);
   const domainDir = join(workspace, "memory/domains/smm");
   mkdirSync(domainDir, { recursive: true });
   put(join(workspace, "engram.json"), { workspace: { id: "project" } });
-  put(join(workspace, "memory/domains/registry.json"), { domains: { smm: { type: "topic-thread", topic: { chatId: "-100123", topicId: "2" } } } });
+  put(join(workspace, "memory/domains/registry.json"), { domains: { smm: groupDirect ? { type: "group-direct", group: { chatId: "-100123" } } : { type: "topic-thread", topic: { chatId: "-100123", topicId: "2" } } } });
   put(join(domainDir, "status.md"), "# Ручная передача\n\nСохранить назначенного исполнителя.\n");
   put(join(domainDir, "decisions.md"), "# Решения руководителя\n");
   put(join(domainDir, "changelog.md"), "# История\n");
   const config = { agents: { entries: { project: { workspace } } }, channels: { telegram: { groups: { "-100123": {
     enabled: true, topics: { "2": { enabled: true, agentId: "project" } } } } } } };
-  const bindings = configuredTopicBindings(config, workspace, "project", ["smm"]), hash = sha256("policy");
+  const groupConfig = { agents: config.agents, channels: { telegram: { groups: { "-100123": { enabled: true } } } },
+    bindings: [{ type: "route", agentId: "project", match: { channel: "telegram", peer: { kind: "group", id: "-100123" } } }] };
+  const bindings = groupDirect ? configuredGroupDirectBindings(groupConfig, workspace, "project", ["smm"]) : configuredTopicBindings(config, workspace, "project", ["smm"]), hash = sha256("policy");
   const at = "2026-09-01T00:00:00.000Z", completedAt = "2026-09-07T10:30:00.000Z";
-  const p = { schema: "engram.memory-observation-rollout.v4", workspaceId: "project", enabled: true, mode: "canary", bindings,
+  const p = { schema: groupDirect ? "engram.memory-observation-rollout.v5" : "engram.memory-observation-rollout.v4", workspaceId: "project", enabled: true, mode: "canary", bindings,
     pluginDigest: hash, inference: { provider: "openai", model: "openai/gpt-5.6-terra", evaluateAfter: at },
     evaluation: { mode: "batch-cron", policyDigest: hash, batch: { sourcePolicyDigest: hash, inactivityGapSeconds: 300, maxTurns: 8,
       maxEvidenceBytes: 262144, maxAgeSeconds: 900, maxInferenceCallsPerRun: 1, schedulerId: "group-worker" } },
@@ -48,7 +51,7 @@ function fixture() {
   const destinationEntryId = sha256("engram.daily-note-entry.v1\0" + observation.observationId);
   const operationId = sha256("engram.memory-apply.v1\0daily-note\0" + observation.observationId + "\0" + destinationEntryId);
   const rendered = renderDailyNoteEntry(observation, destinationEntryId);
-  const destinationRef = "memory/agent-project/telegram-group--100123-topic-2/2026-09-04.md#engram-entry:" + destinationEntryId;
+  const destinationRef = "memory/agent-project/telegram-group--100123" + (groupDirect ? "" : "-topic-2") + "/2026-09-04.md#engram-entry:" + destinationEntryId;
   const receipt: any = { schema: "engram.memory-apply-receipt.v1", receiptId: sha256("engram.memory-apply-receipt.v1\0" + operationId),
     traceId, sourceObservationRef: observation.observationId, scope, producer: DAILY_NOTE_APPLICATOR, sourceProvenance: { observationDigest: observation.observationDigest },
     consumer: "daily-note", operationId, destinationDate: "2026-09-04", destinationRef, destinationEntryId, status: "applied",
@@ -127,3 +130,18 @@ test("dirty-only recovery survives source batch and daily receipt retention", as
   expect(f.dirtyCalls()).toBe(1);
   expect(readFileSync(join(f.domainDir, "changelog.md"), "utf8").split("Согласовал срок.")).toHaveLength(2);
 });
+
+for (const point of [null, "after_changelog", "after_status", "after_receipt", "after_dirty"] as const) {
+  test("group-direct v5 exact domain projection and retry: " + point, async () => {
+    const f = fixture(true);
+    if (point) await expect(consumeTopicDomainReceipts({ ...f.options, fault: p => { if (p === point) throw new Error("group crash"); } })).rejects.toThrow("group crash");
+    await consumeTopicDomainReceipts(f.options);
+    expect((await consumeTopicDomainReceipts(f.options)).applied).toBe(0);
+    const log = readFileSync(join(f.domainDir, "changelog.md"), "utf8");
+    expect(log.split("<!-- engram-domain-entry:")).toHaveLength(2);
+    expect(log).toContain("Участник Telegram 111");
+    expect(readFileSync(join(f.domainDir, "status.md"), "utf8")).toContain("Сохранить назначенного исполнителя");
+    expect(readFileSync(join(f.domainDir, "decisions.md"), "utf8")).toBe("# Решения руководителя\n");
+    expect((await scanDomains({ workspace: f.workspace, dryRun: true })).domains[0].due).toBe(false);
+  });
+}

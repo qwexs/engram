@@ -1,3 +1,4 @@
+import { groupDomainOf, isGroupProjectionSchema } from "./group-bindings.ts";
 import { renderRecentDomainStatus } from "./domain-recent.ts";
 import { acquireProcessLease } from "./process-lease.ts";
 import { randomUUID } from "node:crypto";
@@ -66,7 +67,7 @@ async function consumeLocked(options: DomainConsumerOptions) {
   const state = join(workspace, "memory-state/domain-effects/v1");
   const projection = () => resolveMemoryObservationProjection({ workspace, workspaceId: options.workspaceId, expectedPluginDigest: options.expectedPluginDigest });
   const initial = projection();
-  if (initial.schema !== MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4) return { status: "not-applicable", applied: 0, indexedPending: 0 };
+  if (!isGroupProjectionSchema(initial.schema)) return { status: "not-applicable", applied: 0, indexedPending: 0 };
   function qmdForRoute(route: Pick<BatchObservationV1, "scope" | "sourceCompletedAt">, domain: string, active: typeof initial) {
     const domainDir = join(workspace, "memory/domains", domain);
     return options.qmdPreflight ? options.qmdPreflight(route as BatchObservationV1, domain) : (() => {
@@ -103,7 +104,7 @@ async function consumeLocked(options: DomainConsumerOptions) {
     if (existsSync(dirtyPath)) continue;
     const saved = json(applyPath), active = projection();
     const binding = memoryObservationBinding(active, saved.scope?.runtimeSessionKey);
-    if (!binding?.topicDomain || binding.topicDomain.domain !== saved.domain || saved.scope.workspaceId !== options.workspaceId
+    if (!binding || !groupDomainOf(binding) || groupDomainOf(binding)!.domain !== saved.domain || saved.scope.workspaceId !== options.workspaceId
       || saved.scope.scopeId !== binding.scopeId || saved.scope.scopeClass !== binding.scopeClass
       || saved.schema !== "engram.domain-apply-receipt.v1" || saved.canonicalApplied !== true) throw new Error("domain recovery receipt scope mismatch");
     const log = safeFile(join(workspace, "memory/domains", saved.domain, "changelog.md"));
@@ -119,7 +120,7 @@ async function consumeLocked(options: DomainConsumerOptions) {
     const receipt = json(path) as MemoryApplyReceiptV1;
     const active = projection();
     const binding = memoryObservationBinding(active, receipt.scope?.runtimeSessionKey);
-    if (!binding?.topicDomain || receipt.scope.workspaceId !== options.workspaceId) continue;
+    if (!binding || !groupDomainOf(binding) || receipt.scope.workspaceId !== options.workspaceId) continue;
     const operationKey = key(receipt.operationId);
     const applyPath = join(state, "receipts", operationKey + ".json"), dirtyPath = join(state, "dirty", operationKey + ".json");
     if (existsSync(applyPath)) continue;
@@ -144,7 +145,7 @@ async function consumeLocked(options: DomainConsumerOptions) {
       || receipt.readBackDigest !== sha256(rendered) || !safeFile(notePath).includes(rendered)) {
       throw new Error("domain source receipt/observation/destination join failed");
     }
-    const domain = binding.topicDomain.domain, domainDir = join(workspace, "memory/domains", domain);
+    const domain = groupDomainOf(binding)!.domain, domainDir = join(workspace, "memory/domains", domain);
     const qmd = qmdForRoute(observation, domain, active);
     const block = entryBlock(receipt, observation);
     withDailyNoteLock(join(domainDir, ".engram-domain"), () => {

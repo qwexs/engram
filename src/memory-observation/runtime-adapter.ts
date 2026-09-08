@@ -1,3 +1,4 @@
+import { groupDomainOf } from "./group-bindings.ts";
 import type { TopicDomainBinding } from "./topic-bindings.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -33,6 +34,7 @@ export type RuntimeObservationBinding = {
   scopeId: string;
   requireOwner: boolean;
   topicDomain?: TopicDomainBinding;
+  groupDomain?: import("./group-bindings.ts").GroupDirectDomainBinding;
   allowedChannels: readonly ("telegram" | "openclaw")[];
   admit: (
     source: TrustedCompletedTurn,
@@ -1033,7 +1035,7 @@ export class OpenClawObservationRuntimeAdapter {
           messageId: params.bound.messageId,
           ...(params.bound.replyToId && params.bound.replyToId !== params.binding.topicDomain?.topicId
             ? { replyToMessageId: params.bound.replyToId } : {}),
-          ...(params.binding.topicDomain ? { actorId: params.bound.actorId, attribution: "speaker-only" } : {}) },
+          ...(groupDomainOf(params.binding) ? { actorId: params.bound.actorId, attribution: "speaker-only" } : {}) },
         outcome: { role: "assistant", text: params.assistantText,
           ...(!params.assistantText ? { status: "unknown", reasonCode: "assistant_text_unavailable" } : {}) },
         ...(replyContext ? { replyContext } : {}),
@@ -1251,6 +1253,7 @@ export class OpenClawObservationRuntimeAdapter {
       scopeId: binding.scopeId,
       requireOwner: binding.requireOwner,
       ...(binding.topicDomain ? { topicDomain: binding.topicDomain } : {}),
+      ...(binding.groupDomain ? { groupDomain: binding.groupDomain } : {}),
       allowedChannels: [...binding.allowedChannels].sort(),
     });
   }

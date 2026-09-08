@@ -1,3 +1,4 @@
+import { groupDomainOf, assertGroupHostRoutes } from "../../src/memory-observation/group-bindings.ts";
 import { RUNTIME_AUTHORITY, EVALUATOR_AUTHORITY, RUNTIME_REGISTRY, RUNTIME_POLICY } from "../../src/memory-observation/runtime-authority.ts";
 import { assertTopicHostRoutes } from "../../src/memory-observation/topic-bindings.ts";
 import { createHash } from "node:crypto";
@@ -167,8 +168,8 @@ function bindingFor(api: any, active: ActiveWorkspace, runtimeSessionKey: string
   } catch { return null; }
   const binding = memoryObservationBinding(projection, runtimeSessionKey);
   if (!binding) return null;
-  if (binding.topicDomain) {
-    try { assertTopicHostRoutes(currentConfig(api), active.workspace, active.workspaceId, [binding]); }
+  if (groupDomainOf(binding)) {
+    try { assertGroupHostRoutes(currentConfig(api), active.workspace, active.workspaceId, [binding]); }
     catch { return null; }
   }
   const ledger = ledgerFor(active, projection, runtimeSessionKey);
@@ -189,6 +190,7 @@ function bindingFor(api: any, active: ActiveWorkspace, runtimeSessionKey: string
     scopeId: binding.scopeId,
     requireOwner: binding.requireOwner,
     ...(binding.topicDomain ? { topicDomain: binding.topicDomain } : {}),
+      ...(binding.groupDomain ? { groupDomain: binding.groupDomain } : {}),
     allowedChannels: binding.allowedChannels,
     resolveReplyContext: (params) => replyContext.resolve(params),
     recordTransportLink: (params) => replyContext.record({
@@ -352,8 +354,8 @@ function currentDailyNotePolicy(api: any, runtimeSessionKey: string): {
   const dailyNote = memoryObservationDailyNoteCanary(active.projection);
   const binding = memoryObservationBinding(active.projection, runtimeSessionKey);
   if (!dailyNote || !binding) return null;
-  if (binding.topicDomain) {
-    try { assertTopicHostRoutes(currentConfig(api), active.workspace, active.workspaceId, [binding]); }
+  if (groupDomainOf(binding)) {
+    try { assertGroupHostRoutes(currentConfig(api), active.workspace, active.workspaceId, [binding]); }
     catch { return null; }
   }
   const exactScope = {

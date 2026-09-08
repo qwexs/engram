@@ -1,3 +1,4 @@
+import { groupDomainOf, isGroupProjectionSchema } from "../../src/memory-observation/group-bindings.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { normalizeSessionSegment, splitCanonicalSessionKey } from "../../src/session-key.ts";
@@ -26,9 +27,9 @@ export function observerOwnsDomainProjection(workspace: string, domain: string, 
   try {
     const config = JSON.parse(readFileSync(join(workspace, "engram.json"), "utf8"));
     const projection = resolveMemoryObservationProjection({ workspace, workspaceId: config.workspace?.id });
-    return projection.schema === "engram.memory-observation-rollout.v4"
+    return isGroupProjectionSchema(projection.schema)
       && projection.captureOwnership?.owner === "observer"
       && Date.parse(projection.captureOwnership.effectiveAfter) <= now.getTime()
-      && projection.bindings.some(binding => binding.topicDomain?.domain === domain);
+      && projection.bindings.some(binding => groupDomainOf(binding)?.domain === domain);
   } catch { return false; }
 }

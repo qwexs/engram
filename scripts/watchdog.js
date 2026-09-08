@@ -10,6 +10,7 @@ import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { auditWorkspace, discoverWorkspaces, finalizeReport, mergeReports } from "./_lib/workspace-watchdog.js";
 import { auditQmdGlobalRegistry, readQmdGlobalRegistry } from "../src/qmd/global-registry.ts";
+import { collectWatchdogRuntime } from "./_lib/watchdog-runtime.js";
 
 const rawArgv = process.argv.slice(2);
 const repeatedWorkspaces = [];
@@ -34,6 +35,8 @@ const { values: args } = parseArgs({
     "no-qmd": { type: "boolean", default: false },
     "no-hooks": { type: "boolean", default: false },
     "no-routing": { type: "boolean", default: false },
+    "no-runtime": { type: "boolean", default: false },
+    "archive-details": { type: "boolean", default: false },
     "qmd-registry": { type: "string" },
     "exit-zero-on-warn": { type: "boolean", default: false },
     "help": { type: "boolean", short: "h", default: false },
@@ -60,6 +63,8 @@ Options:
   --no-qmd                 Skip QMD collection checks.
   --no-hooks               Skip runtime hook drift checks.
   --no-routing             Skip Telegram topic routing checks.
+  --no-runtime             Skip host plugin/scheduler observations (reported unverified).
+  --archive-details        Include historical v2 findings in human output (JSON always includes them).
   --qmd-registry <path>    Audit a global QMD registry and merge findings once.
   --exit-zero-on-warn      Exit 0 for warnings-only reports (useful for cron).
   -h, --help               Show this help.
@@ -77,7 +82,7 @@ Read-only guarantee:
 }
 
 const unknown = Object.keys(args).filter((k) => ![
-  "workspace", "all", "workspaces-dir", "json", "output", "no-core", "no-qmd", "no-hooks", "no-routing", "qmd-registry", "exit-zero-on-warn", "help", "_",
+  "workspace", "all", "workspaces-dir", "json", "output", "no-core", "no-qmd", "no-hooks", "no-routing", "no-runtime", "archive-details", "qmd-registry", "exit-zero-on-warn", "help", "_",
 ].includes(k));
 if (unknown.length) {
   console.error(`❌ Unknown option(s): ${unknown.map((k) => `--${k}`).join(", ")}`);
@@ -107,9 +112,15 @@ const options = {
   qmd: !args["no-qmd"],
   hooks: !args["no-hooks"],
   routing: !args["no-routing"],
-  cronPayload: !(args["no-core"] && args["no-qmd"] && args["no-hooks"]),
+  cronPayload: !args["no-runtime"] && !(args["no-core"] && args["no-qmd"] && args["no-hooks"]),
 };
+// One bounded caller-scoped snapshot per CLI invocation, not once per workspace.
+if (options.cronPayload) options.runtime = collectWatchdogRuntime(workspaces[0]);
 const reports = workspaces.map((workspace) => auditWorkspace(workspace, options));
+if (args["no-runtime"]) {
+  for (let i = 0; i < reports.length; i++) reports[i] = finalizeReport(reports[i].workspace,
+    [...reports[i].findings, { code: "WD-RUNTIME-SKIPPED", level: "info", message: "Host plugin/scheduler checks explicitly skipped; runtime health is unverified", fixable: false }], options);
+}
 if (args["qmd-registry"]) {
   const registryPath = resolve(args["qmd-registry"]);
   let registryFindings;
@@ -143,11 +154,13 @@ function renderHuman(report) {
   }
   lines.push(`Status: ${report.status.toUpperCase()}`);
   lines.push(`Summary: ${report.summary.errors} error(s), ${report.summary.warnings} warning(s), ${report.summary.findings} finding(s), read-only`);
+  if (report.summary.archive?.findings) lines.push(`Historical v2 archive: ${report.summary.archive.findings} finding(s), excluded from live health; no archive repairs. Use --archive-details for details.`);
   lines.push("");
 
-  const findings = report.reports
+  const allFindings = report.reports
     ? report.reports.flatMap((r) => r.findings.map((f) => ({ ...f, workspace: r.workspace })))
     : report.findings;
+  const findings = allFindings.filter(f => args["archive-details"] || f.area !== "archive");
 
   if (!findings.length) {
     lines.push("No findings.");

@@ -23,6 +23,22 @@ for (const [path, needle] of forbiddenSources) {
   const target = join(repository, path);
   if (existsSync(target) && readFileSync(target, "utf8").includes(needle)) violations.push(`legacy mutation reachability: ${path} contains ${needle}`);
 }
+// The validator is an archive reader, irrespective of authority-marker state.
+// Reject write capabilities themselves, not only one historical call spelling.
+const validatorPath = join(repository, "scripts/validate.js");
+if (!existsSync(validatorPath)) violations.push("read-only validator missing: scripts/validate.js");
+else {
+  const source = readFileSync(validatorPath, "utf8");
+  const capabilities = /\b(?:writeFile(?:Sync)?|appendFile(?:Sync)?|createWriteStream|mkdir(?:Sync)?|rename(?:Sync)?|unlink(?:Sync)?|rm(?:Sync)?|truncate(?:Sync)?|copyFile(?:Sync)?|openSync)\b/g;
+  for (const token of new Set(source.match(capabilities) ?? [])) violations.push(`validator write capability: ${token}`);
+  if (/Bun\s*\.\s*write\s*\(/.test(source)) violations.push("validator write capability: Bun.write");
+  if (/legacyKgMutationState/.test(source)) violations.push("validator mutation authority fallback remains reachable");
+}
+const heartbeatPath = join(repository, "scripts/heartbeat-runner.js");
+if (existsSync(heartbeatPath)) {
+  const source = readFileSync(heartbeatPath, "utf8");
+  if (/["'`]--fix["'`]/.test(source)) violations.push("heartbeat automatic validator fix argument remains reachable");
+}
 for (const path of forbiddenGuidanceFiles) {
   const target = join(repository, path);
   if (existsSync(target) && readFileSync(target, "utf8").includes("memory-write.js")) {

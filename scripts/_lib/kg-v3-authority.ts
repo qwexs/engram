@@ -7,18 +7,17 @@ export interface LegacyKgMutationState {
   mode: string | null;
 }
 
-/** Legacy v2 mutation is allowed only before authority exists or while the
- * explicit containment marker still says legacy-contained. Any malformed or
- * later authority state fails closed. */
+/** Historical authority metadata only. Fleet retirement permanently disables
+ * v2 mutation, including absent, malformed and old containment markers. */
 export function legacyKgMutationState(workspace: string): LegacyKgMutationState {
   const path = join(workspace, "memory-state", "kg-v3", "authority.json");
-  if (!existsSync(path)) return { authorityPresent: false, allowed: true, mode: null };
+  if (!existsSync(path)) return { authorityPresent: false, allowed: false, mode: null };
   try {
     const marker = JSON.parse(readFileSync(path, "utf8"));
     const valid = marker?.schema === "engram.kg-v3-authority.v1";
     return {
       authorityPresent: true,
-      allowed: valid && marker.mode === "legacy-contained",
+      allowed: false,
       mode: valid ? marker.mode : "invalid",
     };
   } catch {

@@ -389,7 +389,8 @@ export class KgV3Core {
     return workspaceLockHeld ? resolveReceipt() : withLock(paths.commitLock, resolveReceipt);
   }
 
-  private readOperation(path: string): OperationRecord {
+  /** Read-only journal inspection; does not recover, acquire locks, or publish. */
+  readOperation(path: string): OperationRecord {
     const record = readJson<OperationRecord>(path);
     if (!record || record.schema !== KG_V3_OPERATION_SCHEMA || !operationId(record.operationId)
       || !operationId(record.payloadDigest) || record.workspaceId !== this.options.workspaceId

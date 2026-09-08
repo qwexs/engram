@@ -8,7 +8,8 @@ afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "worker-health-")); roots.push(root);
   const put = (dir: string, name: string, value: any) => { const path = join(root, "memory-state/memory-observation/v1", dir);
-    mkdirSync(path, { recursive: true }); writeFileSync(join(path, name + ".json"), JSON.stringify(value)); };
+    mkdirSync(path, { recursive: true }); const schemas: Record<string, string> = { "queues/evaluator": "engram.memory-observation-ledger-queue.v1", "consumers/daily-note/queue": "engram.memory-observation-consumer-queue.v1", "pre-admission/checkpoints": "engram.memory-admission-checkpoint.v1" };
+    writeFileSync(join(path, name + ".json"), JSON.stringify(value && typeof value === "object" && schemas[dir] ? { schema: schemas[dir], ...value } : value)); };
   return { root, put };
 }
 test("terminal JSON failure and pre-admission gap remain visible even with an empty pending queue", () => {
@@ -26,4 +27,49 @@ test("legitimate skips and successful applications are not failures", () => {
 test("waiting context is distinguished from technical failure and reports age", () => {
   const f = fixture(); f.put("queues/evaluator", "a", { status: "queued", reasonCode: "semantic_batch_defer", createdAt: "2026-09-07T12:00:00Z" });
   expect(memoryWorkerHealth(f.root, new Date("2026-09-07T12:10:00Z"))).toMatchObject({ status: "waiting_context", waitingContext: 1, oldestPendingAgeSeconds: 600 });
+});
+test("absent state is not observed, not an empty healthy worker", () => {
+  expect(memoryWorkerHealth(fixture().root).status).toBe("not_observed");
+});
+test("fresh technical pending is pending, while old evaluator work is degraded", () => {
+  const f = fixture();
+  f.put("queues/evaluator", "a", { status: "queued", createdAt: "2026-09-07T12:00:00Z" });
+  expect(memoryWorkerHealth(f.root, new Date("2026-09-07T12:01:00Z")).status).toBe("pending");
+  expect(memoryWorkerHealth(f.root, new Date("2026-09-14T12:00:00Z"))).toMatchObject({ status: "degraded", pending: 1 });
+});
+test("QMD-only pending, expired claims, admission and jobs without done are accounted independently", () => {
+  const f = fixture(), now = new Date("2026-09-07T14:00:00Z"), createdAt = "2026-09-07T12:00:00Z";
+  f.put("consumers/daily-note/queue", "qmd", { status: "qmd_pending", createdAt });
+  f.put("consumers/daily-note/queue", "claim", { status: "claimed", claimedAt: createdAt, createdAt });
+  f.put("pre-admission/checkpoints", "admission", { stage: "received", createdAt });
+  f.put("../batch-live-store/memory-batch-live/v1/jobs", "job", { jobId: "job", createdAt });
+  expect(memoryWorkerHealth(f.root, now)).toMatchObject({ status: "degraded", pending: 0, totalPending: 4, qmdPending: 1, expiredClaims: 1, admissionPending: 1, batchPending: 1 });
+});
+test("one corrupt record cannot suppress another queue's failures", () => {
+  const f = fixture(); f.put("queues/evaluator", "bad", null);
+  f.put("consumers/daily-note/queue", "failure", { status: "terminal", reasonCode: "terminal_readback_failed" });
+  expect(memoryWorkerHealth(f.root)).toMatchObject({ status: "degraded", corruptRecords: 1, dailyFailures: 1 });
+});
+test("duplicate receipt completion is a successful terminal", () => {
+  const f = fixture(); f.put("consumers/daily-note/queue", "duplicate", { status: "terminal", reasonCode: "duplicate_receipt" });
+  expect(memoryWorkerHealth(f.root)).toMatchObject({ status: "ok", dailyFailures: 0 });
+});
+test("missing done is pending unless a complete digest-verified recovery replaced the historical job", async () => {
+  const { sha256 } = await import("./ledger.ts");
+  const f = fixture(), jobId = sha256("job"), bundleId = sha256("bundle"), traceId = sha256("trace");
+  const authorizedAt = "2026-09-07T12:00:00.000Z", authorizedBy = "operator", reason = "confirmed repair";
+  const recoveryId = sha256({ schema: "engram.memory-batch-terminal-recovery.v1", jobId, authorizedBy, authorizedAt, reason });
+  const base = "../batch-live-store/memory-batch-live/v1";
+  f.put(`${base}/jobs`, jobId.slice(7), { jobId, bundle: { bundleId }, createdAt: authorizedAt });
+  const recovery = `${base}/recoveries/${jobId.slice(7)}/${recoveryId.slice(7)}`;
+  const completed = { schema: "engram.memory-batch-terminal-recovery.v1", status: "requeued", recoveryId, jobId, bundleId, traceIds: [traceId], authorizedAt, authorizedBy, reason };
+  f.put(recovery, "completed", completed);
+  expect(memoryWorkerHealth(f.root).batchPending).toBe(1);
+  const failure = { jobId, traceIds: [traceId], errorCode: "batch_invalid_json" };
+  const original = { traceId, status: "terminal" }, requeued = { traceId, status: "queued" };
+  f.put(recovery, "failure", failure); f.put(recovery, "done", failure);
+  f.put(recovery, "authorization", { recoveryId, jobId, doneDigest: sha256(failure), failureDigest: sha256(failure), traceIds: [traceId], queues: [{ traceId, original, originalDigest: sha256(original), requeued, requeuedDigest: sha256(requeued) }] });
+  expect(memoryWorkerHealth(f.root)).toMatchObject({ batchPending: 0, recoveredBatchJobs: 1 });
+  f.put(recovery, "done", { ...failure, errorCode: "tampered" });
+  expect(memoryWorkerHealth(f.root)).toMatchObject({ batchPending: 1, recoveredBatchJobs: 0 });
 });

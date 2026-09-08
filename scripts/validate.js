@@ -4,18 +4,19 @@
 // Usage: node scripts/validate.js [--fix] [--agent-id main]
 
 import { parseArgs } from 'node:util';
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, lstatSync, readlinkSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, lstatSync, readlinkSync, statSync } from 'node:fs';
 import { join, relative, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { loadEngramConfig } from './config.js';
-import { legacyKgMutationState } from './_lib/kg-v3-authority.ts';
+import { payloadText, normalizeCronInventory } from './_lib/watchdog-runtime.js';
 
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || dirname(fileURLToPath(import.meta.url)).replace(/[\\\/]scripts$/, '');
 
 const { values: args } = parseArgs({
   options: {
     'fix': { type: 'boolean', default: false },
+    'json': { type: 'boolean', default: false },
     'quality': { type: 'boolean', default: false },
     'agent-id': { type: 'string' },
     'help': { type: 'boolean', short: 'h', default: false },
@@ -31,7 +32,8 @@ Usage:
   node scripts/validate.js [options]
 
 Options:
-  --fix            Auto-fix issues where possible
+  --fix            Deprecated compatibility flag; always read-only
+  --json           Emit engram.validate.v1 structured report
   --agent-id <id>  Agent identifier (default: main)
   -h, --help       Show this help
 
@@ -42,55 +44,25 @@ Checks:
   4. No orphan entities (missing from index.md)
   5. ID uniqueness within each items.json
   6. No broken supersededBy references
-  7. BOM encoding detection and fix
-  8. Legacy format migration (bare array → v2 wrapper)
+  7. BOM encoding detection (read-only)
+  8. Legacy format detection (immutable archive)
 `);
   process.exit(0);
 }
 
 const WORKSPACE = process.cwd();
 const _config = loadEngramConfig(WORKSPACE);
-const agentId = args['agent-id'] || _config.agent.replace(/^agent-/, '') || 'main';
+const agentId = args['agent-id'] || String(_config.agent || 'main').replace(/^agent-/, '') || 'main';
 const LIFE_DIR = join(WORKSPACE, 'life');
-const authority = legacyKgMutationState(WORKSPACE);
-const fix = Boolean(args.fix) && authority.allowed;
-if (args.fix && !fix) {
-  console.warn(`⚠️ --fix disabled: v2 archive is immutable under KG v3 authority mode ${authority.mode}`);
-}
 const quality = args.quality;
-let errors = 0;
-let warnings = 0;
-let fixed = 0;
-
+const findings = [];
+let area = 'runtime';
+let section = 'structure';
+let skipped = 0;
+function log(message) { if (!args.json) console.log(message); }
 const VALID_ABSTRACTION = ['episode', 'pattern', 'principle'];
 const VALID_STATUS = ['active', 'superseded', 'pending'];
 const VALID_CATEGORIES = ['relationship', 'milestone', 'status', 'preference', 'context', 'decision', 'correction'];
-const CATEGORY_MAP = {
-  undefined: 'context',
-  technical: 'context',
-  features: 'context',
-  integration: 'context',
-  testing: 'context',
-  process: 'context',
-  'project-status': 'status',
-  instruction: 'preference',
-  infrastructure: 'context',
-  configuration: 'context',
-  pattern: 'context',
-  fact: 'context',
-  event: 'milestone',
-  verification: 'status',
-  observation: 'context',
-  system: 'context',
-  goal: 'status',
-  principle: 'context',
-  architecture: 'context',
-  security: 'context',
-  learning: 'context',
-  credential: 'context',
-  resource: 'context',
-};
-
 const TEST_ARTIFACT_RE = /(^|[\\/]|[-_])(test|tests|fixture|fixtures|dummy|sample)([-_]|$|[\\/])|(^|[\\/])__[^\\/]*__($|[\\/])/i;
 const TEST_TAGS = new Set(['test', 'fixture', 'fixtures', 'dummy', 'sample']);
 
@@ -111,10 +83,25 @@ function isCleanupMarker(fact) {
   return /should be ignored as user memory|test artifact/i.test(factText) && tagsOf(fact).includes('cleanup');
 }
 
-function error(msg) { console.error(`❌ ${msg}`); errors++; }
-function warn(msg) { console.warn(`⚠️  ${msg}`); warnings++; }
-function ok(msg) { console.log(`✅ ${msg}`); }
-function fixMsg(msg) { console.log(`🔧 ${msg}`); fixed++; }
+function record(level, message, code = `VALIDATE-${section.toUpperCase()}-${level.toUpperCase()}`, findingArea = area) {
+  findings.push({ code, level, message, area: findingArea });
+  if (!args.json) {
+    const line = `${level === 'error' ? '❌' : level === 'warn' ? '⚠️ ' : '✅'} ${findingArea === 'archive' ? '[archive] ' : ''}${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    else console.log(line);
+  }
+}
+function error(msg, code, findingArea) { record('error', msg, code, findingArea); }
+function warn(msg, code, findingArea) { record('warn', msg, code, findingArea); }
+function ok(msg) { record('info', msg); }
+function unverified(msg) { skipped++; warn(msg, 'VALIDATE-CRON-UNVERIFIED'); }
+if (args.fix) warn('--fix is deprecated and ignored; validation is always read-only, including without an authority marker', 'VALIDATE-FIX-DEPRECATED');
+// Configuration parse errors must not silently fall back to healthy defaults.
+if (existsSync(join(WORKSPACE, 'engram.json'))) {
+  try { const config = JSON.parse(readFileSync(join(WORKSPACE, 'engram.json'), 'utf8')); if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('expected object'); }
+  catch (e) { error(`engram.json invalid: ${e.message}`, 'VALIDATE-CONFIG-INVALID'); }
+}
 
 // 1. Directory structure
 const requiredDirs = [
@@ -128,16 +115,11 @@ const requiredDirs = [
   'life/archives',
 ];
 
-console.log('--- Directory Structure ---');
+log('--- Directory Structure ---');
 for (const dir of requiredDirs) {
   const fullPath = join(WORKSPACE, dir);
   if (!existsSync(fullPath)) {
-    if (fix) {
-      mkdirSync(fullPath, { recursive: true });
-      fixMsg(`Created ${dir}/`);
-    } else {
-      error(`Missing directory: ${dir}/`);
-    }
+    error(`Missing directory: ${dir}/`, 'VALIDATE-DIRECTORY-MISSING', dir.startsWith('life') ? 'archive' : 'runtime');
   }
 }
 ok('Directory structure checked');
@@ -155,16 +137,18 @@ if (_config?.oll?.scheduleOwner === 'nightly') {
   requiredFiles.push('memory/weekly-synthesis-tracker.json');
 }
 
-console.log('\n--- Required Files ---');
+log('\n--- Required Files ---');
 for (const file of requiredFiles) {
   if (!existsSync(join(WORKSPACE, file))) {
-    error(`Missing file: ${file}`);
+    error(`Missing file: ${file}`, 'VALIDATE-FILE-MISSING', file.startsWith('life/') ? 'archive' : 'runtime');
   }
 }
 ok('Required files checked');
 
+area = 'archive';
+section = 'archive';
 // 3. items.json validation (v2 format with BOM detection)
-console.log('\n--- Knowledge Graph (items.json) ---');
+log('\n--- Knowledge Graph (items.json) ---');
 
 function findItemsJson(dir) {
   const results = [];
@@ -183,24 +167,16 @@ function findItemsJson(dir) {
 const itemsFiles = findItemsJson(LIFE_DIR);
 let totalFacts = 0;
 let v2Compliant = 0;
-let legacyMigrated = 0;
-let bomFixed = 0;
 
 for (const file of itemsFiles) {
   const relPath = relative(WORKSPACE, file);
   
   // Read raw bytes to detect BOM (0xEF 0xBB 0xBF)
   let raw = readFileSync(file, 'utf-8');
-  let hadBom = false;
 
   if (raw.charCodeAt(0) === 0xFEFF) {
-    hadBom = true;
     warn(`${relPath}: BOM detected`);
-    if (fix) {
-      raw = raw.slice(1);
-      bomFixed++;
-      fixMsg(`${relPath}: removed BOM`);
-    }
+    raw = raw.slice(1); // Decode BOM for inspection only; never rewrite archive bytes.
   }
 
   // Parse JSON
@@ -214,33 +190,15 @@ for (const file of itemsFiles) {
 
   // Detect format: v2 {entityId, entityType, facts:[]} or legacy [{fact}]
   let facts;
-  let isLegacy = false;
-  let needsRewrite = false;
 
   if (Array.isArray(data)) {
     // Legacy format: bare array of facts
-    isLegacy = true;
     facts = data;
     warn(`${relPath}: legacy format (bare array)`);
     
-    if (fix) {
-      // Derive entityId from path: life/projects/foo/items.json -> projects/foo
-      const parts = relPath.replace(/\\items\.json$/, '').replace(/^life[\\\/]/, '').split(/[\\\/]/);
-      const entityId = parts.join('/');
-      const entityType = parts[0].replace(/s$/, ''); // projects->project, areas->area
-      
-      data = {
-        entityId,
-        entityType,
-        facts
-      };
-      
-      legacyMigrated++;
-      fixMsg(`${relPath}: migrated to v2 (entityId="${entityId}", entityType="${entityType}")`);
-      needsRewrite = true;
-    }
   } else {
     // v2 format validation
+    if (!data || typeof data !== 'object') { error(`${relPath}: expected object or fact array`); continue; }
     if (!data.entityId) {
       error(`${relPath}: missing entityId`);
     }
@@ -261,6 +219,7 @@ for (const file of itemsFiles) {
     const f = facts[i];
     const prefix = `${relPath}:facts[${i}]`;
     totalFacts++;
+    if (!f || typeof f !== 'object' || Array.isArray(f)) { error(`${prefix}: fact must be an object`); continue; }
 
     // ID uniqueness
     if (!f.id) {
@@ -276,32 +235,11 @@ for (const file of itemsFiles) {
       error(`${prefix}: missing text/fact`);
     }
     if (f.text && !f.fact) {
-      if (fix) {
-        f.fact = f.text;
-        delete f.text;
-        needsRewrite = true;
-        fixMsg(`${prefix}: migrated legacy text → fact`);
-      } else {
-        warn(`${prefix}: legacy text field without fact`);
-      }
-    }
-    if (f.fact && f.text && f.fact === f.text && fix) {
-      delete f.text;
-      needsRewrite = true;
-      fixMsg(`${prefix}: removed duplicate legacy text field`);
+      warn(`${prefix}: legacy text field without fact`);
     }
     if (!VALID_CATEGORIES.includes(f.category)) {
-      const categoryKey = f.category === undefined || f.category === null ? 'undefined' : String(f.category).toLowerCase();
-      const mapped = CATEGORY_MAP[categoryKey];
-      if (fix && mapped) {
-        fixMsg(`${prefix}: normalized category "${f.category}" → "${mapped}"`);
-        f.category = mapped;
-        needsRewrite = true;
-      } else {
-        const message = `${prefix}: non-canonical category "${f.category}" (must be: ${VALID_CATEGORIES.join(', ')})`;
-        if (quality) error(message);
-        else warn(message);
-      }
+      const message = `${prefix}: non-canonical category "${f.category}" (must be: ${VALID_CATEGORIES.join(', ')})`;
+      if (quality) error(message); else warn(message);
     }
     if (quality && f.status !== 'superseded') {
       const factText = String(f.fact || f.text || '');
@@ -342,35 +280,25 @@ for (const file of itemsFiles) {
 
     // Validate abstractionLevel
     if (f.abstractionLevel && !VALID_ABSTRACTION.includes(f.abstractionLevel)) {
-      if (fix && f.abstractionLevel === 'episodic') {
-        f.abstractionLevel = 'episode';
-        needsRewrite = true;
-        fixMsg(`${prefix}: normalized abstractionLevel "episodic" → "episode"`);
-      } else {
-        error(`${prefix}: invalid abstractionLevel "${f.abstractionLevel}" (must be: ${VALID_ABSTRACTION.join(', ')})`);
-      }
+      error(`${prefix}: invalid abstractionLevel "${f.abstractionLevel}" (must be: ${VALID_ABSTRACTION.join(', ')})`);
     }
 
     // Broken supersededBy reference
-    if (f.supersededBy && !facts.some(fact => fact.id === f.supersededBy)) {
+    if (f.supersededBy && !facts.some(fact => fact?.id === f.supersededBy)) {
       warn(`${prefix}: broken supersededBy "${f.supersededBy}"`);
     }
   }
 
-  // Auto-fix: rewrite clean JSON if BOM, legacy format, or formatting issues
-  if (fix && (hadBom || isLegacy || needsRewrite)) {
-    const clean = JSON.stringify(data, null, 2) + '\n';
-    writeFileSync(file, clean, 'utf-8');
-  }
+
 }
 
 ok(`${itemsFiles.length} items.json files, ${totalFacts} facts`);
 if (v2Compliant > 0) ok(`${v2Compliant} files v2-compliant`);
-if (legacyMigrated > 0) fixMsg(`${legacyMigrated} files migrated from legacy format`);
-if (bomFixed > 0) fixMsg(`${bomFixed} BOM encodings fixed`);
+area = 'runtime';
+section = 'domains';
 
 // 4. Domain validation
-console.log('\n--- Domains ---');
+log('\n--- Domains ---');
 const domainsDir = join(WORKSPACE, 'memory', 'domains');
 if (existsSync(domainsDir)) {
   const allDomainEntries = readdirSync(domainsDir, { withFileTypes: true })
@@ -406,12 +334,7 @@ if (existsSync(domainsDir)) {
     for (const reqFile of requiredDomainFiles) {
       const filePath = join(domainPath, reqFile);
       if (!existsSync(filePath)) {
-        if (fix) {
-          writeFileSync(filePath, `# ${reqFile.replace('.md', '')}: ${entry.name}\n`);
-          fixMsg(`Created domains/${entry.name}/${reqFile}`);
-        } else {
-          error(`Domain "${entry.name}" missing: ${reqFile}`);
-        }
+        error(`Domain "${entry.name}" missing: ${reqFile}`);
       }
     }
   }
@@ -484,8 +407,9 @@ if (existsSync(domainsDir)) {
   ok('No domains directory (optional)');
 }
 
+section = 'heartbeat';
 // 5. heartbeat-state.json sessions
-console.log('\n--- Heartbeat State ---');
+log('\n--- Heartbeat State ---');
 const heartbeatPath = join(WORKSPACE, 'memory/heartbeat-state.json');
 if (existsSync(heartbeatPath)) {
   try {
@@ -560,9 +484,11 @@ if (existsSync(heartbeatPath)) {
 // has `--all-active-sessions` in payload (if required), and ran recently.
 // If the CLI is unavailable (sandbox / PATH issue), downgrade to warn.
 // Workspaces that don't define engram.json -> cron skip the check cleanly.
-console.log('\n--- Cron Config ---');
+section = 'cron';
+log('\n--- Cron Config ---');
 const cronCfg = _config && _config.cron;
 if (!cronCfg || !cronCfg.expectedJobName) {
+  skipped++;
   ok('Cron drift check skipped (engram.json -> cron.expectedJobName not set for this workspace)');
 } else {
   const expectedJobName = cronCfg.expectedJobName;
@@ -574,20 +500,19 @@ if (!cronCfg || !cronCfg.expectedJobName) {
   // as a missing job.
   const cronProbe = spawnSync('openclaw', ['cron', 'list', '--all', '--agent', agentId, '--json'], { encoding: 'utf8', shell: false, timeout: 30000 });
   if (cronProbe.error || cronProbe.status !== 0) {
-    warn(`openclaw cron list unavailable (${cronProbe.error?.message || 'exit ' + cronProbe.status}) — skipping cron drift check`);
+    unverified(`openclaw cron list unavailable (${cronProbe.error?.message || 'exit ' + cronProbe.status}) — cron checks unverified`);
   } else {
-    const stdout = cronProbe.stdout || '';
-    const jsonStart = stdout.indexOf('{');
-    if (jsonStart < 0) {
-      warn('openclaw cron list returned no JSON — skipping cron drift check');
-    } else {
-      let parsed = null;
-      try { parsed = JSON.parse(stdout.slice(jsonStart)); }
-      catch (e) { warn(`openclaw cron list parse error: ${e.message} — skipping cron drift check`); }
-      if (parsed && Array.isArray(parsed.jobs)) {
-        const job = parsed.jobs.find(j => j.name === expectedJobName);
+    let parsed;
+    try { parsed = JSON.parse(cronProbe.stdout || ''); }
+    catch { unverified('openclaw cron list returned invalid JSON — cron checks unverified'); }
+    if (parsed !== undefined) {
+      const inventory = normalizeCronInventory(parsed);
+      if (!inventory.available) unverified('openclaw cron list returned an unknown inventory shape');
+      else {
+        if (!inventory.complete) unverified('Cron inventory is incomplete; invisible jobs are not evidence of absence');
+        const job = inventory.jobs.find(j => j.name === expectedJobName);
         if (!job) {
-          error(`Cron job "${expectedJobName}" not found in gateway. Run \`openclaw cron list\` to inspect; see HEARTBEAT.md for the expected id.`);
+          unverified(`Cron job "${expectedJobName}" is not visible in caller-scoped inventory`);
         } else {
           if (!job.enabled) {
             warn(`Cron job "${expectedJobName}" is present but DISABLED`);
@@ -605,24 +530,35 @@ if (!cronCfg || !cronCfg.expectedJobName) {
           } else {
             warn(`Schedule unexpected: got ${JSON.stringify(sched)}, expected ${JSON.stringify(expectedSchedule)}`);
           }
-          const msg = job.payload?.message || '';
-          if (!requireAllActive || msg.includes('--all-active-sessions')) {
+          // Script payloads can contain JSON-encoded shell command literals.
+          // Decode quote escaping for static inspection only, never execute source.
+          const msg = payloadText(job).replace(/\\"/g, '"').replace(/\\'/g, "'");
+          const argv = job.payload?.argv;
+          const structured = Array.isArray(argv);
+          const hasFlag = (flag) => structured ? argv.includes(flag) : new RegExp('(?:^|\\s)' + flag + '(?:\\s|[\"\',;)]|$)').test(msg);
+          if (structured && job.payload?.cwd && resolve(job.payload.cwd) !== WORKSPACE) warn(`Command cwd differs from this workspace (${job.payload.cwd})`, 'VALIDATE-CRON-CWD');
+          const argument = (flag) => {
+            if (structured) { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : null; }
+            const match = msg.match(new RegExp('(?:^|\\s)' + flag + '(?:=|\\s+)(?:"([^"]+)"|\'([^\']+)\'|([^\\s;\"\',)]+))'));
+            return match ? match[1] ?? match[2] ?? match[3] : null;
+          };
+          if (!requireAllActive || hasFlag('--all-active-sessions')) {
             if (requireAllActive) ok('Payload contains --all-active-sessions (per-session daily notes enabled)');
           } else {
             error(`Payload missing --all-active-sessions — only "main" daily note will be created. Update via \`openclaw cron update ${job.id} --patch '{"payload":{"message":"<new>"}}'\` or \`bun skills/engram/scripts/heartbeat-runner.js … --all-active-sessions\``);
           }
           // 8c. Payload workspace/agent-id check — payload must target this workspace.
-          if (msg.includes(`--workspace ${WORKSPACE}`) || msg.includes(`--workspace ${WORKSPACE}/`)) {
+          if (typeof argument('--workspace') === 'string' && resolve(job.payload?.cwd || WORKSPACE, argument('--workspace')) === WORKSPACE) {
             ok(`Payload --workspace targets this workspace`);
           } else {
             error(`Payload --workspace does not match this workspace (${WORKSPACE}). Update the cron job payload to use --workspace ${WORKSPACE}.`);
           }
-          if (msg.includes(`--agent-id ${agentId}`)) {
+          if (argument('--agent-id') === agentId) {
             ok(`Payload --agent-id matches this agent (${agentId})`);
           } else {
             error(`Payload --agent-id does not match this agent (expected "${agentId}"). Update the cron job payload to use --agent-id ${agentId}.`);
           }
-          if (job.payload?.lightContext !== true) {
+          if (job.payload?.kind !== 'command' && job.payload?.kind !== 'script' && job.payload?.lightContext !== true) {
             warn(`Payload lightContext is ${job.payload?.lightContext}, expected true (cron should not load full workspace bootstrap)`);
           }
           const last = job.state?.lastRunAtMs;
@@ -645,7 +581,7 @@ if (!cronCfg || !cronCfg.expectedJobName) {
           // runner.summary.status and warnings, with a ≤512-token reply
           // cap. The check below catches any cron still on the old
           // form so the operator can re-run install-cron.js to upgrade.
-          const promptMsg = job.payload?.message || '';
+          const promptMsg = ['command', 'script'].includes(job.payload?.kind) ? '' : msg;
           if (promptMsg.includes('Reply with: the runner output (as text)')) {
             error(`Cron payload uses the pre-2026-06-23 echo prompt (~11k output tokens/tick wasted, frequent max_tokens=8192 clipping). Run \`bun skills/engram/scripts/install-cron.js install\` in this workspace to upgrade to the concise form.`);
           } else if (['Step 4 — Final reply (CONCISE, NO ECHO)', 'Step 5 — Final reply (CONCISE, NO ECHO)'].some((marker) => promptMsg.includes(marker))) {
@@ -665,7 +601,8 @@ if (!cronCfg || !cronCfg.expectedJobName) {
 // OpenClaw hooks dir, OpenClaw silently skips it. install-hooks.js creates
 // the directories; this check surfaces drift before runtime hits it.
 // Idempotent install: this does not run install-hooks.js itself, just reports.
-console.log('\n--- Hooks Sync ---');
+section = 'hooks';
+log('\n--- Hooks Sync ---');
 {
   // Skill hooks dir = <skill>/hooks. resolveDir is the workspace-specific
   // junction target (e.g. <workspace>/skills/engram -> .openclaw/skills/engram);
@@ -787,9 +724,18 @@ console.log('\n--- Hooks Sync ---');
   }
 }
 
-// Summary
-console.log(`\n--- Summary ---`);
-console.log(`Errors:   ${errors}`);
-console.log(`Warnings: ${warnings}`);
-if (fix) console.log(`Fixed:    ${fixed}`);
+// Archive findings remain inspectable but are not current memory-health failures.
+const errors = findings.filter(f => f.area !== 'archive' && f.level === 'error').length;
+const warnings = findings.filter(f => f.area !== 'archive' && f.level === 'warn').length;
+const summary = { errors, warnings, skipped, readOnly: true, fixed: 0,
+  archiveErrors: findings.filter(f => f.area === 'archive' && f.level === 'error').length,
+  archiveWarnings: findings.filter(f => f.area === 'archive' && f.level === 'warn').length };
+if (args.json) console.log(JSON.stringify({ schema: 'engram.validate.v1', workspace: WORKSPACE, findings, summary }));
+else {
+  log('\n--- Summary ---');
+  log(`Errors:   ${errors}`);
+  log(`Warnings: ${warnings}`);
+  log(`Archive:  ${summary.archiveErrors} errors, ${summary.archiveWarnings} warnings (read-only historical audit)`);
+  log('Fixed:    0 (read-only)');
+}
 process.exit(errors > 0 ? 1 : 0);

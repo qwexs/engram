@@ -24,7 +24,6 @@ import { applyDomainWriteHandoff, scanDomains, formatDomainScanSummary, shouldIn
 import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerivedStatus, hasAutoDerivedMarker } from "./_lib/auto-derive-status.js";
 import { runtimeSpawnLabel, transitionSpawnRecord } from "./spawn-lifecycle.js";
 import { runWorkspaceQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
-import { legacyKgMutationState } from "./_lib/kg-v3-authority.ts";
 import { observerOwnsDailyCapture, observerOwnsDomainProjection } from "./_lib/observer-daily-ownership.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -81,7 +80,7 @@ if (opts.help || opts.h) {
     "  --no-write-extraction    Dry-run extraction writes without advancing watermark.",
     "  --advance-watermark-on-no-write",
     "                           Allow dry-run extraction to advance watermark/session cursor.",
-    "  --no-fix                 Run validate.js without --fix.",
+    "  --no-fix                 Deprecated compatibility flag; validation is always read-only.",
     "  --skip-maintenance       Skip validate/qmd maintenance (test/smoke only).",
     "  --domains-write          Enable guarded domain write handoff application.",
     "  --domains-dry-run        Validate domain write handoff without mutating files.",
@@ -1398,9 +1397,7 @@ async function runOllTriggerShell({ domainScan = null } = {}) {
 }
 
 async function runMaintenance() {
-  const legacyMutation = legacyKgMutationState(workspace);
   const validateArgs = [scriptPath("validate.js")];
-  if (!opts["no-fix"] && legacyMutation.allowed) validateArgs.push("--fix");
   validateArgs.push("--agent-id", agentId);
 
   const validate = run("bun", validateArgs);
@@ -1479,7 +1476,8 @@ const VALIDATE_BENIGN_WARNINGS = [
 async function maybeAutoSeedFromValidate(validateResult) {
   if (!validateResult) return;
   if (!isLegacyOllAdmissionEnabled(workspace)) return;
-  const out = `${validateResult.stdout ?? ""}\n${validateResult.stderr ?? ""}`;
+  const out = `${validateResult.stdout ?? ""}\n${validateResult.stderr ?? ""}`
+    .split("\n").filter(line => !line.includes("[archive]")).join("\n");
   const errorCount = (out.match(/❌/g) || []).length;
   const allWarnLines = out.split("\n").filter((l) => /⚠️/.test(l));
   // Filter out known-benign warnings

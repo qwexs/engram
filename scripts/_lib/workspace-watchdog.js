@@ -19,7 +19,10 @@ import { Database } from "bun:sqlite";
 import { legacyOllAdmissionState, loadEngramConfig } from "../config.js";
 import { DEPRECATED_HEARTBEAT_KEYS, LEGACY_OLL_PHASES } from "../../src/oll/legacy-migration.ts";
 import { listQmdCollections, readQmdCapabilities } from "./qmd-provision.js";
-import { legacyKgMutationState } from "./kg-v3-authority.ts";
+import { observerOwnsDailyCapture } from "./observer-daily-ownership.ts";
+import { auditHeartbeatScheduler, auditMemoryWorkerRuntime, auditMissingWorkerProjection, collectWatchdogRuntime } from "./watchdog-runtime.js";
+import { auditKgV3 } from "../../src/kg-v3/watchdog.ts";
+import { auditMemoryObservation } from "../../src/memory-observation/watchdog.ts";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_DIR = resolve(MODULE_DIR, "..");
@@ -361,7 +364,7 @@ function runValidate(workspace, findings) {
     return;
   }
 
-  const r = runCommand("bun", [script, "--agent-id", agentId], workspace, 120000);
+  const r = runCommand("bun", [script, "--agent-id", agentId, "--json"], workspace, 120000);
   if (r.error) {
     findings.push(makeFinding({
       code: "WD-CORE-001",
@@ -371,15 +374,22 @@ function runValidate(workspace, findings) {
     }));
     return;
   }
-  if (r.status !== 0) {
+  let structured;
+  try { structured = JSON.parse(r.stdout); } catch {}
+  if (structured?.schema === "engram.validate.v1" && Array.isArray(structured.findings)) {
+    for (const entry of structured.findings) {
+      if (!["error", "warn", "info"].includes(entry.level)) continue;
+      findings.push({ ...makeFinding({ code: `WD-CORE-${entry.code || entry.level.toUpperCase()}`, level: entry.level,
+        message: entry.message, path: entry.path, details: entry.details }), ...(entry.area ? { area: entry.area } : {}) });
+    }
+    if (r.status !== 0 && !structured.findings.some(entry => entry.level === "error"))
+      findings.push(makeFinding({ code: "WD-CORE-001", level: "error", message: "Validator exited unsuccessfully without a structured error" }));
+  } else {
     findings.push(makeFinding({
       code: "WD-CORE-001",
-      level: "error",
-      message: `validate.js exited with code ${r.status}`,
-      details: {
-        stdoutTail: r.stdout.split(/\r?\n/).slice(-20).join("\n"),
-        stderrTail: r.stderr.split(/\r?\n/).slice(-20).join("\n"),
-      },
+      level: r.status !== 0 ? "error" : "warn",
+      message: "Validator structured report unavailable; core checks are unverified",
+      details: { exitCode: r.status },
     }));
   }
 }
@@ -507,6 +517,7 @@ function checkQmd(workspace, registry, engram, findings, options = {}) {
 }
 
 export function checkQmdEmbedCoverage(engram, findings, capabilities = null) {
+  if (engram?.qmd?.maintenance?.mode === "coordinated") return;
   const maintenance = Array.isArray(engram?.qmd?.collections)
     ? [...new Set(engram.qmd.collections.map((c) => String(c)).filter(Boolean))]
     : [];
@@ -753,6 +764,9 @@ function expectedMaintenanceCollections(workspace, registry, engram, indexCollec
 }
 
 function checkQmdMaintenanceCollections(workspace, registry, engram, findings) {
+  // Coordinated ownership is validated by the named-index registry/worker
+  // binding checks, not by the retired per-workspace heartbeat embed model.
+  if (engram?.qmd?.maintenance?.mode === "coordinated") return;
   const metaRefs = collectMetaDomainCollections(registry, engram);
   if (metaRefs.length === 0) return;
 
@@ -1035,6 +1049,7 @@ function checkHeartbeatState(workspace, registry, findings) {
   // Check the most recent 7 daily notes for each active session — if all have
   // 0 events/decisions/learnings, the agent is not recording session activity.
   for (const session of activeSessions) {
+    if (observerOwnsDailyCapture(workspace, agentId, session)) continue;
     const sessionDir = join(agentDir, session);
     if (!isDir(sessionDir)) continue;
     const notes = readdirSync(sessionDir)
@@ -1056,7 +1071,7 @@ function checkHeartbeatState(workspace, registry, findings) {
       findings.push(makeFinding({
         code: "WD-SESSION-006",
         level: "warn",
-        message: `Daily notes for session "${session}" are empty for ${emptyCount} consecutive days — agent is not recording events/decisions/learnings`,
+        message: `The ${emptyCount} most recent daily notes for session "${session}" have no events/decisions/learnings; verify eligible activity before diagnosing a capture gap`,
         path: `memory/agent-${agentId}/${session}`,
         details: { session, emptyDays: emptyCount, checkedDays: notes.length },
       }));
@@ -1197,10 +1212,9 @@ function checkKg(workspace, findings) {
             level: "warn",
             message: "Heartbeat extraction garbage in KG — fact is a heartbeat artifact, not a real memory",
             path: factPath,
-            fixable: true,
+            fixable: false,
             details: {
               reason: isHbRunId ? "heartbeat-run-id" : (isHbPhrase ? "heartbeat-phrase" : "heartbeat-tags"),
-              text: text.slice(0, 120),
               fix: "Historical v2 archive is immutable after KG v3 fleet cutover; record remediation separately.",
             },
           }));
@@ -1215,7 +1229,7 @@ function checkKg(workspace, findings) {
       findings.push(makeFinding({
         code: "WD-KG-006",
         level: "info",
-        message: `KG entity has 0 active facts (${supersededCount} superseded) — consider removing the entity or re-seeding`,
+        message: `Historical KG entity has 0 active facts (${supersededCount} superseded); preserve the immutable archive`,
         path: label,
         details: { entityId: data.entityId, activeCount, supersededCount },
       }));
@@ -1237,40 +1251,8 @@ function checkCronConfig(workspace, engram, findings) {
 // WD-CRON-007: verify the generated heartbeat payload matches its ownership
 // boundary. Clean installs use the deterministic script payload; the old
 // message marker is meaningful only for a pre-cutover compatibility job.
-function checkCronPayloadVersion(workspace, findings, engram = {}) {
-  const result = runCommand("openclaw", ["cron", "list", "--json"], workspace, 30000);
-  if (result.status !== 0 || !result.stdout) return;
-  let jobs;
-  try { jobs = JSON.parse(result.stdout); } catch { return; }
-  if (!Array.isArray(jobs)) return;
-  const expectedName = engram?.cron?.expectedJobName;
-  const candidates = jobs.filter((job) => job?.name && (expectedName ? job.name === expectedName : job.name.includes("Heartbeat")));
-  for (const job of candidates) {
-    const payload = String(job?.payload?.script ?? job?.payload?.source ?? job?.payload?.message ?? "");
-    if (!payload) continue;
-    const nightlyOwned = engram?.oll?.scheduleOwner === "nightly";
-    if (nightlyOwned) {
-      const hasLegacyFlags = ["--spawn-rethink", "--spawn-rethink2", "--spawn-autoresearch", "--recover-stale-oll-locks"].some((flag) => payload.includes(flag));
-      if (!payload.includes("Generated by install-deterministic-heartbeat-cron.js") || hasLegacyFlags) {
-        findings.push(makeFinding({
-          code: "WD-CRON-007",
-          level: "warn",
-          message: "Heartbeat cron violates the nightly OLL ownership boundary. Re-run: bun skills/engram/scripts/install-deterministic-heartbeat-cron.js --action install",
-          path: `cron:${job.name}`,
-          fixable: true,
-        }));
-      }
-    } else if (!payload.includes("Forward OLL rethink alerts")) {
-      findings.push(makeFinding({
-        code: "WD-CRON-007",
-        level: "warn",
-        message: "Legacy heartbeat cron payload is outdated — missing Step 4 (Forward OLL rethink alerts). Re-run: bun skills/engram/scripts/install-cron.js install",
-        path: `cron:${job.name}`,
-        fixable: true,
-      }));
-    }
-    return;
-  }
+function checkCronPayloadVersion(workspace, findings, engram = {}, runtime) {
+  findings.push(...auditHeartbeatScheduler(engram, runtime?.cron));
 }
 
 function checkOllState(workspace, findings, engram = {}) {
@@ -1908,7 +1890,12 @@ export function auditWorkspace(workspaceInput, options = {}) {
     checkDomains(workspace, registry, engram, findings);
     checkHeartbeatState(workspace, registry, findings);
   }
-  checkKg(workspace, findings);
+  const archiveFindings = [];
+  checkKg(workspace, archiveFindings);
+  findings.push(...archiveFindings.map(f => ({ ...f, area: "archive", fixable: false })));
+  findings.push(...auditKgV3({ workspace, workspaceId: engram.workspace?.id || getAgentId(workspace) })
+    .map(f => ({ ...f, level: f.level === "warning" ? "warn" : f.level, fixable: false })));
+  findings.push(...auditMemoryObservation(workspace, { now: options.now }));
   checkOllState(workspace, findings, engram);
   checkSkillGeneratedArtifacts(findings, options);
   if (options.qmd !== false) {
@@ -1922,7 +1909,15 @@ export function auditWorkspace(workspaceInput, options = {}) {
   // enables it explicitly; synthetic callers remain deterministic and do not
   // pay an unrelated OpenClaw subprocess on every workspace assertion.
   if (options.cronPayload === true) {
-    checkCronPayloadVersion(workspace, findings, engram);
+    const runtime = options.runtime ?? collectWatchdogRuntime(workspace);
+    checkCronPayloadVersion(workspace, findings, engram, runtime);
+    const projectionPath = join(workspace, "memory-state/memory-observation/projection.json");
+    if (existsSync(projectionPath)) {
+      try {
+        const projection = JSON.parse(readFileSync(projectionPath, "utf8"));
+        findings.push(...auditMemoryWorkerRuntime(workspace, projection, runtime, { now: options.now }));
+      } catch { /* The local projection auditor reports malformed JSON. */ }
+    } else findings.push(...auditMissingWorkerProjection(workspace, runtime));
   }
   checkTelegramRouting(workspace, findings, options);
 
@@ -1939,9 +1934,13 @@ export function finalizeReport(workspace, findings, options = {}) {
     deduped.push(finding);
   }
   findings = deduped;
-  const errors = findings.filter((f) => f.level === "error").length;
-  const warnings = findings.filter((f) => f.level === "warn").length;
-  const info = findings.filter((f) => f.level === "info").length;
+  const live = findings.filter(f => f.area !== "archive");
+  const archive = findings.filter(f => f.area === "archive");
+  const errors = live.filter((f) => f.level === "error").length;
+  const warnings = live.filter((f) => f.level === "warn").length;
+  const info = live.filter((f) => f.level === "info").length;
+  const archiveSummary = { findings: archive.length, errors: archive.filter(f => f.level === "error").length,
+    warnings: archive.filter(f => f.level === "warn").length, info: archive.filter(f => f.level === "info").length };
   return {
     schema: "engram.watchdog.v1",
     generatedAt: new Date().toISOString(),
@@ -1952,6 +1951,7 @@ export function finalizeReport(workspace, findings, options = {}) {
       warnings,
       info,
       findings: findings.length,
+      archive: archiveSummary,
       fixed: 0,
       readOnly: true,
     },
@@ -1962,9 +1962,13 @@ export function finalizeReport(workspace, findings, options = {}) {
 
 export function mergeReports(reports) {
   const findings = reports.flatMap((r) => r.findings.map((f) => ({ ...f, workspace: r.workspace })));
-  const errors = findings.filter((f) => f.level === "error").length;
-  const warnings = findings.filter((f) => f.level === "warn").length;
-  const info = findings.filter((f) => f.level === "info").length;
+  const live = findings.filter(f => f.area !== "archive");
+  const archive = findings.filter(f => f.area === "archive");
+  const errors = live.filter((f) => f.level === "error").length;
+  const warnings = live.filter((f) => f.level === "warn").length;
+  const info = live.filter((f) => f.level === "info").length;
+  const archiveSummary = { findings: archive.length, errors: archive.filter(f => f.level === "error").length,
+    warnings: archive.filter(f => f.level === "warn").length, info: archive.filter(f => f.level === "info").length };
   return {
     schema: "engram.watchdog.v1",
     generatedAt: new Date().toISOString(),
@@ -1975,6 +1979,7 @@ export function mergeReports(reports) {
       warnings,
       info,
       findings: findings.length,
+      archive: archiveSummary,
       fixed: 0,
       readOnly: true,
     },

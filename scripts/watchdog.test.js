@@ -86,6 +86,33 @@ function codes(report) {
 }
 
 describe("workspace watchdog core", () => {
+  test("coordinated QMD is not diagnosed as per-heartbeat multi-collection embed", () => {
+    const configPath = join(workspace, "engram.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.qmd.maintenance = { mode: "coordinated" };
+    config.qmd.collections = ["alpha-memory", "topic-memory-alpha", "alpha-ops"];
+    writeFileSync(configPath, JSON.stringify(config));
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).not.toContain("WD-QMD-014");
+    expect(codes(report)).not.toContain("WD-QMD-009");
+  });
+
+  test("Memory Worker malformed projection is included in the main audit", () => {
+    const root = join(workspace, "memory-state", "memory-observation");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "projection.json"), "{invalid");
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).toContain("WD-MW-005");
+    expect(report.status).toBe("error");
+  });
+
+  test("active KG v3 missing authority is included in the main audit", () => {
+    mkdirSync(join(workspace, "life", "v3"), { recursive: true });
+    const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
+    expect(codes(report)).toContain("WD-KGV3-001");
+    expect(report.status).toBe("error");
+  });
+
   test("clean synthetic workspace is ok when core/qmd checks are skipped", () => {
     const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
     expect(report.status).toBe("ok");
@@ -525,11 +552,13 @@ models:
       facts: [{ id: "bad", title: "Old", content: "test fixture", category: "technical", tags: ["test"] }],
     }, null, 2) + "\n");
     const report = auditWorkspace(workspace, { core: false, qmd: false, hooks: false });
-    expect(report.status).toBe("error");
+    expect(report.status).toBe("ok"); // Historical v2 errors do not describe current writer health.
+    expect(report.summary.archive.errors).toBeGreaterThan(0);
     expect(codes(report)).toContain("WD-KG-001");
     expect(codes(report)).toContain("WD-KG-002");
     expect(codes(report)).toContain("WD-KG-003");
     expect(codes(report)).toContain("WD-KG-004");
+    expect(report.findings.filter(f => f.code.startsWith("WD-KG-")).every(f => f.area === "archive" && f.fixable === false)).toBe(true);
   });
 
   test("detects generated runtime artifacts inside the Engram skill repo", () => {

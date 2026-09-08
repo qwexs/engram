@@ -24,6 +24,8 @@ import {
 import type { WorkspaceDirtyMarkResult } from "../qmd/maintenance-integration.ts";
 import { readIndexHandoff } from "../qmd/index-provenance.ts";
 import { qmdMaintenancePaths } from "../qmd/maintenance.ts";
+import { memoryWorkerHealth } from "./worker-health.ts";
+import { memoryWorkerRunResult } from "./worker-run-result.ts";
 
 const roots: string[] = [];
 const contractSchema = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "schemas", "memory-observation-contracts-v1.schema.json"), "utf8"));
@@ -182,6 +184,26 @@ function marked(root: string, reason: string, collections = ["main-direct-memory
 }
 
 describe("daily-note canary applicator", () => {
+  test("old admission gaps remain visible while a new note is applied exactly once", async () => {
+    const root = workspace();
+    const gapPath = join(root, "memory-state/memory-observation/v1/pre-admission/checkpoints/historical.json");
+    mkdirSync(dirname(gapPath), { recursive: true });
+    const gap = JSON.stringify({ stage: "terminal_gap", createdAt: "2026-08-01T00:00:00.000Z" });
+    writeFileSync(gapPath, gap);
+    const value = observation(); persist(root, value);
+    const applicator = new DailyNoteCanaryApplicator({ workspace: root, resolveActivePolicy: () => policy() });
+    const result = await applicator.processOne(new Date("2026-08-26T21:32:00.000Z"));
+    expect(result.status).toBe("applied");
+    expect(memoryWorkerRunResult({ applications: [result] }).exitCode).toBe(0);
+    expect(memoryWorkerHealth(root)).toMatchObject({ status: "degraded", admissionGaps: 1 });
+    const again = await applicator.processOne(new Date("2026-08-26T21:33:00.000Z"));
+    expect(again.status).toBe("idle");
+    const note = readFileSync(join(root, "memory/agent-main/telegram-direct-100000001/2026-08-27.md"), "utf8");
+    expect(count(note, "<!-- engram-entry:sha256:")).toBe(1);
+    expect(applicator.readReceipt(value.observationId)?.status).toBe("applied");
+    expect(readFileSync(gapPath, "utf8")).toBe(gap);
+  });
+
   test("applies one future event to the source date with immutable receipt and deterministic read-back", async () => {
     const root = workspace();
     const value = observation();

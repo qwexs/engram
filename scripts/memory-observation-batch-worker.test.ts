@@ -58,6 +58,19 @@ describe("memory observation batch worker CLI", () => {
       { cwd: repository, env: { ...process.env, PATH: bin + ":" + process.env.PATH } });
     const idle = run(); expect(idle.exitCode).toBe(0);
     expect(JSON.parse(idle.stdout.toString())).toMatchObject({ fastPath: "no_pending_work", evaluation: { status: "idle" } });
+    // The same unresolved historical gap must remain visible without making
+    // every empty pass fail and eventually auto-disabling the entire fleet.
+    const gapPath = "memory-state/memory-observation/v1/pre-admission/checkpoints/" + "b".repeat(64) + ".json";
+    put(gapPath, { stage: "terminal_gap", createdAt: "2026-08-01T00:00:00.000Z" });
+    const gapBefore = readFileSync(join(workspace, gapPath), "utf8");
+    for (let pass = 0; pass < 2; pass++) {
+      const historical = run(); expect(historical.exitCode).toBe(0);
+      expect(JSON.parse(historical.stdout.toString())).toMatchObject({
+        fastPath: "no_pending_work", health: { status: "degraded", admissionGaps: 1 },
+        execution: { status: "ok", exitCode: 0, errors: [] },
+      });
+    }
+    expect(readFileSync(join(workspace, gapPath), "utf8")).toBe(gapBefore);
     put("memory-state/memory-observation/v1/queues/evaluator/" + "a".repeat(64) + ".json",
       { schema: "engram.memory-observation-ledger-queue.v1", status: "queued" });
     const pending = run(); expect(pending.exitCode).not.toBe(0);

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { memoryWorkerHealth } from "../src/memory-observation/worker-health.ts";
+import { memoryWorkerRunResult } from "../src/memory-observation/worker-run-result.ts";
 import { tmpdir } from "node:os";
 import { memoryBatchIsIdle } from "../src/memory-observation/idle-preflight.ts";
 import { acquireProcessLease } from "../src/memory-observation/process-lease.ts";
@@ -14,6 +15,7 @@ import { openClawRawModelRunProvider } from "../src/memory-observation/batch-sha
 import {
   buildDailyNoteCanaryPolicy,
   DailyNoteCanaryApplicator,
+  type DailyNoteApplicatorResult,
 } from "../src/memory-observation/daily-note-applicator.ts";
 import { MemoryObservationLedger, purgeMemoryObservationLifecycle, sha256, type Digest, type JsonValue, type ObservationScope } from "../src/memory-observation/ledger.ts";
 import {
@@ -89,14 +91,15 @@ const topicWorkspace = projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEM
 if (memoryBatchIsIdle(workspace, topicWorkspace)) {
   const idle = { status: "idle" };
   const health = memoryWorkerHealth(workspace);
+  const execution = memoryWorkerRunResult();
   process.stdout.write(`${JSON.stringify({
     schema: "engram.memory-batch-live-run.v1", workspaceId, schedulerId: batch.schedulerId,
-    health, fastPath: "no_pending_work", evaluation: idle, evaluationScope: null,
+    health, execution, fastPath: "no_pending_work", evaluation: idle, evaluationScope: null,
     apply: idle, applyScope: null,
     domains: topicWorkspace ? { status: "idle", applied: 0, indexedPending: 0 } : null,
     ...(topicWorkspace ? { applications: [{ result: idle, scope: null }] } : {}),
   })}\n`);
-  process.exit(health.status === "degraded" ? 1 : 0);
+  process.exit(execution.exitCode);
 }
 if (topicWorkspace) {
   const get = (path: string) => {
@@ -284,7 +287,7 @@ function applicatorFor(scope: ObservationScope): DailyNoteCanaryApplicator {
 
 let evaluation: Awaited<ReturnType<BatchLiveWorker["processOne"]>> = { status: "idle" };
 let evaluationScope: ObservationScope | null = null;
-const evaluations: { result: any; scope: ObservationScope }[] = [];
+const evaluations: { result: Awaited<ReturnType<BatchLiveWorker["processOne"]>>; scope: ObservationScope }[] = [];
 // Bounded sequential drain; processOne still has one inference allowance.
 const maxBatchesPerWake = 3;
 const drainStarted = Date.now();
@@ -324,7 +327,7 @@ if (evaluations.length === priorCount || evaluations.length >= maxBatchesPerWake
 }
 } finally { releaseInference?.(); }
 
-const applications: any[] = [];
+const applications: { result: DailyNoteApplicatorResult; scope: ObservationScope | null }[] = [];
 for (let turn = 0; turn < 50; turn++) {
 const dueApplicators = collectScopes().map((candidate) => {
   const applicator = applicatorFor(candidate.scope);
@@ -342,7 +345,9 @@ const apply = applications[0]?.result ?? { status: "idle" }, applyScope = applic
 const domains = projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4
   ? await consumeTopicDomainReceipts({ workspace, workspaceId, expectedPluginDigest }) : null;
 const health = memoryWorkerHealth(workspace);
-if (domains?.indexedPending || health.status === "degraded" || evaluations.some(entry => ["retry", "terminal_failure"].includes(entry.result.status))) process.exitCode = 1;
+const execution = memoryWorkerRunResult({ evaluations: evaluations.map(entry => entry.result),
+  applications: applications.map(entry => entry.result), domains });
+process.exitCode = execution.exitCode;
 process.stdout.write(`${JSON.stringify({
   schema: "engram.memory-batch-live-run.v1",
   workspaceId,
@@ -351,6 +356,7 @@ process.stdout.write(`${JSON.stringify({
   evaluationScope,
   evaluations,
   health,
+  execution,
   maxBatchesPerWake,
   domains,
   apply,

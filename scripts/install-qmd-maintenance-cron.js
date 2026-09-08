@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 /**
- * Provision a deterministic OpenClaw command cron for global QMD maintenance.
+ * Provision an OpenClaw agent cron for global QMD maintenance.
  *
- * The coordinator is already a Bun program. Wrapping it in an agentTurn makes
- * a model decide whether to run one fixed command, which is both costly and
- * unreliable. This installer intentionally creates payload.kind=command.
+ * Gonka credentials are available only through protected Gateway egress in an
+ * agent turn. The turn runs one fixed coordinator command and remains alive
+ * until that process exits, so the opaque egress token cannot expire midway.
  */
 
 import { parseArgs } from "node:util";
@@ -45,7 +45,7 @@ Options:
   --cron-name <name>     Managed job name
   --timeout-ms <n>       Coordinator timeout, milliseconds (default: 600000)
   --disabled             Create or update the job disabled
-  --dry-run              Print the desired command-job spec only
+  --dry-run              Print the desired protected agent-job spec only
 `);
   process.exit(exitCode);
 }
@@ -88,27 +88,24 @@ try {
 }
 
 function buildSpec() {
+  const coordinatorArgv = [
+    "bun",
+    "./skills/engram/scripts/qmd-maintenance-coordinator.ts",
+    "--manifest", manifest,
+    "--workspace", workspace,
+    "--timeout-ms", String(timeoutMs),
+  ];
+  const coordinatorCommand = coordinatorArgv.map((arg) => `'${arg.replaceAll("'", "'\"'\"'")}'`).join(" ");
   return {
     name: cronName,
     description: "Single physical-index QMD maintenance coordinator. Managed by install-qmd-maintenance-cron.js.",
     schedule: { kind: "cron", expr: args.schedule, tz: args.tz, staggerMs: 0 },
     sessionTarget: "isolated",
     payload: {
-      kind: "command",
-      argv: [
-        "bun",
-        "./skills/engram/scripts/qmd-maintenance-coordinator.ts",
-        "--manifest", manifest,
-        "--workspace", workspace,
-        "--timeout-ms", String(timeoutMs),
-      ],
-      cwd: workspace,
-      // OpenClaw 2026.7.2-beta.7 serializes an omitted repeatable
-      // --command-env as [], which the gateway rightly rejects because a
-      // command env must be an object. A harmless marker keeps the CLI and
-      // gateway contract unambiguous across that version.
-      env: { ENGRAM_CRON_MANAGED: "1" },
+      kind: "agentTurn",
+      message: `Run exactly one canonical Engram global QMD maintenance pass. Use the Gateway-host exec tool once for command ${coordinatorCommand}, cwd ${JSON.stringify(workspace)}, timeoutSeconds ${Math.ceil(timeoutMs / 1000) + 60}, yieldMs 120000. Do not inspect environment variables or secrets. If exec returns a process session, use process polling to keep this agent turn alive and await that exact process until it exits; never launch a duplicate. Preserve the QMD command arguments supplied by Engram unchanged. Finish silently on success; on failure provide a concise diagnostic for scheduler history.`,
       timeoutSeconds: Math.ceil(timeoutMs / 1000) + 60,
+      toolsAllow: ["exec", "process"],
     },
     delivery: { mode: "none" },
     enabled: !args.disabled,
@@ -137,10 +134,6 @@ function existingJob() {
     .find((job) => job.name === cronName) ?? null;
 }
 
-function commandArgv(spec) {
-  return JSON.stringify(spec.payload.argv);
-}
-
 function install() {
   const spec = buildSpec();
   if (args["dry-run"]) {
@@ -153,9 +146,8 @@ function install() {
       "cron", "edit", existing.id,
       "--name", spec.name,
       "--description", spec.description,
-      "--command-argv", commandArgv(spec),
-      "--command-cwd", spec.payload.cwd,
-      "--command-env", "ENGRAM_CRON_MANAGED=1",
+      "--message", spec.payload.message,
+      "--tools", spec.payload.toolsAllow.join(","),
       "--timeout-seconds", String(spec.payload.timeoutSeconds),
       "--cron", spec.schedule.expr,
       "--tz", spec.schedule.tz,
@@ -170,9 +162,8 @@ function install() {
     "cron", "add",
     "--name", spec.name,
     "--description", spec.description,
-    "--command-argv", commandArgv(spec),
-    "--command-cwd", spec.payload.cwd,
-    "--command-env", "ENGRAM_CRON_MANAGED=1",
+    "--message", spec.payload.message,
+    "--tools", spec.payload.toolsAllow.join(","),
     "--timeout-seconds", String(spec.payload.timeoutSeconds),
     "--cron", spec.schedule.expr,
     "--tz", spec.schedule.tz,

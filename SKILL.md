@@ -1,6 +1,6 @@
 ---
 name: "engram"
-description: "Engram daily-note writer: reject unstable session/workspace coordinates."
+description: "Engram memory operations and ownership-aware capture."
 ---
 
 # Engram Memory System
@@ -125,7 +125,7 @@ For full architecture: [references/architecture.md](references/architecture.md)
 ### Every Session Startup (automated by hooks)
 
 - `engram-session-start` → creates sessionDir + daily note, writes `<!-- session:start -->`
-- `engram-bootstrap-qmd` → refreshes QMD index
+- `engram-bootstrap-qmd` → declares scheduler ownership; performs no QMD maintenance
 - `engram-daily-note` → reconciles existing note state on `gateway:startup`; creates nothing
 - For topic-thread: `engram-topic-domain-load` injects Domain Context + AGENTS via system-event
 
@@ -273,7 +273,9 @@ bun skills/engram/scripts/memory-contradict.js --fact "Uses Node.js" --entity "p
 
 ## Session Recording
 
-Daily notes capture session activity. Two-level protection:
+Workspace AGENTS.md owns operational capture policy. For an active observer-owned binding, Memory Worker saves Events/Decisions: do not duplicate those sections, wait for the worker, or read this skill merely to finish a reply. This also applies to compaction and memory-flush. Learnings and handover remain selective foreground operations. For sessions without an active observer binding, use the foreground recording rules below with an explicit absolute workspace and trusted canonical session key.
+
+The following two-level recording fallback applies only to foreground-owned sections:
 
 ```
 Level 1: Agent inline (primary)     — best quality, during session

@@ -436,7 +436,8 @@ export class DailyNoteCanaryApplicator {
     const queued = this.listQueue()
       .filter((record) => (record.status === "queued"
         && (this.queueMatchesPolicy(record, policy) || this.queueNeedsSupersededDisposition(record, policy)))
-        || (record.status === "qmd_pending" && this.queueMatchesPolicy(record, policy)))
+        || (record.status === "qmd_pending"
+          && (this.queueMatchesPolicy(record, policy) || this.queueNeedsSupersededDisposition(record, policy))))
       .map((record) => ({
         record,
         dueAt: record.status === "qmd_pending" ? (record.nextAttemptAt ?? record.updatedAt) : record.updatedAt,
@@ -785,7 +786,10 @@ export class DailyNoteCanaryApplicator {
   }
 
   private queueNeedsSupersededDisposition(record: DailyNoteConsumerQueueRecordV1, policy: DailyNoteCanaryPolicy): boolean {
-    if (record.status !== "queued") return false;
+    if (record.status !== "queued" && record.status !== "qmd_pending") return false;
+    // Binding resolution can fail before the canonical write. Such work may
+    // be superseded, but a receipt-backed handoff must never be discarded.
+    if (record.status === "qmd_pending" && this.readReceipt(record.observationId)) return false;
     let observation: DailyNoteObservation;
     try { observation = this.readObservation(record); }
     catch { return false; }

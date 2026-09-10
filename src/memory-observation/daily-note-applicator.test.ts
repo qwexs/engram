@@ -354,6 +354,52 @@ describe("daily-note canary applicator", () => {
     expect(existsSync(join(root, "memory"))).toBe(false);
   });
 
+  test("settles a superseded unresolved QMD binding without writing under a replacement policy", async () => {
+    const root = workspace();
+    const value = batchObservation();
+    persistBatch(root, value);
+    let active = policy({
+      allowedObservationClasses: ["episodic.event", "episodic.decision"],
+      allowedBatchEvaluationPolicyDigest: value.evaluationPolicyDigest,
+      qmdBinding: { resolver: "exact-session-registry", manifestPath: join(root, "manifest.json"), workspaceRegistryDigest: sha256("manifest") },
+    });
+    const applicator = new DailyNoteCanaryApplicator({
+      workspace: root, resolveActivePolicy: () => active,
+      qmdBindingResolver: () => { throw new Error("binding unavailable"); },
+    });
+    expect((await applicator.processOne(new Date("2026-08-26T21:32:00.000Z"))).status).toBe("qmd_pending");
+    expect(applicator.readReceipt(value.observationId)).toBeNull();
+    active = { ...active, allowedBatchEvaluationPolicyDigest: sha256("replacement-policy") };
+    expect(applicator.nextDueAt()).not.toBeNull();
+    expect(await applicator.processOne(new Date("2026-08-26T21:34:00.000Z"))).toEqual({ status: "idle" });
+    expect(applicator.listQueue()[0]).toMatchObject({ status: "terminal", reasonCode: "policy_superseded_before_apply" });
+    expect(applicator.nextDueAt()).toBeNull();
+    expect(existsSync(join(root, "memory"))).toBe(false);
+  });
+
+  test("does not discard a receipt-backed QMD handoff when the apply policy changes", async () => {
+    const root = workspace();
+    const value = batchObservation();
+    persistBatch(root, value);
+    let active = policy({
+      allowedObservationClasses: ["episodic.event", "episodic.decision"],
+      allowedBatchEvaluationPolicyDigest: value.evaluationPolicyDigest,
+      qmdBinding: { collection: "sample-memory" },
+    });
+    const applicator = new DailyNoteCanaryApplicator({
+      workspace: root, resolveActivePolicy: () => active,
+      dirtyMarker: async () => { throw new Error("dirty mark unavailable"); },
+    });
+    expect((await applicator.processOne(new Date("2026-08-26T21:32:00.000Z"))).status).toBe("qmd_pending");
+    const receipt = applicator.readReceipt(value.observationId);
+    expect(receipt).not.toBeNull();
+    active = { ...active, allowedBatchEvaluationPolicyDigest: sha256("replacement-policy") };
+    expect(applicator.nextDueAt()).toBeNull();
+    expect(await applicator.processOne(new Date("2026-08-26T21:34:00.000Z"))).toEqual({ status: "idle" });
+    expect(applicator.listQueue()[0]).toMatchObject({ status: "qmd_pending", terminalAt: null });
+    expect(applicator.readReceipt(value.observationId)).toEqual(receipt);
+  });
+
   test("applies an admitted decision to Decisions with a typed receipt and idempotent replay", async () => {
     const root = workspace();
     const value = observation({

@@ -86,8 +86,12 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const dailyFailures = daily.filter(row => row.value.status === "terminal" && !dailyOk.has(row.value.reasonCode));
   const waiting = pending.filter(row => row.value.reasonCode === "semantic_batch_defer");
   const historicalGaps = admission.filter(row => row.value.stage === "terminal_gap");
-  const recovered = historicalGaps.filter(row => isAdmissionGapRecovered(workspace, row.value as any));
-  const gaps = historicalGaps.filter(row => !recovered.includes(row));
+  // Native command sessions never promise a conversational completion pair
+  // (captureMessageReceived ignores them). Preserve, but classify, old gaps.
+  const nativeCommandGaps = historicalGaps.filter(row => /^agent:[^:]+:telegram:slash:[^:]+$/.test(row.value.scope?.runtimeSessionKey ?? ""));
+  const conversationalGaps = historicalGaps.filter(row => !nativeCommandGaps.includes(row));
+  const recovered = conversationalGaps.filter(row => isAdmissionGapRecovered(workspace, row.value as any));
+  const gaps = conversationalGaps.filter(row => !recovered.includes(row));
   const age = (row: WorkerStateRow) => {
     const created = Date.parse(row.value.createdAt);
     if (!Number.isFinite(created)) { errors.push({ path: row.path, error: "invalid_pending_timestamp" }); return 0; }
@@ -108,7 +112,7 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const totalPending = pending.length + dailyPending.length + admissionPending.length + batchPending.length;
   return { status: failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending ? "pending" : "ok",
     pending: pending.length, totalPending, waitingContext: waiting.length, terminalFailures: failures.length, admissionGaps: gaps.length,
-    recoveredAdmissionGaps: recovered.length, historicalAdmissionGaps: historicalGaps.length,
+    recoveredAdmissionGaps: recovered.length, historicalAdmissionGaps: historicalGaps.length, nativeCommandGaps: nativeCommandGaps.length,
     dailyPending: dailyPending.length, qmdPending: dailyPending.filter(row => row.value.status === "qmd_pending" || row.value.phase === "qmd").length,
     admissionPending: admissionPending.length, batchPending: batchPending.length, recoveredBatchJobs: recoveredJobs.length, expiredClaims,
     dailyFailures: dailyFailures.length, oldestPendingAgeSeconds: Math.max(0, ...Object.values(stages).map(stage => stage.oldestPendingAgeSeconds)),

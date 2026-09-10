@@ -24,6 +24,13 @@ test("legitimate skips and successful applications are not failures", () => {
   f.put("consumers/daily-note/queue", "b", { status: "terminal", reasonCode: "canonical_applied" });
   expect(memoryWorkerHealth(f.root).status).toBe("ok");
 });
+test("historical native-command gaps remain visible separately from conversational loss", () => {
+  const f = fixture();
+  f.put("pre-admission/checkpoints", "command", { stage: "terminal_gap", scope: { runtimeSessionKey: "agent:alpha:telegram:slash:100000001" } });
+  expect(memoryWorkerHealth(f.root)).toMatchObject({ status: "ok", admissionGaps: 0, historicalAdmissionGaps: 1, nativeCommandGaps: 1 });
+  f.put("pre-admission/checkpoints", "conversation", { stage: "terminal_gap", scope: { runtimeSessionKey: "agent:alpha:telegram:direct:100000001" } });
+  expect(memoryWorkerHealth(f.root)).toMatchObject({ status: "degraded", admissionGaps: 1, historicalAdmissionGaps: 2, nativeCommandGaps: 1 });
+});
 test("waiting context is distinguished from technical failure and reports age", () => {
   const f = fixture(); f.put("queues/evaluator", "a", { status: "queued", reasonCode: "semantic_batch_defer", createdAt: "2026-09-07T12:00:00Z" });
   expect(memoryWorkerHealth(f.root, new Date("2026-09-07T12:10:00Z"))).toMatchObject({ status: "waiting_context", waitingContext: 1, oldestPendingAgeSeconds: 600 });

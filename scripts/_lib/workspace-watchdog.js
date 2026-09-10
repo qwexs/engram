@@ -1238,11 +1238,11 @@ function checkKg(workspace, findings) {
 }
 
 function checkCronConfig(workspace, engram, findings) {
-  if (!engram?.cron?.expectedJobName) {
+  if (!engram?.cron?.expectedJobName && !engram?.cron?.expectedJobId) {
     findings.push(makeFinding({
       code: "WD-CRON-006",
       level: "warn",
-      message: "engram.json has no cron.expectedJobName; cron drift checks are limited/disabled",
+      message: "engram.json has no cron.expectedJobId/expectedJobName; cron drift checks are limited/disabled",
       path: "engram.json",
     }));
   }

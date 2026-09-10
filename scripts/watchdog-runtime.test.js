@@ -110,3 +110,17 @@ test("cadence recognizes supported expressions, declines unknown schedules", () 
   expect(schedulerCadenceSeconds({ kind: "cron", expr: "0 * * * *" })).toBe(3600);
   expect(schedulerCadenceSeconds({ kind: "cron", expr: "0 2 * * *" })).toBe(null);
 });
+
+test("pinned heartbeat ignores disabled legacy names and detects schedule/payload drift", () => {
+  const payload = { kind: "agentTurn", message: "Gateway heartbeat-runner.js spawn-claim.js spawn-ack.js nightly" };
+  const config = { cron: { expectedJobId: "new", expectedJobName: "heartbeat", expectedSchedule: { kind: "cron", expr: "23 * * * *", tz: "UTC", staggerMs: 0 },
+    expectedPayloadSha256: new Bun.CryptoHasher("sha256").update(JSON.stringify(payload)).digest("hex") }, oll: { scheduleOwner: "nightly" } };
+  const job = { id: "new", name: "heartbeat", enabled: true, payload, schedule: config.cron.expectedSchedule };
+  const inventory = normalizeCronInventory([job, { id: "old", name: "heartbeat", enabled: false }]);
+  expect(auditHeartbeatScheduler(config, inventory)).toEqual([]);
+  job.schedule = { ...job.schedule, expr: "24 * * * *" };
+  job.payload = { ...payload, message: payload.message + " changed" };
+  expect(codes(auditHeartbeatScheduler(config, inventory))).toContain("WD-CRON-SCHEDULE");
+  expect(codes(auditHeartbeatScheduler(config, inventory))).toContain("WD-CRON-PAYLOAD-DRIFT");
+  expect(codes(auditHeartbeatScheduler(config, normalizeCronInventory([{ id: "old", name: "heartbeat" }])))).toEqual(["WD-CRON-UNVERIFIED"]);
+});

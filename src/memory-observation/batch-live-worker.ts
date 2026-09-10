@@ -146,7 +146,19 @@ export type BatchLiveFailureV1 = {
   diagnostics?: { outputLength: number; outputDigest: Digest; framing: string };
 };
 
+export type BatchLiveReconciliationV1 = {
+  schema: "engram.memory-batch-live-reconciliation.v1";
+  reconciliationId: Digest;
+  jobId: Digest;
+  bundleId: Digest;
+  evaluationPolicyDigest: Digest;
+  sources: Array<{ traceId: Digest; status: "terminal" | "queued"; reasonCode: string | null;
+    attempt: number; maxAttempts: number; queueDigest: Digest }>;
+  reconciledAt: string;
+};
+
 export type BatchLiveRunResult =
+  | { status: "reconciled"; jobId: Digest; sourceCount: number; exhaustedCount: number }
   | { status: "idle" | "busy"; reason?: string }
   | {
       status: "retry" | "terminal_failure";
@@ -171,7 +183,8 @@ export type BatchLiveFaultPoint =
   | "after_observation"
   | "after_terminal"
   | "after_source"
-  | "after_done";
+  | "after_done"
+  | "after_reconciliation";
 
 export class BatchLiveWorkerError extends Error {
   constructor(readonly code: string, message: string) {
@@ -421,6 +434,9 @@ export class BatchLiveWorker {
       const pending = this.pendingJob(this.options.policy);
       let job = pending;
       if (job) {
+        this.authorizeCurrentBatchEffects();
+        const reconciled = this.reconcileExhaustedJob(job, now);
+        if (reconciled) return reconciled;
         const queueByTrace = new Map(this.options.ledger.listQueue().map((record) => [record.traceId, record]));
         const retryNotDue = job.bundle.sourceRefs.some((source) => {
           const record = queueByTrace.get(source.traceId);
@@ -481,6 +497,9 @@ export class BatchLiveWorker {
           errorCode,
           failedAt,
         ));
+        const mixedExhaustion = retried.some((record) => record.status === "terminal")
+          && retried.some((record) => record.status !== "terminal");
+        if (mixedExhaustion) this.reconcileExhaustedJob(job, failedAt);
         const terminal = retried.every((record) => record.status === "terminal");
         if (terminal) {
           const failureBase = {
@@ -502,7 +521,7 @@ export class BatchLiveWorker {
           writeImmutable(this.donePath(job.jobId), failure as unknown as JsonValue);
         }
         return {
-          status: terminal ? "terminal_failure" : "retry",
+          status: terminal || mixedExhaustion ? "terminal_failure" : "retry",
           jobId: job.jobId,
           sourceCount: job.bundle.sourceRefs.length,
           reason: errorCode,
@@ -625,6 +644,61 @@ export class BatchLiveWorker {
     } finally {
       this.options.ledger.releaseWorkerLease("evaluator", ownerToken);
     }
+  }
+
+  /** An immutable bundle cannot be retried once a subset has exhausted its
+   * source budget. Seal the bundle, not the remaining sources. Their queue rows
+   * stay byte-identical and can form a new bundle on the next pass. */
+  private reconcileExhaustedJob(job: BatchLiveJobV1, now: Date): Extract<BatchLiveRunResult, { status: "reconciled" }> | null {
+    const receiptPath = join(this.root, "reconciliations", `${digestKey(job.jobId)}.json`);
+    let receipt: BatchLiveReconciliationV1;
+    if (existsSync(receiptPath)) {
+      receipt = readJson<BatchLiveReconciliationV1>(receiptPath);
+      const { reconciliationId, ...base } = receipt;
+      if (receipt.schema !== "engram.memory-batch-live-reconciliation.v1"
+        || receipt.jobId !== job.jobId || receipt.bundleId !== job.bundle.bundleId
+        || receipt.evaluationPolicyDigest !== job.evaluationPolicyDigest
+        || reconciliationId !== sha256(base as unknown as JsonValue)
+        || !same(receipt.sources.map(source => source.traceId), job.bundle.sourceRefs.map(source => source.traceId))) {
+        fail("RECONCILIATION_INVALID", "batch reconciliation identity is invalid");
+      }
+    } else {
+      const queues = new Map(this.options.ledger.listQueue().map(record => [record.traceId, record]));
+      const records = job.bundle.sourceRefs.map(source => queues.get(source.traceId));
+      const exhausted = records.filter(record => record?.status === "terminal"
+        && record.attempt >= record.maxAttempts && record.reasonCode?.startsWith("batch_"));
+      if (!exhausted.length) return null;
+      if (records.some(record => !record || (record.status !== "queued" && !exhausted.includes(record)))) {
+        fail("RECONCILIATION_CONFLICT", "batch contains unrelated terminal or claimed sources");
+      }
+      // Old workers may have persisted a successful result before discovering
+      // exhaustion. Do not abandon any already-materialized assertions.
+      const observations = join(this.options.ledger.root, "observations", "batch");
+      if (existsSync(observations) && readdirSync(observations).filter(name => name.endsWith(".json"))
+        .some(name => readJson<BatchObservationV1>(join(observations, name)).bundleId === job.bundle.bundleId)) {
+        fail("RECONCILIATION_EFFECTS_EXIST", "exhausted batch has persisted observations; explicit effect reconciliation required");
+      }
+      const base = {
+        schema: "engram.memory-batch-live-reconciliation.v1" as const,
+        jobId: job.jobId, bundleId: job.bundle.bundleId, evaluationPolicyDigest: job.evaluationPolicyDigest,
+        sources: records.map(record => ({ traceId: record!.traceId,
+          status: record!.status as "terminal" | "queued", reasonCode: record!.reasonCode,
+          attempt: record!.attempt, maxAttempts: record!.maxAttempts,
+          queueDigest: sha256(record as unknown as JsonValue) })),
+        reconciledAt: now.toISOString(),
+      };
+      receipt = { ...base, reconciliationId: sha256(base as unknown as JsonValue) };
+      writeImmutable(receiptPath, receipt as unknown as JsonValue);
+    }
+    const currentQueues = new Map(this.options.ledger.listQueue().map(record => [record.traceId, record]));
+    if (receipt.sources.some(source => !currentQueues.has(source.traceId)
+      || sha256(currentQueues.get(source.traceId) as unknown as JsonValue) !== source.queueDigest)) {
+      fail("RECONCILIATION_CONFLICT", "source state changed after batch reconciliation");
+    }
+    this.options.fault?.("after_reconciliation");
+    writeImmutable(this.donePath(job.jobId), receipt as unknown as JsonValue);
+    return { status: "reconciled", jobId: job.jobId, sourceCount: receipt.sources.length,
+      exhaustedCount: receipt.sources.filter(source => source.status === "terminal").length };
   }
 
   private pendingJob(policy: BatchLivePolicyV1): BatchLiveJobV1 | null {

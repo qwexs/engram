@@ -726,3 +726,113 @@ describe("durable live micro-batch worker", () => {
     }
   });
 });
+
+// Unequal budgets arise after invalid output, successful defer, and fresh evidence.
+async function mixedAttemptScenario(options: { legacy?: boolean; crash?: boolean; write?: boolean } = {}) {
+  const { workspace, ledger, policy } = setup();
+  admit(ledger, 901, "2026-08-31T20:01:00.000Z");
+  admit(ledger, 902, "2026-08-31T20:02:00.000Z");
+  let current = new Date("2026-08-31T20:20:00.000Z"), calls = 0, crash = options.crash;
+  const worker = new BatchLiveWorker({ workspace, ledger, policy, storeRoot: join(workspace, "state"), now: () => current,
+    fault: point => { if (crash && point === "after_reconciliation") { crash = false; throw new Error("reconciliation crash"); } },
+    complete: async request => {
+      calls++;
+      const sources = JSON.parse(request.prompt).task.sources;
+      const refs = sources.map((source: any) => source.sourceRef.traceId);
+      const group = calls === 1 || calls === 3
+        ? { groupId: "incomplete", decision: "skip", sourceRefs: refs.slice(0, 1), reason: "social_noise" }
+        : calls === 2
+          ? { groupId: "deferred", decision: "defer", sourceRefs: refs, reason: "awaiting_continuation" }
+          : options.write
+            ? { groupId: "written", decision: "write", sourceRefs: refs, assertions: [{ section: "events", text: "Completed the synthetic request.",
+                actorRef: "assistant", outcomeStatus: "completed", confidence: 1, reasonCodes: ["explicit_outcome"],
+                citations: [{ traceId: refs[0], evidenceRef: sources[0].evidenceRefs[0] }] }] }
+            : { groupId: "skipped", decision: "skip", sourceRefs: refs, reason: "social_noise" };
+      return { resolvedModel: "openai/gpt-5.6-terra", output: JSON.stringify({ schema: "engram.memory-batch-shadow-output.v1", groups: [group] }) };
+    },
+  });
+  expect(await worker.processOne()).toMatchObject({ status: "retry", reason: "batch_source_coverage" });
+  current = new Date("2026-08-31T20:26:00.000Z");
+  expect(await worker.processOne()).toMatchObject({ status: "completed", deferredCount: 2 });
+  expect(ledger.listQueue().map(record => record.attempt)).toEqual([1, 1]);
+  admit(ledger, 903, "2026-08-31T20:27:00.000Z");
+  current = new Date("2026-08-31T20:47:00.000Z");
+  // Simulate the old failure/result path, not hand-edited queue records.
+  const reconcile = (worker as any).reconcileExhaustedJob;
+  if (options.legacy) (worker as any).reconcileExhaustedJob = () => null;
+  return { workspace, ledger, worker, policy, calls: () => calls,
+    advance: () => { current = new Date(current.getTime() + 360_000); },
+    restore: () => { (worker as any).reconcileExhaustedJob = reconcile; } };
+}
+
+test("mixed exhaustion seals only the batch and lets eligible sources progress", async () => {
+  const s = await mixedAttemptScenario();
+  expect(await s.worker.processOne()).toMatchObject({ status: "terminal_failure", reason: "batch_source_coverage" });
+  const exhausted = s.ledger.listQueue().filter(record => record.status === "terminal");
+  expect(exhausted).toHaveLength(2);
+  expect(s.ledger.listQueue().filter(record => record.status === "queued")).toHaveLength(1);
+  s.advance();
+  expect(await s.worker.processOne()).toMatchObject({ status: "completed", sourceCount: 1 });
+  expect(s.ledger.listQueue().filter(record => exhausted.some(source => source.traceId === record.traceId))).toEqual(exhausted);
+  expect((await s.worker.processOne()).status).toBe("idle");
+  expect(s.calls()).toBe(4);
+});
+
+test("legacy mixed batch with cached valid result is reconciled without another model call", async () => {
+  const s = await mixedAttemptScenario({ legacy: true });
+  await s.worker.processOne(); s.advance();
+  await expect(s.worker.processOne()).rejects.toMatchObject({ code: "BATCH_CLAIM_CONFLICT" });
+  const before = s.ledger.listQueue(); s.restore();
+  expect(await s.worker.processOne()).toMatchObject({ status: "reconciled", sourceCount: 3, exhaustedCount: 2 });
+  expect(s.ledger.listQueue()).toEqual(before);
+  expect(s.calls()).toBe(4);
+  expect(await s.worker.processOne()).toMatchObject({ status: "completed", sourceCount: 1 });
+  expect(s.calls()).toBe(5);
+});
+
+test("mixed reconciliation resumes after receipt persistence without rewriting source states", async () => {
+  const s = await mixedAttemptScenario({ crash: true });
+  await expect(s.worker.processOne()).rejects.toThrow("reconciliation crash");
+  const before = s.ledger.listQueue(); s.advance();
+  expect(await s.worker.processOne()).toMatchObject({ status: "reconciled", exhaustedCount: 2 });
+  expect(s.ledger.listQueue()).toEqual(before);
+  expect(s.calls()).toBe(3);
+  expect(await s.worker.processOne()).toMatchObject({ status: "completed", sourceCount: 1 });
+});
+
+test("legacy recovery refuses to abandon persisted assertions", async () => {
+  const s = await mixedAttemptScenario({ legacy: true, write: true });
+  await s.worker.processOne(); s.advance();
+  await expect(s.worker.processOne()).rejects.toMatchObject({ code: "BATCH_CLAIM_CONFLICT" });
+  const before = s.ledger.listQueue(); s.restore();
+  await expect(s.worker.processOne()).rejects.toMatchObject({ code: "RECONCILIATION_EFFECTS_EXIST" });
+  expect(s.ledger.listQueue()).toEqual(before);
+  expect(s.calls()).toBe(4);
+});
+
+
+test("mixed reconciliation refuses changed source state after a crash", async () => {
+  const s = await mixedAttemptScenario({ crash: true });
+  await expect(s.worker.processOne()).rejects.toThrow("reconciliation crash");
+  s.advance();
+  const now = new Date("2026-08-31T20:53:00.000Z");
+  const token = "synthetic-independent-recovery";
+  expect(s.ledger.acquireWorkerLease("evaluator", token, 300_000, now)).toBe(true);
+  const trace = s.ledger.listQueue().find(record => record.status === "queued")!.traceId;
+  const [claimed] = s.ledger.claimBatchExact(token, [trace], now);
+  s.ledger.retry(claimed!, 300_000, "batch_provider_failure", now);
+  s.ledger.releaseWorkerLease("evaluator", token);
+  const before = s.ledger.listQueue();
+  await expect(s.worker.processOne()).rejects.toMatchObject({ code: "RECONCILIATION_CONFLICT" });
+  expect(s.ledger.listQueue()).toEqual(before);
+});
+
+test("mixed recovery still requires current producer authority", async () => {
+  const s = await mixedAttemptScenario({ legacy: true });
+  await s.worker.processOne(); s.restore(); s.advance();
+  const denied = new BatchLiveWorker({ ...(s.worker as any).options,
+    resolveAuthorityContracts: () => ({ producerRegistry: {}, authorityPolicy: {} }) });
+  const before = s.ledger.listQueue();
+  await expect(denied.processOne()).rejects.toMatchObject({ code: "AUTHORITY_DENIED" });
+  expect(s.ledger.listQueue()).toEqual(before);
+});

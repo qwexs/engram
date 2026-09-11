@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **fix(qmd/bootstrap/watchdog): preserve the managed-exec scheduler contract.**
+  The QMD installer now emits an exec-only script (one tool call, synchronous,
+  600/650/660 second nested budgets), propagates nonzero/incomplete execution,
+  defaults fresh jobs to disabled, preserves ID/activation on update, and writes
+  a declaration only after read-back. Init can explicitly provision it from an
+  existing deployment manifest; workspace-only cannot. Watchdog detects live
+  payload/schedule drift, unverified inventory, stale/failed reports and provenance,
+  plus host-owned Workshop containment errors without modifying host code/models.
+  Clean-install and operations documentation now distinguish scaffold, activation
+  gates, successful scheduling and actual embedding/provenance evidence.
+
 - **feat(memory): add source-specific QMD index and recall provenance.**
   A successful canonical apply now publishes an immutable, content-free index
   handoff after the exact dirty generation. The global maintenance coordinator

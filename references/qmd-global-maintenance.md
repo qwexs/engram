@@ -1,7 +1,66 @@
 # Global QMD maintenance coordinator
 
-> Status: coordinator core, shadow writers and runtime adapter implemented.
-> Scope: production config cutover and initial vector backfill remain gated.
+## Current scheduler contract (2026-09-11)
+
+The canonical installer now generates `payload.kind=script`: one synchronous
+managed Gateway `exec`, `toolsAllow=["exec"]`, `toolBudget=1`, no model and no
+background/process continuation. With the default 600-second coordinator limit,
+exec has 650 seconds and the enclosing script 660 seconds. Nonzero exit or any
+status other than `completed` throws and fails the cron. Secrets stay in the
+managed exec environment; they are never copied into command env, script or files.
+The simple `command` runner does not provide the same environment contract.
+
+```bash
+# Review; dry-run does not read/change cron or create files.
+bun skills/engram/scripts/install-qmd-maintenance-cron.js \
+  --workspace /path/to/coordinator --manifest /private/migration.json --dry-run
+
+# Provision once, disabled on first install. Reinstall preserves ID/activation.
+bun skills/engram/scripts/install-qmd-maintenance-cron.js \
+  --workspace /path/to/coordinator --manifest /private/migration.json
+```
+
+The manifest is a global registry or migration wrapper, NOT a scheduler
+specification. The installer writes `maintenance-scheduler.json` beside the
+manifest only after live read-back agrees. `--declaration` overrides that path;
+`--report` selects the coordinator result file (default
+`maintenance-last-run.json` beside the manifest). Parent directories must exist.
+It refuses ambiguous/pinned-missing/incomplete inventories and hosts without
+script support. There is no automatic legacy payload fallback.
+
+Before explicit `--enabled`: enroll the workspace in the one physical-index
+registry, verify all workspace modes are `coordinated`, verify initial vector
+backfill, validate managed-exec credentials without printing them, and obtain
+operator activation authorization. These are deployment evidence gates, not
+claims that the installer independently proves. Select a free UTC minute with
+`--schedule`; `staggerMs=0` is fixed. A different minute alone is not a lock.
+
+`init.js --qmd-manifest /private/migration.json` calls this same installer,
+records the declaration pointer, and never creates another registry/index,
+backfills, or auto-enables a new coordinator. `--workspace-only` forbids this
+shared mutation. Without this option, init leaves enrollment/provisioning to
+the deployment owner. Workspace scaffolding alone is not operational readiness.
+
+Watchdog accepts `--qmd-scheduler /private/maintenance-scheduler.json` for a fleet,
+or the workspace's `qmd.maintenance.schedulerDeclaration` pointer. It checks
+exact pinned identity/payload/schedule/delivery, the fail-closed wrapper, recent
+execution and the coordinator result/provenance. It never evaluates cron code.
+An unavailable/partial inventory is **unverified**, not proof of a missing job.
+A `clean` pass does not prove new embeddings; a deferred pass is not success
+proof. Actual index generation/SQLite evidence and explicit scoped search are
+still required for end-to-end acceptance.
+
+Workshop collection reviews are host-owned, not Engram coordinators. On the
+2026-09-11 deployment, their inherited Codex runtime fails the host's
+Workshop-root containment guard. Engram must not patch the host, relax the guard,
+or change shared models to conceal that failure. Watchdog reports observed
+containment failures separately from never-run/unverified reviews.
+
+## Coordinator design history
+
+The core design below predates the deployment cutover. Its original PR scope
+is historical; current scheduler installation is described above. Production
+activation remains deployment-owned even though the reusable installer exists.
 
 ## Decision
 

@@ -5,7 +5,8 @@ description: "Engram memory operations and ownership-aware capture."
 
 # Engram Memory System
 
-> v3.6.5 (2026-09-04). Skill is read-only — copy scripts to your workspace, do not edit.
+> v3.6.5. Repository-owned source; changes require an explicit maintenance request.
+> Use the canonical installed scripts; do not make divergent workspace copies.
 > Changelog: [CHANGELOG.md](CHANGELOG.md) · Script reference: [references/scripts.md](references/scripts.md) · Watchdog: [references/watchdog.md](references/watchdog.md)
 
 ## Quick Start
@@ -38,6 +39,15 @@ mutation. Cron provisioning is disabled by default and requires explicit
 `adaptation.mode=active`, and a matching fresh-init rollout projection. The
 single fleet registry and scheduler remain deployment-owned; init does not
 create a competing scheduler.
+
+QMD coordinator bootstrap is explicit: `init.js --qmd-manifest /private/migration.json`
+uses the canonical deterministic `script -> managed Gateway exec` installer,
+creates a fresh job disabled, and records its read-back declaration. No model,
+command-runner fallback, secret copying, backfill or auto-activation. Additional
+workspaces enroll in the existing coordinator; `--workspace-only` forbids shared
+scheduler provisioning. [Setup](references/setup.md) · [Scheduler contract](references/qmd-global-maintenance.md).
+Watchdog can audit a shared declaration with `--qmd-scheduler <path>` and reports
+Workshop containment errors without trying to repair host-owned jobs.
 
 ## Engram QMD CLI
 

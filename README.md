@@ -195,6 +195,14 @@ bun skills/engram/scripts/install-qmd.js
 bun skills/engram/scripts/init.js --with-cron
 ```
 
+QMD при чистой установке: `init.js --qmd-manifest /private/migration.json`
+подключает единый scheduler `script → managed exec` и записывает декларацию
+после read-back. Новое задание отключено; backfill и активация — отдельные
+проверяемые этапы. Новые проекты подключаются к существующему coordinator.
+Подробности: [Setup](references/setup.md), [QMD](references/qmd-global-maintenance.md).
+Watchdog проверяет cron, контракт payload и квитанции; host-owned Workshop
+с несовместимым runtime остаётся отдельным блокером.
+
 Существующий workspace:
 
 ```bash

@@ -19,6 +19,47 @@
   Init creates and verifies `skills/engram` as a symlink to the canonical
   skill so the generated cron entrypoints are available immediately.
 
+## QMD scheduler bootstrap (current contract)
+
+Workspace init delegates index freshness; it does **not** imply an enrolled,
+backfilled, running QMD deployment. For a new coordinator, prepare the private
+registry/migration manifest and review the plan:
+
+```bash
+bun skills/engram/scripts/init.js --workspace /path/to/coordinator \
+  --qmd-manifest /private/migration.json --qmd-cron-schedule '33 * * * *' --dry-run
+# After reviewing the full init plan, run without --dry-run.
+```
+
+This explicit option provisions the canonical `script -> managed exec` job
+(disabled on first install), reads it back, and records the scheduler declaration
+pointer. Reinstall preserves ID and activation. It cannot be combined with
+`--workspace-only`. New project workspaces join the existing global registry and
+coordinator instead; never provision a coordinator per project.
+
+All-workspace coordinated mode, named-index enrollment, initial backfill,
+managed-exec environment canary and operator authorization precede explicit
+activation through `install-qmd-maintenance-cron.js --enabled`. Check the live
+minute inventory before choosing a slot. Bootstrap does not verify these gates
+or enable a new job for you. No `command` or model-driven QMD fallback exists.
+
+Readiness check (read-only):
+
+```bash
+bun skills/engram/scripts/watchdog.js --workspace /path/to/coordinator \
+  --qmd-scheduler /private/maintenance-scheduler.json --json
+```
+
+Then verify a real scheduler execution, coordinator status/provenance, generation
+coverage, and scoped QMD search. `cron ok`, an empty/deferred pass, or successful
+scaffolding alone is not end-to-end proof. See [full QMD contract](qmd-global-maintenance.md).
+
+Workshop is a separate host prerequisite: its managed reviews need a runtime
+that enforces Workshop-root containment. Inherited Codex was rejected in the
+2026-09-11 deployment. Init does not edit system-owned review jobs, change shared
+models or patch OpenClaw; watchdog reports this as `WD-WORKSHOP-RUNTIME` when
+observed, or `WD-WORKSHOP-UNVERIFIED` for never-run reviews.
+
 ## OLL clean-install contract
 
 `init.js` is the canonical workspace installer. A successful fresh init:

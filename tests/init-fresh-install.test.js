@@ -76,6 +76,19 @@ describe("init.js — fresh install happy path", () => {
     }
   });
 
+  test("QMD bootstrap plans canonical scheduler without creating files or enabling it", async () => {
+    const manifest = join(workspace, 'manifest.json');
+    writeFileSync(manifest, JSON.stringify({ schema: 'engram.qmd.global-registry.v1', index: { name: 'test' }, workspaces: [], collections: [] }));
+    const r = await runInit(workspace, ['--dry-run', '--qmd-manifest', manifest]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('canonical script -> managed exec; fresh disabled');
+    expect(existsSync(join(workspace, 'maintenance-scheduler.json'))).toBe(false);
+    expect(existsSync(join(workspace, 'engram.json'))).toBe(false);
+    const invalid = await runInit(workspace, ['--workspace-only', '--qmd-manifest', manifest]);
+    expect(invalid.exitCode).toBe(2);
+    expect(existsSync(join(workspace, 'memory'))).toBe(false);
+  });
+
   test("init --dry-run prints plan without executing", async () => {
     const { exitCode, stdout } = await runInit(workspace, ["--dry-run"]);
     expect(exitCode).toBe(0);

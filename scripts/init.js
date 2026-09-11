@@ -21,6 +21,8 @@ const { values: args } = parseArgs({
     'with-cron': { type: 'boolean', default: false },
     'enable-cron': { type: 'boolean', default: false },
     'cron-schedule': { type: 'string' },
+    'qmd-manifest': { type: 'string' },
+    'qmd-cron-schedule': { type: 'string', default: '33 * * * *' },
     'auto-detect-sessions': { type: 'boolean' },
     'with-sample-domain': { type: 'boolean', default: false },
     'dry-run': { type: 'boolean', default: false },
@@ -50,6 +52,9 @@ Options:
   --hooks-dir <path>        Explicit OpenClaw runtime hooks directory. By default
                              install-hooks.js discovers managedHooksDir from OpenClaw.
   --force                   Merge with existing dirs (won't overwrite files)
+  --qmd-manifest <path>     Provision the single QMD script scheduler from an existing fleet registry.
+                             Fresh job disabled; existing activation preserved. No backfill/activation.
+  --qmd-cron-schedule <e>   QMD slot (default: "33 * * * *", UTC, staggerMs=0).
   --with-cron               Also install the deterministic heartbeat cron (idempotent).
                              The cron is created disabled unless --enable-cron is explicit.
   --enable-cron             Enable a newly installed heartbeat cron immediately.
@@ -133,6 +138,14 @@ if (!Number.isFinite(CHILD_TIMEOUT_MS) || CHILD_TIMEOUT_MS < 1000) {
   process.exit(2);
 }
 const WORKSPACE_ONLY = !!args['workspace-only'];
+if (WORKSPACE_ONLY && args['qmd-manifest']) {
+  console.error('--workspace-only cannot provision a shared QMD scheduler');
+  process.exit(2);
+}
+if (args['qmd-manifest'] && !existsSync(resolve(args['qmd-manifest']))) {
+  console.error('--qmd-manifest must point to an existing deployment registry');
+  process.exit(2);
+}
 if (WORKSPACE_ONLY && args['with-cron']) {
   console.error('--workspace-only cannot be combined with --with-cron');
   process.exit(2);
@@ -1465,6 +1478,28 @@ if (args['with-cron']) {
   } else {
     recordCreate('cron', `install deterministic heartbeat ${args['enable-cron'] ? 'enabled' : 'disabled'} with schedule ${schedule}; OLL enabled/active`);
   }
+}
+
+// Shared QMD provisioning is explicit and never creates another registry/index.
+if (args['qmd-manifest']) {
+  const manifest = resolve(args['qmd-manifest']);
+  const schedulerPath = join(dirname(manifest), 'maintenance-scheduler.json');
+  if (dryRun) recordCreate('qmd-scheduler', `canonical script -> managed exec; fresh disabled, existing activation preserved; manifest=${manifest}`);
+  else {
+    const result = spawnSync('bun', [join(SKILL_DIR, 'scripts/install-qmd-maintenance-cron.js'),
+      '--workspace', WORKSPACE, '--manifest', manifest, '--schedule', args['qmd-cron-schedule']],
+      { cwd: WORKSPACE, stdio: 'inherit', timeout: CHILD_TIMEOUT_MS });
+    if (result.status !== 0) recordError('QMD scheduler provisioning/read-back failed; no legacy fallback');
+    else {
+      const path = join(WORKSPACE, 'engram.json');
+      const cfg = JSON.parse(readFileSync(path, 'utf8'));
+      cfg.qmd.maintenance = { ...cfg.qmd.maintenance, schedulerDeclaration: schedulerPath };
+      writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
+      recordCreate('qmd-scheduler', 'script scheduler verified; fresh activation/backfill still require deployment preflight');
+    }
+  }
+} else {
+  recordSkip('qmd-scheduler', 'shared scheduler provisioning', 'deployment-owned; use --qmd-manifest or enroll in existing coordinator');
 }
 
 // --- AC6: Sample domain ---

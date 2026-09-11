@@ -240,19 +240,49 @@ quarantine, release, and rollback evidence. Watchdog never performs rollout.
 This is deliberately conservative: likely pollution is a warning, not a delete
 instruction. Engram's no-deletion rule still applies.
 
-### Cron drift visibility
+### Cron and QMD scheduler drift (current runtime checks)
 
-- `WD-CRON-006` — `engram.json` has no `cron.expectedJobName`, so deeper cron
-  drift checks are limited/disabled.
+The CLI reads one caller-scoped `openclaw cron list --all --json` snapshot plus
+minimal effective config/plugin observations. Library callers opt in with
+`cronPayload=true`; tests can supply observations. `--no-runtime` explicitly
+marks runtime health unverified. Partial/inaccessible inventory is not absence.
 
-The auditor does not call OpenClaw cron APIs or modify jobs. Cron repair, if ever
-added, should be a separate explicitly-invoked tool or guarded phase.
+- `WD-CRON-006` — no expected heartbeat identity.
+- `WD-CRON-*` — pinned heartbeat payload/schedule drift, duplicate/disabled jobs,
+  or unverified visibility. Reviewed payload hash is not interchangeable with
+  a generic substring match.
+- `WD-QMD-SCHEDULER-DECLARATION` — coordinated mode lacks a readable declaration.
+- `WD-QMD-SCHEDULER-MODE` — workspace is not coordinated despite a shared declaration.
+- `WD-QMD-SCHEDULER-CONTRACT` — not the canonical fail-closed `script` wrapper,
+  one synchronous managed exec, budget 1, nested timeout, exec-only tools.
+- `WD-QMD-SCHEDULER-DRIFT` / `DUPLICATE` — live job differs from declaration or
+  another enabled coordinator shares its identity.
+- `WD-QMD-SCHEDULER-UNVERIFIED` / `DISABLED` / `NEVER-RUN` / `STALE` — visibility,
+  activation and schedule-freshness states, distinct from execution failure.
+- `WD-QMD-SCHEDULER-EXECUTION` — latest cron execution failed.
+- `WD-QMD-SCHEDULER-REPORT*` / `PROVENANCE` / `DEFERRED` — missing/stale/failed or
+  partial coordinator result, failed workspace reconciliation, or deferred lease.
+  A `clean` pass is valid but not evidence of newly built vectors.
+- `WD-WORKSHOP-RUNTIME` — observed host review containment refusal; host-owned,
+  no automatic Engram repair or model/guard changes.
+- `WD-WORKSHOP-UNVERIFIED` / `EXECUTION` — never-run or other failed review,
+  restricted to the workspace's agent identity.
+
+Declaration resolution: explicit `--qmd-scheduler <absolute-path>` (shared across
+selected workspaces), then `qmd.maintenance.schedulerDeclaration`, then the local
+`ops/qmd-global-migration/maintenance-scheduler.json` convention. For a fresh
+installation the manifest can live anywhere; bootstrap records the pointer.
+
+The auditor never evaluates cron scripts, reads credential values, repairs jobs,
+or runs update/embed. Cron status/report checks are not full physical-index or
+source-message E2E proof. Memory Worker plugin/route/scheduler checks remain
+independent; v2 archive findings remain separate from active health.
 
 ## Read-only guarantee
 
 The auditor only reads files, opens an explicitly configured QMD SQLite index
 read-only, and invokes read-only commands (`validate.js` and
-`qmd collection list`). It does not:
+`qmd collection list`, OpenClaw cron/config/plugin inspection). It does not:
 
 - edit workspace files;
 - edit KG facts;

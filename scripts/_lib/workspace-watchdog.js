@@ -21,6 +21,7 @@ import { DEPRECATED_HEARTBEAT_KEYS, LEGACY_OLL_PHASES } from "../../src/oll/lega
 import { listQmdCollections, readQmdCapabilities } from "./qmd-provision.js";
 import { observerOwnsDailyCapture } from "./observer-daily-ownership.ts";
 import { auditHeartbeatScheduler, auditMemoryWorkerRuntime, auditMissingWorkerProjection, collectWatchdogRuntime } from "./watchdog-runtime.js";
+import { auditQmdScheduler, auditWorkshopReviews } from "./qmd-scheduler-watchdog.js";
 import { auditKgV3 } from "../../src/kg-v3/watchdog.ts";
 import { auditMemoryObservation } from "../../src/memory-observation/watchdog.ts";
 
@@ -1911,6 +1912,8 @@ export function auditWorkspace(workspaceInput, options = {}) {
   if (options.cronPayload === true) {
     const runtime = options.runtime ?? collectWatchdogRuntime(workspace);
     checkCronPayloadVersion(workspace, findings, engram, runtime);
+    findings.push(...auditQmdScheduler(workspace, engram, runtime?.cron, { declarationPath: options.qmdScheduler, now: options.now }));
+    findings.push(...auditWorkshopReviews(getAgentId(workspace), runtime?.cron));
     const projectionPath = join(workspace, "memory-state/memory-observation/projection.json");
     if (existsSync(projectionPath)) {
       try {

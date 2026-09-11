@@ -458,12 +458,20 @@ bun skills/engram/scripts/install-qmd-maintenance-cron.js \
   --manifest /private/migration.json --workspace /path/to/coordinator-workspace
 ```
 
-Installs the global coordinator as an OpenClaw `command` payload rather than
-an `agentTurn`. The manifest must be a global registry or a migration wrapper
-containing one (not the scheduler declaration); use `--dry-run` to review the
-exact argv before rollout.
-The manifest stays deployment-private; the installer does not enable a
-coordinator before its existing coordinated-mode and vector-backfill gates.
+Installs one deterministic `script` payload with one synchronous managed Gateway
+`exec` (`toolsAllow=["exec"]`, `toolBudget=1`), not `command` or `agentTurn`.
+Nonzero/incomplete exec fails the cron. The default nested timeouts are
+600/650/660 seconds (coordinator/exec/script). Managed credentials are not copied.
+Fresh jobs are disabled; updates preserve ID and activation unless `--enabled`
+or `--disabled` is explicit. The manifest must be a registry/migration wrapper,
+not the scheduler declaration. `--dry-run` prints the spec without mutation.
+`--report` and `--declaration` override the result/read-back paths beside the
+manifest. The installer verifies live read-back before writing the declaration;
+unsupported script hosts and ambiguous inventories fail without legacy fallback.
+
+For workspace bootstrap, `init.js --qmd-manifest <path>` invokes the same
+installer and records `qmd.maintenance.schedulerDeclaration`. No registry,
+backfill or fresh activation is implicit. See [QMD contract](qmd-global-maintenance.md).
 
 ## install-deterministic-heartbeat-cron.js — No-model heartbeat cron
 

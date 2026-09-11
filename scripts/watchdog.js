@@ -38,6 +38,7 @@ const { values: args } = parseArgs({
     "no-runtime": { type: "boolean", default: false },
     "archive-details": { type: "boolean", default: false },
     "qmd-registry": { type: "string" },
+    "qmd-scheduler": { type: "string" },
     "exit-zero-on-warn": { type: "boolean", default: false },
     "help": { type: "boolean", short: "h", default: false },
   },
@@ -65,6 +66,7 @@ Options:
   --no-routing             Skip Telegram topic routing checks.
   --no-runtime             Skip host plugin/scheduler observations (reported unverified).
   --archive-details        Include historical v2 findings in human output (JSON always includes them).
+  --qmd-scheduler <path>   Shared QMD scheduler declaration for selected workspaces.
   --qmd-registry <path>    Audit a global QMD registry and merge findings once.
   --exit-zero-on-warn      Exit 0 for warnings-only reports (useful for cron).
   -h, --help               Show this help.
@@ -82,7 +84,7 @@ Read-only guarantee:
 }
 
 const unknown = Object.keys(args).filter((k) => ![
-  "workspace", "all", "workspaces-dir", "json", "output", "no-core", "no-qmd", "no-hooks", "no-routing", "no-runtime", "archive-details", "qmd-registry", "exit-zero-on-warn", "help", "_",
+  "workspace", "all", "workspaces-dir", "json", "output", "no-core", "no-qmd", "no-hooks", "no-routing", "no-runtime", "archive-details", "qmd-registry", "qmd-scheduler", "exit-zero-on-warn", "help", "_",
 ].includes(k));
 if (unknown.length) {
   console.error(`❌ Unknown option(s): ${unknown.map((k) => `--${k}`).join(", ")}`);
@@ -112,7 +114,8 @@ const options = {
   qmd: !args["no-qmd"],
   hooks: !args["no-hooks"],
   routing: !args["no-routing"],
-  cronPayload: !args["no-runtime"] && !(args["no-core"] && args["no-qmd"] && args["no-hooks"]),
+  qmdScheduler: args["qmd-scheduler"] ? resolve(args["qmd-scheduler"]) : undefined,
+  cronPayload: !args["no-runtime"] && (Boolean(args["qmd-scheduler"]) || !(args["no-core"] && args["no-qmd"] && args["no-hooks"])),
 };
 // One bounded caller-scoped snapshot per CLI invocation, not once per workspace.
 if (options.cronPayload) options.runtime = collectWatchdogRuntime(workspaces[0]);

@@ -170,6 +170,20 @@ export function parseContextualOutput(raw: string | unknown, bundleValue: Compil
     for (const a of value.assertions as ContextAssertion[]) {
         if (!value.dispositions.some((d: ContextDisposition) => d.kind === "asserted" && d.assertionIds.includes(a.id)))
             reject();
+    }
+    // Complete only redundant context edges already proven by exact, validated
+    // spans. Never invent a source disposition, a primary assertion edge, an
+    // asserted-source decision, a quote, or semantic content. Skip/unresolved
+    // and empty supports remain strict errors when contradicted by citations.
+    for (const d of value.dispositions as ContextDisposition[]) {
+        if (!["asserted", "supports", "duplicate"].includes(d.kind)) continue;
+        for (const a of value.assertions as ContextAssertion[]) {
+            const cited = a.spans.filter(s => s.traceId === d.traceId);
+            if (!d.assertionIds.includes(a.id) && cited.length && cited.every(s => s.purpose === "context"))
+                d.assertionIds.push(a.id);
+        }
+    }
+    for (const a of value.assertions as ContextAssertion[]) {
         if (a.spans.some(s => !value.dispositions.some((d: ContextDisposition) => d.traceId === s.traceId && d.assertionIds.includes(a.id))))
             reject();
     }

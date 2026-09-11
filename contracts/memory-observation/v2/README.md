@@ -37,7 +37,11 @@ source message time is not invented. Both daily and domain text expose status,
 subject and quotes for retrieval. The old v1 validator and renderer remain strict.
 
 Each source disposition (`asserted`, `supports`, `duplicate`, `skip`, `unresolved`)
-has a reason and exact assertion links. Unresolved is a visible debt, not a
+has a reason and exact assertion links. A missing redundant context-only link
+may be derived from already validated exact spans when a nonempty semantic
+disposition and an explicit asserted source already exist. Missing primary
+links, missing dispositions, invented citations and asserted-source decisions
+are never repaired implicitly. Normalization is deterministic and idempotent. Unresolved is a visible debt, not a
 successful semantic skip. The one-pass v2 producer does not repeatedly defer
 unchanged evidence: established facts are written; unresolved input is retained
 in terminal accounting for explicit later recovery. Universal episode joining

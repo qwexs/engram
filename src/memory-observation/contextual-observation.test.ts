@@ -120,3 +120,20 @@ test('bounded stored episode candidates resolves a current instruction without r
     fakeActor.assertions[0]!.spans[1]!.purpose = 'assertion';
     expect(() => parseContextualOutput(fakeActor, b, now)).toThrow();
 });
+
+
+test('derives a redundant context backlink without inventing a primary or semantic disposition',()=>{
+ const b=fixture(),o=output(b);o.assertions[0]!.spans[0]!.purpose='context';
+ o.assertions.push({id:'proposal',section:'events',text:'The assistant proposed a timer fix commit.',subject:'timer fix',resolution:'explicit',actorRef:'assistant',status:'proposed',spans:[{...o.assertions[0]!.spans[0]!,purpose:'assertion'}]});
+ o.dispositions[0]={traceId:b.inputs[0]!.traceId,kind:'asserted',assertionIds:['proposal'],reason:'An explicit assistant proposal.'};
+ const parsed=parseContextualOutput(o,b,now);
+ expect(parsed.dispositions[0]!.assertionIds).toEqual(['proposal','decision']);
+ expect(o.dispositions[0]!.assertionIds).toEqual(['proposal']); // source output is immutable
+ expect(parseContextualOutput(parsed,b,now)).toEqual(parsed);
+ const noAssertedSource=structuredClone(o);noAssertedSource.dispositions[1]!.kind='supports';
+ expect(()=>parseContextualOutput(noAssertedSource,b,now)).toThrow();
+ const noDisposition=structuredClone(o);noDisposition.dispositions.shift();
+ expect(()=>parseContextualOutput(noDisposition,b,now)).toThrow();
+ const primaryGap=structuredClone(o);primaryGap.assertions[0]!.spans[0]!.purpose='assertion';
+ expect(()=>parseContextualOutput(primaryGap,b,now)).toThrow();
+});

@@ -32,8 +32,13 @@ test("historical native-command gaps remain visible separately from conversation
   expect(memoryWorkerHealth(f.root)).toMatchObject({ status: "degraded", admissionGaps: 1, historicalAdmissionGaps: 2, nativeCommandGaps: 1 });
 });
 test("waiting context is distinguished from technical failure and reports age", () => {
-  const f = fixture(); f.put("queues/evaluator", "a", { status: "queued", reasonCode: "semantic_batch_defer", createdAt: "2026-09-07T12:00:00Z" });
-  expect(memoryWorkerHealth(f.root, new Date("2026-09-07T12:10:00Z"))).toMatchObject({ status: "waiting_context", waitingContext: 1, oldestPendingAgeSeconds: 600 });
+  const f = fixture(), traceId = "sha256:" + "a".repeat(64);
+  f.put("queues/evaluator", "a", { traceId, status: "queued", reasonCode: "semantic_batch_defer", createdAt: "2026-09-07T12:00:00Z" });
+  f.put("evidence", traceId.slice(7), { traceId, expiresAt: "2026-09-10T12:00:00.000Z" });
+  expect(memoryWorkerHealth(f.root, new Date("2026-09-07T14:00:00Z"))).toMatchObject({ status: "waiting_context", waitingContext: 1, expiredWaitingContext: 0,
+    oldestPendingAgeSeconds: 7200, stages: { evaluator: { stale: 0, overdue: 0 } } });
+  expect(memoryWorkerHealth(f.root, new Date("2026-09-11T12:00:00Z"))).toMatchObject({ status: "degraded", expiredWaitingContext: 1,
+    stages: { evaluator: { stale: 1, overdue: 1 } }, reasons: ["semantic_batch_defer_expired"] });
 });
 test("absent state is not observed, not an empty healthy worker", () => {
   expect(memoryWorkerHealth(fixture().root).status).toBe("not_observed");
@@ -90,4 +95,20 @@ test('completion deadline debt is degraded; invalid feed data cannot look health
  expect(memoryWorkerHealth(f.root)).toMatchObject({status:'degraded',completionUnresolved:1});
  f.put('completion-mirrors','feed',{...feed,digest:sha256('wrong')});
  expect(memoryWorkerHealth(f.root).corruptRecords).toBe(1);
+});
+
+test("only digest-verified accounting reconciliation closes batch backlog", async () => {
+  const { sha256 } = await import("./ledger.ts");
+  const f = fixture(), jobId = sha256("accounted-job"), bundleId = sha256("accounted-bundle"), traceId = sha256("accounted-trace");
+  const base = "../batch-live-store/memory-batch-live/v1";
+  const job = { schema: "engram.memory-batch-live-job.v1", jobId, bundle: { bundleId, sourceRefs: [{ traceId }] }, evaluationPolicyDigest: sha256("evaluation"), createdAt: "2026-09-07T12:00:00.000Z" };
+  f.put(`${base}/jobs`, jobId.slice(7), job);
+  const body = { schema: "engram.memory-batch-accounting-reconciliation.v1", outcome: "terminal_failure_accounted", jobId, jobDigest: sha256(job), bundleId,
+    evaluationPolicyDigest: job.evaluationPolicyDigest, sourceStates: [{ traceId }], supersedingJobId: null, supersedingDoneDigest: null,
+    authorizedBy: "operator", authorizedAt: "2026-09-07T13:00:00.000Z", reason: "verified", reconciledAt: "2026-09-07T13:00:00.000Z" };
+  const done = { ...body, reconciliationId: sha256(body) };
+  f.put(`${base}/done`, jobId.slice(7), done);
+  expect(memoryWorkerHealth(f.root)).toMatchObject({ batchPending: 0, corruptRecords: 0 });
+  f.put(`${base}/done`, jobId.slice(7), { ...done, reason: "tampered" });
+  expect(memoryWorkerHealth(f.root)).toMatchObject({ batchPending: 1, corruptRecords: 1, status: "degraded" });
 });

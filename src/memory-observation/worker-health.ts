@@ -59,6 +59,46 @@ function recoveredBatchJob(job: WorkerStateRow): boolean {
     });
   } catch { return false; }
 }
+
+/** A filename in done/ is not completion evidence by itself. Verify the
+ * schema-bound identity against the immutable job before excluding it from
+ * batch backlog. */
+function verifiedDoneJobId(done: WorkerStateRow, jobs: WorkerStateRow[], errors: WorkerReadError[]): string | null {
+  const value = done.value;
+  const job = jobs.find(row => row.value.jobId === value.jobId)?.value;
+  if (!job || !/^sha256:[a-f0-9]{64}$/.test(value.jobId) || value.bundleId !== job.bundle?.bundleId) {
+    errors.push({ path: done.path, error: "invalid_done_record" });
+    return null;
+  }
+  const identity = (() => {
+    if (["engram.memory-batch-live-terminal.v1", "engram.memory-batch-live-terminal.v2"].includes(value.schema)) {
+      const { terminalId, ...base } = value;
+      return terminalId === sha256(base);
+    }
+    if (value.schema === "engram.memory-batch-live-failure.v1") {
+      const { failureId, ...base } = value;
+      return failureId === sha256(base);
+    }
+    if (value.schema === "engram.memory-batch-live-reconciliation.v1") {
+      const { reconciliationId, ...base } = value;
+      return reconciliationId === sha256(base) && value.evaluationPolicyDigest === job.evaluationPolicyDigest
+        && sha256(value.sources?.map((source: any) => source.traceId)) === sha256(job.bundle?.sourceRefs?.map((source: any) => source.traceId));
+    }
+    if (value.schema === "engram.memory-batch-accounting-reconciliation.v1") {
+      const { reconciliationId, ...base } = value;
+      return reconciliationId === sha256(base) && value.jobDigest === sha256(job)
+        && value.evaluationPolicyDigest === job.evaluationPolicyDigest
+        && ["terminal_failure_accounted", "superseded_by_completed_job"].includes(value.outcome)
+        && sha256(value.sourceStates?.map((source: any) => source.traceId)) === sha256(job.bundle?.sourceRefs?.map((source: any) => source.traceId));
+    }
+    return false;
+  })();
+  if (!identity) {
+    errors.push({ path: done.path, error: "invalid_done_record" });
+    return null;
+  }
+  return value.jobId;
+}
 /** Accounting only: never mutates queues or changes the process-success contract. */
 export function memoryWorkerHealth(workspace: string, now = new Date(), options: { staleAfterSeconds?: number; claimTtlSeconds?: number } = {}) {
   const snapshot = memoryWorkerSnapshot(workspace);
@@ -88,13 +128,25 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const pending = evaluator.filter(row => row.value.status !== "terminal");
   const dailyPending = daily.filter(row => row.value.status !== "terminal");
   const admissionPending = admission.filter(row => !["terminal_gap", "ledger_admitted"].includes(row.value.stage));
-  const doneIds = new Set(done.map(row => row.value.jobId));
+  const doneIds = new Set(done.map(row => verifiedDoneJobId(row, jobs, errors)).filter((value): value is string => value !== null));
   const unfinishedJobs = jobs.filter(row => !row.value.jobId || !doneIds.has(row.value.jobId));
   const recoveredJobs = unfinishedJobs.filter(recoveredBatchJob);
   const batchPending = unfinishedJobs.filter(row => !recoveredJobs.includes(row));
   const failures = evaluator.filter(row => row.value.status === "terminal" && !terminalOk.has(row.value.reasonCode));
   const dailyFailures = daily.filter(row => row.value.status === "terminal" && !dailyOk.has(row.value.reasonCode));
   const waiting = pending.filter(row => row.value.reasonCode === "semantic_batch_defer");
+  const waitingExpiry = new Map<WorkerStateRow, number>();
+  for (const row of waiting) {
+    const traceId = String(row.value.traceId ?? "");
+    const evidencePath = /^sha256:[a-f0-9]{64}$/.test(traceId) ? join(snapshot.root, "v1/evidence", `${traceId.slice(7)}.json`) : "";
+    try {
+      const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+      const expiresAt = Date.parse(evidence.expiresAt);
+      if (evidence.traceId !== traceId || !Number.isFinite(expiresAt)) throw new Error("invalid waiting evidence");
+      waitingExpiry.set(row, expiresAt);
+    } catch { errors.push({ path: evidencePath || row.path, error: "waiting_evidence_unavailable_or_invalid" }); }
+  }
+  const expiredWaitingContext = waiting.filter(row => (waitingExpiry.get(row) ?? 0) <= now.getTime()).length;
   const historicalGaps = admission.filter(row => row.value.stage === "terminal_gap");
   // Native command sessions never promise a conversational completion pair
   // (captureMessageReceived ignores them). Preserve, but classify, old gaps.
@@ -111,10 +163,13 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
     .map(([stage, rows]) => {
       const ages = rows.map(age);
       const overdue = rows.filter(row => {
+        if (stage === "evaluator" && row.value.reasonCode === "semantic_batch_defer") return (waitingExpiry.get(row) ?? 0) <= now.getTime();
         const due = Date.parse(row.value.nextAttemptAt ?? row.value.expiresAt ?? row.value.createdAt);
         return Number.isFinite(due) && (now.getTime() - due) / 1000 > staleAfterSeconds;
       });
-      return [stage, { pending: rows.length, oldestPendingAgeSeconds: Math.max(0, ...ages), stale: ages.filter(value => value > staleAfterSeconds).length, overdue: overdue.length }];
+      const stale = rows.filter((row, index) => ages[index]! > staleAfterSeconds
+        && !(stage === "evaluator" && row.value.reasonCode === "semantic_batch_defer" && (waitingExpiry.get(row) ?? 0) > now.getTime()));
+      return [stage, { pending: rows.length, oldestPendingAgeSeconds: Math.max(0, ...ages), stale: stale.length, overdue: overdue.length }];
     }));
   const expiredClaims = [...pending, ...dailyPending].filter(row => row.value.status === "claimed"
     && Number.isFinite(Date.parse(row.value.claimedAt)) && now.getTime() - Date.parse(row.value.claimedAt) > claimTtlSeconds * 1000).length;
@@ -122,11 +177,12 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const totalPending = pending.length + dailyPending.length + admissionPending.length + batchPending.length + completionPending;
   return { status: failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims || completionUnresolved || completionBlocked ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending || completionPending ? "pending" : "ok",
     completionPending, completionBlocked, completionUnresolved,
-    pending: pending.length, totalPending, waitingContext: waiting.length, terminalFailures: failures.length, admissionGaps: gaps.length,
+    pending: pending.length, totalPending, waitingContext: waiting.length, expiredWaitingContext, terminalFailures: failures.length, admissionGaps: gaps.length,
     recoveredAdmissionGaps: recovered.length, historicalAdmissionGaps: historicalGaps.length, nativeCommandGaps: nativeCommandGaps.length,
     dailyPending: dailyPending.length, qmdPending: dailyPending.filter(row => row.value.status === "qmd_pending" || row.value.phase === "qmd").length,
     admissionPending: admissionPending.length, batchPending: batchPending.length, recoveredBatchJobs: recoveredJobs.length, expiredClaims,
     dailyFailures: dailyFailures.length, oldestPendingAgeSeconds: Math.max(0, ...Object.values(stages).map(stage => stage.oldestPendingAgeSeconds)),
     stages, corruptRecords: errors.length, errors,
-    reasons: [...new Set([...failures, ...dailyFailures].map(row => String(row.value.reasonCode)))].sort() };
+    reasons: [...new Set([...failures, ...dailyFailures].map(row => String(row.value.reasonCode))
+      .concat(expiredWaitingContext ? ["semantic_batch_defer_expired"] : []))].sort() };
 }

@@ -200,3 +200,20 @@ KG canonical mutation and recall telemetry remain off.
 Known pre-admission recovery gaps and the public transcript-runtime research
 plan are tracked in [`RECOVERY-GAPS.md`](./RECOVERY-GAPS.md). That backlog does
 not authorize direct SQLite access, runtime changes, or scope expansion.
+
+Historical batch accounting is repaired only through
+`scripts/memory-observation-reconcile-accounting.ts`. The command is dry-run by
+default and requires an explicit operator identity, canonical authorization
+time, reason, exact workspace/store root, and job digest. It never requeues a
+source or changes memory. An exhausted job may be accounted only when every
+source is an unclaimed terminal `batch_*` failure and the bundle has no
+observations. A job with effects may be closed only by naming a later,
+digest-valid completed job for the identical immutable bundle. Apply writes an
+immutable reconciliation receipt and the identical verified `done` marker
+under the evaluator-worker lock. Worker health rejects unknown or digest-invalid
+done records.
+
+`semantic_batch_defer` is an expected contextual wait, not a retry failure.
+Health takes its deadline from the retained evidence `expiresAt`; the generic
+pending-age threshold and stale `nextAttemptAt` do not degrade it before that
+TTL. Missing/invalid evidence or an expired TTL remains degraded and explicit.

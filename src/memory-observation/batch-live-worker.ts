@@ -449,9 +449,9 @@ export class BatchLiveWorker {
       }
       if (!job) {
         this.authorizeCurrentBatchEffects();
-        this.options.ledger.disposeUnavailableBatchEvidence(ownerToken, this.options.policy.exactScope, now);
+        this.options.ledger.disposeUnavailableBatchEvidence(ownerToken, this.options.policy.exactScope, now, this.options.policy.sourcePolicyDigest);
         const waiting = new Set(this.options.ledger.listQueue().filter(record => record.reasonCode === "semantic_batch_defer").map(record => record.traceId));
-        const due = this.options.ledger.peekDueEvaluationEvidence(now, this.options.policy.exactScope);
+        const due = this.options.ledger.peekDueEvaluationEvidence(now, this.options.policy.exactScope, this.options.policy.sourcePolicyDigest);
         const fresh = due.filter(entry => !waiting.has(entry.envelope.traceId));
         if (!fresh.length && due.some(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context" };
         // Reconsider waiting evidence with new text, reserving a slot for a fresh

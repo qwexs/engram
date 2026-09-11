@@ -784,7 +784,7 @@ export class MemoryObservationLedger {
     });
   }
 
-  peekDueEvaluationEvidence(now = new Date(), exactScope?: ObservationScope): EvaluationEvidenceV1[] {
+  peekDueEvaluationEvidence(now = new Date(), exactScope?: ObservationScope, sourcePolicyDigest: Digest = this.policyDigest): EvaluationEvidenceV1[] {
     if (!this.evaluatorEnabled) return [];
     return this.listQueue()
       .filter((record) => record.status === "queued"
@@ -794,14 +794,14 @@ export class MemoryObservationLedger {
         || left.createdAt.localeCompare(right.createdAt)
         || left.traceId.localeCompare(right.traceId))
       .filter(record => { if (!exactScope) return true; const envelope = this.requireEnvelope(record.traceId);
-        return jsonEqual(envelope.scope, exactScope) && envelope.policyDigest === this.policyDigest; })
+        return jsonEqual(envelope.scope, exactScope) && envelope.policyDigest === sourcePolicyDigest; })
       .map((record) => this.readEvaluationEvidence(record.traceId, now));
   }
 
   /** Isolate unavailable evidence before batch selection. This is a visible
    * failure, never a semantic skip. The immutable receipt precedes the queue
    * transition so a crash resumes the same disposition without losing IDs. */
-  disposeUnavailableBatchEvidence(ownerToken: string, exactScope: ObservationScope, now = new Date()): number {
+  disposeUnavailableBatchEvidence(ownerToken: string, exactScope: ObservationScope, now = new Date(), sourcePolicyDigest: Digest = this.policyDigest): number {
     if (!this.evaluatorEnabled) return 0;
     return this.withStateLock(() => {
       this.assertWorkerLease("evaluator", ownerToken, now);
@@ -810,7 +810,7 @@ export class MemoryObservationLedger {
         if (current.status !== "queued" || Date.parse(current.nextAttemptAt) > now.getTime()
           || (this.evaluationStartedAt !== null && Date.parse(current.createdAt) < this.evaluationStartedAt)) continue;
         const envelope = this.requireEnvelope(current.traceId);
-        if (!jsonEqual(envelope.scope, exactScope) || envelope.policyDigest !== this.policyDigest) continue;
+        if (!jsonEqual(envelope.scope, exactScope) || envelope.policyDigest !== sourcePolicyDigest) continue;
         const receiptPath = join(this.root, "receipts", "evidence-unavailable", `${digestKey(current.traceId)}.json`);
         let receipt: { schema: string; traceId: Digest; scope: ObservationScope; policyDigest: Digest;
           queueDigest: Digest; reasonCode: string; recordedAt: string; receiptId: Digest };
@@ -818,7 +818,7 @@ export class MemoryObservationLedger {
           receipt = readJson<typeof receipt>(receiptPath);
           const { receiptId, ...base } = receipt;
           if (receipt.schema !== "engram.memory-evidence-unavailable.v1" || receipt.traceId !== current.traceId
-            || !jsonEqual(receipt.scope, exactScope) || receipt.policyDigest !== this.policyDigest
+            || !jsonEqual(receipt.scope, exactScope) || receipt.policyDigest !== sourcePolicyDigest
             || receiptId !== sha256(base as unknown as JsonValue) || receipt.queueDigest !== sha256(current as unknown as JsonValue)) {
             throw new ObservationLedgerError("CONTENT_CONFLICT", "evidence disposition receipt conflicts with the queue");
           }
@@ -833,7 +833,7 @@ export class MemoryObservationLedger {
           // Persisted effects must be reconciled by their original consumer.
           if (this.readEvaluationResult(current.traceId)) continue;
           const base = { schema: "engram.memory-evidence-unavailable.v1", traceId: current.traceId,
-            scope: exactScope, policyDigest: this.policyDigest, queueDigest: sha256(current as unknown as JsonValue),
+            scope: exactScope, policyDigest: sourcePolicyDigest, queueDigest: sha256(current as unknown as JsonValue),
             reasonCode, recordedAt: now.toISOString() };
           receipt = { ...base, receiptId: sha256(base as unknown as JsonValue) };
           if (!writeImmutable(receiptPath, receipt as unknown as JsonValue)) {

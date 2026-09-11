@@ -848,7 +848,7 @@ for (const mode of ["expired", "missing", "corrupt", "digest"] as const) {
     if (mode === "digest") { const e = JSON.parse(readFileSync(path, "utf8")); e.payload.source.text = "altered"; writeFileSync(path, JSON.stringify(e)); }
     admit(ledger, 2, "2026-09-04T01:00:00.000Z");
     let calls = 0;
-    const worker = new BatchLiveWorker({workspace, ledger, policy, storeRoot: join(workspace, "store"),
+    const worker = new BatchLiveWorker({workspace, ledger: effectLedger(workspace), policy, storeRoot: join(workspace, "store"),
       now: () => new Date("2026-09-04T01:20:00.000Z"), resolveAuthorityContracts: batchAuthorityContracts,
       complete: async req => {
         calls++;
@@ -899,7 +899,7 @@ describe("contextual v2 through the existing writer", () => {
       admit(ledger,82,"2026-08-31T20:02:00.000Z");
       const now=()=>new Date("2026-08-31T20:20:00.000Z");
       let calls=0, fault=true;
-      const worker=new BatchLiveWorker({workspace,ledger,policy:{...policy,contextual:true},storeRoot:join(workspace,"state"),now,
+      const worker=new BatchLiveWorker({workspace,ledger:effectLedger(workspace),policy:{...policy,contextual:true},storeRoot:join(workspace,"state"),now,
         fault:point=>{if(fault && point===crash){fault=false;throw Error("simulated interruption");}},
         complete:async request=>{
           calls++; const sources=JSON.parse(request.prompt).sources;
@@ -951,4 +951,32 @@ test('a cached v2 result cannot switch request lineage or consume retries after 
  const before=ledger.listQueue();
  await expect(worker.processOne()).rejects.toThrow('different request or evaluator contract');
  expect(ledger.listQueue()).toEqual(before);expect(calls).toBe(1);
+});
+
+function effectLedger(workspace: string) {
+  return new MemoryObservationLedger({ workspace, workspaceId: "main", exactSessionKeys: [SCOPE.runtimeSessionKey],
+    producerRegistry: REGISTRY, authorityPolicy: {...AUTHORITY, rules: [...AUTHORITY.rules, ...batchAuthorityContracts().authorityPolicy.rules]},
+    limits: {evidenceTtlMs:72*3600000,maxJobs:100,maxBytes:10000000,maxQueueAgeMs:7*86400000,
+      maxAttempts:2,claimTtlMs:300000,maxInferenceCalls:1},
+    evaluatorEnabled:true,evaluationStartedAt:"2026-08-31T20:00:00.000Z" });
+}
+
+test("batch source selection uses its pinned policy, not current effect authority", async () => {
+  const {workspace,ledger:sourceLedger,policy}=setup();
+  admit(sourceLedger,301,"2026-08-31T20:01:00.000Z");
+  const ownTrace=sourceLedger.listQueue()[0]!.traceId;
+  admit(sourceLedger,302,"2026-08-31T20:02:00.000Z",{...SCOPE,scopeId:"other-domain"});
+  const ledger=effectLedger(workspace);
+  admit(ledger,303,"2026-08-31T20:03:00.000Z");
+  let calls=0;
+  const worker=new BatchLiveWorker({workspace,ledger,policy,storeRoot:join(workspace,"store"),
+    now:()=>new Date("2026-08-31T20:20:00.000Z"),resolveAuthorityContracts:batchAuthorityContracts,
+    complete:async req=>{calls++;const sources=JSON.parse(req.prompt).task.sources;
+      expect(sources.map((s:any)=>s.sourceRef.traceId)).toEqual([ownTrace]);
+      return {resolvedModel:req.model,output:JSON.stringify({schema:"engram.memory-batch-shadow-output.v1",
+        groups:[{groupId:"g",decision:"skip",sourceRefs:[ownTrace],reason:"noise"}]})};}});
+  expect((await worker.processOne()).status).toBe("completed");
+  expect(calls).toBe(1);
+  expect(ledger.listQueue().filter(q=>q.status==="queued")).toHaveLength(2);
+  expect((await worker.processOne()).status).toBe("idle");expect(calls).toBe(1);
 });

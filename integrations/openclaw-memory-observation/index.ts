@@ -222,11 +222,6 @@ function bindingFor(api: any, active: ActiveWorkspace, runtimeSessionKey: string
   try {
     projection = resolveMemoryObservationProjection({
       workspace: active.workspace,
-      completionMirrorFeed: {
-        enabled: api.pluginConfig?.completionMirrorCapture === true,
-        register: request => completionFeedFor(api, active.workspace, request).register(request),
-        hasPending: candidateId => [...completionFeeds.values()].some(feed => feed.hasPending(candidateId)),
-      },
       workspaceId: active.workspaceId,
       expectedPluginDigest: PLUGIN_DIGEST,
     });
@@ -320,6 +315,11 @@ function adapterFor(api: any, runtimeSessionKey: string): OpenClawObservationRun
       classifyMissingBinding: (key) => classifyMissingBinding(api, key),
       spoolRoot: join(active.workspace, "memory-state", "memory-observation", "v1", "pre-admission"),
       workspace: active.workspace,
+      completionMirrorFeed: {
+        enabled: api.pluginConfig?.completionMirrorCapture === true,
+        register: request => completionFeedFor(api, active.workspace, request).register(request),
+        hasPending: candidateId => [...completionFeeds.values()].some(feed => feed.hasPending(candidateId)),
+      },
     });
     adapters.set(key, adapter);
   }

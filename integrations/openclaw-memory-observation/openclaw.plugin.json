@@ -8,6 +8,8 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "completionMirrorCapture": {"type": "boolean", "default": false}
+    }
   }
 }

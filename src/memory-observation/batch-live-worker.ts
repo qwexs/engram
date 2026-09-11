@@ -1,3 +1,5 @@
+import { contextualBatchObservations, validateReadableBatchObservation, CONTEXTUAL_BATCH_SCHEMA, CONTEXTUAL_EVALUATOR_AUTHORITY } from "./contextual-batch-observation.ts";
+import { buildContextualObservation, runContextualShadow, type ContextualObservationV2 } from "./contextual-observation.ts";
 import { groupAssertionAttribution } from "./group-attribution.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -68,7 +70,7 @@ export type BatchAuthorityContracts = { producerRegistry: unknown; authorityPoli
 
 function row(value: unknown): Row | null { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : null; }
 
-function authorizeBatchArtifact(contracts: BatchAuthorityContracts, artifactSchema: string, stage: string, trustedInputs: string[], requiredObservationClasses: string[] = []): void {
+function authorizeBatchArtifact(contracts: BatchAuthorityContracts, artifactSchema: string, stage: string, trustedInputs: string[], requiredObservationClasses: string[] = [], expectedProducer = BATCH_EVALUATOR_AUTHORITY): void {
   const registry = row(contracts.producerRegistry);
   const policy = row(contracts.authorityPolicy);
   const producers = registry?.producers;
@@ -78,8 +80,8 @@ function authorizeBatchArtifact(contracts: BatchAuthorityContracts, artifactSche
     || policy.defaultDecision !== "deny" || policy.replayReauthorizationRequired !== true || !Array.isArray(rules)) {
     throw new BatchLiveWorkerError("AUTHORITY_DENIED", "current batch authority contracts are invalid or do not require replay reauthorization");
   }
-  const producer = producers.map(row).find((entry) => entry?.id === BATCH_EVALUATOR_AUTHORITY.id
-    && entry.version === BATCH_EVALUATOR_AUTHORITY.version && entry.digest === BATCH_EVALUATOR_AUTHORITY.digest);
+  const producer = producers.map(row).find((entry) => entry?.id === expectedProducer.id
+    && entry.version === expectedProducer.version && entry.digest === expectedProducer.digest);
   const rule = rules.map(row).find((entry) => entry?.artifactSchema === artifactSchema && entry.stage === stage);
   const artifactSchemas = producer?.artifactSchemas;
   const observationClasses = producer?.observationClasses;
@@ -88,7 +90,7 @@ function authorizeBatchArtifact(contracts: BatchAuthorityContracts, artifactSche
   const requiredTrustedInputs = rule?.requiredTrustedInputs;
   if (!producer || !rule || !Array.isArray(artifactSchemas) || !artifactSchemas.includes(artifactSchema)
     || typeof producer.authorityClass !== "string"
-    || !Array.isArray(allowedProducerIds) || !allowedProducerIds.includes(BATCH_EVALUATOR_AUTHORITY.id)
+    || !Array.isArray(allowedProducerIds) || !allowedProducerIds.includes(expectedProducer.id)
     || !Array.isArray(allowedAuthorityClasses) || !allowedAuthorityClasses.includes(producer.authorityClass)
     || !Array.isArray(requiredTrustedInputs) || requiredTrustedInputs.some((input) => typeof input !== "string" || !trustedInputs.includes(input))
     || (requiredObservationClasses.length > 0 && (!Array.isArray(observationClasses)
@@ -98,6 +100,7 @@ function authorizeBatchArtifact(contracts: BatchAuthorityContracts, artifactSche
 }
 
 export type BatchLivePolicyV1 = {
+  contextual?: boolean;
   workspaceId: string;
   exactScope: ObservationScope;
   producerEpoch: string;
@@ -445,8 +448,10 @@ export class BatchLiveWorker {
         if (retryNotDue) return { status: "idle", reason: "pending_retry_not_due" };
       }
       if (!job) {
+        this.authorizeCurrentBatchEffects();
+        this.options.ledger.disposeUnavailableBatchEvidence(ownerToken, this.options.policy.exactScope, now);
         const waiting = new Set(this.options.ledger.listQueue().filter(record => record.reasonCode === "semantic_batch_defer").map(record => record.traceId));
-        const due = this.options.ledger.peekDueEvaluationEvidence(now).filter(entry => sameScope(entry.envelope.scope, this.options.policy.exactScope));
+        const due = this.options.ledger.peekDueEvaluationEvidence(now, this.options.policy.exactScope);
         const fresh = due.filter(entry => !waiting.has(entry.envelope.traceId));
         if (!fresh.length && due.some(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context" };
         // Reconsider waiting evidence with new text, reserving a slot for a fresh
@@ -465,6 +470,7 @@ export class BatchLiveWorker {
         fail("POLICY_CONFLICT", "pending batch job is outside the active exact policy");
       }
       this.authorizeCurrentBatchEffects();
+      if (this.options.policy.contextual) return await this.processContextualJob(job, ownerToken);
       let run: Awaited<ReturnType<typeof runBatchShadow>>;
       let diagnostics: BatchLiveFailureV1["diagnostics"];
       try {
@@ -553,7 +559,7 @@ export class BatchLiveWorker {
       }
       for (const observation of observations) {
         validateBatchObservation(observation);
-        this.authorizeCurrentArtifact(BATCH_OBSERVATION_SCHEMA, "advisory-batch-evaluation", BATCH_TRUSTED_INPUTS, ["episodic.event", "episodic.decision"]);
+        this.authorizeCurrentArtifact(this.options.policy.contextual ? CONTEXTUAL_BATCH_SCHEMA : BATCH_OBSERVATION_SCHEMA, "advisory-batch-evaluation", BATCH_TRUSTED_INPUTS, ["episodic.event", "episodic.decision"]);
         writeImmutable(this.observationPath(observation.observationId), observation as unknown as JsonValue);
         this.options.fault?.("after_observation");
       }
@@ -646,6 +652,82 @@ export class BatchLiveWorker {
     }
   }
 
+  private async processContextualJob(job: BatchLiveJobV1, ownerToken: string): Promise<BatchLiveRunResult> {
+    const path=join(this.root,"contextual-results",`${digestKey(job.jobId)}.json`);
+    const duplicate=existsSync(path);
+    let evaluated: Awaited<ReturnType<typeof runContextualShadow>>;
+    try {
+      if (duplicate) {
+        const saved=readJson<any>(path); const {digest,...base}=saved;
+        if(saved.schema!=="engram.memory-contextual-result.v2" || saved.jobId!==job.jobId
+          || saved.policyDigest!==job.evaluationPolicyDigest || digest!==sha256(base)) fail("CONTEXTUAL_RESULT_INVALID","cached contextual identity changed");
+        evaluated=saved.evaluated;
+      } else {
+        evaluated=await runContextualShadow({bundle:job.bundle,model:this.options.policy.runner.requestedModel,
+          maxTokens:this.options.policy.runner.maxTokens,complete:this.options.complete,now:this.options.now});
+        // Hash precisely the JSON bytes we can reload (provider usage is optional).
+        evaluated=JSON.parse(JSON.stringify(evaluated));
+        this.contextualObservations(job,evaluated);
+        const base={schema:"engram.memory-contextual-result.v2",jobId:job.jobId,policyDigest:job.evaluationPolicyDigest,evaluated};
+        writeImmutable(path,{...base,digest:sha256(base as unknown as JsonValue)} as unknown as JsonValue);
+      }
+    } catch (error) {
+      if (duplicate) throw error; // persisted effects require explicit repair, never consume source attempts
+      const now=this.options.now?.()??new Date();
+      const claimed=this.options.ledger.claimBatchExact(ownerToken,job.bundle.sourceRefs.map(s=>s.traceId),now);
+      const queues=claimed.map(q=>this.options.ledger.retry(q,this.options.policy.deferDelayMs,"batch_contextual_evaluation_failed",now));
+      const exhausted=queues.filter(q=>q.status==="terminal");
+      if(exhausted.length) this.reconcileExhaustedJob(job,now);
+      return {status:exhausted.length?"terminal_failure":"retry",jobId:job.jobId,sourceCount:queues.length,
+        reason:"batch_contextual_evaluation_failed",attempt:Math.max(...queues.map(q=>q.attempt)),maxAttempts:Math.max(...queues.map(q=>q.maxAttempts))};
+    }
+    this.options.fault?.("after_result");
+    this.authorizeCurrentBatchEffects();
+    const result=evaluated.observation;
+    const observations=this.contextualObservations(job,evaluated);
+    for(const observation of observations) {
+      validateReadableBatchObservation(observation);
+      writeImmutable(this.observationPath(observation.observationId),observation as unknown as JsonValue);
+      this.options.fault?.("after_observation");
+    }
+    const observationByAssertion=new Map(observations.map(o=>[o.groupId,o.observationId]));
+    const dispositions: BatchEvaluationDispositionV1[]=result.dispositions.map(d=>({traceId:d.traceId,
+      decision: d.assertionIds.length?"write":"skip",
+      reasonCode:`semantic_contextual_${d.kind}`,
+      observationRefs:d.assertionIds.map(id=>observationByAssertion.get(id)!)}));
+    const resultKey=sha256({schema:"engram.memory-contextual-result-key.v2",requestDigest:evaluated.requestDigest} as JsonValue);
+    const base={schema:"engram.memory-batch-live-terminal.v2",jobId:job.jobId,bundleId:job.bundle.bundleId,
+      resultKey,resultDigest:sha256(evaluated as unknown as JsonValue),dispositions,sourceDispositions:result.dispositions,completedAt:result.recordedAt};
+    const terminal={...base,terminalId:sha256(base as unknown as JsonValue)};
+    this.authorizeCurrentArtifact(TRACE_SCHEMA,"trace-append",TRACE_TRUSTED_INPUTS);
+    writeImmutable(this.terminalPath(job.jobId),terminal as unknown as JsonValue);
+    this.options.fault?.("after_terminal");
+    const now=this.options.now?.()??new Date();
+    const claims=this.options.ledger.claimBatchExact(ownerToken,dispositions.map(d=>d.traceId),now,new Map(dispositions.map(d=>[d.traceId,d.reasonCode])));
+    for(const d of dispositions) {
+      const claim=claims.find(q=>q.traceId===d.traceId)!;
+      if(claim.status!=="claimed") continue;
+      this.options.ledger.completeBatchClaim(ownerToken,claim,CONTEXTUAL_EVALUATOR_AUTHORITY,{ref:terminal.terminalId,digest:terminal.resultDigest},d,this.options.now?.()??new Date());
+      this.options.fault?.("after_source");
+    }
+    writeImmutable(this.donePath(job.jobId),terminal as unknown as JsonValue);
+    this.options.fault?.("after_done");
+    return {status:duplicate?"duplicate":"completed",jobId:job.jobId,sourceCount:job.bundle.sourceRefs.length,
+      observationCount:observations.length,deferredCount:0,resultKey};
+  }
+
+  private contextualObservations(job: BatchLiveJobV1, evaluated: Awaited<ReturnType<typeof runContextualShadow>>) {
+    const result=evaluated.observation;
+    if(!DIGEST_RE.test(evaluated.requestDigest) || !Number.isFinite(evaluated.latencyMs) || evaluated.latencyMs<0
+      || result.bundleId!==job.bundle.bundleId) fail("CONTEXTUAL_RESULT_INVALID","invalid persisted contextual result");
+    const output={schema:"engram.memory-contextual-output.v2",assertions:result.assertions,dispositions:result.dispositions};
+    const rebuilt=buildContextualObservation(output,job.bundle,result.evaluationPolicyDigest,new Date(result.recordedAt));
+    if(!same(rebuilt,result)) fail("CONTEXTUAL_RESULT_INVALID","contextual result differs from its bound evidence");
+    const observations=contextualBatchObservations(output,job.bundle,job.evaluationPolicyDigest,new Date(result.recordedAt));
+    observations.forEach(validateReadableBatchObservation);
+    return observations;
+  }
+
   /** An immutable bundle cannot be retried once a subset has exhausted its
    * source budget. Seal the bundle, not the remaining sources. Their queue rows
    * stay byte-identical and can form a new bundle on the next pass. */
@@ -717,17 +799,17 @@ export class BatchLiveWorker {
   private currentAuthorityContracts(): BatchAuthorityContracts {
     if (this.options.resolveAuthorityContracts) return this.options.resolveAuthorityContracts();
     return {
-      producerRegistry: readJson(join(CONTRACT_ROOT, "producer-registry.json")),
-      authorityPolicy: readJson(join(CONTRACT_ROOT, "authority-policy.json")),
+      producerRegistry: readJson(join(this.options.policy.contextual ? resolve(CONTRACT_ROOT,"../v2") : CONTRACT_ROOT, "producer-registry.json")),
+      authorityPolicy: readJson(join(this.options.policy.contextual ? resolve(CONTRACT_ROOT,"../v2") : CONTRACT_ROOT, "authority-policy.json")),
     };
   }
 
   private authorizeCurrentArtifact(artifactSchema: string, stage: string, trustedInputs: string[], observationClasses: string[] = []): void {
-    authorizeBatchArtifact(this.currentAuthorityContracts(), artifactSchema, stage, trustedInputs, observationClasses);
+    authorizeBatchArtifact(this.currentAuthorityContracts(), artifactSchema, stage, trustedInputs, observationClasses, this.options.policy.contextual ? CONTEXTUAL_EVALUATOR_AUTHORITY : BATCH_EVALUATOR_AUTHORITY);
   }
 
   private authorizeCurrentBatchEffects(): void {
-    this.authorizeCurrentArtifact(BATCH_OBSERVATION_SCHEMA, "advisory-batch-evaluation", BATCH_TRUSTED_INPUTS, ["episodic.event", "episodic.decision"]);
+    this.authorizeCurrentArtifact(this.options.policy.contextual ? CONTEXTUAL_BATCH_SCHEMA : BATCH_OBSERVATION_SCHEMA, "advisory-batch-evaluation", BATCH_TRUSTED_INPUTS, ["episodic.event", "episodic.decision"]);
     this.authorizeCurrentArtifact(TRACE_SCHEMA, "trace-append", TRACE_TRUSTED_INPUTS);
   }
 

@@ -185,6 +185,7 @@ export type LedgerFaultPoint =
   | "after_envelope"
   | "after_queue"
   | "after_source_trace"
+  | "after_evidence_disposition"
   | "after_typed_observation"
   | "after_evaluation_trace";
 
@@ -467,6 +468,14 @@ export function purgeMemoryObservationLifecycle(workspace: string, now = new Dat
       if (record?.schema === "engram.memory-observation-consumer-queue.v1" && typeof record.observationId === "string") consumers.set(record.observationId.slice(7), record);
     }
     const oldTerminal = (record: Record<string, any> | undefined) => record?.status === "terminal" && isExpired(record.terminalAt, cutoff30);
+    const retainedContextualSources=new Set<string>();
+    const batchObservations=join(root,"observations","batch");
+    if(existsSync(batchObservations)) for(const name of readdirSync(batchObservations).filter(n=>n.endsWith(".json"))) {
+      const observation=lifecycleJson(join(batchObservations,name));
+      if(observation?.schema!=="engram.memory-batch-observation.v2" || !Array.isArray(observation.sourceRefs)) continue;
+      if(!oldTerminal(consumers.get(String(observation.observationId).slice(7))))
+        for(const source of observation.sourceRefs) if(typeof source.traceId==="string") retainedContextualSources.add(source.traceId.slice(7));
+    }
     const purgeExpiresAt = (directory: string, counter: "evidence" | "transportLinks") => {
       if (!existsSync(directory)) return;
       let changed = false;
@@ -507,7 +516,7 @@ export function purgeMemoryObservationLifecycle(workspace: string, now = new Dat
     const envelopeDir = join(root, "envelopes");
     let envelopesChanged = false;
     if (existsSync(envelopeDir)) for (const name of readdirSync(envelopeDir).filter((value) => value.endsWith(".json"))) {
-      if (oldTerminal(queues.get(name.slice(0, -5)))) { unlinkSync(join(envelopeDir, name)); result.envelopes++; envelopesChanged = true; }
+      if (oldTerminal(queues.get(name.slice(0, -5))) && !retainedContextualSources.has(name.slice(0,-5))) { unlinkSync(join(envelopeDir, name)); result.envelopes++; envelopesChanged = true; }
     }
     if (envelopesChanged) flushDirectory(envelopeDir);
     const purgeObservations = (directory: string, batch: boolean) => {
@@ -521,14 +530,28 @@ export function purgeMemoryObservationLifecycle(workspace: string, now = new Dat
         const terminal = batch
           ? Array.isArray(record.sourceRefs) && record.sourceRefs.length > 0 && record.sourceRefs.every((source: any) => typeof source?.traceId === "string" && oldTerminal(queues.get(source.traceId.slice(7))))
           : oldTerminal(queues.get(name.slice(0, -5)));
-        if (terminal && (!consumer || oldTerminal(consumer))) { unlinkSync(path); result.observations++; changed = true; }
+        if (terminal && (record.schema === "engram.memory-batch-observation.v2" ? oldTerminal(consumer) : (!consumer || oldTerminal(consumer)))) { unlinkSync(path); result.observations++; changed = true; }
       }
       if (changed) flushDirectory(directory);
     };
     purgeObservations(join(root, "observations", "typed"), false);
     purgeObservations(join(root, "observations", "batch"), true);
+    // Contextual result caches are not permanent raw-evidence storage. Retain
+    // interrupted/unconsumed effects; remove only a completed, aged result
+    // whose individual assertions have confirmed terminal consumer records.
+    const contextualResults = join(root,"..","batch-live-store/memory-batch-live/v1/contextual-results");
+    if (existsSync(contextualResults)) for (const name of readdirSync(contextualResults).filter(n=>/^[a-f0-9]{64}\.json$/.test(n))) {
+      const file=join(contextualResults,name), saved=lifecycleJson(file);
+      const done=lifecycleJson(join(contextualResults,"../done",name));
+      if(saved?.schema!=="engram.memory-contextual-result.v2" || !done || done.jobId!==saved.jobId || !isExpired(done.completedAt,cutoff30)) continue;
+      const dispositions=done.dispositions;
+      if(!Array.isArray(dispositions) || !dispositions.length || !dispositions.every((d:any)=>
+        oldTerminal(queues.get(String(d.traceId).slice(7))) && Array.isArray(d.observationRefs)
+        && d.observationRefs.every((id:string)=>oldTerminal(consumers.get(id.slice(7)))))) continue;
+      unlinkSync(file); result.observations++; flushDirectory(contextualResults);
+    }
     let evaluatorChanged = false;
-    for (const [key, record] of queues) if (oldTerminal(record)) { unlinkSync(join(queueDir, `${key}.json`)); result.evaluatorQueue++; evaluatorChanged = true; }
+    for (const [key, record] of queues) if (oldTerminal(record) && !retainedContextualSources.has(key)) { unlinkSync(join(queueDir, `${key}.json`)); result.evaluatorQueue++; evaluatorChanged = true; }
     if (evaluatorChanged) flushDirectory(queueDir);
     let consumerChanged = false;
     for (const [key, record] of consumers) if (oldTerminal(record)) { unlinkSync(join(consumerDir, `${key}.json`)); result.consumerQueue++; consumerChanged = true; }
@@ -761,7 +784,7 @@ export class MemoryObservationLedger {
     });
   }
 
-  peekDueEvaluationEvidence(now = new Date()): EvaluationEvidenceV1[] {
+  peekDueEvaluationEvidence(now = new Date(), exactScope?: ObservationScope): EvaluationEvidenceV1[] {
     if (!this.evaluatorEnabled) return [];
     return this.listQueue()
       .filter((record) => record.status === "queued"
@@ -770,7 +793,60 @@ export class MemoryObservationLedger {
       .sort((left, right) => left.nextAttemptAt.localeCompare(right.nextAttemptAt)
         || left.createdAt.localeCompare(right.createdAt)
         || left.traceId.localeCompare(right.traceId))
+      .filter(record => { if (!exactScope) return true; const envelope = this.requireEnvelope(record.traceId);
+        return jsonEqual(envelope.scope, exactScope) && envelope.policyDigest === this.policyDigest; })
       .map((record) => this.readEvaluationEvidence(record.traceId, now));
+  }
+
+  /** Isolate unavailable evidence before batch selection. This is a visible
+   * failure, never a semantic skip. The immutable receipt precedes the queue
+   * transition so a crash resumes the same disposition without losing IDs. */
+  disposeUnavailableBatchEvidence(ownerToken: string, exactScope: ObservationScope, now = new Date()): number {
+    if (!this.evaluatorEnabled) return 0;
+    return this.withStateLock(() => {
+      this.assertWorkerLease("evaluator", ownerToken, now);
+      let disposed = 0;
+      for (const current of this.listQueue()) {
+        if (current.status !== "queued" || Date.parse(current.nextAttemptAt) > now.getTime()
+          || (this.evaluationStartedAt !== null && Date.parse(current.createdAt) < this.evaluationStartedAt)) continue;
+        const envelope = this.requireEnvelope(current.traceId);
+        if (!jsonEqual(envelope.scope, exactScope) || envelope.policyDigest !== this.policyDigest) continue;
+        const receiptPath = join(this.root, "receipts", "evidence-unavailable", `${digestKey(current.traceId)}.json`);
+        let receipt: { schema: string; traceId: Digest; scope: ObservationScope; policyDigest: Digest;
+          queueDigest: Digest; reasonCode: string; recordedAt: string; receiptId: Digest };
+        if (existsSync(receiptPath)) {
+          receipt = readJson<typeof receipt>(receiptPath);
+          const { receiptId, ...base } = receipt;
+          if (receipt.schema !== "engram.memory-evidence-unavailable.v1" || receipt.traceId !== current.traceId
+            || !jsonEqual(receipt.scope, exactScope) || receipt.policyDigest !== this.policyDigest
+            || receiptId !== sha256(base as unknown as JsonValue) || receipt.queueDigest !== sha256(current as unknown as JsonValue)) {
+            throw new ObservationLedgerError("CONTENT_CONFLICT", "evidence disposition receipt conflicts with the queue");
+          }
+        } else {
+          let reasonCode: string;
+          try { this.readEvaluationEvidence(current.traceId, now); continue; }
+          catch (error) {
+            if (!(error instanceof ObservationLedgerError)
+              || !["EVIDENCE_MISSING", "EVIDENCE_EXPIRED", "STATE_CORRUPT", "CONTENT_CONFLICT"].includes(error.code)) throw error;
+            reasonCode = `batch_evidence_${error.code.toLowerCase()}`;
+          }
+          // Persisted effects must be reconciled by their original consumer.
+          if (this.readEvaluationResult(current.traceId)) continue;
+          const base = { schema: "engram.memory-evidence-unavailable.v1", traceId: current.traceId,
+            scope: exactScope, policyDigest: this.policyDigest, queueDigest: sha256(current as unknown as JsonValue),
+            reasonCode, recordedAt: now.toISOString() };
+          receipt = { ...base, receiptId: sha256(base as unknown as JsonValue) };
+          if (!writeImmutable(receiptPath, receipt as unknown as JsonValue)) {
+            throw new ObservationLedgerError("CONTENT_CONFLICT", "evidence disposition receipt already exists");
+          }
+        }
+        this.fault?.("after_evidence_disposition");
+        writeAtomic(this.queuePath(current.traceId), { ...current, status: "terminal", claimedAt: null, claimToken: null,
+          terminalAt: receipt.recordedAt, updatedAt: receipt.recordedAt, reasonCode: receipt.reasonCode });
+        disposed++;
+      }
+      return disposed;
+    });
   }
 
   claimBatchExact(
@@ -932,8 +1008,13 @@ export class MemoryObservationLedger {
     if (!envelope) throw new ObservationLedgerError("SOURCE_MISSING", "observation envelope is unavailable");
     const path = this.evidencePath(traceId);
     if (!existsSync(path)) throw new ObservationLedgerError("EVIDENCE_MISSING", "observation evidence is unavailable");
-    const evidence = readJson<EvaluationEvidenceV1["evidence"]>(path);
-    if (evidence.schema !== "engram.memory-evidence-envelope.v1"
+    let evidence: EvaluationEvidenceV1["evidence"];
+    try { evidence = readJson<EvaluationEvidenceV1["evidence"]>(path); }
+    catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      throw new ObservationLedgerError("STATE_CORRUPT", "observation evidence is not valid JSON");
+    }
+    if (!evidence || evidence.schema !== "engram.memory-evidence-envelope.v1"
       || evidence.traceId !== traceId
       || !jsonEqual(evidence.scope, envelope.scope)
       || !validInstant(evidence.createdAt)

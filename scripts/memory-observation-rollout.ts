@@ -191,7 +191,7 @@ async function buildPlugin(repository: string) {
         entrypoints: ["./integrations/openclaw-memory-observation/index.ts"],
         target: "node",
         format: "esm",
-        external: ["openclaw/plugin-sdk/core"],
+        external: ["openclaw/plugin-sdk/core", "openclaw/plugin-sdk/session-transcript-runtime"],
         minify: false,
         sourcemap: "none",
         write: false,

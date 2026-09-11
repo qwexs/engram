@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BatchLiveWorker, type BatchLiveFaultPoint, type BatchLivePolicyV1 } from "./batch-live-worker.ts";
@@ -835,4 +835,104 @@ test("mixed recovery still requires current producer authority", async () => {
   const before = s.ledger.listQueue();
   await expect(denied.processOne()).rejects.toMatchObject({ code: "AUTHORITY_DENIED" });
   expect(s.ledger.listQueue()).toEqual(before);
+});
+
+for (const mode of ["expired", "missing", "corrupt", "digest"] as const) {
+  test(`unavailable ${mode} evidence cannot block fresh exact-scope work`, async () => {
+    const {workspace, ledger, policy} = setup();
+    admit(ledger, 1, "2026-09-01T00:00:00.000Z");
+    const trace = ledger.listQueue()[0]!.traceId;
+    const path = join(ledger.root, "evidence", trace.slice(7) + ".json");
+    if (mode === "missing") rmSync(path);
+    if (mode === "corrupt") writeFileSync(path, "{");
+    if (mode === "digest") { const e = JSON.parse(readFileSync(path, "utf8")); e.payload.source.text = "altered"; writeFileSync(path, JSON.stringify(e)); }
+    admit(ledger, 2, "2026-09-04T01:00:00.000Z");
+    let calls = 0;
+    const worker = new BatchLiveWorker({workspace, ledger, policy, storeRoot: join(workspace, "store"),
+      now: () => new Date("2026-09-04T01:20:00.000Z"), resolveAuthorityContracts: batchAuthorityContracts,
+      complete: async req => {
+        calls++;
+        const sources = JSON.parse(req.prompt).task.sources;
+        expect(sources).toHaveLength(1);
+        expect(sources[0].sourceRef.traceId).not.toBe(trace);
+        return {resolvedModel: req.model, output: JSON.stringify({schema: "engram.memory-batch-shadow-output.v1",
+          groups: [{groupId: "g", decision: "skip", sourceRefs: sources.map((s: any) => s.sourceRef.traceId), reason: "noise"}]})};
+      }});
+    expect((await worker.processOne()).status).toBe("completed");
+    expect(calls).toBe(1);
+    const failed = ledger.listQueue().find(q => q.traceId === trace)!;
+    expect(failed.status).toBe("terminal");
+    expect(failed.reasonCode).toStartWith("batch_evidence_");
+    expect(failed.attempt).toBe(0);
+    const receiptPath = join(ledger.root, "receipts", "evidence-unavailable", trace.slice(7) + ".json");
+    const receipt = readFileSync(receiptPath, "utf8");
+    await worker.processOne();
+    expect(readFileSync(receiptPath, "utf8")).toBe(receipt);
+  });
+}
+
+test("evidence disposition requires lease and exact scope and resumes receipt-first crash", () => {
+  const {workspace, ledger, policy} = setup();
+  admit(ledger, 1, "2026-09-01T00:00:00.000Z");
+  const now = new Date("2026-09-04T01:20:00.000Z");
+  expect(() => ledger.disposeUnavailableBatchEvidence("no-lease", policy.exactScope, now)).toThrow();
+  ledger.acquireWorkerLease("evaluator", "owner", 300000, now);
+  expect(ledger.disposeUnavailableBatchEvidence("owner", {...policy.exactScope, scopeId: "other"}, now)).toBe(0);
+  // The injected fault happens after fsync of the immutable receipt.
+  (ledger as any).fault = (point: string) => { if (point === "after_evidence_disposition") throw Error("crash"); };
+  expect(() => ledger.disposeUnavailableBatchEvidence("owner", policy.exactScope, now)).toThrow("crash");
+  expect(ledger.listQueue()[0]!.status).toBe("queued");
+  const receipts = join(ledger.root, "receipts", "evidence-unavailable");
+  const before = readFileSync(join(receipts, readdirSync(receipts)[0]!), "utf8");
+  (ledger as any).fault = undefined;
+  expect(ledger.disposeUnavailableBatchEvidence("owner", policy.exactScope, now)).toBe(1);
+  expect(ledger.disposeUnavailableBatchEvidence("owner", policy.exactScope, now)).toBe(0);
+  expect(readFileSync(join(receipts, readdirSync(receipts)[0]!), "utf8")).toBe(before);
+});
+
+
+describe("contextual v2 through the existing writer", () => {
+  for (const crash of [null, "after_result", "after_observation", "after_terminal", "after_source", "after_done"] as const) {
+    test(`retains quote, meaning and source dispositions across ${crash ?? "normal completion"}`, async () => {
+      const {workspace,ledger,policy}=setup();
+      admit(ledger,81,"2026-08-31T20:01:00.000Z");
+      admit(ledger,82,"2026-08-31T20:02:00.000Z");
+      const now=()=>new Date("2026-08-31T20:20:00.000Z");
+      let calls=0, fault=true;
+      const worker=new BatchLiveWorker({workspace,ledger,policy:{...policy,contextual:true},storeRoot:join(workspace,"state"),now,
+        fault:point=>{if(fault && point===crash){fault=false;throw Error("simulated interruption");}},
+        complete:async request=>{
+          calls++; const sources=JSON.parse(request.prompt).sources;
+          return {resolvedModel:request.model,output:JSON.stringify({schema:"engram.memory-contextual-output.v2",
+            assertions:[{id:"timer-request",section:"decisions",text:"The user requested the timer change.",subject:"timer change",
+              resolution:"explicit",actorRef:"user",status:"requested",spans:[{traceId:sources[0].traceId,role:"user",purpose:"assertion",quote:"request-81"}]}],
+            dispositions:[{traceId:sources[0].traceId,kind:"asserted",assertionIds:["timer-request"],reason:"Explicit instruction."},
+              {traceId:sources[1].traceId,kind:"unresolved",assertionIds:[],reason:"Referent cannot be established."}]})};
+        }});
+      if(crash) await expect(worker.processOne()).rejects.toThrow("simulated interruption");
+      expect(["completed","duplicate","idle"]).toContain((await worker.processOne()).status);
+      expect(calls).toBe(1);
+      expect(ledger.listQueue().map(q=>q.reasonCode).sort()).toEqual(["semantic_contextual_asserted","semantic_contextual_unresolved"]);
+      const applyPolicy=()=>buildDailyNoteCanaryPolicy({workspaceId:"main",exactScope:SCOPE,applyAfter:"2026-08-31T20:00:00.000Z",timezone:"UTC",
+        allowedObservationClasses:["episodic.event","episodic.decision"],maxAppliesPerWake:1,
+        allowedBatchEvaluationPolicyDigest:policy.evaluationPolicyDigest,allowContextualObservations:true});
+      let active=applyPolicy();
+      const app=new DailyNoteCanaryApplicator({workspace,resolveActivePolicy:()=>active});
+      app.reconcile(now());
+      // A legacy producer-only rollback must not turn an unapplied v2 result
+      // into a successful policy skip. It stays readable and can resume later.
+      active=buildDailyNoteCanaryPolicy({...active,allowContextualObservations:false});
+      expect((await app.processOne(now())).status).toBe("idle");
+      const queuedPath=join(workspace,"memory-state/memory-observation/v1/consumers/daily-note/queue");
+      expect(JSON.parse(readFileSync(join(queuedPath,readdirSync(queuedPath)[0]!),"utf8")).status).toBe("queued");
+      active=buildDailyNoteCanaryPolicy({...applyPolicy(),allowedBatchEvaluationPolicyDigest:sha256("new-policy"),
+        allowedPreviousBatchEvaluationPolicyDigests:[policy.evaluationPolicyDigest]});
+      expect((await app.processOne(now())).status).toBe("applied");
+      expect((await app.processOne(now())).status).toBe("idle");
+      const note=readFileSync(join(workspace,"memory/agent-main/telegram-direct-100000001/2026-08-31.md"),"utf8");
+      expect(note).toContain("The user requested the timer change.");
+      expect(note).toContain("request-81"); expect(note).toContain("Поручено");
+      expect(note.match(/The user requested the timer change/g)).toHaveLength(1);
+    });
+  }
 });

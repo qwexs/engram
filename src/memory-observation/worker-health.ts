@@ -30,7 +30,7 @@ export function memoryWorkerSnapshot(workspace: string) {
   const read = (path: string) => readWorkerRows(join(root, path), errors);
   return { root, observed: existsSync(root), captureObserved: existsSync(join(root, "v1")) || existsSync(join(root, "batch-live-store/memory-batch-live/v1")), errors,
     evaluator: read("v1/queues/evaluator"), daily: read("v1/consumers/daily-note/queue"),
-    admission: read("v1/pre-admission/checkpoints"),
+    admission: read("v1/pre-admission/checkpoints"), completionFeeds: read("v1/completion-mirrors"),
     jobs: read("batch-live-store/memory-batch-live/v1/jobs"), done: read("batch-live-store/memory-batch-live/v1/done") };
 }
 /** Completed operator recovery replaces the old job, not its historical failure evidence. */
@@ -63,9 +63,19 @@ function recoveredBatchJob(job: WorkerStateRow): boolean {
 export function memoryWorkerHealth(workspace: string, now = new Date(), options: { staleAfterSeconds?: number; claimTtlSeconds?: number } = {}) {
   const snapshot = memoryWorkerSnapshot(workspace);
   const { evaluator, daily, admission, jobs, done, errors } = snapshot;
+  for(const row of snapshot.completionFeeds) if(!["engram.completion-mirror-feed.v1","engram.completion-unresolved.v1"].includes(row.value.schema))
+    errors.push({path:row.path,error:"invalid_completion_record_schema"});
+  const completionUnresolved = snapshot.completionFeeds.filter(row => row.value.schema === "engram.completion-unresolved.v1").length;
+  const feeds = snapshot.completionFeeds.filter(row => row.value.schema === "engram.completion-mirror-feed.v1");
+  for (const row of feeds) {
+    const {digest,...base}=row.value;
+    if (digest !== sha256(base) || !Array.isArray(row.value.pending)) errors.push({path:row.path,error:"invalid_completion_feed"});
+  }
+  const completionBlocked = feeds.filter(row=>row.value.blocked && row.value.pending?.length).length;
+  const completionPending = feeds.reduce((sum,row)=>sum+(Array.isArray(row.value.pending)?row.value.pending.length:0),0);
   const staleAfterSeconds = options.staleAfterSeconds ?? WORKER_STALE_AFTER_SECONDS;
   const claimTtlSeconds = options.claimTtlSeconds ?? 300;
-  const terminalOk = new Set(["semantic_batch_write", "semantic_batch_skip", "semantic_batch_grouped_no_assertion", "semantic_write", "semantic_skip", "semantic_skip_noise", "semantic_skip_already_captured", "semantic_skip_incomplete", "pre_activation_not_evaluated"]);
+  const terminalOk = new Set(["semantic_contextual_asserted", "semantic_contextual_supports", "semantic_contextual_duplicate", "semantic_contextual_skip", "semantic_batch_write", "semantic_batch_skip", "semantic_batch_grouped_no_assertion", "semantic_write", "semantic_skip", "semantic_skip_noise", "semantic_skip_already_captured", "semantic_skip_incomplete", "pre_activation_not_evaluated"]);
   const dailyOk = new Set(["canonical_applied", "duplicate_receipt", "policy_superseded_before_apply"]);
   for (const [rows, statuses] of [[evaluator, ["queued", "claimed", "terminal"]], [daily, ["queued", "claimed", "qmd_pending", "terminal"]]] as const) {
     for (const row of rows) if (!statuses.includes(row.value.status)) errors.push({ path: row.path, error: "invalid_queue_status" });
@@ -109,8 +119,9 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const expiredClaims = [...pending, ...dailyPending].filter(row => row.value.status === "claimed"
     && Number.isFinite(Date.parse(row.value.claimedAt)) && now.getTime() - Date.parse(row.value.claimedAt) > claimTtlSeconds * 1000).length;
   const stalled = Object.values(stages).some(stage => stage.stale || stage.overdue);
-  const totalPending = pending.length + dailyPending.length + admissionPending.length + batchPending.length;
-  return { status: failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending ? "pending" : "ok",
+  const totalPending = pending.length + dailyPending.length + admissionPending.length + batchPending.length + completionPending;
+  return { status: failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims || completionUnresolved || completionBlocked ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending || completionPending ? "pending" : "ok",
+    completionPending, completionBlocked, completionUnresolved,
     pending: pending.length, totalPending, waitingContext: waiting.length, terminalFailures: failures.length, admissionGaps: gaps.length,
     recoveredAdmissionGaps: recovered.length, historicalAdmissionGaps: historicalGaps.length, nativeCommandGaps: nativeCommandGaps.length,
     dailyPending: dailyPending.length, qmdPending: dailyPending.filter(row => row.value.status === "qmd_pending" || row.value.phase === "qmd").length,

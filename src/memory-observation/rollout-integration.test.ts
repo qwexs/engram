@@ -13,7 +13,7 @@ describe("memory observation shadow and daily-note canary rollout integration", 
       entrypoints: [entry],
       target: "node",
       format: "esm",
-      external: ["openclaw/plugin-sdk/core"],
+      external: ["openclaw/plugin-sdk/core", "openclaw/plugin-sdk/session-transcript-runtime"],
       write: false,
     });
     expect(result.success).toBe(true);
@@ -66,7 +66,8 @@ describe("memory observation shadow and daily-note canary rollout integration", 
       "qmd-indexer",
       "BatchLiveWorker",
       "openClawRawModelRunProvider",
-      "memory-batch-live",
+      "processContextualJob",
+      "qualityProducerForScope",
     ]) expect(bundle).not.toContain(forbidden);
   });
 

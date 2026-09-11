@@ -1,3 +1,4 @@
+import {readQualityRollout,qualityScopeEnabled,contextualEvaluationDigest} from "./quality-rollout.ts";
 import { groupDomainOf, isGroupProjectionSchema } from "./group-bindings.ts";
 import { renderRecentDomainStatus } from "./domain-recent.ts";
 import { acquireProcessLease } from "./process-lease.ts";
@@ -10,7 +11,7 @@ import { markWorkspaceQmdDirty } from "../qmd/maintenance-integration.ts";
 import { resolveQmdContext } from "../qmd/context.ts";
 import { resolveCanaryQmdRuntimeBinding } from "./qmd-binding-preflight.ts";
 import { memoryObservationBinding, resolveMemoryObservationProjection, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 } from "./projection.ts";
-import { validateBatchObservation, type BatchObservationV1 } from "./batch-observation.ts";
+import {validateReadableBatchObservation as validateBatchObservation, renderContextualBatch, CONTEXTUAL_BATCH_SCHEMA, type ReadableBatchObservation as BatchObservationV1} from "./contextual-batch-observation.ts";
 import { DAILY_NOTE_APPLICATOR, renderDailyNoteEntry, type MemoryApplyReceiptV1 } from "./daily-note-applicator.ts";
 import { sha256, type JsonValue, type Digest } from "./ledger.ts";
 
@@ -39,7 +40,8 @@ function safeFile(path: string): string {
   return readFileSync(path, "utf8");
 }
 function entryBlock(receipt: MemoryApplyReceiptV1, observation: BatchObservationV1): string {
-  const text = observation.payload.text.replace(/<!--/g, "&lt;!--").split(/\r?\n/).join("\n  ");
+  const content = observation.schema === CONTEXTUAL_BATCH_SCHEMA ? renderContextualBatch(observation).replace(/^- /, "") : observation.payload.text;
+  const text = content.replace(/<!--/g, "&lt;!--").split(/\r?\n/).join("\n  ");
   return "<!-- engram-domain-entry:" + receipt.operationId + " -->\n- " + observation.sourceCompletedAt
     + " [" + observation.payload.section + "] " + text + "\n  Источник: " + receipt.destinationRef + "\n";
 }
@@ -132,12 +134,17 @@ async function consumeLocked(options: DomainConsumerOptions) {
     const expectedOperation = sha256("engram.memory-apply.v1\0daily-note\0" + observation.observationId + "\0" + receipt.destinationEntryId);
     const notePath = join(workspace, "memory", "agent-" + split.agentId, split.sessionKey, receipt.destinationDate + ".md");
     const rendered = renderDailyNoteEntry(observation, receipt.destinationEntryId);
+    const quality=readQualityRollout(workspace,{workspaceId:options.workspaceId,pluginDigest:active.pluginDigest,
+      baseEvaluationPolicyDigest:active.evaluation!.policyDigest,sourcePolicyDigest:active.evaluation?.batch?.sourcePolicyDigest as Digest,
+      applyAfter:active.consumers!.dailyNote.applyAfter});
+    const policyAllowed=observation.evaluationPolicyDigest===active.evaluation?.policyDigest
+      || (qualityScopeEnabled(quality,observation.scope) && observation.evaluationPolicyDigest===contextualEvaluationDigest(active.evaluation!.policyDigest));
     if (receipt.schema !== "engram.memory-apply-receipt.v1" || receipt.consumer !== "daily-note" || receipt.status !== "applied"
       || receipt.canonicalMutation !== true || digest(receipt.producer) !== digest(DAILY_NOTE_APPLICATOR)
       || receipt.operationId !== expectedOperation || receipt.receiptId !== sha256("engram.memory-apply-receipt.v1\0" + expectedOperation)
       || receipt.destinationEntryId !== expectedEntryId || receipt.sourceProvenance.observationDigest !== observation.observationDigest
       || digest(receipt.scope) !== digest(observation.scope) || binding.scopeId !== receipt.scope.scopeId || binding.scopeClass !== receipt.scope.scopeClass
-      || observation.evaluationPolicyDigest !== active.evaluation?.policyDigest
+      || !policyAllowed
       || Date.parse(receipt.completedAt) < Date.parse(active.consumers!.dailyNote.applyAfter)
       || !/^\d{4}-\d{2}-\d{2}$/.test(receipt.destinationDate)
       || resolve(workspace, receipt.destinationRef.split("#")[0]!) !== notePath

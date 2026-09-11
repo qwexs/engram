@@ -89,6 +89,7 @@ function adapter(options: {
   workspaceRoot?: string;
   classifyMissingBinding?: (runtimeSessionKey: string) => "revoked" | "unavailable";
   fault?: (point: RuntimeAdapterFaultPoint) => void;
+  completionMirrorFeed?: ConstructorParameters<typeof OpenClawObservationRuntimeAdapter>[0]["completionMirrorFeed"];
 } = {}) {
   const admitted = options.admitted ?? [];
   const binding = options.binding === undefined ? {
@@ -107,6 +108,7 @@ function adapter(options: {
     ...(options.spoolRoot ? { spoolRoot: options.spoolRoot } : {}),
     ...(options.workspaceRoot ? { workspace: options.workspaceRoot } : {}),
     ...(options.fault ? { fault: options.fault } : {}),
+    ...(options.completionMirrorFeed ? {completionMirrorFeed: options.completionMirrorFeed} : {}),
   });
 }
 
@@ -770,7 +772,7 @@ describe("OpenClaw PR2 runtime adapter", () => {
       scopeId: "telegram:100000001",
     });
     expect(admitted[0]!.redactedEvidence).toEqual({
-      source: { role: "user", text: "Принято: запускаем PR2 runtime adapter", messageId: "42" },
+      source: { role: "user", text: "Принято: запускаем PR2 runtime adapter", messageId: "42", observedAt: "2026-08-24T19:20:00.000Z" },
       outcome: { role: "assistant", text: "PR2 runtime adapter реализован" },
     });
     expect(admitted[0]!.trustedInputs).toEqual(["completed-source-turn", "runtime-session-key", "workspace-binding", "source-completion-time"]);
@@ -1115,4 +1117,47 @@ describe("OpenClaw PR2 runtime adapter", () => {
     });
     expect(sha256("neutral request")).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
+});
+
+for (const field of ["phase", "channel"]) {
+  test(`does not mistake ${field} commentary or tool arguments for a completed outcome`, () => {
+    const admitted: TrustedCompletedTurn[] = [];
+    const runtime = adapter({admitted}); const f = attach(runtime);
+    runtime.completeAgentEnd({...f.endEvent, messages: [f.endEvent.messages[0],
+      {role: "assistant", [field]: "commentary", content: "I will update the timer."},
+      {role: "assistant", content: [{type: "toolCall", name: "message", arguments: {message: "Timer fixed", final: true}}]},
+    ]}, f.runContext);
+    expect((admitted[0]!.redactedEvidence as any).outcome).toMatchObject({text: "", status: "unknown"});
+  });
+}
+
+test("does not capture a successor turn's final as the bound source outcome", () => {
+  const admitted: TrustedCompletedTurn[] = []; const runtime = adapter({admitted}); const f = attach(runtime);
+  runtime.completeAgentEnd({...f.endEvent, messages: [f.endEvent.messages[0],
+    {role: "assistant", phase: "final", content: "Timer updated"},
+    {role: "user", idempotencyKey: "another-source", content: "Separate request"},
+    {role: "assistant", phase: "final", content: "Unrelated result"}]}, f.runContext);
+  expect((admitted[0]!.redactedEvidence as any).outcome.text).toBe("Timer updated");
+});
+
+test("exact mirror after agent_end survives restart and admits the final, never interim commentary", () => {
+  const root = workspace(); const admitted: TrustedCompletedTurn[] = [];
+  const requests: any[] = [];
+  const completionMirrorFeed = {register: (r: any) => requests.push(r), hasPending: (id: string) => requests.some(r => r.candidateId === id)};
+  const options = {admitted, workspaceRoot: root, spoolRoot: join(root, "spool"), completionMirrorFeed};
+  const runtime = adapter(options); const f = hookFixtures();
+  runtime.captureMessageReceived(f.receivedEvent, f.receivedContext);
+  runtime.adoptPersistedUser(f.persistedEvent, {sessionKey});
+  runtime.attachRun({}, {...f.runContext, sessionId: "session-a"});
+  const end = runtime.completeAgentEnd({...f.endEvent, messages: [f.endEvent.messages[0],
+    {role: "assistant", phase: "commentary", content: "I will update the timer."}]}, f.runContext);
+  expect(end.status).toBe("captured"); expect(admitted).toHaveLength(0); expect(requests).toHaveLength(1);
+  const restarted = adapter(options);
+  expect(restarted.reconcileOrphanedCheckpoints().gaps).toBe(0);
+  expect(restarted.completeMessageSent({success: true, content: "Timer updated",
+    sourceReply: {final: true, sourceTurnId, toolCallId: "tool-a"}}, f.runContext).status).toBe("admitted");
+  expect((admitted[0]!.redactedEvidence as any).outcome.text).toBe("Timer updated");
+  expect(restarted.completeMessageSent({success: true, content: "Timer updated",
+    sourceReply: {final: true, sourceTurnId, toolCallId: "tool-a"}}, f.runContext).status).toBe("ignored");
+  expect(admitted).toHaveLength(1);
 });

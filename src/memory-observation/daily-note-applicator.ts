@@ -40,7 +40,8 @@ import type { MemoryObservationQmdBindingV1, MemoryObservationQmdResolverV1 } fr
 import { resolveQmdContext } from "../qmd/context.ts";
 import { readIndexHandoff, storeIndexHandoff } from "../qmd/index-provenance.ts";
 
-type DailyNoteObservation = EpisodicObservationV1 | BatchObservationV1;
+import { CONTEXTUAL_BATCH_SCHEMA, CONTEXTUAL_EVALUATOR_AUTHORITY, validateReadableBatchObservation, renderContextualBatch, type ReadableBatchObservation } from "./contextual-batch-observation.ts";
+type DailyNoteObservation = EpisodicObservationV1 | ReadableBatchObservation;
 export type ResolvedDailyNoteQmdBinding = {
   collection: string;
   bindingDigest: Digest;
@@ -74,6 +75,8 @@ export type DailyNoteCanaryPolicy = {
   maxAppliesPerWake: 1;
   policyDigest: Digest;
   allowedBatchEvaluationPolicyDigest?: Digest;
+  allowContextualObservations?: boolean;
+  allowedPreviousBatchEvaluationPolicyDigests?: Digest[];
   qmdBinding?: MemoryObservationQmdBindingV1 | MemoryObservationQmdResolverV1 | ResolvedDailyNoteQmdBinding;
 };
 
@@ -85,8 +88,8 @@ export function buildDailyNoteCanaryPolicy(input: Omit<DailyNoteCanaryPolicy, "p
     consumer: "daily-note",
     workspaceId: input.workspaceId,
     mode: "canary",
-    inputSchemas: ["engram.memory-observation.v1", "engram.memory-batch-observation.v1"],
-    allowedProducers: [SINGLE_TURN_EVALUATOR_AUTHORITY, BATCH_EVALUATOR_AUTHORITY],
+    inputSchemas: ["engram.memory-observation.v1", "engram.memory-batch-observation.v1", ...(input.allowContextualObservations ? [CONTEXTUAL_BATCH_SCHEMA] : [])],
+    allowedProducers: [SINGLE_TURN_EVALUATOR_AUTHORITY, BATCH_EVALUATOR_AUTHORITY, ...(input.allowContextualObservations ? [CONTEXTUAL_EVALUATOR_AUTHORITY] : [])],
     allowedObservationClasses: input.allowedObservationClasses,
     allowedCanonicalSourceSchemas: [],
     exactScopeAllowlist: [input.exactScope],
@@ -104,6 +107,8 @@ export function buildDailyNoteCanaryPolicy(input: Omit<DailyNoteCanaryPolicy, "p
     ...(input.allowedBatchEvaluationPolicyDigest
       ? { allowedBatchEvaluationPolicyDigest: input.allowedBatchEvaluationPolicyDigest }
       : {}),
+    ...(input.allowContextualObservations ? { allowContextualObservations: true } : {}),
+    ...(input.allowedPreviousBatchEvaluationPolicyDigests?.length ? {allowedPreviousBatchEvaluationPolicyDigests: input.allowedPreviousBatchEvaluationPolicyDigests} : {}),
     ...(input.qmdBinding ? { qmdBinding: input.qmdBinding } : {}),
   };
   return { ...input, policyDigest: sha256(policyBase as unknown as JsonValue) };
@@ -270,8 +275,10 @@ function allowsObservationClass(policy: DailyNoteCanaryPolicy, value: DailyNoteO
 }
 
 function allowsObservationPolicy(policy: DailyNoteCanaryPolicy, observation: DailyNoteObservation): boolean {
-  return observation.schema !== "engram.memory-batch-observation.v1"
-    || policy.allowedBatchEvaluationPolicyDigest === observation.evaluationPolicyDigest;
+  if (observation.schema === "engram.memory-observation.v1") return true;
+  if (observation.schema === CONTEXTUAL_BATCH_SCHEMA && !policy.allowContextualObservations) return false;
+  return policy.allowedBatchEvaluationPolicyDigest === observation.evaluationPolicyDigest
+    || (policy.allowedPreviousBatchEvaluationPolicyDigests ?? []).includes(observation.evaluationPolicyDigest);
 }
 
 function dateInTimezone(instant: string, timezone: string): string {
@@ -292,6 +299,7 @@ function noteTemplate(date: string): string {
 }
 
 export function renderDailyNoteEntry(observation: DailyNoteObservation, destinationEntryId: Digest): string {
+  if (observation.schema === CONTEXTUAL_BATCH_SCHEMA) return `<!-- engram-entry:${destinationEntryId} -->\n${renderContextualBatch(observation)}`;
   const textLines = observation.payload.text.split(/\r?\n/);
   const bullet = [`- ${textLines[0]}`, ...textLines.slice(1).map((line) => `  ${line}`)].join("\n");
   return `<!-- engram-entry:${destinationEntryId} -->\n${bullet}`;
@@ -313,8 +321,8 @@ function insertEntry(content: string, section: "Events" | "Decisions", rendered:
 }
 
 export function validateDailyNoteObservation(observation: DailyNoteObservation): void {
-  if (observation.schema === "engram.memory-batch-observation.v1") {
-    validateBatchObservation(observation);
+  if (observation.schema !== "engram.memory-observation.v1") {
+    validateReadableBatchObservation(observation);
     return;
   }
   const { observationDigest, ...base } = observation;
@@ -334,19 +342,19 @@ export function validateDailyNoteObservation(observation: DailyNoteObservation):
 }
 
 function primaryTraceId(observation: DailyNoteObservation): Digest {
-  return observation.schema === "engram.memory-batch-observation.v1"
+  return observation.schema !== "engram.memory-observation.v1"
     ? observation.sourceRefs[0]!.traceId
     : observation.traceId;
 }
 
 function sourceTurnId(observation: DailyNoteObservation): string {
-  return observation.schema === "engram.memory-batch-observation.v1"
+  return observation.schema !== "engram.memory-observation.v1"
     ? observation.sourceRefs[0]!.sourceTurnId
     : observation.sourceTurnId;
 }
 
 function evidenceRefs(observation: DailyNoteObservation): EpisodicObservationV1["evidenceRefs"] {
-  return observation.schema === "engram.memory-batch-observation.v1"
+  return observation.schema !== "engram.memory-observation.v1"
     ? observation.citations.map((citation) => citation.evidenceRef).slice(0, 8)
     : observation.evidenceRefs;
 }
@@ -535,7 +543,7 @@ export class DailyNoteCanaryApplicator {
           observationClass: observation.observationClass,
           evidenceRefs: evidenceRefs(observation),
           observationDigest: observation.observationDigest,
-          ...(observation.schema === "engram.memory-batch-observation.v1"
+          ...(observation.schema !== "engram.memory-observation.v1"
             ? {
                 batchSourceRefs: observation.sourceRefs,
                 batchCitations: observation.citations,
@@ -793,13 +801,16 @@ export class DailyNoteCanaryApplicator {
     let observation: DailyNoteObservation;
     try { observation = this.readObservation(record); }
     catch { return false; }
+    // On rollback, dual readers retain v2 work; a v1-only producer must not
+    // silently retire a queued v2 result as a policy skip.
+    if (observation.schema === CONTEXTUAL_BATCH_SCHEMA && !policy.allowContextualObservations) return false;
     const sameRuntimePartition = observation.scope.workspaceId === policy.exactScope.workspaceId
       && observation.scope.runtimeSessionKey === policy.exactScope.runtimeSessionKey;
     const predatesPolicy = sameRuntimePartition && Date.parse(observation.completedAt) < Date.parse(policy.applyAfter);
     const scopeWasRebound = sameRuntimePartition && !sameScope(observation.scope, policy.exactScope);
     const batchPolicyWasReplaced = sameRuntimePartition
-      && observation.schema === "engram.memory-batch-observation.v1"
-      && observation.evaluationPolicyDigest !== policy.allowedBatchEvaluationPolicyDigest;
+      && observation.schema !== "engram.memory-observation.v1"
+      && !allowsObservationPolicy(policy, observation);
     return predatesPolicy || scopeWasRebound || batchPolicyWasReplaced;
   }
 
@@ -892,13 +903,13 @@ export class DailyNoteCanaryApplicator {
       ? readdirSync(directory).filter((name) => name.endsWith(".json")).sort()
         .map((name) => schema === "single"
           ? readJson<EpisodicObservationV1>(join(directory, name))
-          : readJson<BatchObservationV1>(join(directory, name)))
+          : readJson<ReadableBatchObservation>(join(directory, name)))
       : []);
   }
 
   private readObservation(claimed: DailyNoteConsumerQueueRecordV1): DailyNoteObservation {
     const batchPath = join(this.root, "observations", "batch", `${digestKey(claimed.observationId)}.json`);
-    if (existsSync(batchPath)) return readJson<BatchObservationV1>(batchPath);
+    if (existsSync(batchPath)) return readJson<ReadableBatchObservation>(batchPath);
     const path = join(this.root, "observations", "typed", `${digestKey(claimed.traceId)}.json`);
     if (!existsSync(path)) throw new DailyNoteApplicatorError("OBSERVATION_MISSING", "typed observation is unavailable");
     const observation = readJson<EpisodicObservationV1>(path);

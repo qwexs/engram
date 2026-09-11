@@ -80,3 +80,14 @@ test("missing done is pending unless a complete digest-verified recovery replace
   f.put(recovery, "done", { ...failure, errorCode: "tampered" });
   expect(memoryWorkerHealth(f.root)).toMatchObject({ batchPending: 1, recoveredBatchJobs: 0 });
 });
+
+test('completion deadline debt is degraded; invalid feed data cannot look healthy',async()=>{
+ const {sha256}=await import('./ledger.ts');const f=fixture();
+ const feed={schema:'engram.completion-mirror-feed.v1',target:{agentId:'alpha',sessionKey:'agent:alpha:main',sessionId:'a'},pending:[{registeredAt:'2026-09-01T12:00:00.000Z'}],blocked:null};
+ f.put('completion-mirrors','feed',{...feed,digest:sha256(feed)});
+ expect(memoryWorkerHealth(f.root)).toMatchObject({status:'pending',completionPending:1});
+ f.put('completion-mirrors','unresolved',{schema:'engram.completion-unresolved.v1',reason:'final_wait_deadline'});
+ expect(memoryWorkerHealth(f.root)).toMatchObject({status:'degraded',completionUnresolved:1});
+ f.put('completion-mirrors','feed',{...feed,digest:sha256('wrong')});
+ expect(memoryWorkerHealth(f.root).corruptRecords).toBe(1);
+});

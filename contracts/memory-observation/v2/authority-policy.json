@@ -1,0 +1,184 @@
+{
+  "schema": "engram.memory-authority-policy.v1",
+  "policyVersion": "memory-observation-authority-v1",
+  "rules": [
+    {
+      "artifactSchema": "engram.memory-observation-job.v1",
+      "stage": "source-admission",
+      "allowedAuthorityClasses": [
+        "runtime"
+      ],
+      "allowedProducerIds": [
+        "openclaw-runtime"
+      ],
+      "requiredTrustedInputs": [
+        "completed-source-turn",
+        "runtime-session-key",
+        "workspace-binding",
+        "source-completion-time"
+      ]
+    },
+    {
+      "artifactSchema": "engram.memory-observation.v1",
+      "stage": "advisory-evaluation",
+      "allowedAuthorityClasses": [
+        "evaluator"
+      ],
+      "allowedProducerIds": [
+        "post-turn-observer"
+      ],
+      "requiredTrustedInputs": [
+        "observation-job",
+        "ttl-evidence-store",
+        "producer-registry"
+      ]
+    },
+    {
+      "artifactSchema": "engram.memory-batch-observation.v1",
+      "stage": "advisory-batch-evaluation",
+      "allowedAuthorityClasses": [
+        "evaluator"
+      ],
+      "allowedProducerIds": [
+        "batch-post-turn-observer"
+      ],
+      "requiredTrustedInputs": [
+        "immutable-batch-bundle",
+        "full-source-coverage",
+        "exact-scoped-citations",
+        "batch-evaluation-policy"
+      ]
+    },
+    {
+      "artifactSchema": "engram.memory-apply-receipt.v1",
+      "stage": "daily-note-apply",
+      "allowedAuthorityClasses": [
+        "applicator"
+      ],
+      "allowedProducerIds": [
+        "daily-note-applicator"
+      ],
+      "requiredTrustedInputs": [
+        "admitted-observation",
+        "daily-consumer-policy",
+        "apply-time-authority-readback"
+      ]
+    },
+    {
+      "artifactSchema": "engram.kg-assertion.v3-mvp",
+      "stage": "kg-v3-canonical-write",
+      "allowedAuthorityClasses": [
+        "typed-ingress"
+      ],
+      "allowedProducerIds": [
+        "kg-v3-explicit-intent-ingress"
+      ],
+      "requiredTrustedInputs": [
+        "explicit-user-intent",
+        "kg-v3-registry",
+        "trusted-source-turn"
+      ]
+    },
+    {
+      "artifactSchema": "oll.memory-candidate-report.v2",
+      "stage": "oll-candidate-compile",
+      "allowedAuthorityClasses": [
+        "compiler"
+      ],
+      "allowedProducerIds": [
+        "oll-memory-candidate-compiler"
+      ],
+      "requiredTrustedInputs": [
+        "oll-consumer-policy",
+        "typed-provenance-sidecar",
+        "stable-source-snapshot"
+      ]
+    },
+    {
+      "artifactSchema": "oll.adaptation-operation.v1",
+      "stage": "oll-rule-materialize",
+      "allowedAuthorityClasses": [
+        "applicator"
+      ],
+      "allowedProducerIds": [
+        "oll-rule-materializer"
+      ],
+      "requiredTrustedInputs": [
+        "approved-rollout-projection",
+        "review-acknowledgement",
+        "apply-time-authority-readback"
+      ]
+    },
+    {
+      "artifactSchema": "engram.memory-index-handoff.v1",
+      "stage": "qmd-index-handoff",
+      "allowedAuthorityClasses": [
+        "applicator"
+      ],
+      "allowedProducerIds": [
+        "daily-note-applicator"
+      ],
+      "requiredTrustedInputs": [
+        "memory-apply-receipt",
+        "qmd-dirty-mark",
+        "exact-qmd-binding"
+      ]
+    },
+    {
+      "artifactSchema": "qmd.index-generation.v1",
+      "stage": "canonical-index",
+      "allowedAuthorityClasses": [
+        "indexer"
+      ],
+      "allowedProducerIds": [
+        "qmd-indexer"
+      ],
+      "requiredTrustedInputs": [
+        "memory-index-handoff",
+        "completed-maintenance-generation",
+        "exact-index-readback"
+      ]
+    },
+    {
+      "artifactSchema": "engram.memory-trace-event.v1",
+      "stage": "trace-append",
+      "allowedAuthorityClasses": [
+        "runtime",
+        "evaluator",
+        "applicator",
+        "indexer",
+        "telemetry"
+      ],
+      "allowedProducerIds": [
+        "openclaw-runtime",
+        "batch-post-turn-observer",
+        "daily-note-applicator",
+        "qmd-indexer",
+        "memory-trace-writer"
+      ],
+      "requiredTrustedInputs": [
+        "stage-specific-authority",
+        "trace-id",
+        "policy-digest"
+      ]
+    },
+    {
+      "artifactSchema": "engram.memory-batch-observation.v2",
+      "stage": "advisory-batch-evaluation",
+      "allowedAuthorityClasses": [
+        "evaluator"
+      ],
+      "allowedProducerIds": [
+        "batch-post-turn-observer"
+      ],
+      "requiredTrustedInputs": [
+        "immutable-batch-bundle",
+        "full-source-coverage",
+        "exact-scoped-citations",
+        "batch-evaluation-policy"
+      ]
+    }
+  ],
+  "defaultDecision": "deny",
+  "replayReauthorizationRequired": true
+}

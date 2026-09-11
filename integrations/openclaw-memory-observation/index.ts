@@ -6,6 +6,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/core";
+import { readSessionTranscriptVisibleMessageDelta } from "openclaw/plugin-sdk/session-transcript-runtime";
+import { CompletionMirrorFeed, type CompletionTarget, type CompletionPage } from "../../src/memory-observation/completion-mirror-feed.ts";
 import {
   resolveObservationAgentRunIdentity,
   resolveObservationMessageReceivedIdentity,
@@ -51,7 +53,64 @@ const adapters = new Map<string, OpenClawObservationRuntimeAdapter>();
 const evaluatorRunners = new Map<string, AutonomousEpisodicRunner>();
 const dailyNoteRunners = new Map<string, AutonomousDailyNoteCanaryRunner>();
 let lifecycleTimer: ReturnType<typeof setInterval> | null = null;
+let completionTimer: ReturnType<typeof setInterval> | null = null;
+const completionFeeds = new Map<string, CompletionMirrorFeed>();
+let completionTickRunning = false;
 const LIFECYCLE_INTERVAL_MS = 60 * 60 * 1_000;
+
+function completionFeedFor(api: any, workspace: string, target: CompletionTarget): CompletionMirrorFeed {
+  target = {agentId: target.agentId, sessionKey: target.sessionKey, sessionId: target.sessionId};
+  const key = JSON.stringify([workspace, target.agentId, target.sessionKey, target.sessionId]);
+  const existing = completionFeeds.get(key); if (existing) return existing;
+  const feed = new CompletionMirrorFeed({root: join(workspace, "memory-state/memory-observation/v1/completion-mirrors"), target,
+    read: async request => await readSessionTranscriptVisibleMessageDelta(request) as CompletionPage,
+    expire: async request => {
+      const adapter = adapterFor(api, request.sessionKey);
+      if (!adapter) return "retry";
+      const result = adapter.completeWithoutDeliveredFinal(request);
+      if (result.status === "admitted" || result.status === "duplicate") return "done";
+      const checkpoint = new AdmissionStore(workspace, RUNTIME_AUTHORITY).readCheckpoint(request.candidateId as any);
+      return checkpoint && ["ledger_admitted", "terminal_gap"].includes(checkpoint.stage) ? "done" : "retry";
+    },
+    deliver: async (request, mirror) => {
+      const adapter = adapterFor(api, request.sessionKey);
+      if (!adapter) return "retry";
+      const result = adapter.completeMessageSent({success: true, content: mirror.text,
+        sourceReply: {final: true, sourceTurnId: request.sourceTurnId, toolCallId: mirror.toolCallId}},
+        {sessionKey: request.sessionKey, runId: request.runId, sessionId: request.sessionId});
+      if (result.status === "admitted" || result.status === "duplicate") return "done";
+      // A crash after admission can leave a matched feed item. Confirm the
+      // candidate's durable disposition rather than treating any ignore as OK.
+      const checkpoint = new AdmissionStore(workspace, RUNTIME_AUTHORITY).readCheckpoint(request.candidateId as any);
+      return checkpoint && ["ledger_admitted", "terminal_gap"].includes(checkpoint.stage) ? "done" : "retry";
+    }});
+  completionFeeds.set(key, feed); return feed;
+}
+
+function restoreCompletionFeeds(api: any): void {
+  for (const workspace of configuredWorkspaces(api)) {
+    const root = join(workspace, "memory-state/memory-observation/v1/completion-mirrors");
+    if (!existsSync(root)) continue;
+    for (const file of readdirSync(root).filter(name => /^[a-f0-9]{64}\.json$/.test(name))) {
+      try {
+        const target = readJson(join(root, file)).target as CompletionTarget;
+        if (agentIdFromSessionKey(target.sessionKey) !== target.agentId
+          || resolveAgentWorkspace(currentConfig(api), target.agentId) !== workspace) throw Error("scope mismatch");
+        completionFeedFor(api, workspace, target).status();
+      } catch { api.logger.warn?.("engram-memory-observation: completion feed restore failed"); }
+    }
+  }
+}
+
+async function tickCompletionFeeds(api: any): Promise<void> {
+  if (completionTickRunning) return;
+  completionTickRunning = true;
+  try { for (const feed of completionFeeds.values()) {
+    if (!feed.status().pending) continue;
+    try { const result = await feed.tick(); if (result.status === "blocked") api.logger.warn?.("engram-memory-observation: completion feed blocked; exact recovery required"); }
+    catch { api.logger.warn?.("engram-memory-observation: completion feed read/admission failed; retained for retry"); }
+  }} finally { completionTickRunning = false; }
+}
 
 function readJson(path: string): any { return JSON.parse(readFileSync(path, "utf8")); }
 
@@ -162,6 +221,11 @@ function bindingFor(api: any, active: ActiveWorkspace, runtimeSessionKey: string
   try {
     projection = resolveMemoryObservationProjection({
       workspace: active.workspace,
+      completionMirrorFeed: {
+        enabled: api.pluginConfig?.completionMirrorCapture === true,
+        register: request => completionFeedFor(api, active.workspace, request).register(request),
+        hasPending: candidateId => [...completionFeeds.values()].some(feed => feed.hasPending(candidateId)),
+      },
       workspaceId: active.workspaceId,
       expectedPluginDigest: PLUGIN_DIGEST,
     });
@@ -510,7 +574,11 @@ export default definePluginEntry({
     api.registerService({
       id: "engram-memory-observation-evaluator",
       start: () => {
+        restoreCompletionFeeds(api);
         runLifecycleMaintenance(api, "startup");
+        if (completionTimer) clearInterval(completionTimer);
+        completionTimer = setInterval(() => { void tickCompletionFeeds(api); }, 15_000);
+        completionTimer.unref?.();
         if (lifecycleTimer) clearInterval(lifecycleTimer);
         lifecycleTimer = setInterval(() => runLifecycleMaintenance(api, "periodic"), LIFECYCLE_INTERVAL_MS);
         lifecycleTimer.unref?.();
@@ -520,6 +588,8 @@ export default definePluginEntry({
         }
       },
       stop: () => {
+        if (completionTimer) clearInterval(completionTimer);
+        completionTimer = null;
         if (lifecycleTimer) clearInterval(lifecycleTimer);
         lifecycleTimer = null;
         adapters.clear();

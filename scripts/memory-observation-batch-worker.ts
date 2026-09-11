@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import {readQualityRollout,qualityScopeEnabled,qualityProducerForScope,contextualEvaluationDigest,qualityTransitionInventory} from "../src/memory-observation/quality-rollout.ts";
 import { isGroupProjectionSchema, assertGroupHostRoutes } from "../src/memory-observation/group-bindings.ts";
 import { memoryWorkerHealth } from "../src/memory-observation/worker-health.ts";
 import { memoryWorkerRunResult } from "../src/memory-observation/worker-run-result.ts";
@@ -47,7 +48,7 @@ async function sourcePluginDigest(repository: string): Promise<`sha256:${string}
       entrypoints: ["./integrations/openclaw-memory-observation/index.ts"],
       target: "node",
       format: "esm",
-      external: ["openclaw/plugin-sdk/core"],
+      external: ["openclaw/plugin-sdk/core", "openclaw/plugin-sdk/session-transcript-runtime"],
       minify: false,
       sourcemap: "none",
       write: false,
@@ -178,7 +179,7 @@ function collectScopes(): ScopeCandidate[] {
   if (existsSync(observationDirectory)) {
     for (const name of readdirSync(observationDirectory).filter((entry) => entry.endsWith(".json"))) {
       const value = readJson(join(observationDirectory, name));
-      if ((!existsSync(join(dailyQueueDirectory, name)) || pendingDailyObservationIds.has(value?.observationId)) && value?.evaluationPolicyDigest === projection.evaluation!.policyDigest
+      if ((!existsSync(join(dailyQueueDirectory, name)) || pendingDailyObservationIds.has(value?.observationId)) && (admittedScope(value) && readableBatchPolicy(value?.evaluationPolicyDigest,admittedScope(value)!))
         && Date.parse(value?.completedAt) >= Date.parse(dailyNote.applyAfter)) {
         add(admittedScope(value), value.completedAt);
       } else if (pendingDailyObservationIds.has(value?.observationId)) {
@@ -194,6 +195,10 @@ function collectScopes(): ScopeCandidate[] {
         add(currentlyBoundScope(value), value.completedAt);
       }
     }
+  }
+  if(qualityRollout()) for(const job of qualityTransitionInventory(workspace).batches) {
+    const scope=currentlyBoundScope({scope:job.partition});
+    if(scope && qualityScopeEnabled(qualityRollout(),scope)) add(scope,dailyNote.applyAfter);
   }
   return [...candidates.values()].sort((left, right) => left.firstAt.localeCompare(right.firstAt)
     || left.scope.runtimeSessionKey.localeCompare(right.scope.runtimeSessionKey));
@@ -220,14 +225,24 @@ function ledgerFor(scope: ObservationScope, current = projection): MemoryObserva
   });
 }
 
+function qualityRollout(current = projection) {
+  return readQualityRollout(workspace,{workspaceId,pluginDigest:current.pluginDigest,baseEvaluationPolicyDigest:current.evaluation!.policyDigest,
+    sourcePolicyDigest:current.evaluation!.batch!.sourcePolicyDigest as Digest,applyAfter:memoryObservationDailyNoteCanary(current)!.applyAfter});
+}
+function readableBatchPolicy(digest:Digest,scope:ObservationScope,current=projection):boolean {
+  return digest===current.evaluation!.policyDigest || (qualityScopeEnabled(qualityRollout(current),scope) && digest===contextualEvaluationDigest(current.evaluation!.policyDigest));
+}
 function livePolicy(scope: ObservationScope, current = projection): BatchLivePolicyV1 {
+  const producer=qualityProducerForScope(workspace,scope,qualityRollout(current));
+  if(producer==="blocked") throw Error("QUALITY_PENDING_BUNDLE_REQUIRES_RECONCILIATION");
   const currentBatch = current.evaluation!.batch!;
   return {
     workspaceId,
     exactScope: scope,
     producerEpoch: "v1",
     sourcePolicyDigest: currentBatch.sourcePolicyDigest as Digest,
-    evaluationPolicyDigest: current.evaluation!.policyDigest,
+    evaluationPolicyDigest: producer==="v2"?contextualEvaluationDigest(current.evaluation!.policyDigest):current.evaluation!.policyDigest,
+    ...(producer==="v2"?{contextual:true}:{}),
     inactivityGapMs: currentBatch.inactivityGapSeconds * 1_000,
     maxTurns: currentBatch.maxTurns,
     maxEvidenceBytes: currentBatch.maxEvidenceBytes,
@@ -255,6 +270,8 @@ function dailyPolicy(scope: ObservationScope, current = projection) {
     allowedObservationClasses: currentDaily.allowedObservationClasses,
     maxAppliesPerWake: currentDaily.maxAppliesPerWake,
     allowedBatchEvaluationPolicyDigest: current.evaluation!.policyDigest,
+    ...(qualityScopeEnabled(qualityRollout(current),scope)?{allowContextualObservations:true,
+      allowedPreviousBatchEvaluationPolicyDigests:[contextualEvaluationDigest(current.evaluation!.policyDigest)]}:{}),
     ...(currentDaily.qmdBinding ? { qmdBinding: currentDaily.qmdBinding } : {}),
   });
 }
@@ -287,6 +304,7 @@ function applicatorFor(scope: ObservationScope): DailyNoteCanaryApplicator {
 
 let evaluation: Awaited<ReturnType<BatchLiveWorker["processOne"]>> = { status: "idle" };
 let evaluationScope: ObservationScope | null = null;
+const qualityBlockedScopes=new Set<string>();
 const evaluations: { result: Awaited<ReturnType<BatchLiveWorker["processOne"]>>; scope: ObservationScope }[] = [];
 // Bounded sequential drain; processOne still has one inference allowance.
 const maxBatchesPerWake = 3;
@@ -300,6 +318,10 @@ const priorCount = evaluations.length;
 for (const candidate of collectScopes()) {
   if (evaluations.length >= maxBatchesPerWake || Date.now() - drainStarted >= 90_000) break;
   const current = currentProjectionForScope(candidate.scope);
+  if(qualityProducerForScope(workspace,candidate.scope,qualityRollout(current))==="blocked") {
+    qualityBlockedScopes.add(candidate.scope.runtimeSessionKey);
+    continue;
+  }
   const workerPolicy = livePolicy(candidate.scope, current);
   const policyDigest = sha256(workerPolicy as unknown as JsonValue);
   const worker = new BatchLiveWorker({
@@ -345,6 +367,7 @@ const apply = applications[0]?.result ?? { status: "idle" }, applyScope = applic
 const domains = isGroupProjectionSchema(projection.schema)
   ? await consumeTopicDomainReceipts({ workspace, workspaceId, expectedPluginDigest }) : null;
 const health = memoryWorkerHealth(workspace);
+if(qualityBlockedScopes.size){health.status="degraded";health.reasons.push("quality_pending_bundle_requires_reconciliation");}
 const execution = memoryWorkerRunResult({ evaluations: evaluations.map(entry => entry.result),
   applications: applications.map(entry => entry.result), domains });
 process.exitCode = execution.exitCode;
@@ -358,6 +381,7 @@ process.stdout.write(`${JSON.stringify({
   health,
   execution,
   maxBatchesPerWake,
+  qualityBlockedScopes:[...qualityBlockedScopes],
   domains,
   apply,
   applyScope,

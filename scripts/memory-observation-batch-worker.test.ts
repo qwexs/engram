@@ -20,7 +20,7 @@ async function sourcePluginDigest(): Promise<`sha256:${string}`> {
     entrypoints: [join(repository, "integrations", "openclaw-memory-observation", "index.ts")],
     target: "node",
     format: "esm",
-    external: ["openclaw/plugin-sdk/core"],
+    external: ["openclaw/plugin-sdk/core", "openclaw/plugin-sdk/session-transcript-runtime"],
     minify: false,
     sourcemap: "none",
     write: false,
@@ -239,4 +239,39 @@ describe("memory observation batch worker CLI", () => {
       reasonCode: "policy_superseded_before_apply",
     });
   });
+});
+
+test('v2 sidecar admits existing contextual effects through CLI and producer rollback without inference',async()=>{
+ const {fixture,now}=await import('../tests/fixtures/memory-observation/contextual/bundle.ts');
+ const {contextualBatchObservations}=await import('../src/memory-observation/contextual-batch-observation.ts');
+ const {contextualEvaluationDigest,qualityTransitionInventory}=await import('../src/memory-observation/quality-rollout.ts');
+ for(const mode of ['active','drain'] as const){
+  const workspace=mkdtempSync(join(tmpdir(),'quality-cli-'));roots.push(workspace);
+  const put=(path:string,v:unknown)=>{const f=join(workspace,path);mkdirSync(dirname(f),{recursive:true});writeFileSync(f,JSON.stringify(v));};
+  put('engram.json',{workspace:{id:'alpha'}});
+  const bundle=fixture(['Save the timer fix.'],['actor-a'],['Timer fix saved.']);
+  const scope={workspaceId:'alpha',runtimeSessionKey:bundle.partition.runtimeSessionKey,scopeClass:'self' as const,scopeId:'workspace:alpha'};
+  const basePolicy=sha256('cli-base'),pluginDigest=await sourcePluginDigest(),at='2026-09-01T00:00:00.000Z';
+  put('memory-state/memory-observation/projection.json',{
+    schema:'engram.memory-observation-rollout.v2',workspaceId:'alpha',enabled:true,mode:'canary',
+    bindings:[{...scope,workspaceId:undefined,requireOwner:true,allowedChannels:['telegram']}],pluginDigest,
+    inference:{provider:'openai',model:'openai/gpt-5.6-terra',evaluateAfter:at},
+    evaluation:{mode:'batch-cron',policyDigest:basePolicy,batch:{sourcePolicyDigest:sha256('source-policy'),inactivityGapSeconds:300,maxTurns:8,maxEvidenceBytes:262144,maxAgeSeconds:900,maxInferenceCallsPerRun:1,schedulerId:'fixture-quality'}},
+    limits:{evidenceTtlHours:72,maxJobs:100,maxBytes:10485760,maxQueueAgeHours:168,maxAttempts:2,claimTtlSeconds:300,maxInferenceCalls:1},
+    consumers:{dailyNote:{mode:'canary',applyAfter:at,timezone:'UTC',allowedObservationClasses:['episodic.event','episodic.decision'],maxAppliesPerWake:1}},
+    captureOwnership:{owner:'observer',effectiveAfter:at,foregroundDailyNoteCapture:'disabled'},approvedBy:'operator',approvedAt:at});
+  const traceId=bundle.inputs[0]!.traceId;
+  const observation=contextualBatchObservations({schema:'engram.memory-contextual-output.v2',assertions:[{id:'timer',section:'decisions',text:'The user requested saving the timer fix.',subject:'timer fix',resolution:'explicit',actorRef:'user',status:'requested',spans:[{traceId,role:'user',purpose:'assertion',quote:'Save the timer fix.'}]}],dispositions:[{traceId,kind:'asserted',assertionIds:['timer'],reason:'Explicit instruction.'}]},bundle,contextualEvaluationDigest(basePolicy),now)[0]!;
+  put('memory-state/memory-observation/v1/observations/batch/'+observation.observationId.slice(7)+'.json',observation);
+  const rollout={schema:'engram.memory-quality-rollout.v1',mode,workspaceId:'alpha',pluginDigest,baseEvaluationPolicyDigest:basePolicy,sourcePolicyDigest:sha256('source-policy'),applyAfter:at,exactScopes:[scope],preparedAt:now.toISOString(),inventoryDigest:qualityTransitionInventory(workspace).inventoryDigest};
+  put('memory-state/memory-observation/quality-rollout.json',{...rollout,digest:sha256(rollout)});
+  const bin=join(workspace,'bin');mkdirSync(bin);writeFileSync(join(bin,'openclaw'),'#!/bin/sh\nexit 79\n',{mode:0o755});
+  const run=()=>Bun.spawnSync([process.execPath,join(repository,'scripts/memory-observation-batch-worker.ts'),'--workspace',workspace],{cwd:repository,env:{...process.env,PATH:bin+':'+process.env.PATH}});
+  const result=run();expect(result.stderr.toString()).toBe('');expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout.toString()).apply.status).toBe('applied');
+  const note=readFileSync(join(workspace,'memory/agent-alpha/telegram-direct-100000001/2026-09-01.md'),'utf8');
+  expect(note).toContain('Поручено');expect(note).toContain('The user requested saving the timer fix.');
+  expect(run().exitCode).toBe(0);
+  expect(readFileSync(join(workspace,'memory/agent-alpha/telegram-direct-100000001/2026-09-01.md'),'utf8')).toBe(note);
+ }
 });

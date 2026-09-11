@@ -304,3 +304,17 @@ describe("Memory Observation Layer PR1 recovery and queue reliability", () => {
     expect(implementation).not.toContain("memory-state/post-turn-observer");
   });
 });
+
+
+test("v2 retention never purges an unconsumed result or its source accounting",()=>{
+ const root=workspace();const store=ledger(root);
+ const admitted=store.admit(source(),new Date("2026-01-01T00:00:00.000Z"));
+ const state=join(root,"memory-state/memory-observation/v1"),key=admitted.envelope.traceId.slice(7);
+ const qpath=join(state,"queues/evaluator",key+".json"),q=JSON.parse(readFileSync(qpath,"utf8"));
+ writeFileSync(qpath,JSON.stringify({...q,status:"terminal",terminalAt:"2026-01-01T01:00:00.000Z"}));
+ const observationId=sha256("unconsumed-context");const path=join(state,"observations/batch",observationId.slice(7)+".json");
+ mkdirSync(join(state,"observations/batch"),{recursive:true});
+ writeFileSync(path,JSON.stringify({schema:"engram.memory-batch-observation.v2",observationId,sourceRefs:[{traceId:admitted.envelope.traceId}]}));
+ purgeMemoryObservationLifecycle(root,new Date("2026-02-10T00:00:00.000Z"));
+ expect(existsSync(path)).toBe(true);expect(existsSync(qpath)).toBe(true);
+});

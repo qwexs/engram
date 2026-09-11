@@ -25,6 +25,7 @@ import {
 import type { Digest, JsonValue, ProducerRef, TrustedCompletedTurn } from "./ledger.ts";
 import { inspectMemoryObservationAdmission, ObservationLedgerError, sanitizeEvidence, sha256 } from "./ledger.ts";
 import { MAX_REPLY_CONTEXT_PAIRS, type ReplyContextResult } from "./reply-context.ts";
+import type { CompletionRequest } from "./completion-mirror-feed.ts";
 
 type Row = Record<string, unknown>;
 
@@ -235,6 +236,11 @@ export class OpenClawObservationRuntimeAdapter {
     stateTtlMs?: number;
     spoolRoot?: string;
     workspace?: string;
+    completionMirrorFeed?: {
+      enabled?: boolean;
+      register: (request: CompletionRequest) => void;
+      hasPending: (candidateId: string) => boolean;
+    };
     fault?: (point: RuntimeAdapterFaultPoint) => void;
   }) {
     if (options.stateTtlMs !== undefined && (!Number.isInteger(options.stateTtlMs) || options.stateTtlMs < 1)) {
@@ -514,11 +520,30 @@ export class OpenClawObservationRuntimeAdapter {
         throw new RuntimeAdapterError("IDENTITY_CONFLICT", "terminal transcript source content changed after durable persistence");
       }
       let assistantText = "";
+      let explicitFinal = false;
+      let toolPath = false;
       for (const value of messages.slice(sourceIndexes[0]!.index + 1)) {
         const message = row(value);
+        // A queued/steered successor cannot supply this turn's outcome.
+        if (message?.role === "user") break;
         if (message?.role !== "assistant") continue;
+        if (Array.isArray(message.content) && message.content.some((part: any) => ["toolCall", "tool_use", "function_call"].includes(part?.type))) toolPath = true;
+        // Explicit non-final phases are progress, even if they are the last
+        // text before a message-tool call. Tool arguments are not evidence.
+        const phase = message.phase ?? message.channel;
+        if (phase !== undefined && phase !== "final") continue;
         const text = extractText(message, 50_000);
-        if (text) assistantText = text;
+        if (text) { assistantText = text; explicitFinal = phase === "final"; }
+      }
+      if (toolPath && !explicitFinal) assistantText = "";
+      if (this.options.completionMirrorFeed && this.options.completionMirrorFeed.enabled !== false
+        && !explicitFinal && (toolPath || !assistantText) && bound.sessionId) {
+        const agentId = runtimeSessionKey.match(/^agent:([^:]+):/)?.[1];
+        if (!agentId) throw new RuntimeAdapterError("INVALID_TURN", "bound session has no agent identity");
+        this.options.completionMirrorFeed.register({agentId, sessionKey: runtimeSessionKey, sessionId: bound.sessionId,
+          candidateId: bound.candidateId, runId, sourceTurnId: bound.sourceTurnId});
+        this.recordCheckpoint(bound, "completion_observed", now);
+        return {status: "captured", sourceTurnId: bound.sourceTurnId};
       }
       // Successful runtime completion and the exact persisted user source have
       // already been verified. A tool-delivered/non-text reply need not appear
@@ -561,6 +586,7 @@ export class OpenClawObservationRuntimeAdapter {
       token("toolCallId", sourceReply.toolCallId);
       if (
         bound.runtimeSessionKey !== runtimeSessionKey ||
+        (typeof context.sessionId === "string" && bound.sessionId !== context.sessionId) ||
         bound.sourceTurnId !== sourceTurnId
       ) {
         this.publishBoundGap(bound, "run_attached", "identity_conflict", now);
@@ -643,6 +669,17 @@ export class OpenClawObservationRuntimeAdapter {
       ...(completed.replyToId ? { parentMessageId: completed.replyToId } : {}),
     });
     return { status: "attached", sourceTurnId: completed.sourceTurnId };
+  }
+
+  completeWithoutDeliveredFinal(request: CompletionRequest): RuntimeAdapterResult {
+    const checkpoint = this.admissionStore?.readCheckpoint(request.candidateId as Digest);
+    if (!checkpoint || checkpoint.stage !== "completion_observed") return {status:"ignored",reason:"completion_not_observed"};
+    const bound = this.boundFromDurableRun(request.runId, request.sessionKey);
+    if (!bound || bound.candidateId !== request.candidateId || bound.sessionId !== request.sessionId
+      || bound.sourceTurnId !== request.sourceTurnId) throw new RuntimeAdapterError("IDENTITY_CONFLICT","pending final identity changed");
+    const binding = this.options.resolveBinding(request.sessionKey);
+    if (!binding || this.bindingFingerprint(binding) !== bound.bindingFingerprint) throw new RuntimeAdapterError("SCOPE_REVOKED","pending final scope changed");
+    return this.admitCompletedTurn({bound,binding,runtimeSessionKey:request.sessionKey,assistantText:"",now:new Date(checkpoint.updatedAt)});
   }
 
   dropRun(runId: string | undefined): void {
@@ -760,6 +797,8 @@ export class OpenClawObservationRuntimeAdapter {
           continue;
         }
         if (spool?.status === "completed") { result.retained++; continue; }
+        if (this.options.completionMirrorFeed?.hasPending(checkpoint.candidateId)
+          && Date.parse(checkpoint.expiresAt) > now.getTime()) { result.retained++; continue; }
         if (mode === "periodic" && checkpoint.stage !== "completion_observed" && Date.parse(checkpoint.expiresAt) > now.getTime()) {
           result.retained++;
           continue;
@@ -1032,6 +1071,7 @@ export class OpenClawObservationRuntimeAdapter {
       ],
       redactedEvidence: sanitizeEvidence({
         source: { role: "user", text: params.bound.userText,
+          observedAt: new Date(params.bound.observedAt).toISOString(),
           messageId: params.bound.messageId,
           ...(params.bound.replyToId && params.bound.replyToId !== params.binding.topicDomain?.topicId
             ? { replyToMessageId: params.bound.replyToId } : {}),

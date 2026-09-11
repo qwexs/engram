@@ -545,3 +545,44 @@ export function recoverReconciledBatch(options: {
     injectFault(options,'before_completed');writeImmutableExact(completePath,plan);injectFault(options,'after_completed');return plan;
   } finally {release();}
 }
+
+/** Operator-reviewed false skip. Unlike a retry of a failed batch, the old
+ * successful terminal/result and other sources' effects remain untouched. */
+export function recoverReviewedSkip(options: {
+  workspace: string; storeRoot: string; jobId: Digest; traceId: Digest;
+  authorizedBy: string; authorizedAt: string; reason: string; apply?: boolean;
+  now?: Date; faultAt?: BatchTerminalRecoveryFaultPoint;
+}) {
+  if(!options.authorizedBy.trim()||!options.reason.trim()||!instant(options.authorizedAt)) fail('INVALID_AUTHORIZATION','explicit skip review required');
+  const root=join(resolve(options.storeRoot),'memory-batch-live/v1'),state=join(resolve(options.workspace),'memory-state/memory-observation/v1');
+  const key=digestKey(options.jobId),traceKey=digestKey(options.traceId);
+  const job=readJson<BatchLiveJobV1>(join(root,'jobs',key+'.json')),terminal=readJson<any>(join(root,'terminals',key+'.json'));
+  const {terminalId,...terminalBody}=terminal;
+  if(job.schema!==BATCH_LIVE_JOB_SCHEMA||job.jobId!==options.jobId||!job.bundle.sourceRefs.some(s=>s.traceId===options.traceId)
+    ||terminal.schema!=='engram.memory-batch-live-terminal.v2'||terminal.jobId!==job.jobId||terminal.bundleId!==job.bundle.bundleId
+    ||terminalId!==valueDigest(terminalBody)||!sameValue(terminal,readJson(join(root,'done',key+'.json')))
+    ||!terminal.dispositions.some((d:any)=>d.traceId===options.traceId&&d.decision==='skip'&&d.reasonCode==='semantic_contextual_skip'&&d.observationRefs.length===0))
+    fail('SKIP_REVIEW_INVALID','target is not an exact completed contextual skip');
+  const base={schema:'engram.memory-reviewed-skip-recovery.v1',jobId:job.jobId,traceId:options.traceId,terminalId,
+    authorizedBy:options.authorizedBy,authorizedAt:options.authorizedAt,reason:options.reason};
+  const recoveryId=valueDigest(base),path=join(root,'recoveries',key,digestKey(recoveryId));
+  const plan={...base,recoveryId,status:'requeued'},authPath=join(path,'authorization.json'),completePath=join(path,'completed.json');
+  if(existsSync(completePath)){if(!sameValue(readJson(completePath),plan))fail('COMPLETION_CONFLICT','review receipt changed');return plan;}
+  const queuePath=join(state,'queues/evaluator',traceKey+'.json'),evidencePath=join(state,'evidence',traceKey+'.json');
+  const original=existsSync(authPath)?readJson<any>(authPath).original:readJson<LedgerQueueRecordV1>(queuePath);
+  if(original.traceId!==options.traceId||original.status!=='terminal'||original.reasonCode!=='semantic_contextual_skip'||original.claimToken!==null) fail('QUEUE_INELIGIBLE','only reviewed skips may be retried');
+  const requeued=recoveredQueue(original,options.authorizedAt),evidence=readJson<any>(evidencePath);
+  const auth={...base,recoveryId,original,requeued,evidenceDigest:valueDigest(evidence)};
+  if(existsSync(authPath)&&!sameValue(readJson(authPath),auth))fail('AUTHORIZATION_CONFLICT','review authorization changed');
+  const check=()=>{
+    if(evidence.traceId!==options.traceId||!instant(evidence.expiresAt)||valueDigest(readJson(evidencePath))!==auth.evidenceDigest
+      ||Date.parse(evidence.expiresAt)<=Math.max(Date.parse(options.authorizedAt),(options.now??new Date()).getTime()))fail('EVIDENCE_EXPIRED','reviewed source changed or expired');
+    if(![valueDigest(original),valueDigest(requeued)].includes(valueDigest(readJson(queuePath))))fail('QUEUE_STATE_DIVERGED','reviewed queue changed');
+    const observations=join(state,'observations/batch');
+    if(existsSync(observations)&&readdirSync(observations).filter(n=>n.endsWith('.json')).some(n=>readJson<any>(join(observations,n)).sourceRefs?.some((s:any)=>s.traceId===options.traceId)))
+      fail('EFFECTS_EXIST','source already has observations; do not duplicate them');
+  };
+  check();if(!options.apply)return {...plan,status:'planned'};
+  const release=acquireRecoveryLock(join(state,'locks/evaluator.worker'),recoveryId);
+  try{check();writeImmutableExact(authPath,auth);injectFault(options,'after_authorization');writeAtomic(queuePath,requeued);injectFault(options,'after_queue_requeue');writeImmutableExact(completePath,plan);injectFault(options,'after_completed');return plan;}finally{release();}
+}

@@ -198,3 +198,26 @@ test('reconciled recovery rejects expiry, changed queue and existing effects',as
   expect(()=>recoverReconciledBatch(input)).toThrow();
  }
 });
+
+test('reviewed skip recovery preserves other batch effects and survives partial recovery',async()=>{
+ const {recoverReviewedSkip}=await import('./batch-terminal-recovery.ts');
+ for(const faultAt of [undefined,'after_authorization','after_queue_requeue'] as const){
+ const f=fixture('semantic_contextual_skip'),root=join(f.storeRoot,'memory-batch-live/v1'),state=join(f.workspace,'memory-state/memory-observation/v1');
+ const job=JSON.parse(readFileSync(join(root,'jobs',f.jobId.slice(7)+'.json'),'utf8'));
+ const base={schema:'engram.memory-batch-live-terminal.v2',jobId:f.jobId,bundleId:job.bundle.bundleId,dispositions:[{traceId:f.traceId,decision:'skip',reasonCode:'semantic_contextual_skip',observationRefs:[]}]};const terminal={...base,terminalId:sha256(base)};
+ write(join(root,'terminals',f.jobId.slice(7)+'.json'),terminal);write(join(root,'done',f.jobId.slice(7)+'.json'),terminal);
+ const other=join(state,'observations/batch',sha256('other').slice(7)+'.json');write(other,{bundleId:job.bundle.bundleId,sourceRefs:[{traceId:sha256('other')}]});
+ const input={...recoveryInput(f),now:new Date('2026-09-03T20:00:00.000Z'),traceId:f.traceId,apply:true};
+ const targetObs=join(state,'observations/batch',sha256('target').slice(7)+'.json');write(targetObs,{sourceRefs:[{traceId:f.traceId}]});
+ expect(()=>recoverReviewedSkip({...input,apply:false})).toThrow('already has observations');rmSync(targetObs);
+ expect(()=>recoverReviewedSkip({...input,apply:false,now:new Date('2026-09-07T00:00:00.000Z')})).toThrow('expired');
+ expect(recoverReviewedSkip({...input,apply:false}).status).toBe('planned');
+ if(faultAt)expect(()=>recoverReviewedSkip({...input,faultAt})).toThrow();
+ const result=recoverReviewedSkip(input);expect(result.status).toBe('requeued');expect(recoverReviewedSkip(input)).toEqual(result);
+ expect(JSON.parse(readFileSync(join(root,'done',f.jobId.slice(7)+'.json'),'utf8'))).toEqual(terminal);expect(JSON.parse(readFileSync(other,'utf8')).sourceRefs[0].traceId).toBe(sha256('other'));
+ }
+});
+test('skip review cannot requeue written sources or another source',async()=>{
+ const {recoverReviewedSkip}=await import('./batch-terminal-recovery.ts');const f=fixture();
+ expect(()=>recoverReviewedSkip({...recoveryInput(f),traceId:sha256('foreign'),apply:true})).toThrow();
+});

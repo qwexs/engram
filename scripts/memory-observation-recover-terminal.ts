@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
-import { recoverTerminalBatch, recoverReconciledBatch, restoreLegacyDefer } from "../src/memory-observation/batch-terminal-recovery.ts";
+import { recoverTerminalBatch, recoverReconciledBatch, recoverReviewedSkip, restoreLegacyDefer } from "../src/memory-observation/batch-terminal-recovery.ts";
 import type { Digest } from "../src/memory-observation/ledger.ts";
 
 function args(argv: string[]): Record<string, string | boolean> {
@@ -35,5 +35,5 @@ const common = {
 };
 const result = options["restore-defer-trace"]
   ? restoreLegacyDefer({ ...common, traceId: required(options, "restore-defer-trace") as Digest })
-  : options["reconciled"] === true ? recoverReconciledBatch(common) : recoverTerminalBatch(common);
+  : options["review-skip-trace"] ? recoverReviewedSkip({...common,traceId:required(options,"review-skip-trace") as Digest}) : options["reconciled"] === true ? recoverReconciledBatch(common) : recoverTerminalBatch(common);
 console.log(JSON.stringify(result, null, 2));

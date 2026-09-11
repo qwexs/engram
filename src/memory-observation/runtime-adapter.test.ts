@@ -1163,6 +1163,24 @@ test("exact mirror after agent_end survives restart and admits the final, never 
   expect(admitted).toHaveLength(1);
 });
 
+test("accepts only a host-owned run terminal after tool use as the exact completed outcome", () => {
+  const root = workspace(); const admitted: TrustedCompletedTurn[] = []; const requests: any[] = [];
+  const completionMirrorFeed = {register: (request: any) => requests.push(request), hasPending: () => false};
+  const runtime = adapter({admitted, workspaceRoot: root, spoolRoot: join(root, "spool"), completionMirrorFeed});
+  const f = hookFixtures();
+  runtime.captureMessageReceived(f.receivedEvent, f.receivedContext);
+  runtime.adoptPersistedUser(f.persistedEvent, {sessionKey});
+  runtime.attachRun({}, {...f.runContext, sessionId: "session-a"});
+  const result = runtime.completeAgentEnd({...f.endEvent, messages: [f.endEvent.messages[0],
+    {role: "assistant", content: [{type: "toolCall", name: "read", arguments: {}}]},
+    {role: "assistant", content: "Unrelated adjacent text", __openclaw: {runTerminal: true, runId: "another-run"}},
+    {role: "assistant", content: "Verified terminal result", __openclaw: {runTerminal: true, runId: f.runContext.runId}},
+  ]}, f.runContext);
+  expect(result.status).toBe("admitted");
+  expect(requests).toHaveLength(0);
+  expect((admitted[0]!.redactedEvidence as any).outcome).toMatchObject({role: "assistant", text: "Verified terminal result"});
+});
+
 
 test("episode candidates are sealed once and recovered without re-resolving newer context",()=>{
  const root=workspace(),spoolRoot=join(root,"spool");const admitted:TrustedCompletedTurn[]=[];

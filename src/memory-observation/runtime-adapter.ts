@@ -533,8 +533,14 @@ export class OpenClawObservationRuntimeAdapter {
         // text before a message-tool call. Tool arguments are not evidence.
         const phase = message.phase ?? message.channel;
         if (phase !== undefined && phase !== "final") continue;
+        // Current OpenClaw transcripts may omit a phase on the persisted
+        // terminal assistant record. Accept only the host-owned terminal bit
+        // bound to this exact run; an unphased adjacent assistant message is
+        // still not completion evidence.
+        const metadata = row(message.__openclaw);
+        const persistedRunTerminal = phase === undefined && metadata?.runTerminal === true && metadata?.runId === runId;
         const text = extractText(message, 50_000);
-        if (text) { assistantText = text; explicitFinal = phase === "final"; }
+        if (text) { assistantText = text; explicitFinal = phase === "final" || persistedRunTerminal; }
       }
       if (toolPath && !explicitFinal) assistantText = "";
       if (this.options.completionMirrorFeed && this.options.completionMirrorFeed.enabled !== false

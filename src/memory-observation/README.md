@@ -217,3 +217,10 @@ done records.
 Health takes its deadline from the retained evidence `expiresAt`; the generic
 pending-age threshold and stale `nextAttemptAt` do not degrade it before that
 TTL. Missing/invalid evidence or an expired TTL remains degraded and explicit.
+
+After a tool call, the persisted terminal assistant record may be unphased in
+current OpenClaw transcripts. The runtime adapter accepts it as the completed
+outcome only when host-owned `__openclaw.runTerminal=true` and its `runId`
+equals the exact bound run. Commentary, unphased adjacent text, tool arguments,
+and terminal records from another run remain ineligible. The completion-mirror
+feed is used only when this exact terminal evidence is absent.

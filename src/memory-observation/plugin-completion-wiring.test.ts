@@ -30,7 +30,14 @@ test('production plugin adapter registers tool-delivered finals in its durable f
    approvedBy:'operator',approvedAt:'2026-08-24T19:00:00.000Z'
   }));
   const api={pluginConfig:{completionMirrorCapture:true},runtime:{},config:{agents:{entries:[{id:'fixture-main',workspace:root}]}},logger:{warn(){},debug(){}}};
-  const {adapterFor}=await import(bundle);const adapter=adapterFor(api,sessionKey);expect(adapter).not.toBeNull();
+  const plugin=await import(bundle);
+  const hooks=new Map<string,Function>();let warnings=0;
+  plugin.default.register({...api,on:(name:string,fn:Function)=>hooks.set(name,fn),registerService(){},logger:{warn(){warnings++;}}});
+  for(const role of ['assistant','tool'])hooks.get('before_message_write')!({message:{role}},{});
+  expect(warnings).toBe(0);
+  hooks.get('before_message_write')!({message:{role:'user'}},{});
+  expect(warnings).toBe(1); // Invalid user identity must still fail closed.
+  const {adapterFor}=plugin;const adapter=adapterFor(api,sessionKey);expect(adapter).not.toBeNull();
   const context={sessionKey,sessionId:'fixture-session',runId:'fixture-run',trigger:'user'};
   const user={role:'user',idempotencyKey:sourceTurnId,content:'Prepare the agreed report',__openclaw:{senderIsOwner:true,transport:{channel:'telegram',messageId:'42'}}};
   adapter.captureMessageReceived({messageId:'42',senderId:'100000001',content:user.content,timestamp:Date.now()/1000},{sessionKey,messageId:'42',senderId:'100000001',channelId:'telegram'});

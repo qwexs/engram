@@ -148,9 +148,17 @@ export class CompletionMirrorFeed {
                 state.pending = state.pending.filter(p => p.request.candidateId !== pending.request.candidateId);
                 this.save(state);
             }
-            // Bounds apply per wake, not per whole transcript. Large histories warm
-            // incrementally without losing the opaque host cursor across restarts.
-            for (let pageNumber = 0; pageNumber < 2; pageNumber++) {
+            // Catch up within the existing wake: two pages every 15 seconds can
+            // take minutes and restart from zero on a legitimate host rewrite.
+            // Bound both work and wall time, yielding between SDK pages so the
+            // Gateway remains responsive. Normal caught-up reads still return early.
+            const scanStarted = performance.now();
+            for (let pageNumber = 0; pageNumber < 32; pageNumber++) {
+                if (pageNumber > 0) {
+                    await new Promise<void>(resolve => setImmediate(resolve));
+                    if (performance.now() - scanStarted >= 1000)
+                        break;
+                }
                 const before = this.load();
                 if (before.blocked)
                     return { status: "blocked", delivered };

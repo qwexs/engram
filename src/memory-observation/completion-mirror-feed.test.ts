@@ -96,7 +96,7 @@ test('rejects a request for another session incarnation and keeps bounded reads'
     expect(() => feed.register({ ...request, sessionId: 'other' })).toThrow();
     feed.register(request);
     expect((await feed.tick()).status).toBe('pending');
-    expect(reads).toBe(2);
+    expect(reads).toBe(32);
     expect(feed.status().pending).toBe(1);
 });
 test('reset discards old branch match, scans fresh cursor and admits only the new exact final', async () => {
@@ -137,4 +137,17 @@ test('deadline preserves source as unknown with explicit debt; retries do not du
     await new CompletionMirrorFeed(options).tick();
     expect(expired).toBe(1);
     expect(new CompletionMirrorFeed(options).status().pending).toBe(0);
+});
+
+test('bounded catch-up reaches a late exact final without idle timer delays and yields between pages', async () => {
+ const root=setup();let reads=0,delivered=0,yielded=false;
+ const options={root,target,read:async():Promise<CompletionPage>=>{
+  reads++;
+  if(reads===1)setImmediate(()=>{yielded=true;});
+  if(reads===2)expect(yielded).toBe(true);
+  return reads<12?page([],`c${reads}`,true):page(reads===12?[mirror()]:[], 'tail');
+ },deliver:async()=>{delivered++;return 'done' as const;}};
+ const feed=new CompletionMirrorFeed(options);feed.register(request);
+ expect((await feed.tick()).delivered).toBe(1);expect(reads).toBe(13);
+ await new CompletionMirrorFeed(options).tick();expect(delivered).toBe(1);
 });

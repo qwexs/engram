@@ -623,6 +623,8 @@ export default definePluginEntry({
     });
 
     api.on("before_message_write", (event: any, context: any) => {
+      // This hook also observes assistant/tool writes. They are not candidates.
+      if (event?.message?.role !== "user") return;
       safe(api, "before_message_write", () => {
         const identity = resolveObservationPersistedUserIdentity(event || {}, context || {});
         const adapter = adapterFor(api, identity.runtimeSessionKey);

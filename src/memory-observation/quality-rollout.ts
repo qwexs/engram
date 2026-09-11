@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { sha256, type Digest, type JsonValue, type ObservationScope } from './ledger.ts';
-import { CONTEXTUAL_PROMPT_VERSION, CONTEXTUAL_THINKING } from './contextual-observation.ts';
+import { CONTEXTUAL_PROMPT_VERSION, CONTEXTUAL_PROMPT_VERSIONS, type ContextualPromptVersion, CONTEXTUAL_THINKING } from './contextual-observation.ts';
 export type QualityRollout = {
     schema: 'engram.memory-quality-rollout.v1';
     mode: 'active' | 'drain';
@@ -15,8 +15,8 @@ export type QualityRollout = {
     inventoryDigest: Digest;
 };
 const hash = (v: unknown) => sha256(v as JsonValue);
-export function contextualEvaluationDigest(base: Digest): Digest {
-    return hash({ schema: 'engram.memory-contextual-policy.v2', baseEvaluationPolicyDigest: base, promptVersion: CONTEXTUAL_PROMPT_VERSION, thinking: CONTEXTUAL_THINKING });
+export function contextualEvaluationDigest(base: Digest, promptVersion: ContextualPromptVersion = CONTEXTUAL_PROMPT_VERSION): Digest {
+    return hash({ schema: 'engram.memory-contextual-policy.v2', baseEvaluationPolicyDigest: base, promptVersion, thinking: CONTEXTUAL_THINKING });
 }
 /** An opt-in sidecar does not rewrite source admission, the v1 projection,
  * activation time or old receipts. Both consumer policy digests remain admitted
@@ -74,8 +74,8 @@ export function qualityProducerForScope(workspace: string, scope: ObservationSco
     const inventory = qualityTransitionInventory(workspace);
     const scopeHash = hash(scope);
     const jobs = inventory.batches.filter(j => hash({ workspaceId: j.partition.workspaceId, runtimeSessionKey: j.partition.runtimeSessionKey, scopeClass: j.partition.scopeClass, scopeId: j.partition.scopeId }) === scopeHash);
-    const liveJobs = jobs.filter(j => [r.baseEvaluationPolicyDigest, contextualEvaluationDigest(r.baseEvaluationPolicyDigest)].includes(j.policyDigest) || j.sourceRefs.some((s: any) => queues.get(s.traceId)?.status !== 'terminal'));
-    if (liveJobs.some(j => ![r.baseEvaluationPolicyDigest, contextualEvaluationDigest(r.baseEvaluationPolicyDigest)].includes(j.policyDigest)))
+    const liveJobs = jobs.filter(j => [r.baseEvaluationPolicyDigest, ...readableContextualDigests(r.baseEvaluationPolicyDigest)].includes(j.policyDigest) || j.sourceRefs.some((s: any) => queues.get(s.traceId)?.status !== 'terminal'));
+    if (liveJobs.some(j => ![r.baseEvaluationPolicyDigest, ...readableContextualDigests(r.baseEvaluationPolicyDigest)].includes(j.policyDigest)))
         return 'blocked';
     const pending = liveJobs[0];
     if (pending) {
@@ -88,4 +88,17 @@ export function qualityProducerForScope(workspace: string, scope: ObservationSco
         return 'v2';
     }
     return r.mode === 'active' ? 'v2' : 'v1';
+}
+
+/** Keep the immediately preceding shipped producer readable and resumable.
+ * No widening to arbitrary policies and no re-labeling cached results. */
+export function readableContextualDigests(base: Digest): Digest[] {
+    return CONTEXTUAL_PROMPT_VERSIONS.map(v => contextualEvaluationDigest(base, v));
+}
+export function contextualPromptForScope(workspace: string, scope: ObservationScope, base: Digest): ContextualPromptVersion {
+    const scopeHash = hash(scope);
+    const pending = qualityTransitionInventory(workspace).batches.find(j =>
+        hash({workspaceId:j.partition.workspaceId,runtimeSessionKey:j.partition.runtimeSessionKey,scopeClass:j.partition.scopeClass,scopeId:j.partition.scopeId}) === scopeHash
+        && readableContextualDigests(base).includes(j.policyDigest));
+    return pending ? CONTEXTUAL_PROMPT_VERSIONS.find(v => contextualEvaluationDigest(base, v) === pending.policyDigest)! : CONTEXTUAL_PROMPT_VERSION;
 }

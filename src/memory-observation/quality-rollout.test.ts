@@ -61,3 +61,16 @@ test('unknown pending policy blocks only its scope; historical terminal debt is 
     expect(qualityProducerForScope(f.workspace, scope, f.rollout)).toBe('v2');
     expect(qualityTransitionInventory(f.workspace).batches).toHaveLength(1);
 });
+
+test('preceding prompt version resumes its own producer and stays readable without broad policy acceptance',async()=>{
+ const {readableContextualDigests,contextualPromptForScope}=await import('./quality-rollout.ts');
+ const f=setup();const previous=contextualEvaluationDigest(f.rollout.baseEvaluationPolicyDigest,'memory-contextual-shadow-v10');
+ expect(readableContextualDigests(f.rollout.baseEvaluationPolicyDigest)).toContain(previous);
+ expect(readableContextualDigests(f.rollout.baseEvaluationPolicyDigest)).not.toContain(sha256('unreviewed'));
+ f.job(previous);f.put('v1/queues/evaluator/'+f.traceId.slice(7)+'.json',{traceId:f.traceId,status:'queued'});
+ expect(qualityProducerForScope(f.workspace,scope,f.rollout)).toBe('v2');
+ expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v10');
+ expect(qualityProducerForScope(f.workspace,scope,{...f.rollout,mode:'drain'})).toBe('blocked');
+ f.put('batch-live-store/memory-batch-live/v1/done/'+f.jobId.slice(7)+'.json',{jobId:f.jobId});
+ expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v11');
+});

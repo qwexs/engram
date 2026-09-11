@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import {readQualityRollout,qualityScopeEnabled,qualityProducerForScope,contextualEvaluationDigest,qualityTransitionInventory} from "../src/memory-observation/quality-rollout.ts";
+import {readQualityRollout,qualityScopeEnabled,qualityProducerForScope,contextualEvaluationDigest,readableContextualDigests,contextualPromptForScope,qualityTransitionInventory} from "../src/memory-observation/quality-rollout.ts";
 import { isGroupProjectionSchema, assertGroupHostRoutes } from "../src/memory-observation/group-bindings.ts";
 import { memoryWorkerHealth } from "../src/memory-observation/worker-health.ts";
 import { memoryWorkerRunResult } from "../src/memory-observation/worker-run-result.ts";
@@ -230,19 +230,20 @@ function qualityRollout(current = projection) {
     sourcePolicyDigest:current.evaluation!.batch!.sourcePolicyDigest as Digest,applyAfter:memoryObservationDailyNoteCanary(current)!.applyAfter});
 }
 function readableBatchPolicy(digest:Digest,scope:ObservationScope,current=projection):boolean {
-  return digest===current.evaluation!.policyDigest || (qualityScopeEnabled(qualityRollout(current),scope) && digest===contextualEvaluationDigest(current.evaluation!.policyDigest));
+  return digest===current.evaluation!.policyDigest || (qualityScopeEnabled(qualityRollout(current),scope) && readableContextualDigests(current.evaluation!.policyDigest).includes(digest));
 }
 function livePolicy(scope: ObservationScope, current = projection): BatchLivePolicyV1 {
   const producer=qualityProducerForScope(workspace,scope,qualityRollout(current));
   if(producer==="blocked") throw Error("QUALITY_PENDING_BUNDLE_REQUIRES_RECONCILIATION");
   const currentBatch = current.evaluation!.batch!;
+  const promptVersion = contextualPromptForScope(workspace,scope,current.evaluation!.policyDigest);
   return {
     workspaceId,
     exactScope: scope,
     producerEpoch: "v1",
     sourcePolicyDigest: currentBatch.sourcePolicyDigest as Digest,
-    evaluationPolicyDigest: producer==="v2"?contextualEvaluationDigest(current.evaluation!.policyDigest):current.evaluation!.policyDigest,
-    ...(producer==="v2"?{contextual:true}:{}),
+    evaluationPolicyDigest: producer==="v2"?contextualEvaluationDigest(current.evaluation!.policyDigest,promptVersion):current.evaluation!.policyDigest,
+    ...(producer==="v2"?{contextual:true,contextualPromptVersion:promptVersion}:{}),
     inactivityGapMs: currentBatch.inactivityGapSeconds * 1_000,
     maxTurns: currentBatch.maxTurns,
     maxEvidenceBytes: currentBatch.maxEvidenceBytes,
@@ -271,7 +272,7 @@ function dailyPolicy(scope: ObservationScope, current = projection) {
     maxAppliesPerWake: currentDaily.maxAppliesPerWake,
     allowedBatchEvaluationPolicyDigest: current.evaluation!.policyDigest,
     ...(qualityScopeEnabled(qualityRollout(current),scope)?{allowContextualObservations:true,
-      allowedPreviousBatchEvaluationPolicyDigests:[contextualEvaluationDigest(current.evaluation!.policyDigest)]}:{}),
+      allowedPreviousBatchEvaluationPolicyDigests:readableContextualDigests(current.evaluation!.policyDigest)}:{}),
     ...(currentDaily.qmdBinding ? { qmdBinding: currentDaily.qmdBinding } : {}),
   });
 }

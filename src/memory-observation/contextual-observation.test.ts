@@ -137,3 +137,37 @@ test('derives a redundant context backlink without inventing a primary or semant
  const primaryGap=structuredClone(o);primaryGap.assertions[0]!.spans[0]!.purpose='assertion';
  expect(()=>parseContextualOutput(primaryGap,b,now)).toThrow();
 });
+
+test('catalog selections preserve exact source/actor/offsets without generated quotes', async()=>{
+ const {contextualEvidenceCatalog,contextualPrompt}=await import('./contextual-observation.ts');
+ const b=fixture(),o:any=output(b),catalog=contextualEvidenceCatalog(b);
+ for(const a of o.assertions) a.spans=a.spans.map((s:any)=>({evidenceId:catalog.find(e=>e.span.traceId===s.traceId&&e.span.role===s.role)!.id,purpose:s.traceId===b.inputs[1]!.traceId?'assertion':'context'}));
+ const before=JSON.stringify(b);const parsed=parseContextualOutput(o,b,now);
+ expect(parsed.assertions[0]!.spans[1]!.quote).toBe('Yes, do that.');
+ expect(parsed.assertions[0]!.spans[1]!.role).toBe('user');
+ expect(parseContextualOutput(parsed,b,now)).toEqual(parsed);
+ expect(JSON.stringify(b)).toBe(before);
+ expect(JSON.parse(contextualPrompt(b,now)).sources[0].excerpts.length).toBeGreaterThan(0);
+ for(const bad of ['unknown',catalog[0]!.id+'x']) {const f=structuredClone(o);f.assertions[0].spans[0].evidenceId=bad;expect(()=>parseContextualOutput(f,b,now)).toThrow();}
+ const override=structuredClone(o);override.assertions[0].spans[0].role='user';expect(()=>parseContextualOutput(override,b,now)).toThrow();
+ const another=fixture(['Changed proposal','Yes, do that.']);expect(()=>parseContextualOutput(o,another,now)).toThrow();
+});
+test('catalog uses distinct reply/episode locators and never promotes historical speakers',async()=>{
+ const {contextualEvidenceCatalog}=await import('./contextual-observation.ts');
+ const {fixture:make}=await import('../../tests/fixtures/memory-observation/contextual/bundle.ts');
+ const pair={traceId:sha256('past'),sourceTurnId:'channel-user:v1:'+'c'.repeat(64),transportMessageId:'42',evidenceDigest:sha256('past-data'),source:{text:'Review.'},outcome:{text:'I can commit the timer fix.'}};
+ const b=make(['Yes, do that.'],['actor-a'],['I will do it.'],undefined,[{status:'candidates',pairs:[pair],maxPairs:3,maxBytes:16384,reasonCode:null}]);
+ const c=contextualEvidenceCatalog(b),primary=c.find(e=>e.span.role==='user'&&!e.contextOnly)!,ctx=c.find(e=>e.span.role==='assistant'&&e.contextOnly)!;
+ const o:any={schema:'engram.memory-contextual-output.v2',assertions:[{id:'a',section:'decisions',text:'Commit the timer fix.',subject:'timer fix',resolution:'resolved',actorRef:'user',status:'requested',spans:[{evidenceId:primary.id,purpose:'assertion'},{evidenceId:ctx.id,purpose:'context'}]}],dispositions:[{traceId:b.inputs[0]!.traceId,kind:'asserted',assertionIds:['a'],reason:'Explicit approval with context.'}]};
+ const parsed=parseContextualOutput(o,b,now);expect(parsed.assertions[0]!.spans[1]!.episodeContextRef).toBe('42');expect(parsed.assertions[0]!.spans[1]!.replyContextRef).toBeUndefined();
+ o.assertions[0].spans[1].purpose='assertion';expect(()=>parseContextualOutput(o,b,now)).toThrow();
+});
+test('catalog remains bounded per excerpt and covers long and repeated text without ambiguity',async()=>{
+ const {contextualEvidenceCatalog}=await import('./contextual-observation.ts');
+ const text=('Repeated sentence. '.repeat(85))+'😀 final';const b=fixture([text,'Yes.']);
+ const c=contextualEvidenceCatalog(b).filter(e=>e.span.traceId===b.inputs[0]!.traceId&&e.span.role==='user');
+ expect(c.map(e=>e.span.quote).join('')).toBe(text);expect(c.every(e=>e.span.quote.length<=650)).toBe(true);
+ expect(new Set(c.map(e=>e.id)).size).toBe(c.length);
+ const external=contextualEvidenceCatalog(fixture(['<file>Approve</file>','Yes.']));
+ expect(external.filter(e=>e.span.role==='external').every(e=>e.contextOnly)).toBe(true);
+});

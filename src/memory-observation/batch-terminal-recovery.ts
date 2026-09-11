@@ -7,6 +7,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   readlinkSync,
   renameSync,
   rmSync,
@@ -469,4 +470,78 @@ export function recoverTerminalBatch(options: {
   } finally {
     releaseLock();
   }
+}
+
+/** Explicit bounded recovery of exhausted contextual sources. The immutable
+ * reconciled job stays done: recovered rows form a new bundle under the current
+ * producer. Old errors and receipts remain visible; no result is injected. */
+export function recoverReconciledBatch(options: {
+  workspace: string; storeRoot: string; jobId: Digest;
+  authorizedBy: string; authorizedAt: string; reason: string; apply?: boolean;
+  now?: Date; faultAt?: BatchTerminalRecoveryFaultPoint;
+}) {
+  if (!options.authorizedBy.trim() || !options.reason.trim() || !instant(options.authorizedAt)) fail('INVALID_AUTHORIZATION','explicit recovery authorization required');
+  const state = join(resolve(options.workspace),'memory-state/memory-observation/v1');
+  const root = join(resolve(options.storeRoot),'memory-batch-live/v1');
+  const key = digestKey(options.jobId);
+  const job = readJson<BatchLiveJobV1>(join(root,'jobs',key+'.json'));
+  const reconciliation = readJson<any>(join(root,'reconciliations',key+'.json'));
+  const done = readJson<any>(join(root,'done',key+'.json'));
+  const {reconciliationId,...reconciliationBody} = reconciliation;
+  if (job.schema !== BATCH_LIVE_JOB_SCHEMA || job.jobId !== options.jobId
+    || reconciliation.schema !== 'engram.memory-batch-live-reconciliation.v1'
+    || reconciliation.jobId !== job.jobId || reconciliation.bundleId !== job.bundle.bundleId
+    || reconciliation.evaluationPolicyDigest !== job.evaluationPolicyDigest
+    || reconciliationId !== valueDigest(reconciliationBody) || !sameValue(done,reconciliation)
+    || !sameValue(reconciliation.sources.map((s:any)=>s.traceId),job.bundle.sourceRefs.map(s=>s.traceId))) fail('RECONCILIATION_INVALID','reconciled batch identity changed');
+  if (existsSync(join(root,'contextual-results',key+'.json')) || existsSync(join(root,'terminals',key+'.json')))
+    fail('EFFECTS_EXIST','a persisted result requires effect reconciliation, not source requeue');
+  const observationRoot=join(state,'observations/batch');
+  if (existsSync(observationRoot) && readdirSync(observationRoot).filter(n=>n.endsWith('.json')).some(n=>readJson<any>(join(observationRoot,n)).bundleId===job.bundle.bundleId))
+    fail('EFFECTS_EXIST','observations already exist for this batch');
+  const eligible=reconciliation.sources.filter((s:any)=>s.status==='terminal' && s.reasonCode==='batch_contextual_evaluation_failed' && s.attempt>=s.maxAttempts);
+  if (!eligible.length || new Set(eligible.map((s:any)=>s.traceId)).size!==eligible.length) fail('QUEUE_INELIGIBLE','no unique exhausted contextual sources');
+  const base={schema:'engram.memory-reconciled-recovery.v1',jobId:job.jobId,reconciliationId,
+    authorizedBy:options.authorizedBy,authorizedAt:options.authorizedAt,reason:options.reason,traceIds:eligible.map((s:any)=>s.traceId)};
+  const recoveryId=valueDigest(base),path=join(root,'recoveries',key,digestKey(recoveryId));
+  const authPath=join(path,'authorization.json'),completePath=join(path,'completed.json');
+  const plan={...base,recoveryId,status:'requeued'};
+  if (existsSync(completePath)) {
+    if (!sameValue(readJson(completePath),plan)) fail('COMPLETION_CONFLICT','recovery receipt changed');
+    return plan;
+  }
+  const readQueue=(trace:Digest)=>readJson<LedgerQueueRecordV1>(join(state,'queues/evaluator',digestKey(trace)+'.json'));
+  const snapshots: RecoveryQueueSnapshot[] = existsSync(authPath) ? readJson<any>(authPath).queues : eligible.map((source:any)=>{
+    const original=readQueue(source.traceId),evidence=readJson<any>(join(state,'evidence',digestKey(source.traceId)+'.json'));
+    if (valueDigest(original)!==source.queueDigest || original.status!=='terminal' || original.reasonCode!==source.reasonCode
+      || original.claimToken!==null || original.traceId!==source.traceId) fail('QUEUE_STATE_DIVERGED','queue no longer matches exhaustion receipt');
+    const requeued=recoveredQueue(original,options.authorizedAt);
+    return {traceId:source.traceId,original,originalDigest:valueDigest(original),requeued,requeuedDigest:valueDigest(requeued),evidenceDigest:valueDigest(evidence),evidenceExpiresAt:evidence.expiresAt};
+  });
+  const authorization={...base,recoveryId,queues:snapshots};
+  if (existsSync(authPath) && !sameValue(readJson(authPath),authorization)) fail('AUTHORIZATION_CONFLICT','authorization identity changed');
+  const check=()=>{
+    if (snapshots.length!==eligible.length || new Set(snapshots.map(s=>s.traceId)).size!==snapshots.length) fail('AUTHORIZATION_CONFLICT','queue coverage changed');
+    for(const s of snapshots) {
+      const source=eligible.find((x:any)=>x.traceId===s.traceId),evidence=readJson<any>(join(state,'evidence',digestKey(s.traceId)+'.json'));
+      if (!source || s.originalDigest!==source.queueDigest || s.originalDigest!==valueDigest(s.original)
+        || s.requeuedDigest!==valueDigest(s.requeued) || !sameValue(s.requeued,recoveredQueue(s.original,options.authorizedAt))) fail('AUTHORIZATION_CONFLICT','queue snapshot changed');
+      if (evidence.traceId!==s.traceId || !instant(evidence.expiresAt) || valueDigest(evidence)!==s.evidenceDigest
+        || Date.parse(evidence.expiresAt)<=Math.max(Date.parse(options.authorizedAt),(options.now??new Date()).getTime())) fail('EVIDENCE_EXPIRED','evidence changed or expired');
+      if (![s.originalDigest,s.requeuedDigest].includes(valueDigest(readQueue(s.traceId)))) fail('QUEUE_STATE_DIVERGED','queue changed since authorization');
+    }
+  };
+  check();
+  if (!options.apply) return {...plan,status:'planned'};
+  const release=acquireRecoveryLock(join(state,'locks/evaluator.worker'),recoveryId);
+  try {
+    check();writeImmutableExact(authPath,authorization);injectFault(options,'after_authorization');
+    for(const s of snapshots) {
+      const current=valueDigest(readQueue(s.traceId));
+      if(current===s.originalDigest) writeAtomic(join(state,'queues/evaluator',digestKey(s.traceId)+'.json'),s.requeued);
+      else if(current!==s.requeuedDigest) fail('QUEUE_STATE_DIVERGED','queue changed during recovery');
+      injectFault(options,'after_queue_requeue');
+    }
+    injectFault(options,'before_completed');writeImmutableExact(completePath,plan);injectFault(options,'after_completed');return plan;
+  } finally {release();}
 }

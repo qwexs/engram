@@ -167,3 +167,34 @@ describe("bounded terminal batch recovery", () => {
     })).toThrow(/expired/);
   });
 });
+
+function reconciledFixture() {
+ const f=fixture('batch_contextual_evaluation_failed');
+ const root=join(f.storeRoot,'memory-batch-live/v1'),state=join(f.workspace,'memory-state/memory-observation/v1');
+ const job=JSON.parse(readFileSync(join(root,'jobs',f.jobId.slice(7)+'.json'),'utf8'));
+ const queue=JSON.parse(readFileSync(join(state,'queues/evaluator',f.traceId.slice(7)+'.json'),'utf8'));
+ const base={schema:'engram.memory-batch-live-reconciliation.v1',jobId:f.jobId,bundleId:job.bundle.bundleId,evaluationPolicyDigest:job.evaluationPolicyDigest,sources:[{traceId:f.traceId,status:'terminal',reasonCode:queue.reasonCode,attempt:2,maxAttempts:2,queueDigest:sha256(queue)}],reconciledAt:'2026-09-03T10:05:00.000Z'};
+ const rec={...base,reconciliationId:sha256(base)};
+ write(join(root,'reconciliations',f.jobId.slice(7)+'.json'),rec);write(join(root,'done',f.jobId.slice(7)+'.json'),rec);
+ return {...f,root,state,now:new Date('2026-09-03T20:00:00.000Z')};
+}
+for(const faultAt of [undefined,'after_authorization','after_queue_requeue','before_completed','after_completed'] as const) test('reconciled contextual recovery preserves done/evidence and resumes '+faultAt,async()=>{
+ const {recoverReconciledBatch}=await import('./batch-terminal-recovery.ts');const f=reconciledFixture();
+ const input={...recoveryInput(f),now:f.now,apply:true};
+ const paths=[join(f.root,'done',f.jobId.slice(7)+'.json'),join(f.state,'evidence',f.traceId.slice(7)+'.json')];const before=paths.map(p=>readFileSync(p,'utf8'));
+ expect(recoverReconciledBatch({...input,apply:false}).status).toBe('planned');
+ if(faultAt)expect(()=>recoverReconciledBatch({...input,faultAt})).toThrow();
+ const result=recoverReconciledBatch(input);expect(result.status).toBe('requeued');expect(recoverReconciledBatch(input)).toEqual(result);
+ expect(paths.map(p=>readFileSync(p,'utf8'))).toEqual(before);
+ expect(JSON.parse(readFileSync(join(f.state,'queues/evaluator',f.traceId.slice(7)+'.json'),'utf8')).attempt).toBe(0);
+});
+test('reconciled recovery rejects expiry, changed queue and existing effects',async()=>{
+ const {recoverReconciledBatch}=await import('./batch-terminal-recovery.ts');
+ for(const mode of ['expired','changed','effects']) {
+  const f=reconciledFixture(),input={...recoveryInput(f),now:f.now,apply:true};
+  if(mode==='expired')input.now=new Date('2026-09-07T00:00:00.000Z');
+  if(mode==='effects')write(join(f.root,'contextual-results',f.jobId.slice(7)+'.json'),{});
+  if(mode==='changed') {const p=join(f.state,'queues/evaluator',f.traceId.slice(7)+'.json');const q=JSON.parse(readFileSync(p,'utf8'));q.reasonCode='semantic_contextual_asserted';write(p,q);}
+  expect(()=>recoverReconciledBatch(input)).toThrow();
+ }
+});

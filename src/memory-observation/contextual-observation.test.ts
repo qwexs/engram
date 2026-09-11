@@ -171,3 +171,37 @@ test('catalog remains bounded per excerpt and covers long and repeated text with
  const external=contextualEvidenceCatalog(fixture(['<file>Approve</file>','Yes.']));
  expect(external.filter(e=>e.span.role==='external').every(e=>e.contextOnly)).toBe(true);
 });
+
+test('diagnostics distinguish invalid JSON and provenance without persisting raw output', async () => {
+    const b=fixture();
+    for(const [raw,code] of [['private-text sk-secret not JSON','invalid_json'],[JSON.stringify({...output(b), assertions:[{...output(b).assertions[0],spans:[{evidenceId:'missing',purpose:'assertion'}]}]}),'evidence_reference']] as const){
+        try{await runContextualShadow({bundle:b,model:'fixture/model',maxTokens:2048,now:()=>now,
+            complete:async()=>({resolvedModel:'fixture/model',output:raw})});throw Error('must reject');}
+        catch(e:any){expect(e.diagnostic).toEqual({stage:'validation',code:'CONTEXTUAL_OUTPUT_DENIED:'+code,outputLength:raw.length,outputDigest:sha256(raw)});
+            expect(JSON.stringify(e.diagnostic)).not.toContain('private-text');expect(JSON.stringify(e.diagnostic)).not.toContain('sk-secret');}
+    }
+});
+test('provider exceptions are classified using allowlisted codes, never provider messages', async () => {
+    for(const [supplied,expected] of [['MODEL_RUN_FAILED','MODEL_RUN_FAILED'],['secret-provider-code','PROVIDER_EXCEPTION']] as const){
+        try{await runContextualShadow({bundle:fixture(),model:'fixture/model',maxTokens:2048,now:()=>now,
+            complete:async()=>{throw Object.assign(Error('prompt=private-text; token=sk-secret'),{code:supplied});}});throw Error('must reject');}
+        catch(e:any){expect(e.diagnostic).toEqual({stage:'provider',code:expected});expect(e.message).not.toContain('sk-secret');}
+    }
+});
+
+test('assistant clarification cannot be saved as a user instruction',()=>{
+ const b=fixture(),o=output(b);o.assertions[0]!.actorRef='assistant';
+ expect(()=>parseContextualOutput(o,b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:actor_status_resolution');
+});
+test('dispositions cannot link an assertion to an uncited source',()=>{
+ const b=fixture(),o=output(b);o.assertions[0]!.resolution='explicit';o.assertions[0]!.spans=o.assertions[0]!.spans.slice(1);
+ expect(()=>parseContextualOutput(o,b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:disposition_citation');
+});
+test('v12 clarifies actor and owning-source contracts without rewriting legacy prompts',async()=>{
+ const {contextualPrompt}=await import('./contextual-observation.ts');const b=fixture();
+ for(const v of ['memory-contextual-shadow-v10','memory-contextual-shadow-v11'] as const){
+  const p=JSON.parse(contextualPrompt(b,now,v));expect(p.schema).toBe(v);expect(p.instructions).not.toContain('ACTOR/STATUS CONTRACT');
+ }
+ const p=JSON.parse(contextualPrompt(b,now));expect(p.schema).toBe('memory-contextual-shadow-v12');
+ expect(p.instructions).toContain('ACTOR/STATUS CONTRACT');expect(p.instructions).toContain('DISPOSITION ADDRESS CONTRACT');
+});

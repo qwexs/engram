@@ -1,3 +1,4 @@
+import { ContextualEvaluationError, type ContextualFailureDiagnostic } from "./contextual-observation.ts";
 import { contextualBatchObservations, validateReadableBatchObservation, CONTEXTUAL_BATCH_SCHEMA, CONTEXTUAL_EVALUATOR_AUTHORITY } from "./contextual-batch-observation.ts";
 import { buildContextualObservation, contextualPrompt, CONTEXTUAL_SCHEMA, CONTEXTUAL_PROMPT_VERSION, CONTEXTUAL_THINKING, runContextualShadow, type ContextualPromptVersion, type ContextualObservationV2 } from "./contextual-observation.ts";
 import { groupAssertionAttribution } from "./group-attribution.ts";
@@ -171,6 +172,8 @@ export type BatchLiveRunResult =
       reason: string;
       attempt: number;
       maxAttempts: number;
+      diagnostic?: ContextualFailureDiagnostic;
+      diagnosticRef?: string;
     }
   | {
       status: "completed" | "duplicate";
@@ -657,6 +660,7 @@ export class BatchLiveWorker {
     const path=join(this.root,"contextual-results",`${digestKey(job.jobId)}.json`);
     const duplicate=existsSync(path);
     let evaluated: Awaited<ReturnType<typeof runContextualShadow>>;
+    let stage: ContextualFailureDiagnostic["stage"] = "request";
     try {
       if (duplicate) {
         const saved=readJson<any>(path); const {digest,...base}=saved;
@@ -668,19 +672,31 @@ export class BatchLiveWorker {
           maxTokens:this.options.policy.runner.maxTokens,promptVersion:this.options.policy.contextualPromptVersion,complete:this.options.complete,now:this.options.now});
         // Hash precisely the JSON bytes we can reload (provider usage is optional).
         evaluated=JSON.parse(JSON.stringify(evaluated));
+        stage = "observations";
         this.contextualObservations(job,evaluated);
+        stage = "persistence";
         const base={schema:"engram.memory-contextual-result.v2",jobId:job.jobId,policyDigest:job.evaluationPolicyDigest,evaluated};
         writeImmutable(path,{...base,digest:sha256(base as unknown as JsonValue)} as unknown as JsonValue);
       }
     } catch (error) {
       if (duplicate) throw error; // persisted effects require explicit repair, never consume source attempts
       const now=this.options.now?.()??new Date();
+      const diagnostic: ContextualFailureDiagnostic = error instanceof ContextualEvaluationError ? error.diagnostic
+        : {stage, code: stage === "observations" ? "CONTEXTUAL_OBSERVATION_DENIED"
+            : stage === "persistence" ? "CONTEXTUAL_RESULT_WRITE_FAILED" : "CONTEXTUAL_REQUEST_FAILED"};
+      // Persist every failed attempt, including the first one and future recoveries.
+      // UUIDs prevent a recovery's reset attempt counter from overwriting history.
+      const diagnosticRef = join(this.root,"contextual-failures",digestKey(job.jobId),`${randomUUID()}.json`);
+      const detail = {schema: "engram.memory-contextual-failure.v1", jobId: job.jobId,
+        bundleId: job.bundle.bundleId, evaluationPolicyDigest: job.evaluationPolicyDigest,
+        traceIds: job.bundle.sourceRefs.map(s=>s.traceId), failedAt: now.toISOString(), diagnostic};
+      writeImmutable(diagnosticRef, {...detail, diagnosticId: sha256(detail as unknown as JsonValue)} as unknown as JsonValue);
       const claimed=this.options.ledger.claimBatchExact(ownerToken,job.bundle.sourceRefs.map(s=>s.traceId),now);
       const queues=claimed.map(q=>this.options.ledger.retry(q,this.options.policy.deferDelayMs,"batch_contextual_evaluation_failed",now));
       const exhausted=queues.filter(q=>q.status==="terminal");
       if(exhausted.length) this.reconcileExhaustedJob(job,now);
       return {status:exhausted.length?"terminal_failure":"retry",jobId:job.jobId,sourceCount:queues.length,
-        reason:"batch_contextual_evaluation_failed",attempt:Math.max(...queues.map(q=>q.attempt)),maxAttempts:Math.max(...queues.map(q=>q.maxAttempts))};
+        reason:"batch_contextual_evaluation_failed",attempt:Math.max(...queues.map(q=>q.attempt)),maxAttempts:Math.max(...queues.map(q=>q.maxAttempts)),diagnostic,diagnosticRef};
     }
     this.options.fault?.("after_result");
     this.authorizeCurrentBatchEffects();

@@ -980,3 +980,32 @@ test("batch source selection uses its pinned policy, not current effect authorit
   expect(ledger.listQueue().filter(q=>q.status==="queued")).toHaveLength(2);
   expect((await worker.processOne()).status).toBe("idle");expect(calls).toBe(1);
 });
+
+test('contextual failures persist each retry separately and survive exhaustion without canonical effects',async()=>{
+ const {workspace,ledger,policy}=setup();admit(ledger,93,'2026-08-31T20:01:00.000Z');
+ let at=new Date('2026-08-31T20:20:00.000Z');
+ const worker=new BatchLiveWorker({workspace,ledger,policy:{...policy,contextual:true},storeRoot:join(workspace,'state'),now:()=>at,
+  complete:async request=>({resolvedModel:request.model,output:'private source sk-secret invalid JSON'})});
+ const first=await worker.processOne();expect(first.status).toBe('retry');
+ if(first.status!=='retry')throw Error('retry expected');
+ expect(first.diagnostic).toMatchObject({stage:'validation',code:'CONTEXTUAL_OUTPUT_DENIED:invalid_json'});
+ const before=readFileSync(first.diagnosticRef!,'utf8');expect(before).not.toContain('sk-secret');
+ const {diagnosticId,...detail}=JSON.parse(before);expect(diagnosticId).toBe(sha256(detail));
+ at=new Date(at.getTime()+policy.deferDelayMs+1000);
+ const second=await worker.processOne();expect(second.status).toBe('terminal_failure');
+ if(second.status!=='terminal_failure')throw Error('terminal expected');
+ expect(second.diagnosticRef).not.toBe(first.diagnosticRef);
+ expect(readFileSync(first.diagnosticRef!,'utf8')).toBe(before);
+ expect(ledger.listQueue()[0]).toMatchObject({attempt:2,status:'terminal',reasonCode:'batch_contextual_evaluation_failed'});
+ expect(existsSync(join(workspace,'state/memory-batch-live/v1/contextual-results'))).toBe(false);
+ expect(existsSync(join(workspace,'memory'))).toBe(false);
+});
+test('diagnostic persistence failure cannot consume an evaluator retry',async()=>{
+ const {workspace,ledger,policy}=setup();admit(ledger,94,'2026-08-31T20:01:00.000Z');
+ const root=join(workspace,'state/memory-batch-live/v1');mkdirSync(root,{recursive:true});
+ writeFileSync(join(root,'contextual-failures'),'blocked');
+ const worker=new BatchLiveWorker({workspace,ledger,policy:{...policy,contextual:true},storeRoot:join(workspace,'state'),now:()=>new Date('2026-08-31T20:20:00.000Z'),
+ complete:async request=>({resolvedModel:request.model,output:'invalid'})});
+ await expect(worker.processOne()).rejects.toThrow();
+ expect(ledger.listQueue().every(q=>q.attempt===0)).toBe(true);
+});

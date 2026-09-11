@@ -4,8 +4,8 @@ import { validateCompiledBatchBundle } from "./batch-shadow-runner.ts";
 import type { BatchShadowCompletionRequest, BatchShadowProviderResult } from "./batch-shadow-runner.ts";
 export const CONTEXTUAL_THINKING = "medium" as const;
 export const CONTEXTUAL_SCHEMA = "engram.memory-contextual-observation.v2" as const;
-export const CONTEXTUAL_PROMPT_VERSION = "memory-contextual-shadow-v11" as const;
-export const CONTEXTUAL_PROMPT_VERSIONS = ["memory-contextual-shadow-v10", CONTEXTUAL_PROMPT_VERSION] as const;
+export const CONTEXTUAL_PROMPT_VERSION = "memory-contextual-shadow-v12" as const;
+export const CONTEXTUAL_PROMPT_VERSIONS = ["memory-contextual-shadow-v10", "memory-contextual-shadow-v11", CONTEXTUAL_PROMPT_VERSION] as const;
 export type ContextualPromptVersion = typeof CONTEXTUAL_PROMPT_VERSIONS[number];
 export type ContextSpan = {
     traceId: Digest;
@@ -57,6 +57,21 @@ export type ContextualObservationV2 = {
 };
 const token = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 function reject(): never { throw Error("CONTEXTUAL_OUTPUT_DENIED"); }
+export type ContextualFailureDiagnostic = {
+    stage: "request" | "provider" | "validation" | "observations" | "persistence";
+    code: string;
+    outputLength?: number;
+    outputDigest?: Digest;
+};
+export class ContextualEvaluationError extends Error {
+    constructor(readonly diagnostic: ContextualFailureDiagnostic) {
+        super(diagnostic.code);
+        this.name = "ContextualEvaluationError";
+    }
+}
+function rejectOutput(rule = "unspecified"): never {
+    throw new ContextualEvaluationError({ stage: "validation", code: "CONTEXTUAL_OUTPUT_DENIED:" + rule });
+}
 function exact(v: any, keys: string): boolean {
     const wanted = keys.split(" ");
     return !!v && typeof v === "object" && !Array.isArray(v)
@@ -117,18 +132,18 @@ export function parseContextualOutput(raw: string | unknown, bundleValue: Compil
     let value: any = typeof raw === "string" ? raw : structuredClone(raw);
     if (typeof raw === "string") {
         if (raw.length > 131072)
-            reject();
+            rejectOutput("output_size");
         try {
             value = JSON.parse(raw);
         }
         catch {
-            reject();
+            rejectOutput("invalid_json");
         }
     }
     if (!exact(value, "schema assertions dispositions") || value.schema !== "engram.memory-contextual-output.v2"
         || !Array.isArray(value.assertions) || value.assertions.length > 32
         || !Array.isArray(value.dispositions) || value.dispositions.length !== bundle.sourceRefs.length)
-        reject();
+        rejectOutput("output_shape");
     const inputs = new Map(bundle.inputs.map(i => [i.traceId, i]));
     const catalog = new Map(contextualEvidenceCatalog(bundle).map(e => [e.id, e]));
     const ids = new Set<string>();
@@ -140,7 +155,7 @@ export function parseContextualOutput(raw: string | unknown, bundleValue: Compil
             || !["proposed", "requested", "decided", "reported_done", "accepted", "failed", "unknown"].includes(a.status)
             || !Array.isArray(a.spans) || a.spans.length < 1 || a.spans.length > 16
             || (a.resolution === "ambiguous" ? a.subject !== null : a.subject === null))
-            reject();
+            rejectOutput("assertion_shape");
         ids.add(a.id);
         const speakers = new Set<string>();
         let actorSpans = 0;
@@ -150,7 +165,7 @@ export function parseContextualOutput(raw: string | unknown, bundleValue: Compil
             if (exact(s, "evidenceId purpose")) {
                 const selected = catalog.get((s as any).evidenceId);
                 if (!selected || !["assertion", "context"].includes(s.purpose!)
-                    || (selected.contextOnly && s.purpose !== "context")) reject();
+                    || (selected.contextOnly && s.purpose !== "context")) rejectOutput("evidence_reference");
                 s = a.spans[index] = { ...selected.span, purpose: s.purpose };
             }
             // The model supplies words, not hand-counted UTF-16 offsets. Resolve a
@@ -158,17 +173,17 @@ export function parseContextualOutput(raw: string | unknown, bundleValue: Compil
             if (exact(s, "traceId role quote") || exact(s, "traceId role quote purpose") || exact(s, "traceId role quote purpose replyContextRef") || exact(s, "traceId role quote purpose episodeContextRef")) {
                 const input = inputs.get(s.traceId), text = input ? body(input, s.role, s.replyContextRef, s.episodeContextRef) : null;
                 if (typeof text !== "string" || !cleanText(s.quote, 700))
-                    reject();
+                    rejectOutput("quote_shape");
                 const start = text.indexOf(s.quote);
                 if (start < 0 || text.indexOf(s.quote, start + 1) !== -1)
-                    reject();
+                    rejectOutput("quote_not_unique");
                 s.start = start;
                 s.end = start + s.quote.length;
             }
             if ((!exact(s, "traceId role start end quote") && !exact(s, "traceId role start end quote purpose") && !exact(s, "traceId role start end quote purpose replyContextRef") && !exact(s, "traceId role start end quote purpose episodeContextRef")) || (s.purpose !== undefined && !["assertion", "context"].includes(s.purpose)) || !inputs.has(s.traceId) || !["user", "assistant", "external"].includes(s.role)
                 || !Number.isSafeInteger(s.start) || !Number.isSafeInteger(s.end) || s.start < 0 || s.end <= s.start
                 || !cleanText(s.quote, 700))
-                reject();
+                rejectOutput("span_shape");
             const input = inputs.get(s.traceId)!;
             if (s.replyContextRef !== undefined || s.episodeContextRef !== undefined) {
                 const contextRef=s.replyContextRef??s.episodeContextRef;
@@ -176,19 +191,19 @@ export function parseContextualOutput(raw: string | unknown, bundleValue: Compil
                 const matches = Array.isArray(pairs) ? pairs.filter((p: any) => p.transportMessageId === contextRef) : [];
                 if (typeof contextRef !== "string" || !contextRef || s.purpose !== "context" || matches.length !== 1
                     || !input.evidenceRefs.some(r => r.kind === "message" && r.ref === `${bundle.partition.runtimeSessionKey}#${contextRef}` && r.digest === matches[0].evidenceDigest))
-                    reject();
+                    rejectOutput("context_reference");
             }
             const text = body(input, s.role, s.replyContextRef, s.episodeContextRef);
             if (typeof text !== "string" || s.end > text.length || text.slice(s.start, s.end) !== s.quote)
-                reject();
+                rejectOutput("quote_mismatch");
             const key = JSON.stringify([s.traceId,s.role,s.start,s.end,s.replyContextRef??s.episodeContextRef??null]);
             if (spans.has(key))
-                reject();
+                rejectOutput("duplicate_span");
             spans.add(key);
             // Known external envelopes cannot establish a direct user act. Without
             // trusted origin ranges conservatively classify the entire mixed source.
             if (s.role === "user" && /EXTERNAL_UNTRUSTED_CONTENT|<conversation_context>|<file\b/i.test(text))
-                reject();
+                rejectOutput("external_actor");
             if (s.role === a.actorRef && s.purpose !== "context") {
                 actorSpans++;
                 if (s.role === "user") {
@@ -201,7 +216,7 @@ export function parseContextualOutput(raw: string | unknown, bundleValue: Compil
             || (["requested", "decided", "accepted"].includes(a.status) && a.actorRef !== "user")
             || (a.status === "reported_done" && a.actorRef !== "assistant")
             || (a.resolution === "ambiguous" && a.status !== "unknown"))
-            reject();
+            rejectOutput("actor_status_resolution");
     }
     const covered = new Set<string>();
     for (const d of value.dispositions as ContextDisposition[]) {
@@ -210,14 +225,14 @@ export function parseContextualOutput(raw: string | unknown, bundleValue: Compil
             || !Array.isArray(d.assertionIds) || d.assertionIds.some(id => !ids.has(id)) || new Set(d.assertionIds).size !== d.assertionIds.length
             || (["asserted", "supports", "duplicate"].includes(d.kind) && !d.assertionIds.length)
             || (["skip", "unresolved"].includes(d.kind) && d.assertionIds.length))
-            reject();
+            rejectOutput("disposition_shape");
         if (d.assertionIds.some(id => !value.assertions.find((a: ContextAssertion) => a.id === id)?.spans.some((s: ContextSpan) => s.traceId === d.traceId)))
-            reject();
+            rejectOutput("disposition_citation");
         covered.add(d.traceId);
     }
     for (const a of value.assertions as ContextAssertion[]) {
         if (!value.dispositions.some((d: ContextDisposition) => d.kind === "asserted" && d.assertionIds.includes(a.id)))
-            reject();
+            rejectOutput("unclaimed_assertion");
     }
     // Complete only redundant context edges already proven by exact, validated
     // spans. Never invent a source disposition, a primary assertion edge, an
@@ -233,7 +248,7 @@ export function parseContextualOutput(raw: string | unknown, bundleValue: Compil
     }
     for (const a of value.assertions as ContextAssertion[]) {
         if (a.spans.some(s => !value.dispositions.some((d: ContextDisposition) => d.traceId === s.traceId && d.assertionIds.includes(a.id))))
-            reject();
+            rejectOutput("unclaimed_span");
     }
     return value as ContextualOutput;
 }
@@ -289,10 +304,13 @@ export function contextualPrompt(bundle: CompiledBatchBundleV1, now = new Date()
             "No automatic supersession/current-state claims. No confidence-as-proof. At most 32 assertions, 16 spans per assertion, text <=1000 chars. Do not defer already established useful facts while waiting for the whole task."
          ].join("\n"), scope: bundle.partition, sources: bundle.inputs };
     if (version === "memory-contextual-shadow-v10") return JSON.stringify(prompt);
-    if (version !== CONTEXTUAL_PROMPT_VERSION) reject();
+    if (version !== "memory-contextual-shadow-v11" && version !== CONTEXTUAL_PROMPT_VERSION) reject();
     const catalog = contextualEvidenceCatalog(bundle);
+    const constraints = version === "memory-contextual-shadow-v11" ? "" :
+        "\nACTOR/STATUS CONTRACT: requested, decided and accepted are ONLY valid with actorRef=user. An assistant asking for clarification (please provide names/details) is actorRef=assistant/status=unknown, not requested and not a user decision. An assistant offering a next action is proposed. reported_done is ONLY actorRef=assistant and only for a concrete completed action. Never relabel the actor to make a status fit." +
+        "\nDISPOSITION ADDRESS CONTRACT: each excerpt belongs to the source.traceId of the sources[] entry containing it, even when its text quotes an earlier message. messageRef identifies historical context but DOES NOT change that owning traceId. For each disposition, include an assertionId IF AND ONLY IF that assertion selects an evidenceId inside THIS sources[] entry. Do not also link to the historical message's separate input just because its words match. Example: source T2 contains current excerpt E2 and historical excerpt H1 copied from T1; an assertion citing E2+H1 belongs to disposition T2 only, not T1. Link T1 as well only if an actual excerpt from the T1 entry was selected. Before returning JSON, check these addresses and actor/status pairs.";
     return JSON.stringify({ ...prompt,
-        instructions: prompt.instructions + "\nCITATION WIRE FORMAT FOR THIS VERSION: each span is ONLY {evidenceId,purpose}. Select evidenceId from the supplied excerpts and purpose assertion/context. Do NOT generate traceId, role, offsets, quote or reply/episode refs; code fills them from the selected excerpt and validates the unchanged original bundle. These fields supersede the earlier span serialization instructions ONLY. All semantic, speaker, external-origin, coverage and context-only restrictions above still apply. Excerpts of one body are consecutive parts, not independent statements. citeKind replyContext means exact reply, episodeContext means a historical candidate. Entries with contextOnly=true cannot establish a current actor statement. Dispositions still use the owning source traceId; choosing an excerpt never permits inventing or strengthening its meaning.",
+        instructions: prompt.instructions + "\nCITATION WIRE FORMAT FOR THIS VERSION: each span is ONLY {evidenceId,purpose}. Select evidenceId from the supplied excerpts and purpose assertion/context. Do NOT generate traceId, role, offsets, quote or reply/episode refs; code fills them from the selected excerpt and validates the unchanged original bundle. These fields supersede the earlier span serialization instructions ONLY. All semantic, speaker, external-origin, coverage and context-only restrictions above still apply. Excerpts of one body are consecutive parts, not independent statements. citeKind replyContext means exact reply, episodeContext means a historical candidate. Entries with contextOnly=true cannot establish a current actor statement. Dispositions still use the owning source traceId; choosing an excerpt never permits inventing or strengthening its meaning." + constraints,
         sources: bundle.inputs.map(input => ({ traceId: input.traceId,
             sourceMetadata: Object.fromEntries(Object.entries((input.evidence as any)?.source ?? {}).filter(([k]) => k !== "text")),
             excerpts: catalog.filter(e => e.span.traceId === input.traceId).map(e => ({ evidenceId: e.id, role: e.span.role,
@@ -323,10 +341,24 @@ export async function runContextualShadow(options: {
     const request: BatchShadowCompletionRequest = { model: options.model, system: "", prompt, maxTokens: options.maxTokens, temperature: 0, tools: [], thinking: CONTEXTUAL_THINKING };
     const requestDigest = sha256(request as unknown as JsonValue);
     const started = performance.now();
-    const response = await options.complete(request);
+    let response: BatchShadowProviderResult;
+    try { response = await options.complete(request); }
+    catch (error) {
+        // Never persist provider messages, stack traces, source text or credentials.
+        const code = (error as {code?: unknown})?.code;
+        throw new ContextualEvaluationError({stage: "provider", code:
+            typeof code === "string" && ["MODEL_RUN_FAILED", "MODEL_RUN_TIMEOUT", "INVALID_READBACK", "INVALID_CONFIG", "UNSUPPORTED_REQUEST"].includes(code)
+                ? code : "PROVIDER_EXCEPTION"});
+    }
+    const outputMeta = {outputLength: response.output.length, outputDigest: sha256(response.output)};
     if (response.resolvedModel !== options.model)
-        throw Error("CONTEXTUAL_MODEL_MISMATCH");
+        throw new ContextualEvaluationError({stage: "provider", code: "CONTEXTUAL_MODEL_MISMATCH", ...outputMeta});
     const evaluationPolicyDigest = sha256({ schema: CONTEXTUAL_SCHEMA, promptVersion, model: options.model, maxTokens: options.maxTokens, thinking: CONTEXTUAL_THINKING } as JsonValue);
-    return { observation: buildContextualObservation(response.output, options.bundle, evaluationPolicyDigest, options.now?.() ?? new Date()),
-        requestDigest, usage: response.usage, latencyMs: performance.now() - started };
+    try {
+        return { observation: buildContextualObservation(response.output, options.bundle, evaluationPolicyDigest, options.now?.() ?? new Date()),
+            requestDigest, usage: response.usage, latencyMs: performance.now() - started };
+    } catch (error) {
+        const detail = error instanceof ContextualEvaluationError ? error.diagnostic : {stage: "validation" as const, code: "BUNDLE_OR_OBSERVATION_INVALID"};
+        throw new ContextualEvaluationError({...detail, ...outputMeta});
+    }
 }

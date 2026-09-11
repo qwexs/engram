@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { sha256, type Digest, type JsonValue, type ObservationScope } from './ledger.ts';
-import { CONTEXTUAL_PROMPT_VERSION } from './contextual-observation.ts';
+import { CONTEXTUAL_PROMPT_VERSION, CONTEXTUAL_THINKING } from './contextual-observation.ts';
 export type QualityRollout = {
     schema: 'engram.memory-quality-rollout.v1';
     mode: 'active' | 'drain';
@@ -16,7 +16,7 @@ export type QualityRollout = {
 };
 const hash = (v: unknown) => sha256(v as JsonValue);
 export function contextualEvaluationDigest(base: Digest): Digest {
-    return hash({ schema: 'engram.memory-contextual-policy.v2', baseEvaluationPolicyDigest: base, promptVersion: CONTEXTUAL_PROMPT_VERSION });
+    return hash({ schema: 'engram.memory-contextual-policy.v2', baseEvaluationPolicyDigest: base, promptVersion: CONTEXTUAL_PROMPT_VERSION, thinking: CONTEXTUAL_THINKING });
 }
 /** An opt-in sidecar does not rewrite source admission, the v1 projection,
  * activation time or old receipts. Both consumer policy digests remain admitted

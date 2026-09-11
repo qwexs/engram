@@ -1,5 +1,5 @@
 import { contextualBatchObservations, validateReadableBatchObservation, CONTEXTUAL_BATCH_SCHEMA, CONTEXTUAL_EVALUATOR_AUTHORITY } from "./contextual-batch-observation.ts";
-import { buildContextualObservation, runContextualShadow, type ContextualObservationV2 } from "./contextual-observation.ts";
+import { buildContextualObservation, contextualPrompt, CONTEXTUAL_SCHEMA, CONTEXTUAL_PROMPT_VERSION, CONTEXTUAL_THINKING, runContextualShadow, type ContextualObservationV2 } from "./contextual-observation.ts";
 import { groupAssertionAttribution } from "./group-attribution.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -718,6 +718,11 @@ export class BatchLiveWorker {
 
   private contextualObservations(job: BatchLiveJobV1, evaluated: Awaited<ReturnType<typeof runContextualShadow>>) {
     const result=evaluated.observation;
+    const expectedRequest={model:this.options.policy.runner.requestedModel,system:"",prompt:contextualPrompt(job.bundle,new Date(result.recordedAt)),
+      maxTokens:this.options.policy.runner.maxTokens,temperature:0,tools:[],thinking:CONTEXTUAL_THINKING};
+    const expectedPolicy=sha256({schema:CONTEXTUAL_SCHEMA,promptVersion:CONTEXTUAL_PROMPT_VERSION,model:expectedRequest.model,maxTokens:expectedRequest.maxTokens,thinking:CONTEXTUAL_THINKING} as JsonValue);
+    if(evaluated.requestDigest!==sha256(expectedRequest as JsonValue) || result.evaluationPolicyDigest!==expectedPolicy)
+      fail("CONTEXTUAL_RESULT_INVALID","cached result belongs to a different request or evaluator contract");
     if(!DIGEST_RE.test(evaluated.requestDigest) || !Number.isFinite(evaluated.latencyMs) || evaluated.latencyMs<0
       || result.bundleId!==job.bundle.bundleId) fail("CONTEXTUAL_RESULT_INVALID","invalid persisted contextual result");
     const output={schema:"engram.memory-contextual-output.v2",assertions:result.assertions,dispositions:result.dispositions};

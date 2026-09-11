@@ -1,3 +1,4 @@
+import {readQualityRollout,qualityScopeEnabled} from "../../src/memory-observation/quality-rollout.ts";
 import { groupDomainOf, assertGroupHostRoutes } from "../../src/memory-observation/group-bindings.ts";
 import { RUNTIME_AUTHORITY, EVALUATOR_AUTHORITY, RUNTIME_REGISTRY, RUNTIME_POLICY } from "../../src/memory-observation/runtime-authority.ts";
 import { assertTopicHostRoutes } from "../../src/memory-observation/topic-bindings.ts";
@@ -257,6 +258,13 @@ function bindingFor(api: any, active: ActiveWorkspace, runtimeSessionKey: string
       ...(binding.groupDomain ? { groupDomain: binding.groupDomain } : {}),
     allowedChannels: binding.allowedChannels,
     resolveReplyContext: (params) => replyContext.resolve(params),
+    resolveEpisodeContext: params => {
+      if(!projection.evaluation?.batch || !projection.consumers?.dailyNote)return null;
+      const quality=readQualityRollout(active.workspace,{workspaceId:active.workspaceId,pluginDigest:projection.pluginDigest,
+        baseEvaluationPolicyDigest:projection.evaluation.policyDigest,sourcePolicyDigest:projection.evaluation.batch.sourcePolicyDigest as any,
+        applyAfter:projection.consumers.dailyNote.applyAfter});
+      return qualityScopeEnabled(quality,params.scope) ? replyContext.recentCandidates(params) : null;
+    },
     recordTransportLink: (params) => replyContext.record({
       scope: params.scope,
       channel: params.channel,

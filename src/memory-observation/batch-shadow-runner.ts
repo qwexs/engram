@@ -90,6 +90,7 @@ export type BatchShadowRunnerConfigV3 = {
 export type BatchShadowRunnerConfig = BatchShadowRunnerConfigV1 | BatchShadowRunnerConfigV2 | BatchShadowRunnerConfigV3;
 
 export type BatchShadowCompletionRequest = {
+  thinking?: "off" | "low" | "medium" | "high";
   model: string;
   system: string;
   prompt: string;

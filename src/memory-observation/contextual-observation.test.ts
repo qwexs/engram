@@ -90,3 +90,33 @@ test('exact stored reply context resolves a current instruction without re-attri
     fakeActor.assertions[0]!.spans[1]!.purpose = 'assertion';
     expect(() => parseContextualOutput(fakeActor, b, now)).toThrow();
 });
+
+
+test('reordering quote fields cannot manufacture a second independent context span',()=>{
+ const b=fixture();const o=output(b);const a=o.assertions[0]!;const original=a.spans[1]!;
+ a.spans.push({quote:original.quote,end:original.end,start:original.start,role:original.role,traceId:original.traceId,purpose:'context'});
+ expect(()=>parseContextualOutput(o,b,now)).toThrow();
+});
+
+test('bounded stored episode candidates resolves a current instruction without re-attributing the historical actor', async () => {
+    const { fixture: make } = await import('../../tests/fixtures/memory-observation/contextual/bundle.ts');
+    const { contextualBatchObservations, validateReadableBatchObservation } = await import('./contextual-batch-observation.ts');
+    const pair = { traceId: sha256('prior'), sourceTurnId: 'channel-user:v1:' + 'c'.repeat(64), transportMessageId: '42', evidenceDigest: sha256('prior-evidence'),
+        source: { role: 'user', text: 'Review the timer fix.' }, outcome: { role: 'assistant', text: 'I can commit the timer fix.' } };
+    const b = make(['Yes, do that.'], ['actor-a'], ['I will do it.'], undefined, [{ status: 'candidates', maxPairs: 3, maxBytes: 16384, pairs: [pair], reasonCode: null }]);
+    const traceId = b.inputs[0]!.traceId;
+    const o = { schema: 'engram.memory-contextual-output.v2', assertions: [{ id: 'a', section: 'decisions', text: 'The user requested committing the timer fix.', subject: 'timer fix', resolution: 'resolved', actorRef: 'user', status: 'requested', spans: [
+                    { traceId, role: 'user', purpose: 'assertion', quote: 'Yes, do that.' },
+                    { traceId, role: 'assistant', purpose: 'context', episodeContextRef: '42', quote: 'I can commit the timer fix.' }
+                ] }],
+        dispositions: [{ traceId, kind: 'asserted', assertionIds: ['a'], reason: 'Current approval with exact reply context.' }] };
+    const observations = contextualBatchObservations(o, b, sha256('v2'), now);
+    expect(validateReadableBatchObservation(observations[0]!)).toEqual(observations[0]!);
+    expect(observations[0]!.citations.some(c => c.evidenceRef.kind === 'message')).toBe(true);
+    const forged = structuredClone(o);
+    forged.assertions[0]!.spans[1]!.episodeContextRef = '43';
+    expect(() => parseContextualOutput(forged, b, now)).toThrow();
+    const fakeActor = structuredClone(o);
+    fakeActor.assertions[0]!.spans[1]!.purpose = 'assertion';
+    expect(() => parseContextualOutput(fakeActor, b, now)).toThrow();
+});

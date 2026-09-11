@@ -162,3 +162,11 @@ describe("OpenClaw gateway model-run provider", () => {
     }
   });
 });
+
+
+test('explicit evaluator thinking is passed to the supported CLI, while malformed levels are rejected',async()=>{
+ let calls=0;
+ const provider=openClawRawModelRunProvider({cwd:'/tmp',execute:(_command,args)=>{calls++;expect(args[args.indexOf('--thinking')+1]).toBe('medium');return {status:0,signal:null,stdout:success(),stderr:''};}});
+ await provider({...request,thinking:'medium'});expect(calls).toBe(1);
+ await expect(provider({...request,thinking:'unbounded' as any})).rejects.toMatchObject({code:'UNSUPPORTED_REQUEST'});expect(calls).toBe(1);
+});

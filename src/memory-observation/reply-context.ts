@@ -305,6 +305,41 @@ export class ReplyContextStore {
     };
   }
 
+  /** Context candidates, NOT a reply chain or a new actor statement. The
+   * complete pair is verified before copying a bounded exact prefix. */
+  recentCandidates(params: {scope: ObservationScope; channel:"telegram"|"openclaw"; before:Date; now?:Date}) {
+    this.validateScope(params.scope);
+    const now=params.now??new Date(), directory=join(this.root,"transport-links");
+    const pairs:ReplyContextPair[]=[]; const maxPairs=3, maxBytes=16_384;
+    if(!Number.isFinite(params.before.getTime()) || params.before>now)throw new ReplyContextError("INVALID_CONFIG","invalid context boundary");
+    if(!existsSync(directory))return {status:"candidates" as const,pairs,maxPairs,maxBytes};
+    const links:TransportLinkV1[]=[];
+    for(const name of readdirSync(directory).filter(n=>/^[a-f0-9]{64}\.json$/.test(n))) {
+      try {
+        const link=readJson<TransportLinkV1>(join(directory,name));
+        if(link.workspaceId!==params.scope.workspaceId || link.runtimeSessionKey!==params.scope.runtimeSessionKey || link.channel!==params.channel || link.messageRole!=="user")continue;
+        this.validateLink(link,params.scope,params.channel,link.transportMessageId);
+        if(!Number.isFinite(Date.parse(link.createdAt)) || !Number.isFinite(Date.parse(link.expiresAt)) || Date.parse(link.expiresAt)<=now.getTime() || Date.parse(link.createdAt)>=params.before.getTime()
+          || Date.parse(link.createdAt)<params.before.getTime()-2*3600_000)continue;
+        links.push(link);
+      }catch { /* unavailable context cannot block the current source */ }
+    }
+    const seen=new Set<string>();let bytes=0;
+    for(const link of links.sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.traceId.localeCompare(b.traceId))) {
+      if(seen.has(link.traceId))continue;seen.add(link.traceId);
+      try {
+        const evidence=readJson<EvidenceRecord>(this.evidencePath(link.traceId));
+        if(!sameScope(evidence.scope,params.scope)||Date.parse(evidence.expiresAt)<=now.getTime())continue;
+        const pair=pairFromEvidence(link,evidence);
+        pair.source.text=Array.from(pair.source.text).slice(0,2048).join("");
+        pair.outcome.text=Array.from(pair.outcome.text).slice(0,2048).join("");
+        const size=Buffer.byteLength(JSON.stringify(pair));if(bytes+size>maxBytes)continue;
+        pairs.push(pair);bytes+=size;if(pairs.length>=maxPairs)break;
+      }catch { /* keep a missing candidate out of the trusted snapshot */ }
+    }
+    pairs.reverse();return {status:"candidates" as const,pairs,maxPairs,maxBytes};
+  }
+
   purgeExpired(now = new Date()): number {
     const directory = join(this.root, "transport-links");
     if (!existsSync(directory)) return 0;

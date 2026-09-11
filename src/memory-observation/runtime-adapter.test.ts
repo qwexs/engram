@@ -854,6 +854,7 @@ describe("OpenClaw PR2 runtime adapter", () => {
       scopeId: "telegram:100000001",
       requireOwner: true,
       allowedChannels: ["telegram"],
+      resolveEpisodeContext: () => { throw Error("explicit reply takes precedence"); },
       resolveReplyContext: (params) => {
         resolverCalls.push(params);
         return {
@@ -1160,4 +1161,22 @@ test("exact mirror after agent_end survives restart and admits the final, never 
   expect(restarted.completeMessageSent({success: true, content: "Timer updated",
     sourceReply: {final: true, sourceTurnId, toolCallId: "tool-a"}}, f.runContext).status).toBe("ignored");
   expect(admitted).toHaveLength(1);
+});
+
+
+test("episode candidates are sealed once and recovered without re-resolving newer context",()=>{
+ const root=workspace(),spoolRoot=join(root,"spool");const admitted:TrustedCompletedTurn[]=[];
+ let resolverCalls=0;
+ const binding:RuntimeObservationBinding={workspaceId:"fixture-main",scopeClass:"self",scopeId:"telegram:100000001",requireOwner:true,allowedChannels:["telegram"],
+  resolveEpisodeContext:params=>{
+   resolverCalls++;expect(params.before.getTime()).toBeLessThanOrEqual(params.now.getTime());
+   return {status:"candidates",maxPairs:3,maxBytes:16384,pairs:[{traceId:sha256("prior-trace"),sourceTurnId:"channel-user:v1:"+"b".repeat(64),transportMessageId:"prior-message",evidenceDigest:sha256("prior-evidence"),source:{role:"user",text:"Review the timer."},outcome:{role:"assistant",text:"I can commit the timer fix."}}]};
+  },admit:source=>{admitted.push(source);return {status:"admitted"};}};
+ const first=adapter({binding,spoolRoot,fault:point=>{if(point==="after_completed_spool")throw Error("stop after seal");}});
+ expect(()=>complete(first)).toThrow("stop after seal");expect(resolverCalls).toBe(1);
+ const second=adapter({binding:{...binding,resolveEpisodeContext:()=>{throw Error("must not resolve again");}},spoolRoot});
+ expect(second.reconcileCompleted()).toEqual({admitted:1,retained:0,terminal:0});
+ expect(admitted[0]!.redactedEvidence).toMatchObject({episodeContext:{status:"candidates",pairs:[{transportMessageId:"prior-message"}]}});
+ expect(admitted[0]!.evidenceRefs).toContainEqual({kind:"message",ref:sessionKey+"#prior-message",digest:sha256("prior-evidence")});
+ expect(second.reconcileCompleted()).toEqual({admitted:0,retained:0,terminal:0});
 });

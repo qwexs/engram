@@ -25,9 +25,9 @@ export function contextualBatchObservations(raw: unknown, bundle: CompiledBatchB
         const traces = new Set(a.spans.map(s => s.traceId));
         const sourceRefs = bundle.sourceRefs.filter(s => traces.has(s.traceId));
         const citations = sourceRefs.map(s => ({ traceId: s.traceId, evidenceRef: bundle.inputs.find(i => i.traceId === s.traceId)!.evidenceRefs[0]! }));
-        for (const span of a.spans.filter(s => s.replyContextRef !== undefined)) {
+        for (const span of a.spans.filter(s => (s.replyContextRef??s.episodeContextRef) !== undefined)) {
             const input = bundle.inputs.find(i => i.traceId === span.traceId)!;
-            const evidenceRef = input.evidenceRefs.find(r => r.kind === "message" && r.ref === `${bundle.partition.runtimeSessionKey}#${span.replyContextRef}`)!;
+            const evidenceRef = input.evidenceRefs.find(r => r.kind === "message" && r.ref === `${bundle.partition.runtimeSessionKey}#${span.replyContextRef??span.episodeContextRef}`)!;
             if (!citations.some(c => c.traceId === span.traceId && c.evidenceRef.ref === evidenceRef.ref))
                 citations.push({ traceId: span.traceId, evidenceRef });
         }
@@ -72,12 +72,14 @@ export function validateReadableBatchObservation(value: ReadableBatchObservation
     // with an ephemeral v1-shaped identity; nothing is written in that shape.
     const base = { ...rest, schema: "engram.memory-batch-observation.v1" as const, producer: BATCH_EVALUATOR_AUTHORITY, observationId: deriveBatchObservationId(value) };
     validateBatchObservation({ ...base, observationDigest: sha256(base as unknown as JsonValue) });
+    const distinctSpans=new Set(context.spans.map(s=>JSON.stringify([s.traceId,s.role,s.start,s.end,s.replyContextRef??s.episodeContextRef??null])));
+    if(distinctSpans.size!==context.spans.length)throw Error("CONTEXTUAL_OBSERVATION_DENIED");
     for (const span of context.spans) {
         const keys = Object.keys(span).sort().join(",");
-        if (!["end,quote,role,start,traceId", "end,purpose,quote,role,start,traceId", "end,purpose,quote,replyContextRef,role,start,traceId"].includes(keys)
+        if (!["end,quote,role,start,traceId", "end,purpose,quote,role,start,traceId", "end,purpose,quote,replyContextRef,role,start,traceId", "end,episodeContextRef,purpose,quote,role,start,traceId"].includes(keys)
             || (span.purpose !== undefined && !['assertion', 'context'].includes(span.purpose))
-            || (span.replyContextRef !== undefined && (typeof span.replyContextRef !== "string" || span.purpose !== "context"
-                || !value.citations.some(c => c.traceId === span.traceId && c.evidenceRef.kind === "message" && c.evidenceRef.ref === `${value.scope.runtimeSessionKey}#${span.replyContextRef}`)))
+            || ((span.replyContextRef??span.episodeContextRef) !== undefined && (typeof (span.replyContextRef??span.episodeContextRef) !== "string" || span.purpose !== "context"
+                || !value.citations.some(c => c.traceId === span.traceId && c.evidenceRef.kind === "message" && c.evidenceRef.ref === `${value.scope.runtimeSessionKey}#${span.replyContextRef??span.episodeContextRef}`)))
             || !value.sourceRefs.some(s => s.traceId === span.traceId) || typeof span.quote !== "string" || !span.quote.trim() || span.quote.length > 700
             || !["user", "assistant", "external"].includes(span.role) || !Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end)
             || span.start < 0 || span.end - span.start !== span.quote.length || /<!--|-->/.test(span.quote))

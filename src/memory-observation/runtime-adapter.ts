@@ -54,6 +54,7 @@ export type RuntimeObservationBinding = {
     maxPairs: number;
     now: Date;
   }) => ReplyContextResult;
+  resolveEpisodeContext?: (params: {scope:TrustedCompletedTurn["scope"];channel:"telegram"|"openclaw";before:Date;now:Date}) => {status:"candidates";pairs:import("./reply-context.ts").ReplyContextPair[];maxPairs:number;maxBytes:number}|null;
   recordTransportLink?: (params: {
     scope: TrustedCompletedTurn["scope"];
     channel: "telegram" | "openclaw";
@@ -1050,11 +1051,14 @@ export class OpenClawObservationRuntimeAdapter {
         reasonCode: "reply_resolver_unavailable",
       }
       : null;
+    const episodeContext=!replyContext?.pairs.length ? params.binding.resolveEpisodeContext?.({scope,channel:params.bound.channel,
+      before:new Date(params.bound.observedAt),now:params.now})??null : null;
     const evidenceDigest = sha256({
       sourceTurnId: params.bound.sourceTurnId,
       userText: params.bound.userText,
       assistantText: params.assistantText,
       ...(replyContext ? { replyContext } : {}),
+      ...(episodeContext?.pairs.length ? { episodeContext } : {}),
     });
     const source: TrustedCompletedTurn = {
       sourceTurnId: params.bound.sourceTurnId,
@@ -1063,7 +1067,7 @@ export class OpenClawObservationRuntimeAdapter {
       authority: this.options.authority,
       evidenceRefs: [
         { kind: "source-turn", ref: params.bound.sourceTurnId, digest: evidenceDigest },
-        ...(replyContext?.pairs.map((pair) => ({
+        ...([...(replyContext?.pairs??[]),...(episodeContext?.pairs??[])].map((pair) => ({
           kind: "message" as const,
           ref: `${params.runtimeSessionKey}#${pair.transportMessageId}`,
           digest: pair.evidenceDigest,
@@ -1079,6 +1083,7 @@ export class OpenClawObservationRuntimeAdapter {
         outcome: { role: "assistant", text: params.assistantText,
           ...(!params.assistantText ? { status: "unknown", reasonCode: "assistant_text_unavailable" } : {}) },
         ...(replyContext ? { replyContext } : {}),
+        ...(episodeContext?.pairs.length ? { episodeContext } : {}),
       } as unknown as JsonValue),
       trustedInputs: [
         "completed-source-turn",

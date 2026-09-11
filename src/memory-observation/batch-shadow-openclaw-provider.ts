@@ -77,7 +77,8 @@ export function openClawRawModelRunProvider(options: {
   }
   const execute = options.execute ?? defaultExecutor;
   return async (request) => {
-    if (request.system !== "" || request.tools.length !== 0 || request.temperature !== 0
+    if ((request.thinking !== undefined && !["off", "low", "medium", "high"].includes(request.thinking))
+      || request.system !== "" || request.tools.length !== 0 || request.temperature !== 0
       || !TOKEN_RE.test(request.model) || !Number.isSafeInteger(request.maxTokens) || request.maxTokens < 1
       || typeof request.prompt !== "string" || !request.prompt.trim()) {
       fail("UNSUPPORTED_REQUEST", "raw model-run requires the digested single-user tool-free request mode");
@@ -86,7 +87,7 @@ export function openClawRawModelRunProvider(options: {
       "infer", "model", "run",
       "--gateway",
       "--model", request.model,
-      "--thinking", "off",
+      "--thinking", request.thinking ?? "off",
       "--json",
       "--prompt", request.prompt,
     ], { cwd: options.cwd, timeout, maxBuffer });
@@ -137,7 +138,8 @@ export function openClawGatewayModelRunProvider(options: {
   }
   const execute = options.execute ?? defaultExecutor;
   return async (request) => {
-    if (request.system !== "" || request.tools.length !== 0 || request.temperature !== 0
+    if ((request.thinking !== undefined && !["off", "low", "medium", "high"].includes(request.thinking))
+      || request.system !== "" || request.tools.length !== 0 || request.temperature !== 0
       || !TOKEN_RE.test(request.model) || !Number.isSafeInteger(request.maxTokens) || request.maxTokens < 1
       || typeof request.prompt !== "string" || !request.prompt.trim()) {
       fail("UNSUPPORTED_REQUEST", "gateway model-run requires the digested single-user tool-free request mode");
@@ -148,7 +150,7 @@ export function openClawGatewayModelRunProvider(options: {
       sessionId,
       sessionKey: `agent:${options.agentId}:${sessionId}`,
       message: request.prompt,
-      thinking: "off",
+      thinking: request.thinking ?? "off",
       modelRun: true,
       promptMode: "none",
       cleanupBundleMcpOnRunEnd: true,

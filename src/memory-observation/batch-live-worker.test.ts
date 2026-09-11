@@ -936,3 +936,19 @@ describe("contextual v2 through the existing writer", () => {
     });
   }
 });
+
+test('a cached v2 result cannot switch request lineage or consume retries after effects were persisted',async()=>{
+ const {workspace,ledger,policy}=setup();admit(ledger,91,'2026-08-31T20:01:00.000Z');
+ const now=()=>new Date('2026-08-31T20:20:00.000Z');let calls=0,stop=true;
+ const worker=new BatchLiveWorker({workspace,ledger,policy:{...policy,contextual:true},storeRoot:join(workspace,'state'),now,
+  fault:p=>{if(stop&&p==='after_result'){stop=false;throw Error('stop after result');}},
+  complete:async request=>{calls++;const sources=JSON.parse(request.prompt).sources;return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-contextual-output.v2',assertions:[],dispositions:sources.map((s:any)=>({traceId:s.traceId,kind:'skip',assertionIds:[],reason:'Synthetic non-durable acknowledgement.'}))})};}});
+ await expect(worker.processOne()).rejects.toThrow('stop after result');
+ const dir=join(workspace,'state/memory-batch-live/v1/contextual-results'),path=join(dir,readdirSync(dir)[0]!);
+ const {digest,...record}=JSON.parse(readFileSync(path,'utf8'));
+ record.evaluated.requestDigest=sha256('different model request');
+ writeFileSync(path,JSON.stringify({...record,digest:sha256(record)}));
+ const before=ledger.listQueue();
+ await expect(worker.processOne()).rejects.toThrow('different request or evaluator contract');
+ expect(ledger.listQueue()).toEqual(before);expect(calls).toBe(1);
+});

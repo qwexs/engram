@@ -11,7 +11,19 @@ disposition for every input. Assertions separate a self-contained interpretation
 from exact source spans. A unique exact quote is converted to UTF-16 offsets by
 code; invented/ambiguous quotations are rejected. Scope and actor checks are
 independent of model confidence. Context spans can identify an object without
-making their speaker the approving actor.
+making their speaker the approving actor. An explicit transport reply takes
+precedence. With v2 active and no resolved reply, at most three exact-scope
+candidates admitted before the current request and within two hours are copied
+as bounded prefixes (2,048 code points per role, 16 KiB total). They are historical
+context, not a reply relation or a fresh assertion. `episodeContextRef` spans must
+be context-only and cite a pinned message digest. Conflicting candidates stay
+ambiguous. The completed source seals that snapshot; recovery does not rescan
+newer messages. Missing, expired or corrupt candidates cannot block capture.
+
+The contextual request uses the same configured model with explicit `thinking: medium`,
+bound into its request and evaluation-policy digests. Legacy v1 requests retain
+their existing thinking default. Provider resolution is checked; missing usage
+or cost telemetry is not fabricated.
 
 Statuses are `proposed`, `requested`, `decided`, `reported_done`, `accepted`,
 `failed`, `unknown`. An agent's completion report is not independently verified.

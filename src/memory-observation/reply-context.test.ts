@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -61,6 +61,8 @@ function admitPair(
   replies: ReplyContextStore,
   index: number,
   parentTransportMessageId?: string,
+  messageRole: "user" | "assistant" = "assistant",
+  text?: string,
 ) {
   const sourceTurnId = `channel-user:v1:${index.toString(16).padStart(64, "0")}`;
   const now = new Date(Date.UTC(2026, 7, 24, 12, index));
@@ -71,7 +73,7 @@ function admitPair(
     authority,
     evidenceRefs: [{ kind: "source-turn", ref: sourceTurnId, digest: `sha256:${"a".repeat(64)}` }],
     redactedEvidence: {
-      source: { role: "user", text: `user-${index}` },
+      source: { role: "user", text: text ?? `user-${index}` },
       outcome: { role: "assistant", text: `assistant-${index}` },
     },
     trustedInputs: ["completed-source-turn", "runtime-session-key", "workspace-binding", "source-completion-time"],
@@ -81,7 +83,7 @@ function admitPair(
     scope,
     channel: "telegram",
     transportMessageId: `message-${index}`,
-    messageRole: "assistant",
+    messageRole,
     sourceTurnId,
     ...(parentTransportMessageId ? { parentTransportMessageId } : {}),
   });
@@ -164,4 +166,36 @@ describe("memory observation reply context store", () => {
       now: new Date("2026-08-28T00:00:00.000Z"),
     })).toMatchObject({ status: "partial", reasonCode: "reply_link_missing" });
   });
+});
+
+
+test("recent context is bounded, earlier, exact-scope, read-only and independent of evaluator state", () => {
+  const {root,ledger,replies}=setup();
+  for(let i=1;i<=7;i++)admitPair(ledger,replies,i,undefined,"user",i===5?"🧪".repeat(5000):undefined);
+  const before=new Date("2026-08-24T12:07:00.000Z"),now=new Date("2026-08-24T13:00:00.000Z");
+  const directory=join(root,"memory-state/memory-observation/v1");
+  const snapshot=(folder:string)=>readdirSync(join(directory,folder)).sort().map(n=>[n,readFileSync(join(directory,folder,n),"utf8")]);
+  const evidenceBefore=snapshot("evidence");
+  const r=replies.recentCandidates({scope,channel:"telegram",before,now});
+  expect(r.pairs.map(p=>p.transportMessageId)).toEqual(["message-4","message-5","message-6"]);
+  expect(Array.from(r.pairs[1]!.source.text)).toHaveLength(2048);
+  expect(Buffer.byteLength(JSON.stringify(r.pairs))).toBeLessThan(16384);
+  expect(snapshot("evidence")).toEqual(evidenceBefore);
+  expect(replies.recentCandidates({scope:{...scope,scopeId:"different-topic"},channel:"telegram",before,now}).pairs).toEqual([]);
+  expect(replies.recentCandidates({scope,channel:"openclaw",before,now}).pairs).toEqual([]);
+  expect(()=>replies.recentCandidates({scope:{...scope,runtimeSessionKey:sessionKey+"-other"},channel:"telegram",before,now})).toThrow();
+  expect(replies.recentCandidates({scope,channel:"telegram",before:new Date("2026-08-24T16:00:00Z"),now:new Date("2026-08-24T16:00:00Z")}).pairs).toEqual([]);
+  expect(replies.recentCandidates({scope,channel:"telegram",before,now:new Date("2026-08-28T00:00:00Z")}).pairs).toEqual([]);
+});
+
+test("missing and corrupt candidates are omitted without blocking current capture",()=>{
+ const {root,ledger,replies}=setup();
+ const a=admitPair(ledger,replies,1,undefined,"user");
+ const b=admitPair(ledger,replies,2,undefined,"user");
+ const c=admitPair(ledger,replies,3,undefined,"user");
+ const dir=join(root,"memory-state/memory-observation/v1/evidence");
+ rmSync(join(dir,a.link.traceId.slice(7)+".json"));
+ writeFileSync(join(dir,b.link.traceId.slice(7)+".json"),"broken");
+ const result=replies.recentCandidates({scope,channel:"telegram",before:new Date("2026-08-24T12:10:00Z"),now:new Date("2026-08-24T13:00:00Z")});
+ expect(result.pairs.map(p=>p.traceId)).toEqual([c.link.traceId]);
 });

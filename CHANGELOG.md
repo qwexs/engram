@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **fix(memory): reduce routine capture noise and account recovered completion
+  deadlines.** Contextual prompt v13 now skips one-off mechanical requests and
+  results unless they establish reusable state, and coalesces one bounded
+  request with its reported completion into one compact assertion. Worker
+  health retains every historical `final_wait_deadline` receipt but no longer
+  reports active completion debt after the same exact source has passed
+  admission, terminal semantic evaluation, and canonical daily-note apply.
+
 - **fix(qmd/bootstrap/watchdog): preserve the managed-exec scheduler contract.**
   The QMD installer now emits an exec-only script (one tool call, synchronous,
   600/650/660 second nested budgets), propagates nonzero/incomplete execution,

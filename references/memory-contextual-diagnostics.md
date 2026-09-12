@@ -23,19 +23,21 @@ The Worker result includes `diagnostic` and `diagnosticRef`; the queue retains
 A diagnostic-write error fails the run before consuming an evaluator attempt.
 The existing cached-result fail-closed contract and writer dedup are unchanged.
 
-## Prompt v12
+## Prompt v13
 
-New jobs explicitly teach the existing actor/status restrictions and the owning
-input address for historical excerpts. No validation condition is relaxed.
-`requested`/`decided`/`accepted` remain user-only; an assistant clarification is
-not a user instruction. Disposition IDs link to the input owning the selected
-excerpt, not a separate source with matching historical words.
+New jobs retain the v12 actor/status and owning-input address constraints, then
+add two semantic quality rules. One-off mechanical requests and results are
+skipped unless they establish a reusable preference, durable decision, or
+material artifact state. One bounded request plus its reported completion is
+represented as one compact assertion when both describe the same predicate;
+partial work, failure, restrictions, and genuinely different durable facts stay
+separate. No validation condition is relaxed.
 
-Prompt v10/v11 bytes remain unchanged for queued old jobs; their policy digests
-stay explicitly readable. New jobs use v12. The already-installed plugin bundle
-is unchanged: no Gateway restart or projection re-pinning is necessary for this
-standalone-Worker-only release. Always verify this with the actual build before
-applying; do not assume it for a future change.
+Prompt v10/v11/v12 bytes remain unchanged for queued old jobs; their policy
+digests stay explicitly readable. New jobs use v13. The already-installed
+plugin bundle is unchanged: no Gateway restart or projection re-pinning is
+necessary for this standalone-Worker-only release. Always verify this with the
+actual build before applying; do not assume it for a future change.
 
 ## Operator recovery and verification
 

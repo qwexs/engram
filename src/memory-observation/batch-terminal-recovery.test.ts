@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BATCH_LIVE_FAILURE_SCHEMA, BATCH_LIVE_JOB_SCHEMA } from "./batch-live-worker.ts";
@@ -145,14 +145,14 @@ describe("bounded terminal batch recovery", () => {
     const staleCommon = recoveryInput(stale);
     const staleLock = join(stale.workspace, "memory-state", "memory-observation", "v1", "locks", "evaluator.worker");
     mkdirSync(dirname(staleLock), { recursive: true });
-    symlinkSync(JSON.stringify({ pid: 2_147_483_647 }), staleLock);
+    writeFileSync(staleLock, JSON.stringify({ pid: 2_147_483_647 }));
     expect(recoverTerminalBatch({ ...staleCommon, apply: true }).status).toBe("requeued");
 
     const live = fixture();
     const liveCommon = recoveryInput(live);
     const liveLock = join(live.workspace, "memory-state", "memory-observation", "v1", "locks", "evaluator.worker");
     mkdirSync(dirname(liveLock), { recursive: true });
-    symlinkSync(JSON.stringify({ pid: process.pid }), liveLock);
+    writeFileSync(liveLock, JSON.stringify({ pid: process.pid }));
     expect(() => recoverTerminalBatch({ ...liveCommon, apply: true })).toThrow(/worker lock is held/);
   });
 

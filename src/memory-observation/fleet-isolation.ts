@@ -76,6 +76,11 @@ export async function runFleetCommand(argv: string[], cwd: string, timeoutMs: nu
   const child = Bun.spawn(argv, { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: true });
   let timedOut = false;
   const stopChild = () => {
+    if (process.platform === "win32") {
+      try { Bun.spawnSync(["taskkill.exe", "/PID", String(child.pid), "/T", "/F"], { stdout: "ignore", stderr: "ignore" }); }
+      catch { try { child.kill("SIGKILL"); } catch {} }
+      return;
+    }
     try { process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch {} }
   };
   const terminate = () => { stopChild(); process.exit(143); };

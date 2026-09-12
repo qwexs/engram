@@ -131,7 +131,7 @@ export class CompletionMirrorFeed {
                     mkdirSync(this.options.root, { recursive: true });
                     const temporary = `${receiptPath}.${randomUUID()}.tmp`;
                     writeFileSync(temporary, JSON.stringify(receipt) + "\n", { mode: 0o600, flag: "wx" });
-                    const fd = openSync(temporary, "r");
+                    const fd = openSync(temporary, "r+");
                     try {
                         fsyncSync(fd);
                     }
@@ -269,7 +269,7 @@ export class CompletionMirrorFeed {
         mkdirSync(dirname(path), { recursive: true });
         const temporary = `${path}.${randomUUID()}.tmp`;
         writeFileSync(temporary, JSON.stringify({ ...state, digest: sha256(state as unknown as JsonValue) }) + "\n", { mode: 0o600 });
-        const fd = openSync(temporary, "r");
+        const fd = openSync(temporary, "r+");
         try {
             fsyncSync(fd);
         }
@@ -277,12 +277,10 @@ export class CompletionMirrorFeed {
             closeSync(fd);
         }
         renameSync(temporary, path);
-        const directory = openSync(dirname(path), "r");
-        try {
-            fsyncSync(directory);
-        }
-        finally {
-            closeSync(directory);
+        if (process.platform !== "win32") {
+            const directory = openSync(dirname(path), "r");
+            try { fsyncSync(directory); }
+            finally { closeSync(directory); }
         }
     }
 }

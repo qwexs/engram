@@ -105,7 +105,9 @@ function buildSpec() {
 function openclaw(argv, input) {
   const binary = process.env.ENGRAM_OPENCLAW || Bun.which("openclaw");
   if (!binary) fail("openclaw binary not found on PATH");
-  const result = spawnSync(binary, argv, { encoding: "utf8", input, timeout: 30000 });
+  const javascript = /\.(?:c|m)?js$/i.test(binary);
+  const result = spawnSync(javascript ? process.execPath : binary, javascript ? [binary, ...argv] : argv,
+    { encoding: "utf8", input, timeout: 30000, shell: false });
   if (result.error || result.status !== 0) {
     console.error(result.stderr || result.error?.message || `openclaw exited ${result.status}`);
     process.exit(1);

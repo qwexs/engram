@@ -8,10 +8,8 @@ import {
   openSync,
   readFileSync,
   readdirSync,
-  readlinkSync,
   renameSync,
   rmSync,
-  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -155,18 +153,20 @@ function acquireRecoveryLock(path: string, recoveryId: Digest): () => void {
   const owner = JSON.stringify({ schema: "engram.memory-batch-terminal-recovery-lock.v1", pid: process.pid, recoveryId, token: randomUUID() });
   while (true) {
     try {
-      symlinkSync(owner, path);
+      const descriptor = openSync(path, "wx", 0o600);
+      try { writeFileSync(descriptor, owner, "utf8"); fsyncSync(descriptor); }
+      finally { closeSync(descriptor); }
       flushDirectory(dirname(path));
       return () => {
         try {
-          if (readlinkSync(path) === owner) { unlinkSync(path); flushDirectory(dirname(path)); }
+          if (readFileSync(path, "utf8") === owner) { unlinkSync(path); flushDirectory(dirname(path)); }
         } catch { /* already removed or replaced */ }
       };
     } catch (error: any) {
       if (error?.code !== "EEXIST") throw error;
       let observed: string;
       let lockOwner: { pid?: number };
-      try { observed = readlinkSync(path); lockOwner = JSON.parse(observed); }
+      try { observed = readFileSync(path, "utf8"); lockOwner = JSON.parse(observed); }
       catch { fail("WORKER_BUSY", "evaluator worker lock is held by an unreadable or legacy owner"); }
       if (!Number.isInteger(lockOwner.pid) || Number(lockOwner.pid) <= 0) fail("WORKER_BUSY", "evaluator worker lock owner is invalid");
       try { process.kill(Number(lockOwner.pid), 0); fail("WORKER_BUSY", "evaluator worker lock is held"); }
@@ -175,7 +175,7 @@ function acquireRecoveryLock(path: string, recoveryId: Digest): () => void {
         if (probe?.code !== "ESRCH") fail("WORKER_BUSY", "evaluator worker lock owner cannot be disproved");
       }
       try {
-        if (readlinkSync(path) !== observed) continue;
+        if (readFileSync(path, "utf8") !== observed) continue;
         unlinkSync(path);
         flushDirectory(dirname(path));
       } catch (reclaim: any) {

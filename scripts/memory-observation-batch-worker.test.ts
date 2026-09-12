@@ -3,13 +3,20 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { BATCH_EVALUATOR_AUTHORITY, deriveBatchObservationId } from "../src/memory-observation/batch-observation.ts";
 import { sha256, type JsonValue } from "../src/memory-observation/ledger.ts";
 import { configuredTopicBindings } from "../src/memory-observation/topic-bindings.ts";
 
 const roots: string[] = [];
 const repository = resolve(import.meta.dir, "..");
+
+function failingOpenClaw(bin: string): void {
+  const path = join(bin, "openclaw.mjs");
+  writeFileSync(path, "process.exit(91);\n");
+  writeFileSync(join(bin, "openclaw.cmd"), `@echo off\r\n"${process.execPath}" "${path}" %*\r\n`);
+  if (process.platform !== "win32") writeFileSync(join(bin, "openclaw"), `#!/bin/sh\nexec "${process.execPath}" "${path}" "$@"\n`, { mode: 0o755 });
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -54,9 +61,9 @@ describe("memory observation batch worker CLI", () => {
     });
     // Fail any host config or inference invocation. The empty path must not call it.
     const bin = join(workspace, "bin"); mkdirSync(bin);
-    writeFileSync(join(bin, "openclaw"), "#!/bin/sh\nexit 91\n", { mode: 0o755 });
+    failingOpenClaw(bin);
     const run = () => Bun.spawnSync([process.execPath, join(repository, "scripts/memory-observation-batch-worker.ts"), "--workspace", workspace],
-      { cwd: repository, env: { ...process.env, PATH: bin + ":" + process.env.PATH } });
+      { cwd: repository, env: { ...process.env, PATH: bin + delimiter + process.env.PATH } });
     const idle = run(); expect(idle.exitCode).toBe(0);
     expect(JSON.parse(idle.stdout.toString())).toMatchObject({ fastPath: "no_pending_work", evaluation: { status: "idle" } });
     // The same unresolved historical gap must remain visible without making
@@ -103,9 +110,9 @@ describe("memory observation batch worker CLI", () => {
     });
     // Fail any host config or inference invocation. The empty path must not call it.
     const bin = join(workspace, "bin"); mkdirSync(bin);
-    writeFileSync(join(bin, "openclaw"), "#!/bin/sh\nexit 91\n", { mode: 0o755 });
+    failingOpenClaw(bin);
     const run = () => Bun.spawnSync([process.execPath, join(repository, "scripts/memory-observation-batch-worker.ts"), "--workspace", workspace],
-      { cwd: repository, env: { ...process.env, PATH: bin + ":" + process.env.PATH } });
+      { cwd: repository, env: { ...process.env, PATH: bin + delimiter + process.env.PATH } });
     const idle = run(); expect(idle.exitCode).toBe(0);
     expect(JSON.parse(idle.stdout.toString())).toMatchObject({ fastPath: "no_pending_work", evaluation: { status: "idle" } });
     // The same unresolved historical gap must remain visible without making

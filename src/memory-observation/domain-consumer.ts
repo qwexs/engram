@@ -30,7 +30,9 @@ function durableWrite(path: string, value: string, immutable = false): void {
         if (error.code !== "EEXIST" || readFileSync(path, "utf8") !== value) throw new Error("immutable domain receipt conflict");
       }
     } else renameSync(tmp, path);
-    const dir = openSync(dirname(path), "r"); try { fsyncSync(dir); } finally { closeSync(dir); }
+    if (process.platform !== "win32") {
+      const dir = openSync(dirname(path), "r"); try { fsyncSync(dir); } finally { closeSync(dir); }
+    }
   } finally { if (existsSync(tmp)) unlinkSync(tmp); }
 }
 function immutableJson(path: string, value: unknown): void { durableWrite(path, JSON.stringify(value, null, 2) + "\n", true); }

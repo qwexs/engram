@@ -69,7 +69,9 @@ function writeImmutable(path: string, value: unknown) {
   try { linkSync(tmp, path); }
   catch (error: any) { if (error.code !== 'EEXIST') throw error; if (digest(read(path)) !== digest(value)) fail('CONTENT_CONFLICT', 'recovery artifact differs'); }
   finally { unlinkSync(tmp); }
-  const dir = openSync(dirname(path), 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
+  if (process.platform !== 'win32') {
+    const dir = openSync(dirname(path), 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
+  }
 }
 
 /** Re-admission only: original terminal checkpoint/receipt stay immutable; no inference or canonical write. */

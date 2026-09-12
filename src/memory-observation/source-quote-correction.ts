@@ -30,7 +30,9 @@ function durable(p: string, value: string, immutable = false) {
   try { writeFileSync(fd, value); fsyncSync(fd); } finally { closeSync(fd); }
   try { if (immutable) linkSync(tmp, p); else renameSync(tmp, p); }
   finally { if (existsSync(tmp)) unlinkSync(tmp); }
-  const dir = openSync(dirname(p), "r"); try { fsyncSync(dir); } finally { closeSync(dir); }
+  if (process.platform !== "win32") {
+    const dir = openSync(dirname(p), "r"); try { fsyncSync(dir); } finally { closeSync(dir); }
+  }
 }
 const serialized = (x: unknown) => JSON.stringify(x, null, 2) + "\n";
 export type SourceQuoteCorrectionOptions = {

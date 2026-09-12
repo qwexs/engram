@@ -8,9 +8,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
-  readlinkSync,
   rmSync,
-  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -109,17 +107,19 @@ function acquireLock(path: string, reconciliationId: Digest): () => void {
   const owner = JSON.stringify({ schema: "engram.memory-batch-accounting-lock.v1", pid: process.pid, reconciliationId, token: randomUUID() });
   while (true) {
     try {
-      symlinkSync(owner, path);
+      const descriptor = openSync(path, "wx", 0o600);
+      try { writeFileSync(descriptor, owner, "utf8"); fsyncSync(descriptor); }
+      finally { closeSync(descriptor); }
       flushDirectory(dirname(path));
       return () => {
-        try { if (readlinkSync(path) === owner) { unlinkSync(path); flushDirectory(dirname(path)); } }
+        try { if (readFileSync(path, "utf8") === owner) { unlinkSync(path); flushDirectory(dirname(path)); } }
         catch { /* lock already removed or replaced */ }
       };
     } catch (error: any) {
       if (error?.code !== "EEXIST") throw error;
       let observed: string;
       let lockOwner: { pid?: number };
-      try { observed = readlinkSync(path); lockOwner = JSON.parse(observed); }
+      try { observed = readFileSync(path, "utf8"); lockOwner = JSON.parse(observed); }
       catch { fail("WORKER_BUSY", "evaluator worker lock has an unreadable owner"); }
       if (!Number.isInteger(lockOwner.pid) || Number(lockOwner.pid) <= 0) fail("WORKER_BUSY", "evaluator worker lock owner is invalid");
       try { process.kill(Number(lockOwner.pid), 0); fail("WORKER_BUSY", "evaluator worker lock is held"); }
@@ -127,7 +127,7 @@ function acquireLock(path: string, reconciliationId: Digest): () => void {
         if (probe instanceof BatchAccountingReconciliationError) throw probe;
         if (probe?.code !== "ESRCH") fail("WORKER_BUSY", "evaluator worker lock owner cannot be disproved");
       }
-      try { if (readlinkSync(path) === observed) { unlinkSync(path); flushDirectory(dirname(path)); } }
+      try { if (readFileSync(path, "utf8") === observed) { unlinkSync(path); flushDirectory(dirname(path)); } }
       catch (reclaim: any) { if (reclaim?.code !== "ENOENT") throw reclaim; }
     }
   }

@@ -2,9 +2,11 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writ
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
+const PROCESS_STARTED_AT = Date.now();
 function processIdentity(pid: number): string | null {
   try {
     process.kill(pid, 0);
+    if (pid === process.pid) return `self:${PROCESS_STARTED_AT}`;
     try { return readFileSync("/proc/" + pid + "/stat", "utf8").split(") ").at(-1)!.split(" ")[19]!; }
     catch { return "alive"; }
   } catch (error: any) { return error.code === "EPERM" ? "alive" : null; }

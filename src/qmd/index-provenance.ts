@@ -163,8 +163,10 @@ function writeImmutable(path: string, value: unknown): boolean {
     if (descriptor !== null) closeSync(descriptor);
     try { unlinkSync(temporary); } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
   }
-  const directory = openSync(dirname(path), "r");
-  try { fsyncSync(directory); } finally { closeSync(directory); }
+  if (process.platform !== "win32") {
+    const directory = openSync(dirname(path), "r");
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  }
   return published;
 }
 

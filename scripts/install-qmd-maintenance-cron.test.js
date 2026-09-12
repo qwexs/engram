@@ -23,13 +23,10 @@ test("fresh spec is disabled, deterministic and synchronous", () => {
   expect(parsed.execArgs.workdir).toBe(f.workspace);
   expect(spec.schedule).toEqual({kind:"cron",expr:"33 * * * *",tz:"UTC",staggerMs:0});
 });
-test("shell metacharacters in workspace/report remain literal", () => {
+test("scheduler passes paths as literal argv without shell parsing", () => {
   const f=fixture("work space ' $(printf substituted) `printf substituted` $USER");
   const spec=JSON.parse(f.run(["--dry-run"]).stdout), parsed=inspectQmdMaintenancePayload(spec.payload);
-  const command=parsed.execArgs.command.split(" > ")[0];
-  const result=Bun.spawnSync(["bash","-c",`set -- ${command}; printf '%s\\0' "$@"`]);
-  expect(result.exitCode).toBe(0);
-  expect(result.stdout.toString().split("\0").slice(0,-1)).toEqual(["bun",join(f.workspace,"skills/engram/scripts/qmd-maintenance-coordinator.ts"),"--manifest",f.manifest,"--workspace",f.workspace,"--timeout-ms","600000"]);
+  expect(parsed.execArgs.command).toEqual(["bun",join(f.workspace,"skills/engram/scripts/qmd-maintenance-coordinator.ts"),"--manifest",f.manifest,"--workspace",f.workspace,"--timeout-ms","600000","--report",join(f.root,"maintenance-last-run.json")]);
 });
 test("invalid manifests, colliding outputs and conflicting activation flags fail", () => {
   const f=fixture();
@@ -51,7 +48,7 @@ test("generated wrapper fails closed for nonzero, timeout, running and malformed
   }
 });
 function fakeHost(root) {
-  const state=join(root,"host.json"), log=join(root,"calls.jsonl"), binary=join(root,"openclaw");
+  const state=join(root,"host.json"), log=join(root,"calls.jsonl"), binary=join(root,"openclaw.mjs");
   writeFileSync(state,'{"jobs":[]}');
   writeFileSync(binary,`#!/usr/bin/env bun
 import {readFileSync,writeFileSync,appendFileSync} from "node:fs";

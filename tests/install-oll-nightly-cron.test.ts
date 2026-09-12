@@ -15,7 +15,7 @@ function environment() {
   const declaration = join(root, "scheduler-declaration.json");
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "skills"), { recursive: true });
-  symlinkSync(resolve(import.meta.dir, ".."), join(workspace, "skills/engram"));
+  symlinkSync(resolve(import.meta.dir, ".."), join(workspace, "skills/engram"), process.platform === "win32" ? "junction" : "dir");
   writeFileSync(registry, JSON.stringify({
     schema: "oll.workspace-registry-snapshot.v1", capturedAt: "2026-01-01T00:00:00.000Z",
     entries: [{ workspaceId: "workspace-a", workspacePath: join(root, "workspace-a"), registryRevision: 1, registryDigest: "sha256:registry", configDigest: "sha256:config" }],

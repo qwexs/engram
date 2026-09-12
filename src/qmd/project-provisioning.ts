@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, realpathSync, openSync, closeSync, unlinkSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { auditQmdGlobalRegistry } from './global-registry.ts';
 import { configuredTopicBindings } from '../memory-observation/topic-bindings.ts';
 import { configuredGroupDirectBindings } from '../memory-observation/group-bindings.ts';
@@ -18,16 +18,24 @@ const read = (p: string) => JSON.parse(readFileSync(p, 'utf8'));
 const body = (v: unknown) => JSON.stringify(v, null, 2) + '\n';
 const union = (a: string[], b: string[]) => [...new Set([...a, ...b])].sort();
 function canonical(p: string) {
-  if (!isAbsolute(p) || resolve(p) !== p) throw new Error('absolute canonical path required');
-  if (existsSync(p)) { if (realpathSync(p) !== p) throw new Error('symlink path rejected'); }
+  if (!isAbsolute(p) || !samePath(resolve(p), p)) throw new Error('absolute canonical path required');
+  if (existsSync(p)) { if (!samePath(realpathSync(p), p)) throw new Error('symlink path rejected'); }
   else if (dirname(p) !== p) canonical(dirname(p));
   return p;
+}
+function samePath(a: string, b: string) {
+  const left = resolve(a), right = resolve(b);
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+function isDescendant(root: string, candidate: string) {
+  const rel = relative(root, candidate);
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel);
 }
 export function planProjectProvisioning(request: ProjectRequest, hostConfig: unknown): ProjectPlan {
   const r = structuredClone(request), w = canonical(r.workspace);
   if (!/^[a-z][a-z0-9_-]*$/.test(r.id) || r.id === 'main' || r.parentId === r.id) throw new Error('invalid project identity');
   for (const p of [r.globalManifest, r.workerManifest, r.fleetManifest]) canonical(p);
-  if (!r.workerManifest.startsWith(w + '/ops/')) throw new Error('worker manifest must be project-local ops');
+  if (!isDescendant(join(w, 'ops'), r.workerManifest)) throw new Error('worker manifest must be project-local ops');
   if (!r.domains.length || new Set(r.domains).size !== r.domains.length) throw new Error('unique explicit domains required');
   const config = read(join(w, 'engram.json')), domains = read(join(w, 'memory/domains/registry.json'));
   if (config.workspace?.id !== r.id || config.agent !== 'agent-' + r.id) throw new Error('workspace identity mismatch');
@@ -122,7 +130,7 @@ export function applyProjectPlan(plan: ProjectPlan, journalPath: string) {
     const registry = (nextManifest ? JSON.parse(nextManifest.after) : read(plan.request.globalManifest)).registry;
     for (const collection of registry.collections.filter((c: any) => c.owner === plan.request.id)) {
       canonical(collection.path);
-      if (!collection.path.startsWith(plan.request.workspace + '/')) throw new Error('collection root escape');
+      if (!isDescendant(plan.request.workspace, collection.path)) throw new Error('collection root escape');
       mkdirSync(collection.path, { recursive: true });
     }
     for (const c of plan.changes) {
@@ -154,7 +162,7 @@ export function planProjectFleetEnrollment(request: ProjectRequest, projection: 
   if (jobs.length !== 1) throw new Error('unique existing fleet scheduler required');
   const job = jobs[0], args = job.payload?.argv, pos = Array.isArray(args) ? args.indexOf('--manifest') : -1;
   if (!job.enabled || job.payload?.kind !== 'command' || pos < 0 || args[pos + 1] !== r.fleetManifest
-    || !args.some((v: string) => v.endsWith('/memory-observation-group-fleet.ts'))
+    || !args.some((v: string) => basename(v) === 'memory-observation-group-fleet.ts')
     || job.schedule?.kind !== 'cron' || job.schedule.tz !== 'UTC' || job.schedule.staggerMs !== 0) throw new Error('fleet scheduler profile mismatch');
   const current = fleet.workspaces.filter((e: any) => e.id === r.id || e.path === w);
   if (current.length > 1 || (current.length === 1 && (current[0].id !== r.id || current[0].path !== w))) throw new Error('fleet identity conflict');

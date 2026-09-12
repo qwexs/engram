@@ -89,7 +89,7 @@ describe("canary QMD binding preflight", () => {
     mkdirSync(target, { recursive: true });
     const collectionPath = join(base, "memory", "agent-main", "telegram-direct-100000001");
     mkdirSync(join(base, "memory", "agent-main"), { recursive: true });
-    symlinkSync(target, collectionPath);
+    symlinkSync(target, collectionPath, process.platform === "win32" ? "junction" : "dir");
     expect(() => preflightCanaryQmdBinding(input(base))).toThrow("symlink root escape");
   });
 

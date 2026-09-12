@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { dirname, resolve } from "node:path";
 import { resolveQmdContext } from "../src/qmd/context.ts";
 import { auditQmdGlobalRegistry, type QmdGlobalRegistry } from "../src/qmd/global-registry.ts";
 import { reconcileIndexHandoffs } from "../src/qmd/index-provenance.ts";
@@ -53,6 +54,14 @@ function selectedCollections(options: Options, registry: QmdGlobalRegistry): str
   const unknown = collections.filter((collection) => !allowed.has(collection));
   if (unknown.length > 0) throw new Error(`--collections contains names outside the registry: ${unknown.join(", ")}`);
   return collections;
+}
+
+function writeReport(path: string, value: unknown): void {
+  const target = resolve(path);
+  mkdirSync(dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}-${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, target);
 }
 
 const options = parseArgs(process.argv);
@@ -137,7 +146,9 @@ try {
       }),
     };
   });
-  console.log(JSON.stringify({ ...result, provenance, ...(backfill ? { backfill } : {}), ...(initialSync ? { initialSync } : {}) }));
+  const output = { ...result, provenance, ...(backfill ? { backfill } : {}), ...(initialSync ? { initialSync } : {}) };
+  if (typeof options.report === "string") writeReport(options.report, output);
+  else console.log(JSON.stringify(output));
   const provenanceFailed = provenance.some((entry) => entry.failed > 0);
   process.exit(result.status === "error" || result.status === "partial" || provenanceFailed ? 1 : 0);
 } catch (error) {

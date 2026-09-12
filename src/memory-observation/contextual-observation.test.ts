@@ -197,11 +197,14 @@ test('dispositions cannot link an assertion to an uncited source',()=>{
  const b=fixture(),o=output(b);o.assertions[0]!.resolution='explicit';o.assertions[0]!.spans=o.assertions[0]!.spans.slice(1);
  expect(()=>parseContextualOutput(o,b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:disposition_citation');
 });
-test('v12 clarifies actor and owning-source contracts without rewriting legacy prompts',async()=>{
+test('v13 adds bounded retention and coalescing without rewriting legacy prompts',async()=>{
  const {contextualPrompt}=await import('./contextual-observation.ts');const b=fixture();
  for(const v of ['memory-contextual-shadow-v10','memory-contextual-shadow-v11'] as const){
   const p=JSON.parse(contextualPrompt(b,now,v));expect(p.schema).toBe(v);expect(p.instructions).not.toContain('ACTOR/STATUS CONTRACT');
  }
- const p=JSON.parse(contextualPrompt(b,now));expect(p.schema).toBe('memory-contextual-shadow-v12');
+ const prior=JSON.parse(contextualPrompt(b,now,'memory-contextual-shadow-v12'));
+ expect(prior.instructions).toContain('ACTOR/STATUS CONTRACT');expect(prior.instructions).not.toContain('RETENTION CONTRACT');
+ const p=JSON.parse(contextualPrompt(b,now));expect(p.schema).toBe('memory-contextual-shadow-v13');
  expect(p.instructions).toContain('ACTOR/STATUS CONTRACT');expect(p.instructions).toContain('DISPOSITION ADDRESS CONTRACT');
+ expect(p.instructions).toContain('RETENTION CONTRACT');expect(p.instructions).toContain('COALESCING CONTRACT');
 });

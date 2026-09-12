@@ -72,5 +72,5 @@ test('preceding prompt version resumes its own producer and stays readable witho
  expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v10');
  expect(qualityProducerForScope(f.workspace,scope,{...f.rollout,mode:'drain'})).toBe('blocked');
  f.put('batch-live-store/memory-batch-live/v1/done/'+f.jobId.slice(7)+'.json',{jobId:f.jobId});
- expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v12');
+ expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v13');
 });

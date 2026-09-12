@@ -97,6 +97,21 @@ test('completion deadline debt is degraded; invalid feed data cannot look health
  expect(memoryWorkerHealth(f.root).corruptRecords).toBe(1);
 });
 
+test('canonically applied source accounts for completion deadline without deleting its history',async()=>{
+ const {sha256}=await import('./ledger.ts');const f=fixture(),candidateId=sha256('candidate'),traceId=sha256('trace');
+ const sourceTurnId='channel-user:v1:'+'a'.repeat(64);
+ f.put('completion-mirrors','unresolved',{schema:'engram.completion-unresolved.v1',reason:'final_wait_deadline',
+  request:{candidateId,sourceTurnId,agentId:'alpha',sessionKey:'agent:alpha:main',sessionId:'a',runId:'run-a'}});
+ f.put('pre-admission/checkpoints','candidate',{candidateId,sourceTurnId,stage:'ledger_admitted'});
+ f.put('envelopes','trace',{schema:'engram.memory-observation-job.v1',traceId,sourceTurnId});
+ f.put('queues/evaluator','trace',{traceId,status:'terminal',reasonCode:'semantic_contextual_asserted'});
+ expect(memoryWorkerHealth(f.root)).toMatchObject({status:'degraded',completionUnresolved:1,
+  historicalCompletionUnresolved:1,accountedCompletionUnresolved:0});
+ f.put('consumers/daily-note/queue','applied',{traceId,status:'terminal',reasonCode:'canonical_applied'});
+ expect(memoryWorkerHealth(f.root)).toMatchObject({status:'ok',completionUnresolved:0,
+  historicalCompletionUnresolved:1,accountedCompletionUnresolved:1});
+});
+
 test("only digest-verified accounting reconciliation closes batch backlog", async () => {
   const { sha256 } = await import("./ledger.ts");
   const f = fixture(), jobId = sha256("accounted-job"), bundleId = sha256("accounted-bundle"), traceId = sha256("accounted-trace");

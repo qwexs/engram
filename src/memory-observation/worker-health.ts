@@ -30,7 +30,7 @@ export function memoryWorkerSnapshot(workspace: string) {
   const read = (path: string) => readWorkerRows(join(root, path), errors);
   return { root, observed: existsSync(root), captureObserved: existsSync(join(root, "v1")) || existsSync(join(root, "batch-live-store/memory-batch-live/v1")), errors,
     evaluator: read("v1/queues/evaluator"), daily: read("v1/consumers/daily-note/queue"),
-    admission: read("v1/pre-admission/checkpoints"), completionFeeds: read("v1/completion-mirrors"),
+    admission: read("v1/pre-admission/checkpoints"), envelopes: read("v1/envelopes"), completionFeeds: read("v1/completion-mirrors"),
     jobs: read("batch-live-store/memory-batch-live/v1/jobs"), done: read("batch-live-store/memory-batch-live/v1/done") };
 }
 /** Completed operator recovery replaces the old job, not its historical failure evidence. */
@@ -102,10 +102,10 @@ function verifiedDoneJobId(done: WorkerStateRow, jobs: WorkerStateRow[], errors:
 /** Accounting only: never mutates queues or changes the process-success contract. */
 export function memoryWorkerHealth(workspace: string, now = new Date(), options: { staleAfterSeconds?: number; claimTtlSeconds?: number } = {}) {
   const snapshot = memoryWorkerSnapshot(workspace);
-  const { evaluator, daily, admission, jobs, done, errors } = snapshot;
+  const { evaluator, daily, admission, envelopes, jobs, done, errors } = snapshot;
   for(const row of snapshot.completionFeeds) if(!["engram.completion-mirror-feed.v1","engram.completion-unresolved.v1"].includes(row.value.schema))
     errors.push({path:row.path,error:"invalid_completion_record_schema"});
-  const completionUnresolved = snapshot.completionFeeds.filter(row => row.value.schema === "engram.completion-unresolved.v1").length;
+  const unresolvedCompletionRows = snapshot.completionFeeds.filter(row => row.value.schema === "engram.completion-unresolved.v1");
   const feeds = snapshot.completionFeeds.filter(row => row.value.schema === "engram.completion-mirror-feed.v1");
   for (const row of feeds) {
     const {digest,...base}=row.value;
@@ -117,6 +117,23 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const claimTtlSeconds = options.claimTtlSeconds ?? 300;
   const terminalOk = new Set(["semantic_contextual_asserted", "semantic_contextual_supports", "semantic_contextual_duplicate", "semantic_contextual_skip", "semantic_batch_write", "semantic_batch_skip", "semantic_batch_grouped_no_assertion", "semantic_write", "semantic_skip", "semantic_skip_noise", "semantic_skip_already_captured", "semantic_skip_incomplete", "pre_activation_not_evaluated"]);
   const dailyOk = new Set(["canonical_applied", "duplicate_receipt", "policy_superseded_before_apply"]);
+  // Keep deadline receipts as immutable history, but do not report active debt
+  // after the same exact source was admitted, evaluated and canonically applied.
+  const accountedCompletionRows = unresolvedCompletionRows.filter(row => {
+    const request = row.value.request;
+    if (!request || !/^sha256:[a-f0-9]{64}$/.test(request.candidateId ?? "")
+      || !/^channel-user:v1:[a-f0-9]{64}$/.test(request.sourceTurnId ?? "")) return false;
+    const checkpoint = admission.find(item => item.value.candidateId === request.candidateId
+      && item.value.sourceTurnId === request.sourceTurnId && item.value.stage === "ledger_admitted");
+    const envelope = envelopes.find(item => item.value.schema === "engram.memory-observation-job.v1"
+      && item.value.sourceTurnId === request.sourceTurnId && /^sha256:[a-f0-9]{64}$/.test(item.value.traceId ?? ""));
+    return !!checkpoint && !!envelope
+      && evaluator.some(item => item.value.traceId === envelope.value.traceId && item.value.status === "terminal" && terminalOk.has(item.value.reasonCode))
+      && daily.some(item => item.value.traceId === envelope.value.traceId && item.value.status === "terminal" && dailyOk.has(item.value.reasonCode));
+  });
+  const historicalCompletionUnresolved = unresolvedCompletionRows.length;
+  const accountedCompletionUnresolved = accountedCompletionRows.length;
+  const completionUnresolved = historicalCompletionUnresolved - accountedCompletionUnresolved;
   for (const [rows, statuses] of [[evaluator, ["queued", "claimed", "terminal"]], [daily, ["queued", "claimed", "qmd_pending", "terminal"]]] as const) {
     for (const row of rows) if (!statuses.includes(row.value.status)) errors.push({ path: row.path, error: "invalid_queue_status" });
   }
@@ -176,7 +193,7 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const stalled = Object.values(stages).some(stage => stage.stale || stage.overdue);
   const totalPending = pending.length + dailyPending.length + admissionPending.length + batchPending.length + completionPending;
   return { status: failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims || completionUnresolved || completionBlocked ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending || completionPending ? "pending" : "ok",
-    completionPending, completionBlocked, completionUnresolved,
+    completionPending, completionBlocked, completionUnresolved, historicalCompletionUnresolved, accountedCompletionUnresolved,
     pending: pending.length, totalPending, waitingContext: waiting.length, expiredWaitingContext, terminalFailures: failures.length, admissionGaps: gaps.length,
     recoveredAdmissionGaps: recovered.length, historicalAdmissionGaps: historicalGaps.length, nativeCommandGaps: nativeCommandGaps.length,
     dailyPending: dailyPending.length, qmdPending: dailyPending.filter(row => row.value.status === "qmd_pending" || row.value.phase === "qmd").length,

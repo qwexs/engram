@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, relative } from 'node:path';
+import { delimiter, join, resolve, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { legacyKgMutationState } from './_lib/kg-v3-authority.ts';
@@ -16,11 +16,14 @@ function fixture(cron = false) {
   writeFileSync(join(root, 'memory/heartbeat-state.json'), JSON.stringify({ lastDailyNoteCreated: { main: '2026-09-08' } }));
   writeFileSync(join(root, 'memory/weekly-synthesis-tracker.json'), '{}');
   writeFileSync(join(root, 'engram.json'), JSON.stringify({ agent: 'main', ...(cron ? { cron: { expectedJobName: 'heartbeat', expectedSchedule: { kind: 'cron', expr: '20 * * * *' } } } : {}) }));
-  writeFileSync(join(root, 'bin/openclaw'), '#!/bin/sh\ncat "$(dirname "$0")/inventory.json"\n', { mode: 0o755 });
+  const fixtureScript = join(root, 'bin', 'openclaw.mjs');
+  writeFileSync(fixtureScript, `import { readFileSync } from 'node:fs';\nconsole.log(readFileSync(${JSON.stringify(join(root, 'bin', 'inventory.json'))}, 'utf8'));\n`);
+  writeFileSync(join(root, 'bin', 'openclaw.cmd'), `@echo off\r\n"${process.execPath}" "${fixtureScript}" %*\r\n`);
+  if (process.platform !== 'win32') writeFileSync(join(root, 'bin/openclaw'), `#!/bin/sh\nexec "${process.execPath}" "${fixtureScript}" "$@"\n`, { mode: 0o755 });
   return root;
 }
 function run(root: string, args: string[] = []) {
-  const result = spawnSync(process.execPath, [script, '--json', ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, ENGRAM_SKIP_HOOK_INSTALL: '1', PATH: `${join(root, 'bin')}:${process.env.PATH}` } });
+  const result = spawnSync(process.execPath, [script, '--json', ...args], { cwd: root, encoding: 'utf8', timeout: 30_000, env: { ...process.env, ENGRAM_SKIP_HOOK_INSTALL: '1', PATH: `${join(root, 'bin')}${delimiter}${process.env.PATH}` } });
   expect(result.error).toBeUndefined();
   expect(result.stderr).toBe('');
   return { status: result.status, report: JSON.parse(result.stdout) };

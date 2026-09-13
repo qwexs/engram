@@ -47,7 +47,7 @@ function runtime(stateDir: string): QmdMaintenanceIntegrationRuntime {
   return {
     env: { OPENCLAW_STATE_DIR: stateDir, XDG_CACHE_HOME: join(stateDir, "cache") },
     homedir: () => join(stateDir, "home"),
-    platform: "linux",
+    platform: process.platform,
     warn: () => {},
     markDirty: async (stateRoot, input) => {
       const { markQmdDirty } = await import("../src/qmd/maintenance.ts");

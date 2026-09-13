@@ -38,6 +38,19 @@ function fail(code: string, message: string): never {
   throw new BatchShadowOpenClawProviderError(code, message);
 }
 
+function parseOpenClawJson(stdout: string): unknown {
+  const start = stdout.indexOf("{");
+  if (start < 0) fail("INVALID_READBACK", "OpenClaw raw model-run did not return strict JSON");
+  const prefix = stdout.slice(0, start).trim();
+  if (prefix && !prefix.split(/\r?\n/).every((line) =>
+    line.startsWith("[state-migrations]")
+    || line.startsWith("- Skipped plugin doctor state migrations because exclusive state ownership is unavailable:"))) {
+    fail("INVALID_READBACK", "OpenClaw raw model-run returned unexpected non-JSON output");
+  }
+  try { return JSON.parse(stdout.slice(start)); }
+  catch { fail("INVALID_READBACK", "OpenClaw raw model-run did not return strict JSON"); }
+}
+
 export function defaultOpenClawModelRunExecutor(command: string, args: string[], options: {
   cwd: string;
   timeout: number;
@@ -104,9 +117,7 @@ export function openClawRawModelRunProvider(options: {
       const detail = execution.error?.message ?? execution.stderr.trim() ?? `exit=${String(execution.status)}`;
       fail("MODEL_RUN_FAILED", `OpenClaw raw model-run failed: ${detail.slice(0, 500)}`);
     }
-    let parsed: unknown;
-    try { parsed = JSON.parse(execution.stdout); }
-    catch { fail("INVALID_READBACK", "OpenClaw raw model-run did not return strict JSON"); }
+    const parsed = parseOpenClawJson(execution.stdout);
     const result = row(parsed);
     if (!result || result.ok !== true || result.capability !== "model.run" || result.transport !== "gateway"
       || typeof result.provider !== "string" || !TOKEN_RE.test(result.provider)

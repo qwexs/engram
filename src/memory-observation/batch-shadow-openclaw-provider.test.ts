@@ -87,6 +87,14 @@ describe("OpenClaw raw model-run provider", () => {
     });
   });
 
+  test("accepts the known Windows state-migration warning before strict model JSON", async () => {
+    const provider = openClawRawModelRunProvider({ cwd: "/tmp", execute: () => ({
+      status: 0, signal: null, stderr: "",
+      stdout: `[state-migrations] Legacy state migration warnings:\n- Skipped plugin doctor state migrations because exclusive state ownership is unavailable: GatewayLockError\n${success()}`,
+    }) });
+    await expect(provider(request)).resolves.toMatchObject({ resolvedModel: "openai/gpt-5.6-terra" });
+  });
+
   test("rejects system-role requests, fallbacks, and model-run failures", async () => {
     const provider = openClawRawModelRunProvider({
       cwd: "/tmp",

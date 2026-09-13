@@ -42,6 +42,7 @@ import { configuredTopicBindings } from "../src/memory-observation/topic-binding
 
 const PLUGIN_ID = "engram-memory-observation";
 const DEFAULT_INFERENCE_MODEL = "openai/gpt-5.6-sol";
+const OPENCLAW_CHILD_TIMEOUT_MS = 30_000;
 
 function args(argv: string[]): Record<string, string | boolean> {
   const output: Record<string, string | boolean> = {};
@@ -96,7 +97,14 @@ function atomicWrite(path: string, value: unknown): void {
 }
 
 function runOpenClaw(arguments_: string[]): string {
-  const result = spawnSync("openclaw", arguments_, { encoding: "utf8" });
+  const result = spawnSync("openclaw", arguments_, {
+    encoding: "utf8",
+    timeout: OPENCLAW_CHILD_TIMEOUT_MS,
+  });
+  if (result.error) {
+    const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+    throw new Error(`openclaw ${arguments_.join(" ")} ${timedOut ? `timed out after ${OPENCLAW_CHILD_TIMEOUT_MS}ms` : `failed: ${result.error.message}`}`);
+  }
   if (result.status !== 0) throw new Error(`openclaw ${arguments_.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`);
   return result.stdout.trim();
 }
@@ -204,7 +212,18 @@ async function buildPlugin(repository: string) {
 }
 
 function inspectPlugin() {
-  const result = spawnSync("openclaw", ["plugins", "inspect", PLUGIN_ID, "--json", "--runtime"], { encoding: "utf8" });
+  // `--runtime` can wait indefinitely for the active Gateway's exclusive state
+  // lock on Windows. The regular inspect command already reports the loaded
+  // status, source bytes and diagnostics required by this rollout gate.
+  const result = spawnSync("openclaw", ["plugins", "inspect", PLUGIN_ID, "--json"], {
+    encoding: "utf8",
+    timeout: OPENCLAW_CHILD_TIMEOUT_MS,
+  });
+  if (result.error) {
+    const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+    return { installed: false, status: "unverified", enabled: false, source: null, rootDir: null, digest: null,
+      diagnostics: [], error: timedOut ? `plugin inspection timed out after ${OPENCLAW_CHILD_TIMEOUT_MS}ms` : result.error.message };
+  }
   if (result.status !== 0 || !result.stdout.trim()) {
     return { installed: false, status: "absent", enabled: false, source: null, rootDir: null, digest: null, diagnostics: [], error: (result.stderr || result.stdout).trim() };
   }

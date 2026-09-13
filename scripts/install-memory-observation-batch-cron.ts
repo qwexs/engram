@@ -56,12 +56,22 @@ function openclaw(argv: string[], input?: string): string {
   const binary = process.env.ENGRAM_OPENCLAW || Bun.which("openclaw");
   if (!binary) throw new Error("openclaw binary is unavailable");
   const javascript = /\.(?:c|m)?js$/i.test(binary);
-  const result = spawnSync(javascript ? process.execPath : binary, javascript ? [binary, ...argv] : argv, {
+  const windowsShim = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(binary);
+  const executable = javascript ? process.execPath : windowsShim ? (process.env.ComSpec || "cmd.exe") : binary;
+  const childArgs = javascript ? [binary, ...argv]
+    : windowsShim ? ["/d", "/s", "/c", binary, ...argv]
+      : argv;
+  const result = spawnSync(executable, childArgs, {
     encoding: "utf8",
     input,
     shell: false,
+    timeout: 30_000,
   });
-  if (result.error || result.status !== 0) throw new Error(result.stderr || result.error?.message || `openclaw exited ${result.status}`);
+  if (result.error || result.status !== 0) {
+    const timedOut = result.error && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+    throw new Error(timedOut ? "openclaw command timed out after 30000ms"
+      : result.stderr || result.error?.message || `openclaw exited ${result.status}`);
+  }
   return result.stdout || "";
 }
 

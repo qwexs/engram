@@ -391,7 +391,7 @@ const OPENCLAW_UNIX = autoDetectUnixBinary();
  */
 function resolveInvocation() {
   if (process.platform === "win32" && OPENCLAW_NODE_SCRIPT) {
-    return { exe: "node", prefixArgs: [OPENCLAW_NODE_SCRIPT] };
+    return { exe: process.execPath, prefixArgs: [OPENCLAW_NODE_SCRIPT] };
   }
   if (process.platform !== "win32") {
     // Sentinel from envForFake(): on Unix, prefer the node-direct path
@@ -404,7 +404,7 @@ function resolveInvocation() {
       process.env.ENGRAM_OPENCLAW === "__use_node_script_only__" &&
       OPENCLAW_NODE_SCRIPT
     ) {
-      return { exe: "node", prefixArgs: [OPENCLAW_NODE_SCRIPT] };
+      return { exe: process.execPath, prefixArgs: [OPENCLAW_NODE_SCRIPT] };
     }
     return { exe: OPENCLAW_UNIX, prefixArgs: [] };
   }

@@ -11,6 +11,7 @@ export type QmdRegistryWorkspace = {
   kind: QmdRegistryWorkspaceKind;
   parents: string[];
   readableCollections: string[];
+  allowRecursiveExactSessionMask?: boolean;
 };
 
 export type QmdRegistryCollection = {
@@ -132,6 +133,7 @@ function parseWorkspace(value: unknown, index: number, findings: QmdRegistryFind
     kind: value.kind,
     parents: [...new Set(parents)],
     readableCollections: [...new Set(readableCollections)],
+    ...(value.allowRecursiveExactSessionMask === true ? { allowRecursiveExactSessionMask: true } : {}),
   };
 }
 

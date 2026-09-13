@@ -45,6 +45,10 @@ function inside(parent: string, child: string): boolean {
   return path !== "" && !path.startsWith("..") && !isAbsolute(path);
 }
 
+function isExactSessionMarkdownMask(mask: string, workspace?: { allowRecursiveExactSessionMask?: boolean }): boolean {
+  return mask === "*.md" || (mask === "**/*.md" && workspace?.allowRecursiveExactSessionMask === true);
+}
+
 function normalizeManifest(input: QmdRegistryManifestInput): QmdGlobalRegistry {
   const registry = "registry" in input ? input.registry : input;
   const audit = auditQmdGlobalRegistry(registry);
@@ -64,6 +68,7 @@ function registrySliceDigest(registry: QmdGlobalRegistry, workspaceId: string): 
       kind: workspace.kind,
       parents: [...workspace.parents].sort(),
       readableCollections: [...workspace.readableCollections].sort(),
+      allowRecursiveExactSessionMask: workspace.allowRecursiveExactSessionMask === true,
     },
     collections: registry.collections.filter((entry) => entry.owner === workspaceId)
       .map((entry) => ({ name: entry.name, owner: entry.owner, path: realpathSync(entry.path), mask: entry.mask }))
@@ -90,7 +95,7 @@ export function preflightCanaryQmdBinding(input: QmdBindingPreflightInput): QmdB
   if (!matchingWorkspace) fail("wrong owner/workspace");
   if (realpathSync(matchingWorkspace.path) !== realpathSync(workspace)) fail("wrong owner/workspace");
   if (!input.context.policy.ownedCollections.includes(collection) || !matchingWorkspace.readableCollections.includes(collection)) fail("collection not readable/owned");
-  if (entry.mask !== "*.md") fail("wrong mask");
+  if (!isExactSessionMarkdownMask(entry.mask, matchingWorkspace)) fail("wrong mask");
   if (!existsSync(entry.path) || isSymlink(entry.path)) fail("symlink root escape");
   const split = splitCanonicalSessionKey(nonEmpty(input.runtimeSessionKey, "runtimeSessionKey"));
   if (!split) fail("invalid runtimeSessionKey");
@@ -170,8 +175,9 @@ export function resolveCanaryQmdRuntimeBinding(input: {
   const expectedRoot = join(workspace, "memory", `agent-${split.agentId}`, split.sessionKey);
   if (!existsSync(expectedRoot) || isSymlink(expectedRoot)) fail("exact session root is unavailable");
   const canonicalRoot = realpathSync(expectedRoot);
+  const matchingWorkspace = registry.workspaces.find((entry) => entry.id === split.agentId);
   const candidates = registry.collections.filter((entry) => entry.owner === split.agentId
-    && entry.mask === "*.md"
+    && isExactSessionMarkdownMask(entry.mask, matchingWorkspace)
     && existsSync(entry.path)
     && !isSymlink(entry.path)
     && realpathSync(entry.path) === canonicalRoot);

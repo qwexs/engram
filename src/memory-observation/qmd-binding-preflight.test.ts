@@ -63,6 +63,15 @@ describe("canary QMD binding preflight", () => {
     });
   });
 
+  test("accepts a recursive markdown mask when the collection root is the exact session root", () => {
+    const base = root();
+    const value = manifest(base);
+    value.collections[0]!.mask = "**/*.md";
+    value.workspaces[0]!.allowRecursiveExactSessionMask = true;
+    const result = preflightCanaryQmdBinding(input(base, { manifest: value }));
+    expect(result.collection).toBe("main-direct-memory");
+  });
+
   test("accepts a migration wrapper manifest", () => {
     const base = root();
     const result = preflightCanaryQmdBinding({ ...input(base), manifest: { registry: manifest(base) } });

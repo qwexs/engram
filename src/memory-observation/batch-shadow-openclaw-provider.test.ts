@@ -1,10 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import {
+  defaultOpenClawModelRunExecutor,
   BatchShadowOpenClawProviderError,
   openClawGatewayModelRunProvider,
   openClawRawModelRunProvider,
   type OpenClawModelRunExecutor,
 } from "./batch-shadow-openclaw-provider.ts";
+
+test("default executor can invoke the OpenClaw launcher on the current platform", () => {
+  const result = defaultOpenClawModelRunExecutor("openclaw", ["--version"], {
+    cwd: process.cwd(),
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("OpenClaw");
+});
 import type { BatchShadowCompletionRequest } from "./batch-shadow-runner.ts";
 
 const request: BatchShadowCompletionRequest = {

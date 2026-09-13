@@ -38,12 +38,21 @@ function fail(code: string, message: string): never {
   throw new BatchShadowOpenClawProviderError(code, message);
 }
 
-function defaultExecutor(command: string, args: string[], options: {
+export function defaultOpenClawModelRunExecutor(command: string, args: string[], options: {
   cwd: string;
   timeout: number;
   maxBuffer: number;
 }): OpenClawModelRunExecution {
-  const result = spawnSync(command, args, {
+  const resolved = command === "openclaw" ? Bun.which(command) ?? command : command;
+  const javascript = /\.(?:c|m)?js$/i.test(resolved);
+  const windowsShim = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(resolved);
+  const executable = javascript ? process.execPath
+    : windowsShim ? (process.env.ComSpec || "cmd.exe")
+      : resolved;
+  const childArgs = javascript ? [resolved, ...args]
+    : windowsShim ? ["/d", "/s", "/c", resolved, ...args]
+      : args;
+  const result = spawnSync(executable, childArgs, {
     cwd: options.cwd,
     timeout: options.timeout,
     maxBuffer: options.maxBuffer,
@@ -75,7 +84,7 @@ export function openClawRawModelRunProvider(options: {
     || !Number.isSafeInteger(maxBuffer) || maxBuffer < 1) {
     fail("INVALID_CONFIG", "model-run command or bounds are invalid");
   }
-  const execute = options.execute ?? defaultExecutor;
+  const execute = options.execute ?? defaultOpenClawModelRunExecutor;
   return async (request) => {
     if ((request.thinking !== undefined && !["off", "low", "medium", "high"].includes(request.thinking))
       || request.system !== "" || request.tools.length !== 0 || request.temperature !== 0
@@ -136,7 +145,7 @@ export function openClawGatewayModelRunProvider(options: {
     || !Number.isSafeInteger(maxBuffer) || maxBuffer < 1) {
     fail("INVALID_CONFIG", "gateway model-run command or bounds are invalid");
   }
-  const execute = options.execute ?? defaultExecutor;
+  const execute = options.execute ?? defaultOpenClawModelRunExecutor;
   return async (request) => {
     if ((request.thinking !== undefined && !["off", "low", "medium", "high"].includes(request.thinking))
       || request.system !== "" || request.tools.length !== 0 || request.temperature !== 0

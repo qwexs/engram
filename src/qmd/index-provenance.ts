@@ -154,7 +154,13 @@ function writeImmutable(path: string, value: unknown): boolean {
     closeSync(descriptor);
     descriptor = null;
     try {
-      linkSync(temporary, path);
+      if (process.platform === "win32") {
+        const target = openSync(path, "wx", 0o600);
+        try { writeFileSync(target, payload); fsyncSync(target); }
+        finally { closeSync(target); }
+      } else {
+        linkSync(temporary, path);
+      }
       published = true;
     } catch (error: any) {
       if (error?.code !== "EEXIST") throw error;
@@ -179,7 +185,8 @@ function generationPayload(value: Omit<QmdIndexGenerationV1, "generationDigest">
 }
 
 function rootForCanonicalRef(workspace: string, canonicalRef: string): { path: string; root: string; entryId: Digest } {
-  const match = /^(memory\/[A-Za-z0-9._/-]+\.md)#engram-entry:(sha256:[a-f0-9]{64})$/.exec(canonicalRef);
+  const normalizedRef = canonicalRef.replaceAll("\\", "/");
+  const match = /^(memory\/[A-Za-z0-9._/-]+\.md)#engram-entry:(sha256:[a-f0-9]{64})$/.exec(normalizedRef);
   if (!match) fail("CANONICAL_REF_INVALID", "canonical reference is invalid");
   const canonicalWorkspace = realpathSync(resolve(workspace));
   const path = realpathSync(resolve(canonicalWorkspace, match[1]!));

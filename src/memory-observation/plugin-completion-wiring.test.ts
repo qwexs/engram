@@ -12,7 +12,7 @@ test('production plugin adapter registers tool-delivered finals in its durable f
    name:'host-sdk-fixture',setup(build){
     build.onResolve({filter:/^openclaw\/plugin-sdk\//},args=>({path:args.path,namespace:'host-fixture'}));
     build.onLoad({filter:/.*/,namespace:'host-fixture'},()=>({loader:'js',contents:'export const definePluginEntry=x=>x; export const readSessionTranscriptVisibleMessageDelta=async()=>({kind:"missing"});'}));
-    build.onLoad({filter:/integrations\/openclaw-memory-observation\/index\.ts$/},args=>({loader:'ts',contents:readFileSync(args.path,'utf8')+'\nexport {adapterFor};'}));
+    build.onLoad({filter:/integrations[\\/]openclaw-memory-observation[\\/]index\.ts$/},args=>({loader:'ts',contents:readFileSync(args.path,'utf8')+'\nexport {adapterFor};'}));
    }
   }]});
   expect(result.success).toBe(true);

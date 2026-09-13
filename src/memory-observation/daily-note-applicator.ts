@@ -14,7 +14,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep as pathSeparator } from "node:path";
 import { withDailyNoteLock } from "../daily-note-lock.ts";
 import { splitCanonicalSessionKey } from "../session-key.ts";
 import {
@@ -248,7 +248,15 @@ function writeImmutable(path: string, value: unknown): boolean {
   const descriptor = openSync(temp, "wx", 0o600);
   try { writeFileSync(descriptor, `${JSON.stringify(value, null, 2)}\n`, "utf8"); fsyncSync(descriptor); }
   finally { closeSync(descriptor); }
-  try { linkSync(temp, path); }
+  try {
+    if (process.platform === "win32") {
+      const target = openSync(path, "wx", 0o600);
+      try { writeFileSync(target, readFileSync(temp)); fsyncSync(target); }
+      finally { closeSync(target); }
+    } else {
+      linkSync(temp, path);
+    }
+  }
   catch (error: any) {
     unlinkSync(temp);
     if (error?.code === "EEXIST") return false;
@@ -745,7 +753,8 @@ export class DailyNoteCanaryApplicator {
       || receipt.receiptId !== sha256(`engram.memory-apply-receipt.v1\0${operationId}`)) {
       throw new DailyNoteApplicatorError("CONTENT_CONFLICT", "persisted apply receipt is invalid");
     }
-    if (!destinationPath.startsWith(`${this.workspace}/`)
+    const relativeDestination = relative(this.workspace, destinationPath);
+    if (relativeDestination === ".." || relativeDestination.startsWith(`..${pathSeparator}`) || isAbsolute(relativeDestination)
       || !existsSync(destinationPath)
       || !readFileSync(destinationPath, "utf8").includes(renderDailyNoteEntry(observation, destinationEntryId))) {
       throw new DailyNoteApplicatorError("READ_BACK_FAILED", "persisted receipt destination no longer reads back");

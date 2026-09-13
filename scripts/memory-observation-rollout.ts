@@ -43,6 +43,7 @@ import { configuredTopicBindings } from "../src/memory-observation/topic-binding
 const PLUGIN_ID = "engram-memory-observation";
 const DEFAULT_INFERENCE_MODEL = "openai/gpt-5.6-sol";
 const OPENCLAW_CHILD_TIMEOUT_MS = 30_000;
+const OPENCLAW_READ_TIMEOUT_MS = 5_000;
 
 function args(argv: string[]): Record<string, string | boolean> {
   const output: Record<string, string | boolean> = {};
@@ -96,14 +97,14 @@ function atomicWrite(path: string, value: unknown): void {
   }
 }
 
-function runOpenClaw(arguments_: string[]): string {
+function runOpenClaw(arguments_: string[], timeout = OPENCLAW_CHILD_TIMEOUT_MS): string {
   const result = spawnSync("openclaw", arguments_, {
     encoding: "utf8",
-    timeout: OPENCLAW_CHILD_TIMEOUT_MS,
+    timeout,
   });
   if (result.error) {
     const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
-    throw new Error(`openclaw ${arguments_.join(" ")} ${timedOut ? `timed out after ${OPENCLAW_CHILD_TIMEOUT_MS}ms` : `failed: ${result.error.message}`}`);
+    throw new Error(`openclaw ${arguments_.join(" ")} ${timedOut ? `timed out after ${timeout}ms` : `failed: ${result.error.message}`}`);
   }
   if (result.status !== 0) throw new Error(`openclaw ${arguments_.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`);
   return result.stdout.trim();
@@ -122,16 +123,16 @@ function parsedConfigValue(output: string): any {
 }
 
 function configuredAgentModel(agentId: string): string | null {
-  try { return normalizedModel(parsedConfigValue(runOpenClaw(["config", "get", `agents.entries.${agentId}.model`]))); }
+  try { return normalizedModel(parsedConfigValue(runOpenClaw(["config", "get", `agents.entries.${agentId}.model`], OPENCLAW_READ_TIMEOUT_MS))); }
   catch {
-    try { return normalizedModel(parsedConfigValue(runOpenClaw(["config", "get", "agents.defaults.model"]))); }
+    try { return normalizedModel(parsedConfigValue(runOpenClaw(["config", "get", "agents.defaults.model"], OPENCLAW_READ_TIMEOUT_MS))); }
     catch { return null; }
   }
 }
 
 function configuredPluginLlmPolicy(): { allowModelOverride: boolean; allowedModels: unknown[] } {
   try {
-    const value = parsedConfigValue(runOpenClaw(["config", "get", `plugins.entries.${PLUGIN_ID}.llm`]));
+    const value = parsedConfigValue(runOpenClaw(["config", "get", `plugins.entries.${PLUGIN_ID}.llm`], OPENCLAW_READ_TIMEOUT_MS));
     return {
       allowModelOverride: value?.allowModelOverride === true,
       allowedModels: Array.isArray(value?.allowedModels) ? value.allowedModels : [],
@@ -150,7 +151,7 @@ function hostInferenceBoundary(marker: MemoryObservationProjectionV1 | null): {
 } {
   const sessionKey = marker?.bindings?.[0]?.runtimeSessionKey;
   const agentId = typeof sessionKey === "string" ? sessionKey.match(/^agent:([^:]+):/)?.[1] ?? null : null;
-  const foregroundModel = agentId ? configuredAgentModel(agentId) : null;
+  const foregroundModel = agentId && agentId !== "main" ? configuredAgentModel(agentId) : null;
   const expectedModel = marker?.inference?.model ?? null;
   const pluginLlmPolicy = configuredPluginLlmPolicy();
   let topicAuthorized = false;
@@ -217,12 +218,12 @@ function inspectPlugin() {
   // status, source bytes and diagnostics required by this rollout gate.
   const result = spawnSync("openclaw", ["plugins", "inspect", PLUGIN_ID, "--json"], {
     encoding: "utf8",
-    timeout: OPENCLAW_CHILD_TIMEOUT_MS,
+    timeout: OPENCLAW_READ_TIMEOUT_MS,
   });
   if (result.error) {
     const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
     return { installed: false, status: "unverified", enabled: false, source: null, rootDir: null, digest: null,
-      diagnostics: [], error: timedOut ? `plugin inspection timed out after ${OPENCLAW_CHILD_TIMEOUT_MS}ms` : result.error.message };
+      diagnostics: [], error: timedOut ? `plugin inspection timed out after ${OPENCLAW_READ_TIMEOUT_MS}ms` : result.error.message };
   }
   if (result.status !== 0 || !result.stdout.trim()) {
     return { installed: false, status: "absent", enabled: false, source: null, rootDir: null, digest: null, diagnostics: [], error: (result.stderr || result.stdout).trim() };

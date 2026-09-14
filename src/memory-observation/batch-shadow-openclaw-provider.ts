@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type {
   BatchShadowCompletionRequest,
   BatchShadowProviderResult,
@@ -26,9 +28,32 @@ export type OpenClawModelRunExecutor = (command: string, args: string[], options
   cwd: string;
   timeout: number;
   maxBuffer: number;
+  input?: string;
 }) => OpenClawModelRunExecution;
 
 const TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,299}$/;
+const MODEL_RUN_STDIN_BOOTSTRAP = String.raw`
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [cliEntry, ...cliArgs] = process.argv.slice(1);
+if (!cliEntry) throw new Error("OpenClaw CLI entry is required");
+const prompt = readFileSync(0, "utf8");
+process.argv = [process.execPath, cliEntry, ...cliArgs, "--prompt", prompt];
+await import(pathToFileURL(cliEntry).href);
+`;
+
+function failedExecution(message: string): OpenClawModelRunExecution {
+  return { status: null, signal: null, stdout: "", stderr: "", error: new Error(message) };
+}
+
+function resolveOpenClawCliEntry(resolved: string): string | null {
+  const canonical = existsSync(resolved) ? realpathSync(resolved) : resolved;
+  if (/\.(?:c|m)?js$/i.test(canonical)) return canonical;
+  if (process.platform !== "win32" || !/\.(?:cmd|bat)$/i.test(resolved)
+    || !["openclaw.cmd", "openclaw.bat"].includes(basename(resolved).toLowerCase())) return null;
+  const candidate = join(dirname(resolved), "node_modules", "openclaw", "openclaw.mjs");
+  return existsSync(candidate) ? realpathSync(candidate) : null;
+}
 
 function row(value: unknown): Row | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : null;
@@ -55,14 +80,23 @@ export function defaultOpenClawModelRunExecutor(command: string, args: string[],
   cwd: string;
   timeout: number;
   maxBuffer: number;
+  input?: string;
 }): OpenClawModelRunExecution {
   const resolved = command === "openclaw" ? Bun.which(command) ?? command : command;
   const javascript = /\.(?:c|m)?js$/i.test(resolved);
   const windowsShim = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(resolved);
-  const executable = javascript ? process.execPath
+  const stdinTransport = typeof options.input === "string";
+  const cliEntry = stdinTransport ? resolveOpenClawCliEntry(resolved) : null;
+  const node = stdinTransport ? Bun.which("node") : null;
+  if (stdinTransport && !cliEntry) return failedExecution("OpenClaw stdin transport could not resolve the CLI entry");
+  if (stdinTransport && !node) return failedExecution("OpenClaw stdin transport requires Node.js");
+  const executable = stdinTransport ? node!
+    : javascript ? process.execPath
     : windowsShim ? (process.env.ComSpec || "cmd.exe")
       : resolved;
-  const childArgs = javascript ? [resolved, ...args]
+  const childArgs = stdinTransport
+    ? ["--input-type=module", "--eval", MODEL_RUN_STDIN_BOOTSTRAP, cliEntry!, ...args]
+    : javascript ? [resolved, ...args]
     : windowsShim ? ["/d", "/s", "/c", resolved, ...args]
       : args;
   const result = spawnSync(executable, childArgs, {
@@ -71,7 +105,19 @@ export function defaultOpenClawModelRunExecutor(command: string, args: string[],
     maxBuffer: options.maxBuffer,
     encoding: "utf8",
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
+    ...(stdinTransport ? {
+      // The packaged OpenClaw launcher may respawn itself to change its compile-cache
+      // mode. A respawn would run this bootstrap a second time after stdin has already
+      // been consumed and replace the real prompt with an empty string.
+      env: {
+        ...process.env,
+        NODE_DISABLE_COMPILE_CACHE: "1",
+        OPENCLAW_COMPILE_CACHE_DISABLED_RESPAWNED: "1",
+        OPENCLAW_NO_RESPAWN: "1",
+      },
+    } : {}),
+    ...(stdinTransport ? { input: options.input } : {}),
+    stdio: [stdinTransport ? "pipe" : "ignore", "pipe", "pipe"],
   });
   return {
     status: result.status,
@@ -111,8 +157,7 @@ export function openClawRawModelRunProvider(options: {
       "--model", request.model,
       "--thinking", request.thinking ?? "off",
       "--json",
-      "--prompt", request.prompt,
-    ], { cwd: options.cwd, timeout, maxBuffer });
+    ], { cwd: options.cwd, timeout, maxBuffer, input: request.prompt });
     if (execution.error || execution.status !== 0 || execution.signal !== null) {
       const detail = execution.error?.message ?? execution.stderr.trim() ?? `exit=${String(execution.status)}`;
       fail("MODEL_RUN_FAILED", `OpenClaw raw model-run failed: ${detail.slice(0, 500)}`);

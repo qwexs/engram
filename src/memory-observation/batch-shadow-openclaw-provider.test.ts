@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   defaultOpenClawModelRunExecutor,
   BatchShadowOpenClawProviderError,
@@ -17,6 +21,65 @@ test("default executor can invoke the OpenClaw launcher on the current platform"
   expect(result.status).toBe(0);
   expect(result.stdout).toContain("OpenClaw");
 });
+
+test.skipIf(process.platform !== "win32")("stdin transport preserves a large Unicode prompt on Windows", () => {
+  const root = mkdtempSync(join(tmpdir(), "engram-model-run-stdin-"));
+  const fixture = join(root, "fixture.mjs");
+  writeFileSync(fixture, `
+import { createHash } from "node:crypto";
+if (process.env.NODE_DISABLE_COMPILE_CACHE !== "1"
+  || process.env.OPENCLAW_COMPILE_CACHE_DISABLED_RESPAWNED !== "1"
+  || process.env.OPENCLAW_NO_RESPAWN !== "1") {
+  console.error("STDIN_TRANSPORT_RESPAWN_GUARD_MISSING");
+  process.exit(25);
+}
+const index = process.argv.indexOf("--prompt");
+const prompt = index >= 0 ? process.argv[index + 1] : undefined;
+if (typeof prompt !== "string") process.exit(24);
+console.log(JSON.stringify({
+  length: prompt.length,
+  byteLength: Buffer.byteLength(prompt, "utf8"),
+  sha256: createHash("sha256").update(prompt, "utf8").digest("hex"),
+}));
+`, "utf8");
+  const prompt = `${"Арктика🧊漢字\r\n".repeat(1_000)}END`;
+  expect(prompt.length).toBeGreaterThanOrEqual(9_535);
+  try {
+    const result = defaultOpenClawModelRunExecutor(fixture, [], {
+      cwd: root, timeout: 10_000, maxBuffer: 1024 * 1024, input: prompt,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      length: prompt.length,
+      byteLength: Buffer.byteLength(prompt, "utf8"),
+      sha256: createHash("sha256").update(prompt, "utf8").digest("hex"),
+    });
+
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.skipIf(process.platform !== "win32")("stdin transport propagates the primary provider error on Windows", async () => {
+  const root = mkdtempSync(join(tmpdir(), "engram-model-run-primary-error-"));
+  const fixture = join(root, "fixture.mjs");
+  const marker = "PRIMARY_TRANSPORT_ERROR_Ошибка_🧊";
+  writeFileSync(fixture, `
+const index = process.argv.indexOf("--prompt");
+if (index < 0 || !process.argv[index + 1]) process.exit(24);
+console.error(${JSON.stringify(marker)});
+process.exit(23);
+`, "utf8");
+  try {
+    const provider = openClawRawModelRunProvider({ cwd: root, command: fixture.replaceAll("\\", "/") });
+    await expect(provider({
+      model: "openai/gpt-5.6-terra", system: "", prompt: "Ошибка 🧊", maxTokens: 1_000, temperature: 0, tools: [],
+    })).rejects.toMatchObject({ code: "MODEL_RUN_FAILED", message: expect.stringContaining(marker) });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
 import type { BatchShadowCompletionRequest } from "./batch-shadow-runner.ts";
 
 const request: BatchShadowCompletionRequest = {
@@ -68,10 +131,10 @@ function gatewaySuccess(overrides: Record<string, unknown> = {}): string {
 }
 
 describe("OpenClaw raw model-run provider", () => {
-  test("uses argv without a shell and returns exact model read-back without invented usage", async () => {
-    let seen: { command: string; args: string[] } | null = null;
-    const execute: OpenClawModelRunExecutor = (command, args) => {
-      seen = { command, args };
+  test("keeps the prompt out of argv and returns exact model read-back without invented usage", async () => {
+    let seen: { command: string; args: string[]; input?: string } | null = null;
+    const execute: OpenClawModelRunExecutor = (command, args, options) => {
+      seen = { command, args, input: options.input };
       return { status: 0, signal: null, stdout: success(), stderr: "" };
     };
     const provider = openClawRawModelRunProvider({ cwd: "/tmp", execute });
@@ -79,8 +142,10 @@ describe("OpenClaw raw model-run provider", () => {
     expect(seen?.command).toBe("openclaw");
     expect(seen?.args).toEqual([
       "infer", "model", "run", "--gateway", "--model", request.model,
-      "--thinking", "off", "--json", "--prompt", request.prompt,
+      "--thinking", "off", "--json",
     ]);
+    expect(seen?.input).toBe(request.prompt);
+    expect(seen?.args).not.toContain(request.prompt);
     expect(result).toEqual({
       output: "{\"schema\":\"engram.memory-batch-shadow-output.v1\",\"groups\":[]}",
       resolvedModel: "openai/gpt-5.6-terra",
@@ -113,6 +178,7 @@ describe("OpenClaw raw model-run provider", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(BatchShadowOpenClawProviderError);
       expect((error as BatchShadowOpenClawProviderError).code).toBe("MODEL_RUN_FAILED");
+      expect((error as Error).message).toContain("provider unavailable");
     }
   });
 });

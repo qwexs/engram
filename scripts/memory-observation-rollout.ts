@@ -41,7 +41,7 @@ import { personalBatchBinding, runtimeSourcePolicyDigest } from "./_lib/memory-o
 import { configuredTopicBindings } from "../src/memory-observation/topic-bindings.ts";
 
 const PLUGIN_ID = "engram-memory-observation";
-const DEFAULT_INFERENCE_MODEL = "openai/gpt-5.6-sol";
+const DEFAULT_INFERENCE_MODEL = "openai/gpt-5.6-terra";
 const OPENCLAW_CHILD_TIMEOUT_MS = 30_000;
 const OPENCLAW_READ_TIMEOUT_MS = 5_000;
 

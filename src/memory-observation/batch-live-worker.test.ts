@@ -970,9 +970,23 @@ test('v14 JSONL completes atomically and cached success replays without another 
 test('v15 single envelope completes atomically and cached success replays without another model call',async()=>{
  const {workspace,ledger,policy}=setup();admit(ledger,921,'2026-08-31T20:01:00.000Z');
  const now=()=>new Date('2026-08-31T20:20:00.000Z');let calls=0;
- const worker=new BatchLiveWorker({workspace,ledger:effectLedger(workspace),policy:{...policy,contextual:true},storeRoot:join(workspace,'state'),now,
+ const worker=new BatchLiveWorker({workspace,ledger:effectLedger(workspace),policy:{...policy,contextual:true,contextualPromptVersion:'memory-contextual-shadow-v15'},storeRoot:join(workspace,'state'),now,
   complete:async request=>{calls++;const sources=JSON.parse(request.prompt).sources;
    return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-contextual-output.v2',assertions:[],dispositions:sources.map((source:any)=>({traceId:source.traceId,kind:'skip',assertionIds:[],reason:'Synthetic non-durable acknowledgement.'}))})};}});
+ expect((await worker.processOne()).status).toBe('completed');
+ expect((await worker.processOne()).status).toBe('idle');
+ expect(calls).toBe(1);
+ expect(ledger.listQueue()[0]).toMatchObject({status:'terminal',reasonCode:'semantic_contextual_skip'});
+ expect(readdirSync(join(workspace,'state/memory-batch-live/v1/contextual-results'))).toHaveLength(1);
+ expect(existsSync(join(workspace,'memory'))).toBe(false);
+});
+
+test('v16 source-ledger envelope completes atomically and cached success replays without another model call',async()=>{
+ const {workspace,ledger,policy}=setup();admit(ledger,922,'2026-08-31T20:01:00.000Z');
+ const now=()=>new Date('2026-08-31T20:20:00.000Z');let calls=0;
+ const worker=new BatchLiveWorker({workspace,ledger:effectLedger(workspace),policy:{...policy,contextual:true},storeRoot:join(workspace,'state'),now,
+  complete:async request=>{calls++;const sources=JSON.parse(request.prompt).sources;
+   return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-contextual-source-ledger.v1',assertions:[],sourceRecords:sources.map((source:any)=>({traceId:source.traceId,kind:'skip',assertionIds:[],reason:'Synthetic non-durable acknowledgement.'}))})};}});
  expect((await worker.processOne()).status).toBe('completed');
  expect((await worker.processOne()).status).toBe('idle');
  expect(calls).toBe(1);
@@ -1016,7 +1030,7 @@ test('contextual failures persist each retry separately and survive exhaustion w
   complete:async request=>({resolvedModel:request.model,output:'private source sk-secret invalid JSON'})});
  const first=await worker.processOne();expect(first.status).toBe('retry');
  if(first.status!=='retry')throw Error('retry expected');
- expect(first.diagnostic).toMatchObject({stage:'validation',code:'CONTEXTUAL_OUTPUT_DENIED:invalid_json'});
+ expect(first.diagnostic).toMatchObject({stage:'validation',code:'CONTEXTUAL_OUTPUT_DENIED:ledger_invalid_json'});
  const before=readFileSync(first.diagnosticRef!,'utf8');expect(before).not.toContain('sk-secret');
  const {diagnosticId,...detail}=JSON.parse(before);expect(diagnosticId).toBe(sha256(detail));
  at=new Date(at.getTime()+policy.deferDelayMs+1000);

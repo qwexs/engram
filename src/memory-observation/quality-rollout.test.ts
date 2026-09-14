@@ -72,10 +72,10 @@ test('preceding prompt version resumes its own producer and stays readable witho
  expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v10');
  expect(qualityProducerForScope(f.workspace,scope,{...f.rollout,mode:'drain'})).toBe('blocked');
  f.put('batch-live-store/memory-batch-live/v1/done/'+f.jobId.slice(7)+'.json',{jobId:f.jobId});
- expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v15');
+ expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v16');
 });
 
-test('unfinished v13 job keeps its legacy parser and policy identity after v15 becomes default',async()=>{
+test('unfinished v13 job keeps its legacy parser and policy identity after v16 becomes default',async()=>{
  const {contextualPromptForScope}=await import('./quality-rollout.ts');const f=setup();
  const previous=contextualEvaluationDigest(f.rollout.baseEvaluationPolicyDigest,'memory-contextual-shadow-v13');
  f.job(previous);f.put('v1/queues/evaluator/'+f.traceId.slice(7)+'.json',{traceId:f.traceId,status:'queued'});
@@ -83,10 +83,18 @@ test('unfinished v13 job keeps its legacy parser and policy identity after v15 b
  expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v13');
 });
 
-test('unfinished v14 job keeps its JSONL parser and policy identity after v15 becomes default',async()=>{
+test('unfinished v14 job keeps its JSONL parser and policy identity after v16 becomes default',async()=>{
  const {contextualPromptForScope}=await import('./quality-rollout.ts');const f=setup();
  const previous=contextualEvaluationDigest(f.rollout.baseEvaluationPolicyDigest,'memory-contextual-shadow-v14');
  f.job(previous);f.put('v1/queues/evaluator/'+f.traceId.slice(7)+'.json',{traceId:f.traceId,status:'queued'});
  expect(qualityProducerForScope(f.workspace,scope,f.rollout)).toBe('v2');
  expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v14');
+});
+
+test('unfinished v15 job keeps its single-envelope parser and policy identity after v16 becomes default',async()=>{
+ const {contextualPromptForScope}=await import('./quality-rollout.ts');const f=setup();
+ const previous=contextualEvaluationDigest(f.rollout.baseEvaluationPolicyDigest,'memory-contextual-shadow-v15');
+ f.job(previous);f.put('v1/queues/evaluator/'+f.traceId.slice(7)+'.json',{traceId:f.traceId,status:'queued'});
+ expect(qualityProducerForScope(f.workspace,scope,f.rollout)).toBe('v2');
+ expect(contextualPromptForScope(f.workspace,scope,f.rollout.baseEvaluationPolicyDigest)).toBe('memory-contextual-shadow-v15');
 });

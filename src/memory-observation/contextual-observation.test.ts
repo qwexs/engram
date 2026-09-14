@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { buildContextualObservation, contextualEvidenceCatalog, contextualPrompt, parseContextualJsonl, parseContextualOutput, renderContextualObservation, runContextualShadow, type ContextualOutput } from './contextual-observation.ts';
+import { buildContextualObservation, contextualEvidenceCatalog, contextualPrompt, parseContextualJsonl, parseContextualLedger, parseContextualOutput, renderContextualObservation, runContextualShadow, type ContextualOutput } from './contextual-observation.ts';
 import { compileBatchFrame, type CompiledBatchBundleV1 } from './batch-compiler.ts';
 import { deriveSourceDigest, sha256, type JsonValue } from './ledger.ts';
 import { fixture as promptFixture, now as promptNow } from '../../tests/fixtures/memory-observation/contextual/bundle.ts';
@@ -44,6 +44,11 @@ function jsonl(b = fixture(), value: ContextualOutput = output(b)): string {
         return JSON.stringify({ type: 'source', ...disposition, assertions: recordAssertions });
     }).join('\n');
 }
+function ledger(b = fixture(), value: ContextualOutput = output(b)): string {
+    const records=jsonl(b, value).split('\n').map(line => JSON.parse(line));
+    return JSON.stringify({ schema: 'engram.memory-contextual-source-ledger.v1', assertions: records.flatMap(record=>record.assertions),
+        sourceRecords: records.map(({type: _type, assertions: _assertions, ...record})=>record) });
+}
 test('preserves exact quotation AND resolved interpretation, status and chronology in searchable text', () => {
     const b = fixture(), o = buildContextualObservation(output(b), b, sha256('contextual-policy'), now);
     expect(o.assertions[0]!.spans[1]!.quote).toBe('Yes, do that.');
@@ -87,7 +92,7 @@ test('one tool-free call, separate policy identity, no writes, model mismatch de
     const b = fixture();
     let calls = 0;
     const o = output(b);
-    const r = await runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async (request) => { calls++; expect(request.tools).toEqual([]); expect(request.system).toBe(''); return { output: JSON.stringify(o), resolvedModel: request.model }; } });
+    const r = await runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async (request) => { calls++; expect(request.tools).toEqual([]); expect(request.system).toBe(''); return { output: ledger(b, o), resolvedModel: request.model }; } });
     expect(calls).toBe(1);
     expect(r.observation.schema).toBe('engram.memory-contextual-observation.v2');
     await expect(runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async () => ({ output: JSON.stringify(o), resolvedModel: 'different/model' }) })).rejects.toThrow('CONTEXTUAL_MODEL_MISMATCH');
@@ -199,7 +204,7 @@ test('catalog remains bounded per excerpt and covers long and repeated text with
 test('diagnostics distinguish invalid JSON and provenance without persisting raw output', async () => {
     const b=fixture();
     const missing=output(b);missing.assertions[0]!.spans=[{evidenceId:'missing',purpose:'assertion'}] as any;
-    for(const [raw,code] of [['private-text sk-secret not JSON','invalid_json'],[JSON.stringify(missing),'evidence_reference']] as const){
+    for(const [raw,code] of [['private-text sk-secret not JSON','ledger_invalid_json'],[ledger(b,missing),'evidence_reference']] as const){
         try{await runContextualShadow({bundle:b,model:'fixture/model',maxTokens:2048,now:()=>now,
             complete:async()=>({resolvedModel:'fixture/model',output:raw})});throw Error('must reject');}
         catch(e:any){expect(e.diagnostic).toEqual({stage:'validation',code:'CONTEXTUAL_OUTPUT_DENIED:'+code,outputLength:raw.length,outputDigest:sha256(raw)});
@@ -222,7 +227,7 @@ test('dispositions cannot link an assertion to an uncited source',()=>{
  const b=fixture(),o=output(b);o.assertions[0]!.resolution='explicit';o.assertions[0]!.spans=o.assertions[0]!.spans.slice(1);
  expect(()=>parseContextualOutput(o,b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:disposition_citation');
 });
-test('v15 restores the frozen v13 single-envelope contract while v14 remains readable JSONL',()=>{
+test('v16 combines a single envelope with the v14 source ledger while older versions remain readable',()=>{
  const b=fixture();
  for(const v of ['memory-contextual-shadow-v10','memory-contextual-shadow-v11'] as const){
   const p=JSON.parse(contextualPrompt(b,now,v));expect(p.schema).toBe(v);expect(p.instructions).not.toContain('ACTOR/STATUS CONTRACT');
@@ -234,9 +239,11 @@ test('v15 restores the frozen v13 single-envelope contract while v14 remains rea
  expect(v13.instructions).toContain('RETENTION CONTRACT');expect(v13.instructions).toContain('COALESCING CONTRACT');expect(v13.instructions).not.toContain('JSONL OUTPUT CONTRACT');
  const v14=JSON.parse(contextualPrompt(b,now,'memory-contextual-shadow-v14'));
  expect(v14.instructions).toContain('RETENTION CONTRACT');expect(v14.instructions).toContain('COALESCING CONTRACT');expect(v14.instructions).toContain('JSONL OUTPUT CONTRACT');
- const p=JSON.parse(contextualPrompt(b,now));expect(p.schema).toBe('memory-contextual-shadow-v13');
- expect(contextualPrompt(b,now)).toBe(contextualPrompt(b,now,'memory-contextual-shadow-v13'));
- expect(p.instructions).toBe(v13.instructions);expect(p.sources).toEqual(v13.sources);expect(p.instructions).not.toContain('JSONL OUTPUT CONTRACT');
+ const v15=JSON.parse(contextualPrompt(b,now,'memory-contextual-shadow-v15'));expect(v15.schema).toBe('memory-contextual-shadow-v13');
+ expect(contextualPrompt(b,now,'memory-contextual-shadow-v15')).toBe(contextualPrompt(b,now,'memory-contextual-shadow-v13'));
+ expect(v15.instructions).toBe(v13.instructions);expect(v15.sources).toEqual(v13.sources);expect(v15.instructions).not.toContain('JSONL OUTPUT CONTRACT');
+ const p=JSON.parse(contextualPrompt(b,now));expect(p.schema).toBe('memory-contextual-shadow-v16');
+ expect(p.instructions).toContain('SOURCE LEDGER OUTPUT CONTRACT');expect(p.instructions).not.toContain('JSONL OUTPUT CONTRACT');
  const frozen:Record<string,string>={
   'memory-contextual-shadow-v10':'sha256:1319f065b6a75b389c1513d4efb2b02cdf22def3046aef5ffa854e31157c364e',
   'memory-contextual-shadow-v11':'sha256:ae63df07ea3271835393a00f2cc1efe44612b032f5745d1bfd043339f2d83435',
@@ -245,6 +252,22 @@ test('v15 restores the frozen v13 single-envelope contract while v14 remains rea
  const promptBundle=promptFixture();
  for(const [version,digest] of Object.entries(frozen))
   expect(sha256(contextualPrompt(promptBundle,promptNow,version as any))).toBe(digest);
+});
+
+test('v16 source-ledger envelope produces canonical v2 and preserves shared assertion references',()=>{
+ const b=fixture(),value=output(b),canonical=parseContextualJsonl(jsonl(b,value),b,now);
+ expect(parseContextualLedger(ledger(b,value),b,now)).toEqual(canonical);
+});
+
+test('v16 source-ledger envelope rejects malformed framing and incomplete or duplicate coverage',()=>{
+ const b=fixture(),base=JSON.parse(ledger(b));
+ expect(()=>parseContextualLedger(JSON.stringify(base.sourceRecords),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:ledger_envelope_shape');
+ const missing=structuredClone(base);missing.sourceRecords.pop();
+ expect(()=>parseContextualLedger(JSON.stringify(missing),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:output_shape');
+ const duplicate=structuredClone(base);duplicate.sourceRecords[1]=structuredClone(duplicate.sourceRecords[0]);
+ expect(()=>parseContextualLedger(JSON.stringify(duplicate),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:disposition_shape');
+ const extra=structuredClone(base);extra.extra=true;
+ expect(()=>parseContextualLedger(JSON.stringify(extra),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:ledger_envelope_shape');
 });
 
 test('v14 JSONL adapter produces the same canonical observation as equivalent JSON',()=>{

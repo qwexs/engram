@@ -87,10 +87,10 @@ test('one tool-free call, separate policy identity, no writes, model mismatch de
     const b = fixture();
     let calls = 0;
     const o = output(b);
-    const r = await runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async (request) => { calls++; expect(request.tools).toEqual([]); expect(request.system).toBe(''); return { output: jsonl(b, o), resolvedModel: request.model }; } });
+    const r = await runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async (request) => { calls++; expect(request.tools).toEqual([]); expect(request.system).toBe(''); return { output: JSON.stringify(o), resolvedModel: request.model }; } });
     expect(calls).toBe(1);
     expect(r.observation.schema).toBe('engram.memory-contextual-observation.v2');
-    await expect(runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async () => ({ output: jsonl(b, o), resolvedModel: 'different/model' }) })).rejects.toThrow('CONTEXTUAL_MODEL_MISMATCH');
+    await expect(runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async () => ({ output: JSON.stringify(o), resolvedModel: 'different/model' }) })).rejects.toThrow('CONTEXTUAL_MODEL_MISMATCH');
 });
 test('exact stored reply context resolves a current instruction without re-attributing the historical actor', async () => {
     const { fixture: make } = await import('../../tests/fixtures/memory-observation/contextual/bundle.ts');
@@ -199,7 +199,7 @@ test('catalog remains bounded per excerpt and covers long and repeated text with
 test('diagnostics distinguish invalid JSON and provenance without persisting raw output', async () => {
     const b=fixture();
     const missing=output(b);missing.assertions[0]!.spans=[{evidenceId:'missing',purpose:'assertion'}] as any;
-    for(const [raw,code] of [['private-text sk-secret not JSON','jsonl_invalid_json'],[jsonl(b,missing),'evidence_reference']] as const){
+    for(const [raw,code] of [['private-text sk-secret not JSON','invalid_json'],[JSON.stringify(missing),'evidence_reference']] as const){
         try{await runContextualShadow({bundle:b,model:'fixture/model',maxTokens:2048,now:()=>now,
             complete:async()=>({resolvedModel:'fixture/model',output:raw})});throw Error('must reject');}
         catch(e:any){expect(e.diagnostic).toEqual({stage:'validation',code:'CONTEXTUAL_OUTPUT_DENIED:'+code,outputLength:raw.length,outputDigest:sha256(raw)});
@@ -222,7 +222,7 @@ test('dispositions cannot link an assertion to an uncited source',()=>{
  const b=fixture(),o=output(b);o.assertions[0]!.resolution='explicit';o.assertions[0]!.spans=o.assertions[0]!.spans.slice(1);
  expect(()=>parseContextualOutput(o,b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:disposition_citation');
 });
-test('v14 adds JSONL while v10-v13 prompt bytes remain frozen',()=>{
+test('v15 restores the frozen v13 single-envelope contract while v14 remains readable JSONL',()=>{
  const b=fixture();
  for(const v of ['memory-contextual-shadow-v10','memory-contextual-shadow-v11'] as const){
   const p=JSON.parse(contextualPrompt(b,now,v));expect(p.schema).toBe(v);expect(p.instructions).not.toContain('ACTOR/STATUS CONTRACT');
@@ -232,8 +232,11 @@ test('v14 adds JSONL while v10-v13 prompt bytes remain frozen',()=>{
  const v13=JSON.parse(contextualPrompt(b,now,'memory-contextual-shadow-v13'));
  expect(v13.instructions).toContain('ACTOR/STATUS CONTRACT');expect(v13.instructions).toContain('DISPOSITION ADDRESS CONTRACT');
  expect(v13.instructions).toContain('RETENTION CONTRACT');expect(v13.instructions).toContain('COALESCING CONTRACT');expect(v13.instructions).not.toContain('JSONL OUTPUT CONTRACT');
- const p=JSON.parse(contextualPrompt(b,now));expect(p.schema).toBe('memory-contextual-shadow-v14');
- expect(p.instructions).toContain('RETENTION CONTRACT');expect(p.instructions).toContain('COALESCING CONTRACT');expect(p.instructions).toContain('JSONL OUTPUT CONTRACT');
+ const v14=JSON.parse(contextualPrompt(b,now,'memory-contextual-shadow-v14'));
+ expect(v14.instructions).toContain('RETENTION CONTRACT');expect(v14.instructions).toContain('COALESCING CONTRACT');expect(v14.instructions).toContain('JSONL OUTPUT CONTRACT');
+ const p=JSON.parse(contextualPrompt(b,now));expect(p.schema).toBe('memory-contextual-shadow-v13');
+ expect(contextualPrompt(b,now)).toBe(contextualPrompt(b,now,'memory-contextual-shadow-v13'));
+ expect(p.instructions).toBe(v13.instructions);expect(p.sources).toEqual(v13.sources);expect(p.instructions).not.toContain('JSONL OUTPUT CONTRACT');
  const frozen:Record<string,string>={
   'memory-contextual-shadow-v10':'sha256:1319f065b6a75b389c1513d4efb2b02cdf22def3046aef5ffa854e31157c364e',
   'memory-contextual-shadow-v11':'sha256:ae63df07ea3271835393a00f2cc1efe44612b032f5745d1bfd043339f2d83435',

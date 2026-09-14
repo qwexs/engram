@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix(memory): restore the proven single-envelope contextual contract.**
+  Contextual producer policy v15 uses the byte-identical frozen v13 prompt and canonical JSON
+  envelope after v14 JSONL repeatedly returned incomplete source coverage.
+  Historical v14 jobs retain their JSONL parser and policy identity; v15 keeps
+  the strict canonical validator and one-inference-call budget without fallback.
+
 - **fix(memory): reduce routine capture noise and account recovered completion
   deadlines.** Contextual prompt v13 now skips one-off mechanical requests and
   results unless they establish reusable state, and coalesces one bounded

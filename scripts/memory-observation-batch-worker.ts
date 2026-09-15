@@ -6,13 +6,15 @@ import { memoryWorkerRunResult } from "../src/memory-observation/worker-run-resu
 import { tmpdir } from "node:os";
 import { memoryBatchIsIdle } from "../src/memory-observation/idle-preflight.ts";
 import { acquireProcessLease } from "../src/memory-observation/process-lease.ts";
-import { spawnSync } from "node:child_process";
 import { consumeTopicDomainReceipts } from "../src/memory-observation/domain-consumer.ts";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { BatchLiveWorker, type BatchLivePolicyV1 } from "../src/memory-observation/batch-live-worker.ts";
-import { openClawRawModelRunProvider } from "../src/memory-observation/batch-shadow-openclaw-provider.ts";
+import {
+  defaultOpenClawCommandExecutor,
+  openClawRawModelRunProvider,
+} from "../src/memory-observation/batch-shadow-openclaw-provider.ts";
 import {
   buildDailyNoteCanaryPolicy,
   DailyNoteCanaryApplicator,
@@ -104,8 +106,12 @@ if (memoryBatchIsIdle(workspace, topicWorkspace)) {
 }
 if (topicWorkspace) {
   const get = (path: string) => {
-    const result = spawnSync("openclaw", ["config", "get", path], { encoding: "utf8" });
-    if (result.status !== 0) throw new Error("topic host route read-back failed");
+    const result = defaultOpenClawCommandExecutor("openclaw", ["config", "get", path], {
+      cwd: workspace,
+      timeout: 30_000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    if (result.error || result.status !== 0) throw new Error("topic host route read-back failed");
     return JSON.parse(result.stdout);
   };
   assertGroupHostRoutes({ agents: { entries: get("agents.entries") },

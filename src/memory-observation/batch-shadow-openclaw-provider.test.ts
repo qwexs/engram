@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  defaultOpenClawCommandExecutor,
   defaultOpenClawModelRunExecutor,
   BatchShadowOpenClawProviderError,
   openClawGatewayModelRunProvider,
@@ -20,6 +21,31 @@ test("default executor can invoke the OpenClaw launcher on the current platform"
   expect(result.error).toBeUndefined();
   expect(result.status).toBe(0);
   expect(result.stdout).toContain("OpenClaw");
+});
+
+test.skipIf(process.platform !== "win32")("default executor bypasses the Windows command shim", () => {
+  const root = mkdtempSync(join(tmpdir(), "engram-openclaw-shim-"));
+  const shim = join(root, "openclaw.cmd");
+  const shimMarker = join(root, "shim-invoked.txt");
+  const cliDirectory = join(root, "node_modules", "openclaw");
+  const cliEntry = join(cliDirectory, "openclaw.mjs");
+  mkdirSync(cliDirectory, { recursive: true });
+  writeFileSync(shim, `@echo shim-invoked>"${shimMarker}"\r\n@exit /b 29\r\n`, "utf8");
+  writeFileSync(cliEntry, `
+if (process.env.OPENCLAW_NO_RESPAWN !== "1") process.exit(28);
+console.log("DIRECT_OPENCLAW_ENTRY");
+`, "utf8");
+  try {
+    const result = defaultOpenClawCommandExecutor(shim, ["config", "get", "agents.entries"], {
+      cwd: root, timeout: 10_000, maxBuffer: 1024 * 1024,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("DIRECT_OPENCLAW_ENTRY");
+    expect(existsSync(shimMarker)).toBeFalse();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test.skipIf(process.platform !== "win32")("stdin transport preserves a large Unicode prompt on Windows", () => {

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix(memory/windows): keep scheduled OpenClaw child commands headless.**
+  The shared command executor now bypasses the Windows `openclaw.cmd` shim,
+  suppresses console windows, and disables launcher respawn for both memory
+  worker config read-back and model-run inference. The fix applies to every
+  enrolled workspace; no agent-specific scheduler or manifest logic is used.
+
 - **fix(memory): reduce routine capture noise and account recovered completion
   deadlines.** Contextual prompt v13 now skips one-off mechanical requests and
   results unless they establish reusable state, and coalesces one bounded

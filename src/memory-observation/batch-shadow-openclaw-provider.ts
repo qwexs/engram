@@ -76,7 +76,7 @@ function parseOpenClawJson(stdout: string): unknown {
   catch { fail("INVALID_READBACK", "OpenClaw raw model-run did not return strict JSON"); }
 }
 
-export function defaultOpenClawModelRunExecutor(command: string, args: string[], options: {
+export function defaultOpenClawCommandExecutor(command: string, args: string[], options: {
   cwd: string;
   timeout: number;
   maxBuffer: number;
@@ -86,16 +86,19 @@ export function defaultOpenClawModelRunExecutor(command: string, args: string[],
   const javascript = /\.(?:c|m)?js$/i.test(resolved);
   const windowsShim = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(resolved);
   const stdinTransport = typeof options.input === "string";
-  const cliEntry = stdinTransport ? resolveOpenClawCliEntry(resolved) : null;
-  const node = stdinTransport ? Bun.which("node") : null;
+  const cliEntry = stdinTransport || windowsShim ? resolveOpenClawCliEntry(resolved) : null;
+  const node = cliEntry ? Bun.which("node") : null;
   if (stdinTransport && !cliEntry) return failedExecution("OpenClaw stdin transport could not resolve the CLI entry");
   if (stdinTransport && !node) return failedExecution("OpenClaw stdin transport requires Node.js");
-  const executable = stdinTransport ? node!
+  const directNodeLaunch = Boolean(cliEntry && node);
+  const executable = directNodeLaunch ? node!
     : javascript ? process.execPath
     : windowsShim ? (process.env.ComSpec || "cmd.exe")
       : resolved;
-  const childArgs = stdinTransport
-    ? ["--input-type=module", "--eval", MODEL_RUN_STDIN_BOOTSTRAP, cliEntry!, ...args]
+  const childArgs = directNodeLaunch
+    ? stdinTransport
+      ? ["--input-type=module", "--eval", MODEL_RUN_STDIN_BOOTSTRAP, cliEntry!, ...args]
+      : [cliEntry!, ...args]
     : javascript ? [resolved, ...args]
     : windowsShim ? ["/d", "/s", "/c", resolved, ...args]
       : args;
@@ -105,10 +108,13 @@ export function defaultOpenClawModelRunExecutor(command: string, args: string[],
     maxBuffer: options.maxBuffer,
     encoding: "utf8",
     shell: false,
-    ...(stdinTransport ? {
+    // OpenClaw commands here are background work. Prevent Node/cmd launchers
+    // from opening transient console windows on Windows.
+    windowsHide: true,
+    ...(directNodeLaunch ? {
       // The packaged OpenClaw launcher may respawn itself to change its compile-cache
-      // mode. A respawn would run this bootstrap a second time after stdin has already
-      // been consumed and replace the real prompt with an empty string.
+      // mode. Keep background commands in the original hidden process; for stdin
+      // transport this also prevents a second bootstrap after stdin was consumed.
       env: {
         ...process.env,
         NODE_DISABLE_COMPILE_CACHE: "1",
@@ -128,6 +134,9 @@ export function defaultOpenClawModelRunExecutor(command: string, args: string[],
   };
 }
 
+// Backward-compatible domain name retained for existing provider callers.
+export const defaultOpenClawModelRunExecutor = defaultOpenClawCommandExecutor;
+
 export function openClawRawModelRunProvider(options: {
   cwd: string;
   command?: string;
@@ -143,7 +152,7 @@ export function openClawRawModelRunProvider(options: {
     || !Number.isSafeInteger(maxBuffer) || maxBuffer < 1) {
     fail("INVALID_CONFIG", "model-run command or bounds are invalid");
   }
-  const execute = options.execute ?? defaultOpenClawModelRunExecutor;
+  const execute = options.execute ?? defaultOpenClawCommandExecutor;
   return async (request) => {
     if ((request.thinking !== undefined && !["off", "low", "medium", "high"].includes(request.thinking))
       || request.system !== "" || request.tools.length !== 0 || request.temperature !== 0
@@ -201,7 +210,7 @@ export function openClawGatewayModelRunProvider(options: {
     || !Number.isSafeInteger(maxBuffer) || maxBuffer < 1) {
     fail("INVALID_CONFIG", "gateway model-run command or bounds are invalid");
   }
-  const execute = options.execute ?? defaultOpenClawModelRunExecutor;
+  const execute = options.execute ?? defaultOpenClawCommandExecutor;
   return async (request) => {
     if ((request.thinking !== undefined && !["off", "low", "medium", "high"].includes(request.thinking))
       || request.system !== "" || request.tools.length !== 0 || request.temperature !== 0

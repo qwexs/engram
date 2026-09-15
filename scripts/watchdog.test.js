@@ -544,6 +544,20 @@ models:
     expect(codes(report)).toContain("WD-HOOK-001");
   });
 
+  test("detects a KG bootstrap hook without canonical direct-session compatibility", () => {
+    const hooksDir = join(workspace, "runtime-hooks");
+    const hookDir = join(hooksDir, "engram-kg-context-load");
+    mkdirSync(hookDir, { recursive: true });
+    writeFileSync(join(hookDir, "handler.js"), "// legacy KG bootstrap hook\n");
+    writeFileSync(join(hookDir, "HOOK.md"), "# KG bootstrap hook\n");
+    const legacy = auditWorkspace(workspace, { core: false, qmd: false, hooksDir });
+    expect(codes(legacy)).toContain("WD-HOOK-004");
+
+    writeFileSync(join(hookDir, "handler.js"), "// engram.kg-context.session-key.v2\n");
+    const current = auditWorkspace(workspace, { core: false, qmd: false, hooksDir });
+    expect(codes(current)).not.toContain("WD-HOOK-004");
+  });
+
   test("detects KG v2 schema errors and test pollution", () => {
     mkdirSync(join(workspace, "life", "projects", "test-project"), { recursive: true });
     writeFileSync(join(workspace, "life", "projects", "test-project", "items.json"), JSON.stringify({

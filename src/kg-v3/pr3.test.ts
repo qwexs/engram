@@ -111,6 +111,12 @@ describe("PR3 default-context safety", () => {
     const canonicalDirect = { ...event, context: { ...event.context, sessionKey: "agent:main:telegram:direct:1001", trustedActorContext: { trusted: true, contextKind: "direct", actorId: "1001" } }, messages: [] as string[] };
     await kgContextHook(canonicalDirect);
     expect(canonicalDirect.messages).toHaveLength(1);
+    expect(canonicalDirect.messages[0]).toContain("engram.kg-context.session-key.v2");
+    authority.enabledSessionCapabilities.push({ sessionKey: "telegram:direct:1003", capabilities: ["kg:v3:write"] });
+    json(join(workspace, "memory-state", "kg-v3", "authority.json"), authority);
+    const colonGrantDirect = { ...event, context: { ...event.context, sessionKey: "agent:main:telegram:direct:1003", trustedActorContext: { trusted: true, contextKind: "direct", actorId: "1003" } }, messages: [] as string[] };
+    await kgContextHook(colonGrantDirect);
+    expect(colonGrantDirect.messages).toHaveLength(1);
     const primaryGrantDirect = { ...event, context: { ...event.context, sessionKey: "agent:main:telegram:direct:1002", trustedActorContext: { trusted: true, contextKind: "direct", actorId: "1002" } }, messages: [] as string[] };
     await kgContextHook(primaryGrantDirect);
     expect(primaryGrantDirect.messages).toHaveLength(1);

@@ -4,6 +4,11 @@ import { normalizeSessionSegment } from "../_lib/parse-agent-id.ts";
 import { resolveKgDefaultContext } from "../../src/kg-v3/context.ts";
 
 const MAX_CONTEXT_BYTES = 32 * 1024;
+const SESSION_KEY_CONTRACT = "engram.kg-context.session-key.v2";
+
+function authorizedSession(enabled: Array<{ sessionKey: string }>, sessionKey: string): boolean {
+  return enabled.some((entry) => normalizeSessionSegment(entry.sessionKey) === sessionKey);
+}
 
 function primarySession(event: any, enabled: Array<{ sessionKey: string }>): boolean {
   const segment = normalizeSessionSegment(
@@ -12,13 +17,13 @@ function primarySession(event: any, enabled: Array<{ sessionKey: string }>): boo
   if (!segment || /^telegram-group-|topic-/.test(segment)) return false;
   const trustedDirect = event?.context?.trustedActorContext;
   const runtimeDirect = trustedDirect?.trusted === true && trustedDirect?.contextKind === "direct";
-  if (segment === "main") return enabled.some((entry) => entry.sessionKey === "main");
+  if (segment === "main") return authorizedSession(enabled, "main");
   if (!runtimeDirect) return false;
 
   const direct = segment.match(/^telegram-direct-(\d+)$/);
   if (!direct || String(trustedDirect?.actorId || "") !== direct[1]) return false;
 
-  return enabled.some((entry) => entry.sessionKey === segment || entry.sessionKey === "main");
+  return authorizedSession(enabled, segment) || authorizedSession(enabled, "main");
 }
 
 const handler = async (event: any) => {
@@ -40,7 +45,7 @@ const handler = async (event: any) => {
     if (size <= 0 || size > MAX_CONTEXT_BYTES) return;
     const body = readFileSync(projection, "utf8");
     if (/items\.json|\blife\/(?!v3\/)|\bv2\b|historical[ -]?archive/i.test(body)) return;
-    event.messages.push(`<!-- engram-kg-v3-current -->\n${body}`);
+    event.messages.push(`<!-- engram-kg-v3-current -->\n<!-- ${SESSION_KEY_CONTRACT} -->\n${body}`);
   } catch {
     return;
   }

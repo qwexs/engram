@@ -1,15 +1,24 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { normalizeSessionSegment } from "../_lib/parse-agent-id.ts";
 import { resolveKgDefaultContext } from "../../src/kg-v3/context.ts";
 
 const MAX_CONTEXT_BYTES = 32 * 1024;
 
 function primarySession(event: any, enabled: Array<{ sessionKey: string }>): boolean {
-  const segment = String(event?.context?.sessionKey || event?.sessionKey || "").replace(/^agent:[^:]+:/, "");
-  if (!segment || /telegram-group|topic-/.test(segment)) return false;
+  const segment = normalizeSessionSegment(
+    String(event?.context?.sessionKey || event?.sessionKey || ""),
+  ) || "";
+  if (!segment || /^telegram-group-|topic-/.test(segment)) return false;
   const trustedDirect = event?.context?.trustedActorContext;
   const runtimeDirect = trustedDirect?.trusted === true && trustedDirect?.contextKind === "direct";
-  return enabled.some((entry) => entry.sessionKey === segment) && (segment === "main" || runtimeDirect);
+  if (segment === "main") return enabled.some((entry) => entry.sessionKey === "main");
+  if (!runtimeDirect) return false;
+
+  const direct = segment.match(/^telegram-direct-(\d+)$/);
+  if (!direct || String(trustedDirect?.actorId || "") !== direct[1]) return false;
+
+  return enabled.some((entry) => entry.sessionKey === segment || entry.sessionKey === "main");
 }
 
 const handler = async (event: any) => {

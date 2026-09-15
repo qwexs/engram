@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix(kg): inject the current projection into canonical Telegram direct sessions.**
+  The bootstrap hook now normalizes colon-form OpenClaw runtime keys and maps
+  an actor-matched trusted direct contour to the existing primary `main`
+  authority grant. Untrusted, actor-mismatched, group, and topic sessions
+  remain fail-closed.
+
 - **feat(domains): make topic-domain creation complete Memory Worker and QMD setup.**
   In an already enrolled forum workspace, `add-domain.js --type topic-thread`
   now adds the explicit OpenClaw topic route through Gateway config CAS,

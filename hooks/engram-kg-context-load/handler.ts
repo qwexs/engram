@@ -2,28 +2,50 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { normalizeSessionSegment } from "../_lib/parse-agent-id.ts";
 import { resolveKgDefaultContext } from "../../src/kg-v3/context.ts";
+import type { KgRuntimeGrantRegistryV1 } from "../../src/kg-v3/trusted-runtime.ts";
 
 const MAX_CONTEXT_BYTES = 32 * 1024;
-const SESSION_KEY_CONTRACT = "engram.kg-context.session-key.v2";
+const SESSION_KEY_CONTRACT = "engram.kg-context.session-key.v3";
 
 function authorizedSession(enabled: Array<{ sessionKey: string }>, sessionKey: string): boolean {
   return enabled.some((entry) => normalizeSessionSegment(entry.sessionKey) === sessionKey);
 }
 
-function primarySession(event: any, enabled: Array<{ sessionKey: string }>): boolean {
+function authorizedDirectSession(
+  enabled: Array<{ sessionKey: string }>,
+  grants: KgRuntimeGrantRegistryV1,
+  workspaceId: string,
+  segment: string,
+): boolean {
+  const direct = segment.match(/^telegram-direct-(\d+)$/);
+  if (!direct || grants?.schema !== "engram.kg-v3-runtime-grants.v1" || grants.workspaceId !== workspaceId) return false;
+  const principals = Array.isArray(grants.principals)
+    ? grants.principals.filter((principal) => Array.isArray(principal?.bindings)
+      && principal.bindings.some((binding) => binding?.transport === "telegram" && String(binding?.actorId || "") === direct[1]))
+    : [];
+  if (principals.length !== 1 || !Array.isArray(principals[0].grants)) return false;
+  return principals[0].grants.some((grant) => {
+    const grantedSession = normalizeSessionSegment(grant?.sessionKey);
+    return (grantedSession === segment || grantedSession === "main")
+      && authorizedSession(enabled, grantedSession);
+  });
+}
+
+function primarySession(
+  event: any,
+  enabled: Array<{ sessionKey: string }>,
+  grants: KgRuntimeGrantRegistryV1,
+  workspaceId: string,
+): boolean {
   const segment = normalizeSessionSegment(
     String(event?.context?.sessionKey || event?.sessionKey || ""),
   ) || "";
   if (!segment || /^telegram-group-|topic-/.test(segment)) return false;
-  const trustedDirect = event?.context?.trustedActorContext;
-  const runtimeDirect = trustedDirect?.trusted === true && trustedDirect?.contextKind === "direct";
   if (segment === "main") return authorizedSession(enabled, "main");
-  if (!runtimeDirect) return false;
-
-  const direct = segment.match(/^telegram-direct-(\d+)$/);
-  if (!direct || String(trustedDirect?.actorId || "") !== direct[1]) return false;
-
-  return authorizedSession(enabled, segment) || authorizedSession(enabled, "main");
+  const trustedDirect = event?.context?.trustedActorContext;
+  if (trustedDirect && (trustedDirect.trusted !== true || trustedDirect.contextKind !== "direct"
+    || String(trustedDirect.actorId || "") !== segment.match(/^telegram-direct-(\d+)$/)?.[1])) return false;
+  return authorizedDirectSession(enabled, grants, workspaceId, segment);
 }
 
 const handler = async (event: any) => {
@@ -32,12 +54,14 @@ const handler = async (event: any) => {
   if (!workspace) return;
   const configPath = join(workspace, "engram.json");
   const authorityPath = join(workspace, "memory-state", "kg-v3", "authority.json");
-  if (!existsSync(configPath) || !existsSync(authorityPath)) return;
+  const runtimeGrantsPath = join(workspace, "memory-state", "kg-v3", "runtime-grants.json");
+  if (!existsSync(configPath) || !existsSync(authorityPath) || !existsSync(runtimeGrantsPath)) return;
   try {
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     const authority = JSON.parse(readFileSync(authorityPath, "utf8"));
+    const grants = JSON.parse(readFileSync(runtimeGrantsPath, "utf8"));
     const workspaceId = String(config?.workspace?.id || "");
-    if (!workspaceId || !primarySession(event, authority.enabledSessionCapabilities || [])) return;
+    if (!workspaceId || !primarySession(event, authority.enabledSessionCapabilities || [], grants, workspaceId)) return;
     const context = resolveKgDefaultContext({ workspace, workspaceId });
     if (context.mode !== "v3-current" || context.sources.length !== 1) return;
     const projection = join(workspace, context.sources[0]);

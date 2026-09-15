@@ -1589,7 +1589,7 @@ function discoverRuntimeHooksDir(workspace, options = {}) {
 }
 
 function checkHooks(workspace, findings, options = {}) {
-  const kgContextSessionKeyContract = "engram.kg-context.session-key.v2";
+  const kgContextSessionKeyContract = "engram.kg-context.session-key.v3";
   const sourceHooksDir = join(SKILL_DIR, "hooks");
   if (!isDir(sourceHooksDir)) {
     findings.push(makeFinding({

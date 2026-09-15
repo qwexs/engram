@@ -553,7 +553,7 @@ models:
     const legacy = auditWorkspace(workspace, { core: false, qmd: false, hooksDir });
     expect(codes(legacy)).toContain("WD-HOOK-004");
 
-    writeFileSync(join(hookDir, "handler.js"), "// engram.kg-context.session-key.v2\n");
+    writeFileSync(join(hookDir, "handler.js"), "// engram.kg-context.session-key.v3\n");
     const current = auditWorkspace(workspace, { core: false, qmd: false, hooksDir });
     expect(codes(current)).not.toContain("WD-HOOK-004");
   });

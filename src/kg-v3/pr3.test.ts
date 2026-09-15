@@ -79,6 +79,14 @@ describe("PR3 default-context safety", () => {
     await kgContextHook(event);
     expect(event.messages).toEqual([]);
     json(join(workspace, "memory-state", "kg-v3", "authority.json"), { schema: KG_V3_AUTHORITY_SCHEMA, workspaceId: "main", releaseDigest: op("release"), schemaDigest: KG_V3_SCHEMA_DIGEST, mode: "canary", enabledSessionCapabilities: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }], currentProjectionVersion: 1, approvedBy: "operator", approvedAt: "2026-08-12T15:00:00Z" });
+    json(join(workspace, "memory-state", "kg-v3", "runtime-grants.json"), {
+      schema: "engram.kg-v3-runtime-grants.v1", workspaceId: "main", revision: 1,
+      principals: [
+        { principalId: "direct-1001", bindings: [{ transport: "telegram", actorId: "1001" }], grants: [{ sessionKey: "telegram-direct-1001", capabilities: ["kg:v3:write"] }] },
+        { principalId: "primary-1002", bindings: [{ transport: "telegram", actorId: "1002" }], grants: [{ sessionKey: "main", capabilities: ["kg:v3:write"] }] },
+        { principalId: "direct-1003", bindings: [{ transport: "telegram", actorId: "1003" }], grants: [{ sessionKey: "telegram:direct:1003", capabilities: ["kg:v3:write"] }] },
+      ],
+    });
     json(join(workspace, "memory-state", "kg-v3", "default-context.json"), { schema: "engram.kg-v3-default-context.v1", workspaceId: "main", releaseDigest: op("release"), mode: "v3-current", sources: ["life/v3/current-summary.md"], archiveIncludedInDefault: false, switchedAt: "2026-08-12T15:00:00Z" });
     mkdirSync(join(workspace, "life", "v3"), { recursive: true }); writeFileSync(join(workspace, "life", "v3", "current-summary.md"), "# current\n");
     await kgContextHook(event);
@@ -111,13 +119,13 @@ describe("PR3 default-context safety", () => {
     const canonicalDirect = { ...event, context: { ...event.context, sessionKey: "agent:main:telegram:direct:1001", trustedActorContext: { trusted: true, contextKind: "direct", actorId: "1001" } }, messages: [] as string[] };
     await kgContextHook(canonicalDirect);
     expect(canonicalDirect.messages).toHaveLength(1);
-    expect(canonicalDirect.messages[0]).toContain("engram.kg-context.session-key.v2");
+    expect(canonicalDirect.messages[0]).toContain("engram.kg-context.session-key.v3");
     authority.enabledSessionCapabilities.push({ sessionKey: "telegram:direct:1003", capabilities: ["kg:v3:write"] });
     json(join(workspace, "memory-state", "kg-v3", "authority.json"), authority);
-    const colonGrantDirect = { ...event, context: { ...event.context, sessionKey: "agent:main:telegram:direct:1003", trustedActorContext: { trusted: true, contextKind: "direct", actorId: "1003" } }, messages: [] as string[] };
+    const colonGrantDirect = { ...event, context: { ...event.context, sessionKey: "agent:main:telegram:direct:1003" }, messages: [] as string[] };
     await kgContextHook(colonGrantDirect);
     expect(colonGrantDirect.messages).toHaveLength(1);
-    const primaryGrantDirect = { ...event, context: { ...event.context, sessionKey: "agent:main:telegram:direct:1002", trustedActorContext: { trusted: true, contextKind: "direct", actorId: "1002" } }, messages: [] as string[] };
+    const primaryGrantDirect = { ...event, context: { ...event.context, sessionKey: "agent:main:telegram:direct:1002" }, messages: [] as string[] };
     await kgContextHook(primaryGrantDirect);
     expect(primaryGrantDirect.messages).toHaveLength(1);
     const mismatchedActor = { ...event, context: { ...event.context, sessionKey: "agent:main:telegram:direct:1002", trustedActorContext: { trusted: true, contextKind: "direct", actorId: "1003" } }, messages: [] as string[] };

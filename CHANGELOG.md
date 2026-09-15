@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **feat(domains): make topic-domain creation complete Memory Worker and QMD setup.**
+  In an already enrolled forum workspace, `add-domain.js --type topic-thread`
+  now adds the explicit OpenClaw topic route through Gateway config CAS,
+  registers the domain and exact-session QMD collections, extends the existing
+  projection by one binding, republishes its pinned QMD snapshot, and verifies
+  the complete read-back. Repeating the same command resumes partial setup.
+  Fleet manifests, cron jobs and Worker runtime remain unchanged. Stale hook
+  documentation no longer claims silent topic auto-binding.
+
 - **fix(memory): restore the proven single-envelope contextual contract.**
   Contextual producer policy v15 uses the byte-identical frozen v13 prompt and canonical JSON
   envelope after v14 JSONL repeatedly returned incomplete source coverage.

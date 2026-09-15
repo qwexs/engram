@@ -51,11 +51,23 @@ function readRegistry() {
 }
 
 describe("add-domain.js — ISS-9 A7 cadenceAdaptive default", () => {
+  test("non-pending topic creation fails before scaffold when Memory Worker is absent", () => {
+    const { exitCode, stderr } = runAddDomain([
+      "--domain", "must-be-complete",
+      "--type", "topic-thread",
+      "--topic", "-1009999999:99",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("требует активную topic-проекцию Memory Worker");
+    expect(existsSync(join(workspace, "memory/domains/must-be-complete"))).toBe(false);
+  });
+
   test("topic-thread domain gets cadenceAdaptive:true + windowDays:7 by default", () => {
     const { exitCode, stderr } = runAddDomain([
       "--domain", "test-topic",
       "--type", "topic-thread",
       "--topic", "-1009999999:1",
+      "--pending",
       "--description", "Test topic-thread domain",
     ]);
     expect(exitCode).toBe(0);
@@ -111,6 +123,7 @@ describe("add-domain.js — ISS-9 A7 cadenceAdaptive default", () => {
       "--domain", "test-advert",
       "--type", "topic-thread",
       "--topic", "-1009999999:2",
+      "--pending",
     ]);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("cadenceAdaptive=7d");
@@ -121,6 +134,7 @@ describe("add-domain.js — ISS-9 A7 cadenceAdaptive default", () => {
       "--domain", "test-override",
       "--type", "topic-thread",
       "--topic", "-1009999999:3",
+      "--pending",
     ]);
     expect(exitCode).toBe(0);
 
@@ -141,8 +155,16 @@ describe("add-domain.js — ISS-9 A7 cadenceAdaptive default", () => {
       "--domain", "scan-test",
       "--type", "topic-thread",
       "--topic", "-1009999999:42",
+      "--pending",
     ]);
     expect(exitCode).toBe(0);
+
+    // This fixture uses --pending because it has no live Worker projection;
+    // clear the bootstrap-only flag before exercising the active-domain scan.
+    const registryPath = join(workspace, "memory", "domains", "registry.json");
+    const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
+    delete registry.domains["scan-test"].pending;
+    require("node:fs").writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
 
     // Write minimal daily-note (lastCheckedAt suppression needs cadenceDays=2 so today < 2 days)
     const agentDir = join(workspace, "memory", "agent-agent-main");
@@ -286,6 +308,7 @@ describe("add-domain.js — meta-domain type", () => {
       "--domain", "new-topic",
       "--type", "topic-thread",
       "--topic", "-1009999999:5",
+      "--pending",
       "--description", "New topic domain",
     ]);
     expect(newExit).toBe(0);
@@ -311,6 +334,7 @@ describe("add-domain.js — meta-domain type", () => {
       "--domain", "already-there",
       "--type", "topic-thread",
       "--topic", "-1009999999:6",
+      "--pending",
       "--description", "Already there",
     ]);
     expect(newExit).toBe(0);

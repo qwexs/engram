@@ -38,7 +38,8 @@
 2. On the next `agent:bootstrap`, the matching domain-load hook appends Domain Context + Domain AGENTS to `event.messages`.
 3. `engram-rule-context-load` independently resolves company/workspace/domain/person rules and appends only the matching active projection through `context.bootstrapFiles`.
 
-Note: auto-bind for unbound topics happens in `engram-session-start` on `agent:bootstrap` (ISS-10 piggy-back), not in the `message:received` hot path.
+Note: hooks do not auto-create domains or expand Memory Worker bindings. Use the
+explicit `add-domain.js --type topic-thread` operation.
 
 ## Installation
 

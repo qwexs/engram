@@ -43,16 +43,34 @@ main sessions).
    - Cold-start marker `<!-- engram-system-event-hash:[a-f0-9]{8} -->` is written to the daily note **once** (on first hook fire per session) for debugging. The hash is `computeContextHash(agentsMd, decisionsMd, statusMd, changelogMd)` truncated to 8 hex.
    - Subsequent fires in the same session are deduplicated by the OpenClaw session queue (system-event is delivered once per session until context compaction).
    - The hook never replaces or updates the daily note on hot-path (only cold-start marker write). The daily note's `LastWriteTime` should NOT change on `message:received` after cold-start.
-5. **QMD collections**: three collections are auto-created by `add-domain.js`:
+5. **QMD collections**: an active project workspace gets both domain and exact-session search in the same `add-domain.js` call:
    - `domains` (shared) — all domains, for cross-topic queries.
    - `domain-{slug}` (per-domain) — just this domain, the default for topic-agents.
+   - `topic-memory-{slug}` (exact session, `*.md`) — daily notes of this topic only.
    - `life-projects-{slug}` (per-entity, opt-in via `--kg-entity`) — just the bound KG entity.
 6. **Files**: `decisions.md` (pinned facts, append-only on explicit markers), `status.md` (handover, update on thematic block close or explicit `статус?`), `changelog.md` (curated log of significant exchanges). `workflow.md` is NOT created for topic-thread.
 
 ## Lifecycle
 
 - **Create**: `bun skills/engram/scripts/add-domain.js --domain <slug> --type topic-thread --topic <chatId:topicId> [--kg-entity <path>]`.
-  - **Auto-bind (silent, ISS-10 piggy-back)**: `engram-session-start` hook on `agent:bootstrap` checks the sessionKey against the regex `^telegram-group-(-?\d+)-topic-(\d+)$`. If the topic is unbound, the hook spawns `bun skills/engram/scripts/add-domain.js --type topic-thread --domain topic-<chatId>-<topicId> --topic <chatId>:<topicId> --description auto-bound` and pushes a status string (`🧠 Домен \`${slug}\` создан автоматически для этого топика.`) into `event.messages` so the agent sees it in the current/next iteration. Idempotent: registry.json lookup (BOM-tolerant, sign-symmetric chatId match) gates re-fire. There is **no ask-first flow, no Telegram inline_keyboard, no daily-note sentinel** — auto-bind is silent by design. Topics that existed before `engram-session-start` was installed are bound via `init.js --bootstrap-from-forum` (one-shot operator flow, uses `add-domain --pending`).
+  - In an existing workspace with an active topic Memory Worker projection, this one command is complete only after it has configured the domain registry/files, the explicit OpenClaw topic route, `domain-{slug}` and `topic-memory-{slug}`, and one exact projection binding.
+  - The host route uses the supported `config.get → config.patch(baseHash)` contract. A Gateway restart is performed only when the patch reports `restartRequired:true`, followed by effective read-back.
+  - The operation is idempotent. If a host/QMD step fails after the domain scaffold exists, repeating the same command resumes the missing runtime setup instead of creating another domain.
+  - Fleet manifest, cron schedule and Worker runtime are unchanged; the fleet already discovers the workspace and reads its current projection.
+  - `engram-session-start` does not create domains or expand bindings. It only initializes the concrete session daily note.
+  - A normal call fails before creating files when the workspace has no active topic projection. `--pending` is the explicit scaffold-only mode used before the initial fleet rollout.
+
+### Creation invariant
+
+For an already enrolled project workspace, success means all of the following are true:
+
+1. the domain registry contains exactly one matching `(chatId, topicId)`;
+2. the OpenClaw topic route is enabled for the workspace agent;
+3. `domain-{slug}` and `topic-memory-{slug}` are registered and readable;
+4. the current Worker projection contains the exact topic binding;
+5. all bindings pass registry, host-route and exact-QMD read-back.
+
+There is no separate enrollment CLI, handoff protocol, approval state machine, queue or new scheduler.
 - **Archive**: `bun skills/engram/scripts/domains-runner.js --workspace <path> --stale-days 60 --archive` (also called from heartbeat). For each `type=topic-thread` domain with `staleAfterDays` exceeded (default 60, per-domain override in registry), the runner:
   1. Sets `archived: true`, `archivedAt: <ISO>`, `archivePath: archives/{slug}` in registry.json (atomic write).
   2. Renames `memory/domains/{slug}/` → `memory/domains/archives/{slug}/` (atomic FS rename).
@@ -74,7 +92,7 @@ Reference patterns (in case the agent needs to look them up outside the system-e
 
 ```bash
 # Default: own domain + own session notes
-qmd --index <index> query "<topic>" -c domain-{slug} -c openclaw-memory-agent-<agent-id>-{sessionKey}
+qmd --index <index> query "<topic>" -c domain-{slug} -c topic-memory-{slug}
 
 # Cross-topic (explicit opt-in only)
 qmd --index <index> query "<term>" -c domains

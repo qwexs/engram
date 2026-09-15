@@ -417,7 +417,7 @@ Engram ships 11 hooks that automate session tasks. **Agents do NOT need to repea
 | Hook | Event | What it does |
 |------|-------|--------------|
 | `engram-daily-note` | `gateway:startup` | Reconciles state for today's existing notes; creates nothing |
-| `engram-session-start` | `agent:bootstrap` | Lazily creates this session's note + session start marker + auto-bind topics |
+| `engram-session-start` | `agent:bootstrap` | Lazily creates this session's note + session start marker |
 | `engram-session-end` | `command:new/reset` | Session end marker |
 | `engram-session-memory` | `command:new/reset` | Archive session transcript |
 | `engram-bootstrap-qmd` | `agent:bootstrap` | Declares scheduler ownership; performs no QMD maintenance |

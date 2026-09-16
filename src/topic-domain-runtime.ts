@@ -27,9 +27,13 @@ import {
   assertTopicHostRoutes,
   configuredTopicBindings,
 } from "./memory-observation/topic-bindings.ts";
+import { defaultOpenClawCommandExecutor } from "./memory-observation/batch-shadow-openclaw-provider.ts";
 
 type Json = Record<string, any>;
 type GatewayResult = Json;
+const OPENCLAW_CALL_TIMEOUT_MS = 35_000;
+const OPENCLAW_RESTART_TIMEOUT_MS = 30_000;
+const OPENCLAW_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 
 export type TopicDomainRuntimeOptions = {
   workspace: string;
@@ -83,15 +87,46 @@ function sameTopic(left: unknown, right: { chatId: string; topicId: string }): b
   return String(value?.chatId) === right.chatId && String(value?.topicId) === right.topicId;
 }
 
-function gatewayCli(method: string, params: Json): GatewayResult {
-  const result = Bun.spawnSync([
-    "openclaw", "gateway", "call", method, "--json", "--params", JSON.stringify(params), "--timeout", "30000",
-  ], { stdout: "pipe", stderr: "pipe" });
-  if (result.exitCode !== 0) {
-    throw new Error(`OpenClaw ${method} failed: ${result.stderr.toString().trim() || `exit ${result.exitCode}`}`);
+function samePath(left: string, right: string): boolean {
+  const normalizedLeft = resolve(left);
+  const normalizedRight = resolve(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+function runOpenClaw(args: string[], timeout: number): string {
+  const result = defaultOpenClawCommandExecutor("openclaw", args, {
+    cwd: process.cwd(),
+    timeout,
+    maxBuffer: OPENCLAW_MAX_BUFFER_BYTES,
+  });
+  if (result.error || result.status !== 0 || result.signal !== null) {
+    const detail = result.error?.message || result.stderr.trim()
+      || `exit=${String(result.status)} signal=${String(result.signal)}`;
+    throw new Error(`OpenClaw command failed: ${detail.slice(0, 500)}`);
   }
-  try { return JSON.parse(result.stdout.toString()); }
+  return result.stdout;
+}
+
+function parseGatewayResult(stdout: string, method: string): GatewayResult {
+  const start = stdout.indexOf("{");
+  if (start < 0) throw new Error(`OpenClaw ${method} returned invalid JSON`);
+  const prefix = stdout.slice(0, start).trim();
+  if (prefix && !prefix.split(/\r?\n/).every((line) =>
+    line.startsWith("[state-migrations]")
+    || line.startsWith("- Skipped plugin doctor state migrations because exclusive state ownership is unavailable:"))) {
+    throw new Error(`OpenClaw ${method} returned unexpected non-JSON output`);
+  }
+  try { return JSON.parse(stdout.slice(start)); }
   catch { throw new Error(`OpenClaw ${method} returned invalid JSON`); }
+}
+
+function gatewayCli(method: string, params: Json): GatewayResult {
+  const stdout = runOpenClaw([
+    "gateway", "call", method, "--json", "--params", JSON.stringify(params), "--timeout", "30000",
+  ], OPENCLAW_CALL_TIMEOUT_MS);
+  return parseGatewayResult(stdout, method);
 }
 
 async function defaultGatewayCall(method: string, params: Json): Promise<GatewayResult> {
@@ -99,10 +134,7 @@ async function defaultGatewayCall(method: string, params: Json): Promise<Gateway
 }
 
 async function defaultRestartGateway(): Promise<void> {
-  const result = Bun.spawnSync(["openclaw", "gateway", "restart"], { stdout: "pipe", stderr: "pipe" });
-  if (result.exitCode !== 0) {
-    throw new Error(`OpenClaw gateway restart failed: ${result.stderr.toString().trim() || `exit ${result.exitCode}`}`);
-  }
+  runOpenClaw(["gateway", "restart"], OPENCLAW_RESTART_TIMEOUT_MS);
 }
 
 function hostRoute(config: Json, chatId: string, topicId: string): Json | undefined {
@@ -114,7 +146,7 @@ function assertWorkspaceHost(config: Json, workspace: string, workspaceId: strin
   const agent = Array.isArray(entries)
     ? entries.find((entry: Json) => entry?.id === workspaceId)
     : entries?.[workspaceId];
-  if (!agent?.workspace || resolve(agent.workspace) !== resolve(workspace)) {
+  if (!agent?.workspace || !samePath(agent.workspace, workspace)) {
     throw new Error("OpenClaw agent/workspace binding is missing or changed");
   }
 }
@@ -206,8 +238,13 @@ function ancestorsOf(registry: QmdGlobalRegistry, workspaceId: string): Set<stri
 }
 
 function addCollection(registry: QmdGlobalRegistry, collection: { name: string; path: string; owner: string; mask: string }): void {
-  const matches = registry.collections.filter((entry) => entry.name === collection.name || resolve(entry.path) === resolve(collection.path));
-  if (matches.length > 1 || (matches.length === 1 && JSON.stringify(matches[0]) !== JSON.stringify(collection))) {
+  const matches = registry.collections.filter((entry) => entry.name === collection.name || samePath(entry.path, collection.path));
+  const equivalent = matches.length === 1
+    && matches[0].name === collection.name
+    && samePath(matches[0].path, collection.path)
+    && matches[0].owner === collection.owner
+    && matches[0].mask === collection.mask;
+  if (matches.length > 1 || (matches.length === 1 && !equivalent)) {
     throw new Error(`QMD collection collision: ${collection.name}`);
   }
   if (!matches.length) registry.collections.push(collection);
@@ -290,7 +327,7 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
   const globalManifestPath = locateGlobalManifest(workspace, config, workerManifest, options.globalManifestPath);
   const globalManifest = readJson(globalManifestPath);
   const registry = manifestRegistry(globalManifest);
-  const owner = registry.workspaces.find((item) => item.id === workspaceId && resolve(item.path) === workspace);
+  const owner = registry.workspaces.find((item) => item.id === workspaceId && samePath(item.path, workspace));
   if (!owner) throw new Error("workspace is missing from the QMD global registry");
 
   const gatewayCall = options.gatewayCall ?? defaultGatewayCall;
@@ -313,7 +350,7 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
     }
     const freshGlobalManifest = readJson(globalManifestPath);
     const freshRegistry = manifestRegistry(freshGlobalManifest);
-    const freshOwner = freshRegistry.workspaces.find((item) => item.id === workspaceId && resolve(item.path) === workspace);
+    const freshOwner = freshRegistry.workspaces.find((item) => item.id === workspaceId && samePath(item.path, workspace));
     if (!freshOwner) throw new Error("workspace changed in the QMD global registry");
 
     const sessionKey = `telegram-group--${topic.chatId.replace(/^-/, "")}-topic-${topic.topicId}`;

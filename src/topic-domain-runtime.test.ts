@@ -17,7 +17,7 @@ function read(path: string): any {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function fixture() {
+function fixture(storedPath: (path: string) => string = (path) => path) {
   root = mkdtempSync(join(tmpdir(), "engram-topic-runtime-"));
   process.env.XDG_CACHE_HOME = join(root, "cache");
   mkdirSync(join(process.env.XDG_CACHE_HOME, "qmd"), { recursive: true });
@@ -46,16 +46,16 @@ function fixture() {
     schema: "engram.qmd.global-registry.v1",
     index: { name: "topic-runtime-test" },
     workspaces: [
-      { id: "main", path: main, kind: "technical", parents: [], readableCollections: ["main-memory"] },
-      { id: "company", path: company, kind: "business", parents: [], readableCollections: ["company-memory"] },
-      { id: "project", path: workspace, kind: "business", parents: ["company"], readableCollections: ["project-memory", "domain-project-general", "topic-memory-project-general"] },
+      { id: "main", path: storedPath(main), kind: "technical", parents: [], readableCollections: ["main-memory"] },
+      { id: "company", path: storedPath(company), kind: "business", parents: [], readableCollections: ["company-memory"] },
+      { id: "project", path: storedPath(workspace), kind: "business", parents: ["company"], readableCollections: ["project-memory", "domain-project-general", "topic-memory-project-general"] },
     ],
     collections: [
-      { name: "main-memory", path: join(main, "memory/agent-main/main"), owner: "main", mask: "**/*.md" },
-      { name: "company-memory", path: join(company, "memory/agent-company/main"), owner: "company", mask: "**/*.md" },
-      { name: "project-memory", path: join(workspace, "memory/agent-project/main"), owner: "project", mask: "**/*.md" },
-      { name: "domain-project-general", path: oldDomain, owner: "project", mask: "**/*.md" },
-      { name: "topic-memory-project-general", path: oldSession, owner: "project", mask: "*.md" },
+      { name: "main-memory", path: storedPath(join(main, "memory/agent-main/main")), owner: "main", mask: "**/*.md" },
+      { name: "company-memory", path: storedPath(join(company, "memory/agent-company/main")), owner: "company", mask: "**/*.md" },
+      { name: "project-memory", path: storedPath(join(workspace, "memory/agent-project/main")), owner: "project", mask: "**/*.md" },
+      { name: "domain-project-general", path: storedPath(oldDomain), owner: "project", mask: "**/*.md" },
+      { name: "topic-memory-project-general", path: storedPath(oldSession), owner: "project", mask: "*.md" },
     ],
   };
   const manifest = { schema: "engram.qmd.global-migration.v1", indexPath: join(root, "index.sqlite"), registry, workspaces: [] };
@@ -91,7 +91,7 @@ function fixture() {
       qmdBinding: { resolver: "exact-session-registry", manifestPath: workerManifestPath, workspaceRegistryDigest: DIGEST } } },
     captureOwnership: { owner: "observer", effectiveAfter: "2026-09-01T00:00:00.000Z", foregroundDailyNoteCapture: "disabled" },
   });
-  const host = { agents: { entries: [{ id: "project", workspace }] }, channels: { telegram: { groups: {
+  const host = { agents: { entries: [{ id: "project", workspace: storedPath(workspace) }] }, channels: { telegram: { groups: {
     "-1001": { enabled: true, topics: { "1": { enabled: true, agentId: "project" } } },
   } } } };
   let restartCount = 0;
@@ -156,5 +156,17 @@ describe("topic-domain runtime", () => {
     expect(second.status).toBe("already-active");
     expect(f.restartCount()).toBe(1);
     expect(read(join(f.workspace, "memory-state/memory-observation/projection.json")).bindings).toHaveLength(2);
+  });
+
+  test.skipIf(process.platform !== "win32")("accepts case-insensitive Windows workspace paths", async () => {
+    const f = fixture((path) => path.toLowerCase());
+    const result = await ensureTopicDomainRuntime({
+      workspace: f.workspace, domain: "project-new", chatId: "-1001", topicId: "2",
+      gatewayCall: f.gatewayCall, restartGateway: f.restartGateway,
+      registerCollection: async () => ({ ok: true }),
+      markDirty: async (input) => ({ schema: "engram.qmd.dirty-mark.v1", status: "marked", mode: "coordinated",
+        workspace: input.workspace, collections: input.collections, generation: 1 }),
+    });
+    expect(result).toMatchObject({ status: "active" });
   });
 });

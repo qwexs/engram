@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix(domains/windows): make topic-domain OpenClaw calls portable and bounded.**
+  The new topic enrollment runtime now reuses the Windows shim-safe, headless
+  OpenClaw executor for Gateway reads and restarts, applies explicit process
+  deadlines, accepts the known state-migration warning prefix, and compares
+  workspace and registry paths case-insensitively on Windows.
+
 - **fix(memory/windows): keep scheduled OpenClaw child commands headless.**
   The shared command executor now bypasses the Windows `openclaw.cmd` shim,
   suppresses console windows, and disables launcher respawn for both memory

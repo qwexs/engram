@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { splitCanonicalSessionKey } from "../session-key.ts";
 import { auditQmdGlobalRegistry, type QmdGlobalRegistry } from "../qmd/global-registry.ts";
 import type { MemoryObservationQmdResolverV1 } from "./projection.ts";
@@ -40,6 +40,13 @@ function dateInTimezone(instant: string, timezone: string): string { return new 
 function isSymlink(path: string): boolean { try { return lstatSync(path).isSymbolicLink(); } catch { return false; } }
 function digest(value: string | Uint8Array): `sha256:${string}` { return `sha256:${createHash("sha256").update(value).digest("hex")}`; }
 function indexKey(path: string): string { return createHash("sha256").update(realpathSync(path)).digest("hex"); }
+function samePath(left: string, right: string): boolean {
+  const normalizedLeft = resolve(left);
+  const normalizedRight = resolve(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
 function inside(parent: string, child: string): boolean {
   const path = relative(parent, child);
   return path !== "" && !path.startsWith("..") && !isAbsolute(path);
@@ -79,7 +86,7 @@ function registrySliceDigest(registry: QmdGlobalRegistry, workspaceId: string): 
 
 export function preflightCanaryQmdBinding(input: QmdBindingPreflightInput): QmdBindingPreflightResult {
   const workspace = resolve(input.workspace);
-  if (resolve(input.context.workspace) !== workspace) fail("workspace mismatch");
+  if (!samePath(input.context.workspace, workspace)) fail("workspace mismatch");
   const registry = normalizeManifest(input.manifest);
   if (input.context.selector.kind !== "named" || input.context.selector.name !== registry.index.name) fail("wrong index");
   if (!input.context.physicalIndex.exists
@@ -93,7 +100,7 @@ export function preflightCanaryQmdBinding(input: QmdBindingPreflightInput): QmdB
   const entry = matches[0]!;
   const matchingWorkspace = registry.workspaces.find((workspaceEntry) => workspaceEntry.id === entry.owner);
   if (!matchingWorkspace) fail("wrong owner/workspace");
-  if (realpathSync(matchingWorkspace.path) !== realpathSync(workspace)) fail("wrong owner/workspace");
+  if (!samePath(realpathSync(matchingWorkspace.path), realpathSync(workspace))) fail("wrong owner/workspace");
   if (!input.context.policy.ownedCollections.includes(collection) || !matchingWorkspace.readableCollections.includes(collection)) fail("collection not readable/owned");
   if (!isExactSessionMarkdownMask(entry.mask, matchingWorkspace)) fail("wrong mask");
   if (!existsSync(entry.path) || isSymlink(entry.path)) fail("symlink root escape");
@@ -102,11 +109,11 @@ export function preflightCanaryQmdBinding(input: QmdBindingPreflightInput): QmdB
   if (split.agentId !== matchingWorkspace.id) fail("wrong owner/workspace");
   const canonicalRoot = realpathSync(entry.path);
   const expectedRoot = join(workspace, "memory", `agent-${split.agentId}`, split.sessionKey);
-  if (canonicalRoot !== realpathSync(expectedRoot)) fail("wrong root");
+  if (!samePath(canonicalRoot, realpathSync(expectedRoot))) fail("wrong root");
   const date = dateInTimezone(input.applyAfter, input.timezone);
   const destinationDir = canonicalRoot;
   const destinationFile = join(destinationDir, `${date}.md`);
-  if (!resolve(destinationFile).startsWith(resolve(canonicalRoot) + sep)) fail("destination escapes collection root");
+  if (!inside(canonicalRoot, destinationFile)) fail("destination escapes collection root");
   if (existsSync(destinationFile) && isSymlink(destinationFile)) fail("symlink file escape");
   return { collection, destinationDir, destinationFile, date };
 }
@@ -119,7 +126,7 @@ function readPinnedManifest(
   const root = realpathSync(resolve(workspace));
   const manifestPath = resolve(resolver.manifestPath);
   if (!inside(root, manifestPath) || !existsSync(manifestPath) || isSymlink(manifestPath)) fail("manifest is outside workspace or unavailable");
-  if (!statSync(manifestPath).isFile() || realpathSync(manifestPath) !== manifestPath) fail("manifest is not a canonical regular file");
+  if (!statSync(manifestPath).isFile() || !samePath(realpathSync(manifestPath), manifestPath)) fail("manifest is not a canonical regular file");
   const raw = readFileSync(manifestPath);
   let manifest: unknown;
   try { manifest = JSON.parse(raw.toString("utf8")); }
@@ -142,14 +149,14 @@ export function defineCanaryQmdRuntimeResolver(input: {
   const raw = readFileSync(manifestPath);
   const manifest = JSON.parse(raw.toString("utf8")) as QmdRegistryManifestInput;
   const registry = normalizeManifest(manifest);
-  if (resolve(input.context.workspace) !== workspace
+  if (!samePath(input.context.workspace, workspace)
     || input.context.selector.kind !== "named"
     || input.context.selector.name !== registry.index.name
     || !input.context.physicalIndex.exists
     || !existsSync(input.context.physicalIndex.path)
     || isSymlink(input.context.physicalIndex.path)
     || input.context.physicalIndex.key !== indexKey(input.context.physicalIndex.path)) fail("runtime QMD context does not match the registry");
-  const owner = registry.workspaces.filter((entry) => entry.id === input.workspaceId && realpathSync(entry.path) === workspace);
+  const owner = registry.workspaces.filter((entry) => entry.id === input.workspaceId && samePath(realpathSync(entry.path), workspace));
   if (owner.length !== 1) fail("runtime resolver requires one exact workspace owner");
   return {
     resolver: "exact-session-registry",
@@ -180,7 +187,7 @@ export function resolveCanaryQmdRuntimeBinding(input: {
     && isExactSessionMarkdownMask(entry.mask, matchingWorkspace)
     && existsSync(entry.path)
     && !isSymlink(entry.path)
-    && realpathSync(entry.path) === canonicalRoot);
+    && samePath(realpathSync(entry.path), canonicalRoot));
   if (candidates.length !== 1) fail(candidates.length === 0 ? "missing exact-session collection" : "ambiguous exact-session collection");
   const result = preflightCanaryQmdBinding({
     workspace,

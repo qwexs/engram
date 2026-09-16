@@ -1,9 +1,17 @@
 import { readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { MemoryObservationBindingV1 } from "./projection.ts";
 
 export type TopicDomainBinding = { domain: string; chatId: string; topicId: string };
 const TOPIC_KEY = /^agent:([A-Za-z0-9._-]+):telegram:group:(-[1-9][0-9]*):topic:([1-9][0-9]*)$/;
+
+function samePath(left: string, right: string): boolean {
+  const normalizedLeft = resolve(left);
+  const normalizedRight = resolve(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
 
 export function validTopicBinding(binding: MemoryObservationBindingV1, workspaceId?: string): boolean {
   const match = TOPIC_KEY.exec(binding.runtimeSessionKey);
@@ -40,7 +48,7 @@ export function assertTopicDomainRegistry(workspace: string, workspaceId: string
 export function assertTopicHostRoutes(config: any, workspace: string, workspaceId: string, bindings: MemoryObservationBindingV1[]): void {
   const entries = config?.agents?.entries;
   const agent = Array.isArray(entries) ? entries.find((entry: any) => entry.id === workspaceId) : entries?.[workspaceId];
-  if (!agent?.workspace || realpathSync(agent.workspace) !== realpathSync(workspace)) throw new Error("topic agent workspace mismatch");
+  if (!agent?.workspace || !samePath(realpathSync(agent.workspace), realpathSync(workspace))) throw new Error("topic agent workspace mismatch");
   for (const binding of bindings) {
     if (!validTopicBinding(binding, workspaceId)) throw new Error("invalid topic host binding");
     const topic = binding.topicDomain!;

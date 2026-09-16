@@ -1590,6 +1590,7 @@ function discoverRuntimeHooksDir(workspace, options = {}) {
 
 function checkHooks(workspace, findings, options = {}) {
   const kgContextSessionKeyContract = "engram.kg-context.session-key.v3";
+  const kgContextBootstrapFileContract = "engram.kg-context.bootstrap-file.v1";
   const sourceHooksDir = join(SKILL_DIR, "hooks");
   if (!isDir(sourceHooksDir)) {
     findings.push(makeFinding({
@@ -1653,13 +1654,14 @@ function checkHooks(workspace, findings, options = {}) {
       try {
         const sourceBody = readFileSync(sourceHandler, "utf8");
         const runtimeBody = readFileSync(runtimeHandler, "utf8");
-        if (!sourceBody.includes(kgContextSessionKeyContract) || !runtimeBody.includes(kgContextSessionKeyContract)) {
+        const contracts = [kgContextSessionKeyContract, kgContextBootstrapFileContract];
+        if (contracts.some((contract) => !sourceBody.includes(contract) || !runtimeBody.includes(contract))) {
           findings.push(makeFinding({
             code: "WD-HOOK-004",
             level: "warn",
-            message: "KG bootstrap hook lacks the canonical direct-session compatibility contract; current-summary injection is unverified",
+            message: "KG bootstrap hook lacks the canonical direct-session or bootstrap-file carrier contract; current-summary injection is unverified",
             path: runtimeHandler,
-            details: { contract: kgContextSessionKeyContract, sourceHook: sourceHandler, runtimeHooksDir },
+            details: { contracts, sourceHook: sourceHandler, runtimeHooksDir },
           }));
         }
       } catch {
@@ -1668,7 +1670,7 @@ function checkHooks(workspace, findings, options = {}) {
           level: "warn",
           message: "KG bootstrap hook direct-session compatibility could not be verified",
           path: runtimeHandler,
-          details: { contract: kgContextSessionKeyContract, sourceHook: sourceHandler, runtimeHooksDir },
+          details: { contracts: [kgContextSessionKeyContract, kgContextBootstrapFileContract], sourceHook: sourceHandler, runtimeHooksDir },
         }));
       }
     }

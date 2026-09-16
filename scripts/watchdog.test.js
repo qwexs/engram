@@ -554,6 +554,10 @@ models:
     expect(codes(legacy)).toContain("WD-HOOK-004");
 
     writeFileSync(join(hookDir, "handler.js"), "// engram.kg-context.session-key.v3\n");
+    const missingCarrier = auditWorkspace(workspace, { core: false, qmd: false, hooksDir });
+    expect(codes(missingCarrier)).toContain("WD-HOOK-004");
+
+    writeFileSync(join(hookDir, "handler.js"), "// engram.kg-context.session-key.v3\n// engram.kg-context.bootstrap-file.v1\n");
     const current = auditWorkspace(workspace, { core: false, qmd: false, hooksDir });
     expect(codes(current)).not.toContain("WD-HOOK-004");
   });

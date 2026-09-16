@@ -6,6 +6,7 @@ import type { KgRuntimeGrantRegistryV1 } from "../../src/kg-v3/trusted-runtime.t
 
 const MAX_CONTEXT_BYTES = 32 * 1024;
 const SESSION_KEY_CONTRACT = "engram.kg-context.session-key.v3";
+const BOOTSTRAP_FILE_CONTRACT = "engram.kg-context.bootstrap-file.v1";
 
 function authorizedSession(enabled: Array<{ sessionKey: string }>, sessionKey: string): boolean {
   return enabled.some((entry) => normalizeSessionSegment(entry.sessionKey) === sessionKey);
@@ -49,7 +50,10 @@ function primarySession(
 }
 
 const handler = async (event: any) => {
-  if (event?.type !== "agent" || event?.action !== "bootstrap" || !Array.isArray(event.messages)) return;
+  if (event?.type !== "agent" || event?.action !== "bootstrap") return;
+  const messageCarrier = Array.isArray(event.messages);
+  const bootstrapFileCarrier = Array.isArray(event?.context?.bootstrapFiles);
+  if (!messageCarrier && !bootstrapFileCarrier) return;
   const workspace = event?.context?.workspaceDir;
   if (!workspace) return;
   const configPath = join(workspace, "engram.json");
@@ -69,7 +73,19 @@ const handler = async (event: any) => {
     if (size <= 0 || size > MAX_CONTEXT_BYTES) return;
     const body = readFileSync(projection, "utf8");
     if (/items\.json|\blife\/(?!v3\/)|\bv2\b|historical[ -]?archive/i.test(body)) return;
-    event.messages.push(`<!-- engram-kg-v3-current -->\n<!-- ${SESSION_KEY_CONTRACT} -->\n${body}`);
+    const injected = `<!-- engram-kg-v3-current -->\n<!-- ${SESSION_KEY_CONTRACT} -->\n<!-- ${BOOTSTRAP_FILE_CONTRACT} -->\n${body}`;
+    if (messageCarrier) event.messages.push(injected);
+    if (bootstrapFileCarrier) {
+      event.context.bootstrapFiles = [
+        ...event.context.bootstrapFiles,
+        {
+          name: "BOOTSTRAP.md",
+          path: projection,
+          content: injected,
+          missing: false,
+        },
+      ];
+    }
   } catch {
     return;
   }

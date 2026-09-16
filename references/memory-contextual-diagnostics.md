@@ -23,7 +23,7 @@ The Worker result includes `diagnostic` and `diagnosticRef`; the queue retains
 A diagnostic-write error fails the run before consuming an evaluator attempt.
 The existing cached-result fail-closed contract and writer dedup are unchanged.
 
-## Prompt v13
+## Prompt versions v13-v15
 
 New jobs retain the v12 actor/status and owning-input address constraints, then
 add two semantic quality rules. One-off mechanical requests and results are
@@ -34,7 +34,12 @@ partial work, failure, restrictions, and genuinely different durable facts stay
 separate. No validation condition is relaxed.
 
 Prompt v10/v11/v12 bytes remain unchanged for queued old jobs; their policy
-digests stay explicitly readable. New jobs use v13. The already-installed
+digests stay explicitly readable. V14 introduced a source-complete JSONL wire
+format, but repeated live and replay evaluations showed that the model could
+stop after the first valid record and fail strict source coverage. V15 therefore
+uses the exact frozen v13 model-facing bytes and canonical single JSON envelope
+under a new producer-policy identity. Pending v14 jobs remain readable and keep
+their JSONL parser; there is no fallback or second inference call. The already-installed
 plugin bundle is unchanged: no Gateway restart or projection re-pinning is
 necessary for this standalone-Worker-only release. Always verify this with the
 actual build before applying; do not assume it for a future change.

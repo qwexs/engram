@@ -9,6 +9,7 @@ import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerived
 import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addQmdCollection } from './_lib/qmd-provision.js';
+import { ensureTopicDomainRuntime, hasActiveTopicMemoryWorker } from '../src/topic-domain-runtime.ts';
 
 const { values: args } = parseArgs({
   options: {
@@ -74,8 +75,8 @@ Options:
                              для one-shot operator-bind темпов, созданных ДО
                              установки engram-session-start. Идемпотентно: если
                              для этого (chatId, topicId) уже есть домен — exit 0
-                             no-op. Для новых топиков auto-bind делается silently
-                             в engram-session-start (ISS-10) без pending.
+                             no-op. Новые рабочие топики создаются явным вызовом
+                             add-domain; hook не расширяет Worker bindings.
   -h, --help                 Показать справку
 
 Examples:
@@ -159,6 +160,15 @@ if (!/^[a-z][a-z0-9-]*$/.test(domain)) {
 // Валидация типа домена
 if (!['dev-project', 'cron-task', 'topic-thread', 'peer-direct', 'group-direct', 'meta-domain'].includes(domainType)) {
   console.error('❌ Тип домена должен быть dev-project, cron-task, topic-thread, peer-direct, group-direct или meta-domain');
+  process.exit(1);
+}
+
+// Обычное создание рабочего topic-domain не может завершиться только scaffold'ом:
+// в уже подключённом проекте Memory Worker и QMD являются частью одной операции.
+// --pending остаётся явным режимом подготовки до первоначального fleet rollout.
+if (domainType === 'topic-thread' && !pending && !hasActiveTopicMemoryWorker(WORKSPACE)) {
+  console.error('❌ Рабочий topic-domain требует активную topic-проекцию Memory Worker.');
+  console.error('   Для первоначального scaffold до fleet rollout используйте --pending.');
   process.exit(1);
 }
 
@@ -286,9 +296,23 @@ if (domainType === 'group-direct') {
 const domainsDir = join(WORKSPACE, 'memory', 'domains');
 const domainDir = join(domainsDir, domain);
 
+async function ensureTopicRuntimeIfAvailable() {
+  if (!topicBinding || pending || !['topic-thread', 'meta-domain'].includes(domainType)) return null;
+  if (!hasActiveTopicMemoryWorker(WORKSPACE)) {
+    console.warn('⚠️  Активная topic-проекция Memory Worker не найдена; создан только домен.');
+    return null;
+  }
+  return ensureTopicDomainRuntime({
+    workspace: WORKSPACE,
+    domain,
+    chatId: topicBinding.chatId,
+    topicId: topicBinding.topicId,
+    registerCollection: addQmdCollection,
+  });
+}
+
 // --pending идемпотентность: если для этого (chatId, topicId) уже есть домен —
-// no-op. Это критично для auto-bind flow, где хук может вызвать add-domain
-// несколько раз (service-message + первый user message, fast-track). Проверяем
+// no-op. Это сохраняет повторяемость bootstrap/recovery-вызовов. Проверяем
 // ДО README.md check, чтобы повторный вызов с тем же именем и тем же
 // (chatId, topicId) не падал на name conflict.
 if (pending && topicBinding) {
@@ -317,6 +341,24 @@ if (pending && topicBinding) {
 
 // Проверка: домен уже существует
 if (await Bun.file(join(domainDir, 'README.md')).exists()) {
+  if (topicBinding) {
+    try {
+      const existingRegistry = JSON.parse(await Bun.file(join(domainsDir, 'registry.json')).text());
+      const existing = existingRegistry?.domains?.[domain];
+      if (existing?.topic
+        && String(existing.topic.chatId) === String(topicBinding.chatId)
+        && String(existing.topic.topicId) === String(topicBinding.topicId)) {
+        const runtime = await ensureTopicRuntimeIfAvailable();
+        console.log(runtime
+          ? `✅ Домен "${domain}" и его Memory Worker/QMD уже настроены — ${runtime.status}.`
+          : `✅ Домен "${domain}" уже привязан к ${topicBinding.chatId}:${topicBinding.topicId} — no-op.`);
+        process.exit(0);
+      }
+    } catch (error) {
+      console.error(`❌ Не удалось завершить настройку существующего домена: ${error.message}`);
+      process.exit(1);
+    }
+  }
   console.error(`❌ Домен уже существует: memory/domains/${domain}/`);
   process.exit(1);
 }
@@ -458,7 +500,7 @@ if ((domainType === 'topic-thread' || domainType === 'peer-direct' || domainType
 
   // === Cold-start auto-derive для status.md ===
   // Если в сессии уже есть daily note с контентом (типичный случай для
-  // --topic <chatId:topicId> и для auto-bind), заполняем status.md реальным
+  // --topic <chatId:topicId>), заполняем status.md реальным
   // handover'ом вместо пустого placeholder'а. Маркер auto-derived даёт
   // heartbeat-runner'у (Layer 2, опционально) право перегенерить.
   const sessionDir = join(WORKSPACE, 'memory', `agent-${agentId}`, sessionKey);
@@ -639,13 +681,26 @@ if (propagated > 0) {
   console.log(`  ✅ qmdCollections propagated to ${propagated} meta-domain(s)`);
 }
 
+let topicRuntime = null;
+try {
+  topicRuntime = await ensureTopicRuntimeIfAvailable();
+  if (topicRuntime) {
+    console.log(`  ✅ Memory Worker: ${topicRuntime.runtimeSessionKey}`);
+    console.log(`  ✅ QMD: ${topicRuntime.collections.join(', ')}`);
+  }
+} catch (error) {
+  console.error(`❌ Домен создан, но Memory Worker/QMD не настроены: ${error.message}`);
+  console.error('   Повторите ту же команду: add-domain идемпотентно завершит настройку существующего домена.');
+  process.exit(1);
+}
+
 console.log(`
 ✅ Домен создан!${pending ? ' (pending — требует promote для активации)' : ''}
    Домен:        ${domain}
    Тип:          ${domainType}${kgEntity ? `\n   KG Entity:    ${kgEntity}` : ''}${topicBinding ? `\n   Топик:        ${topicBinding.chatId}:${topicBinding.topicId}` : ''}${peerBinding ? `\n   DM:           ${peerBinding.chatId}` : ''}${groupBinding ? `\n   Группа:       ${groupBinding.chatId}` : ''}
    Описание:     ${description}
    Путь:         memory/domains/${domain}/
-   QMD:          qmd query "запрос" -c domains
+   QMD:          ${topicRuntime ? topicRuntime.collections.join(', ') : 'qmd query "запрос" -c domains'}
 
 Использование:
 ${domainType === 'topic-thread'

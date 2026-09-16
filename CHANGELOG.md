@@ -8,6 +8,31 @@
   worker config read-back and model-run inference. The fix applies to every
   enrolled workspace; no agent-specific scheduler or manifest logic is used.
 
+- **fix(kg): inject the current projection into canonical Telegram direct sessions.**
+  The bootstrap hook now normalizes colon-form OpenClaw runtime keys and maps
+  an actor-matched direct contour through the canonical runtime-grant registry
+  to the existing authority grant. Authority and runtime-grant entries are
+  normalized too, so both `main` and exact colon-form personal grants remain
+  compatible without relying on optional bootstrap metadata. Ambiguous,
+  explicitly untrusted, actor-mismatched, group, and topic sessions remain
+  fail-closed. Watchdog now reports an installed KG hook that lacks this
+  direct-session contract.
+
+- **feat(domains): make topic-domain creation complete Memory Worker and QMD setup.**
+  In an already enrolled forum workspace, `add-domain.js --type topic-thread`
+  now adds the explicit OpenClaw topic route through Gateway config CAS,
+  registers the domain and exact-session QMD collections, extends the existing
+  projection by one binding, republishes its pinned QMD snapshot, and verifies
+  the complete read-back. Repeating the same command resumes partial setup.
+  Fleet manifests, cron jobs and Worker runtime remain unchanged. Stale hook
+  documentation no longer claims silent topic auto-binding.
+
+- **fix(memory): restore the proven single-envelope contextual contract.**
+  Contextual producer policy v15 uses the byte-identical frozen v13 prompt and canonical JSON
+  envelope after v14 JSONL repeatedly returned incomplete source coverage.
+  Historical v14 jobs retain their JSONL parser and policy identity; v15 keeps
+  the strict canonical validator and one-inference-call budget without fallback.
+
 - **fix(memory): reduce routine capture noise and account recovered completion
   deadlines.** Contextual prompt v13 now skips one-off mechanical requests and
   results unless they establish reusable state, and coalesces one bounded

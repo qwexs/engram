@@ -1,7 +1,8 @@
 import { expect, test } from 'bun:test';
-import { buildContextualObservation, parseContextualOutput, renderContextualObservation, runContextualShadow, type ContextualOutput } from './contextual-observation.ts';
+import { buildContextualObservation, contextualEvidenceCatalog, contextualPrompt, parseContextualJsonl, parseContextualLedger, parseContextualOutput, renderContextualObservation, runContextualShadow, type ContextualOutput } from './contextual-observation.ts';
 import { compileBatchFrame, type CompiledBatchBundleV1 } from './batch-compiler.ts';
 import { deriveSourceDigest, sha256, type JsonValue } from './ledger.ts';
+import { fixture as promptFixture, now as promptNow } from '../../tests/fixtures/memory-observation/contextual/bundle.ts';
 const now = new Date('2026-09-01T12:10:00.000Z');
 function fixture(texts = ['I can commit the timer fix.', 'Yes, do that.'], actors = ['actor-a', 'actor-a']): CompiledBatchBundleV1 {
     const scope = { workspaceId: 'alpha', runtimeSessionKey: 'agent:alpha:telegram:direct:100000001', scopeClass: 'self', scopeId: 'workspace:alpha' };
@@ -19,6 +20,34 @@ function output(b = fixture()): ContextualOutput {
     const quote = (first.evidence as any).outcome.text, text = (second.evidence as any).source.text;
     return { schema: 'engram.memory-contextual-output.v2', assertions: [{ id: 'decision', section: 'decisions', text: 'The user requested committing the timer fix.', subject: 'timer fix', resolution: 'resolved', actorRef: 'user', status: 'requested', spans: [{ traceId: first.traceId, role: 'assistant', start: 0, end: quote.length, quote }, { traceId: second.traceId, role: 'user', start: 0, end: text.length, quote: text }] }],
         dispositions: [{ traceId: first.traceId, kind: 'supports', assertionIds: ['decision'], reason: 'Identifies the proposed timer fix.' }, { traceId: second.traceId, kind: 'asserted', assertionIds: ['decision'], reason: 'Direct approval of the cited proposal.' }] };
+}
+function jsonl(b = fixture(), value: ContextualOutput = output(b)): string {
+    const catalog = contextualEvidenceCatalog(b);
+    const assertions = value.assertions.map(assertion => ({ ...assertion,
+        spans: assertion.spans.map((span: any) => {
+            if (typeof span.evidenceId === 'string') return span;
+            const selected = catalog.find(entry => entry.span.traceId === span.traceId && entry.span.role === span.role
+                && entry.span.quote === span.quote && entry.span.replyContextRef === span.replyContextRef
+                && entry.span.episodeContextRef === span.episodeContextRef);
+            if (!selected) throw Error('fixture evidence entry missing');
+            return { evidenceId: selected.id, purpose: span.purpose ?? (span.role === assertion.actorRef ? 'assertion' : 'context') };
+        }) }));
+    const declared = new Set<string>();
+    return value.dispositions.map((disposition, index) => {
+        const recordAssertions = assertions.filter(assertion => {
+            if (declared.has(assertion.id)) return false;
+            const firstReference = value.dispositions.findIndex(candidate => candidate.assertionIds.includes(assertion.id));
+            if (firstReference !== index && !(firstReference < 0 && index === 0)) return false;
+            declared.add(assertion.id);
+            return true;
+        });
+        return JSON.stringify({ type: 'source', ...disposition, assertions: recordAssertions });
+    }).join('\n');
+}
+function ledger(b = fixture(), value: ContextualOutput = output(b)): string {
+    const records=jsonl(b, value).split('\n').map(line => JSON.parse(line));
+    return JSON.stringify({ schema: 'engram.memory-contextual-source-ledger.v1', assertions: records.flatMap(record=>record.assertions),
+        sourceRecords: records.map(({type: _type, assertions: _assertions, ...record})=>record) });
 }
 test('preserves exact quotation AND resolved interpretation, status and chronology in searchable text', () => {
     const b = fixture(), o = buildContextualObservation(output(b), b, sha256('contextual-policy'), now);
@@ -63,7 +92,7 @@ test('one tool-free call, separate policy identity, no writes, model mismatch de
     const b = fixture();
     let calls = 0;
     const o = output(b);
-    const r = await runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async (request) => { calls++; expect(request.tools).toEqual([]); expect(request.system).toBe(''); return { output: JSON.stringify(o), resolvedModel: request.model }; } });
+    const r = await runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async (request) => { calls++; expect(request.tools).toEqual([]); expect(request.system).toBe(''); return { output: ledger(b, o), resolvedModel: request.model }; } });
     expect(calls).toBe(1);
     expect(r.observation.schema).toBe('engram.memory-contextual-observation.v2');
     await expect(runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async () => ({ output: JSON.stringify(o), resolvedModel: 'different/model' }) })).rejects.toThrow('CONTEXTUAL_MODEL_MISMATCH');
@@ -174,7 +203,8 @@ test('catalog remains bounded per excerpt and covers long and repeated text with
 
 test('diagnostics distinguish invalid JSON and provenance without persisting raw output', async () => {
     const b=fixture();
-    for(const [raw,code] of [['private-text sk-secret not JSON','invalid_json'],[JSON.stringify({...output(b), assertions:[{...output(b).assertions[0],spans:[{evidenceId:'missing',purpose:'assertion'}]}]}),'evidence_reference']] as const){
+    const missing=output(b);missing.assertions[0]!.spans=[{evidenceId:'missing',purpose:'assertion'}] as any;
+    for(const [raw,code] of [['private-text sk-secret not JSON','ledger_invalid_json'],[ledger(b,missing),'evidence_reference']] as const){
         try{await runContextualShadow({bundle:b,model:'fixture/model',maxTokens:2048,now:()=>now,
             complete:async()=>({resolvedModel:'fixture/model',output:raw})});throw Error('must reject');}
         catch(e:any){expect(e.diagnostic).toEqual({stage:'validation',code:'CONTEXTUAL_OUTPUT_DENIED:'+code,outputLength:raw.length,outputDigest:sha256(raw)});
@@ -197,14 +227,111 @@ test('dispositions cannot link an assertion to an uncited source',()=>{
  const b=fixture(),o=output(b);o.assertions[0]!.resolution='explicit';o.assertions[0]!.spans=o.assertions[0]!.spans.slice(1);
  expect(()=>parseContextualOutput(o,b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:disposition_citation');
 });
-test('v13 adds bounded retention and coalescing without rewriting legacy prompts',async()=>{
- const {contextualPrompt}=await import('./contextual-observation.ts');const b=fixture();
+test('v16 combines a single envelope with the v14 source ledger while older versions remain readable',()=>{
+ const b=fixture();
  for(const v of ['memory-contextual-shadow-v10','memory-contextual-shadow-v11'] as const){
   const p=JSON.parse(contextualPrompt(b,now,v));expect(p.schema).toBe(v);expect(p.instructions).not.toContain('ACTOR/STATUS CONTRACT');
  }
  const prior=JSON.parse(contextualPrompt(b,now,'memory-contextual-shadow-v12'));
  expect(prior.instructions).toContain('ACTOR/STATUS CONTRACT');expect(prior.instructions).not.toContain('RETENTION CONTRACT');
- const p=JSON.parse(contextualPrompt(b,now));expect(p.schema).toBe('memory-contextual-shadow-v13');
- expect(p.instructions).toContain('ACTOR/STATUS CONTRACT');expect(p.instructions).toContain('DISPOSITION ADDRESS CONTRACT');
- expect(p.instructions).toContain('RETENTION CONTRACT');expect(p.instructions).toContain('COALESCING CONTRACT');
+ const v13=JSON.parse(contextualPrompt(b,now,'memory-contextual-shadow-v13'));
+ expect(v13.instructions).toContain('ACTOR/STATUS CONTRACT');expect(v13.instructions).toContain('DISPOSITION ADDRESS CONTRACT');
+ expect(v13.instructions).toContain('RETENTION CONTRACT');expect(v13.instructions).toContain('COALESCING CONTRACT');expect(v13.instructions).not.toContain('JSONL OUTPUT CONTRACT');
+ const v14=JSON.parse(contextualPrompt(b,now,'memory-contextual-shadow-v14'));
+ expect(v14.instructions).toContain('RETENTION CONTRACT');expect(v14.instructions).toContain('COALESCING CONTRACT');expect(v14.instructions).toContain('JSONL OUTPUT CONTRACT');
+ const v15=JSON.parse(contextualPrompt(b,now,'memory-contextual-shadow-v15'));expect(v15.schema).toBe('memory-contextual-shadow-v13');
+ expect(contextualPrompt(b,now,'memory-contextual-shadow-v15')).toBe(contextualPrompt(b,now,'memory-contextual-shadow-v13'));
+ expect(v15.instructions).toBe(v13.instructions);expect(v15.sources).toEqual(v13.sources);expect(v15.instructions).not.toContain('JSONL OUTPUT CONTRACT');
+ const p=JSON.parse(contextualPrompt(b,now));expect(p.schema).toBe('memory-contextual-shadow-v16');
+ expect(p.instructions).toContain('SOURCE LEDGER OUTPUT CONTRACT');expect(p.instructions).not.toContain('JSONL OUTPUT CONTRACT');
+ const frozen:Record<string,string>={
+  'memory-contextual-shadow-v10':'sha256:1319f065b6a75b389c1513d4efb2b02cdf22def3046aef5ffa854e31157c364e',
+  'memory-contextual-shadow-v11':'sha256:ae63df07ea3271835393a00f2cc1efe44612b032f5745d1bfd043339f2d83435',
+  'memory-contextual-shadow-v12':'sha256:9433c7a6123f38c5cd491593ef397abf475ff0b61df41da95ee72af082ba5a4b',
+  'memory-contextual-shadow-v13':'sha256:c78fd581382ee7192eb3c368b18cb69daa359fa8cad9c9aaa10b9ee4b7f5d2a4'};
+ const promptBundle=promptFixture();
+ for(const [version,digest] of Object.entries(frozen))
+  expect(sha256(contextualPrompt(promptBundle,promptNow,version as any))).toBe(digest);
+});
+
+test('v16 source-ledger envelope produces canonical v2 and preserves shared assertion references',()=>{
+ const b=fixture(),value=output(b),canonical=parseContextualJsonl(jsonl(b,value),b,now);
+ expect(parseContextualLedger(ledger(b,value),b,now)).toEqual(canonical);
+});
+
+test('v16 source-ledger envelope rejects malformed framing and incomplete or duplicate coverage',()=>{
+ const b=fixture(),base=JSON.parse(ledger(b));
+ expect(()=>parseContextualLedger(JSON.stringify(base.sourceRecords),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:ledger_envelope_shape');
+ const missing=structuredClone(base);missing.sourceRecords.pop();
+ expect(()=>parseContextualLedger(JSON.stringify(missing),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:output_shape');
+ const duplicate=structuredClone(base);duplicate.sourceRecords[1]=structuredClone(duplicate.sourceRecords[0]);
+ expect(()=>parseContextualLedger(JSON.stringify(duplicate),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:disposition_shape');
+ const extra=structuredClone(base);extra.extra=true;
+ expect(()=>parseContextualLedger(JSON.stringify(extra),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:ledger_envelope_shape');
+});
+
+test('v14 JSONL adapter produces the same canonical observation as equivalent JSON',()=>{
+ const b=fixture(),value=output(b),policy=sha256('same-policy');
+ value.assertions[0]!.spans[0]!.purpose='context';value.assertions[0]!.spans[1]!.purpose='assertion';
+ const canonical=parseContextualOutput(value,b,now),wire=parseContextualJsonl(jsonl(b,value),b,now);
+ expect(wire).toEqual(canonical);
+ expect(buildContextualObservation(wire,b,policy,now)).toEqual(buildContextualObservation(canonical,b,policy,now));
+});
+
+test('v14 JSONL preserves Unicode, escaped newlines, CRLF and one final newline',()=>{
+ const b=fixture(),o=output(b);o.dispositions[0]!.reason='Причина 😀 中文\nsecond line';
+ const raw=jsonl(b,o).replaceAll('\n','\r\n')+'\r\n';
+ expect(parseContextualJsonl(raw,b,now).dispositions[0]!.reason).toBe(o.dispositions[0]!.reason);
+});
+
+test('v14 JSONL rejects framing, shape, coverage, duplication and truncation failures',()=>{
+ const b=fixture(),valid=jsonl(b),lines=valid.split('\n');
+ const firstSource=lines[0]!,secondSource=lines[1]!;
+ const cases:[string,string][]=[
+  ['', 'jsonl_empty'],['```jsonl\n'+valid+'\n```','jsonl_record_count'],['prose\n'+secondSource,'jsonl_invalid_json'],
+  [firstSource+'\n\n','jsonl_blank_record'],[JSON.stringify(output(b)),'jsonl_record_type'],[JSON.stringify({type:'unknown'}),'jsonl_record_type'],
+  [[firstSource,firstSource].join('\n'),'jsonl_duplicate_source'],
+  [firstSource,'jsonl_incomplete_coverage'],
+  [valid+'\n'+firstSource,'jsonl_record_count'],[valid.slice(0,-4),'jsonl_invalid_json'],
+  [JSON.stringify({type:'assertion'}),'jsonl_record_type']];
+ for(const [raw,code] of cases) expect(()=>parseContextualJsonl(raw,b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:'+code);
+ expect(()=>parseContextualJsonl('x'.repeat(131073),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:output_size');
+ const records=lines.map(line=>JSON.parse(line));
+ const missingField=structuredClone(records);delete missingField[0].reason;
+ expect(()=>parseContextualJsonl(missingField.map(JSON.stringify).join('\n'),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:jsonl_source_shape');
+ const badSpan=structuredClone(records);badSpan[0].assertions[0].spans=[{traceId:b.sourceRefs[0]!.traceId}];
+ expect(()=>parseContextualJsonl(badSpan.map(JSON.stringify).join('\n'),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:jsonl_assertion_span_shape');
+ const duplicateAssertion=structuredClone(records);duplicateAssertion[1].assertions=[structuredClone(duplicateAssertion[0].assertions[0])];
+ expect(()=>parseContextualJsonl(duplicateAssertion.map(JSON.stringify).join('\n'),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:jsonl_duplicate_assertion');
+ const tooMany=structuredClone(records);tooMany[0].assertions=Array.from({length:33},(_,index)=>({...structuredClone(records[0].assertions[0]),id:'a'+index}));
+ expect(()=>parseContextualJsonl(tooMany.map(JSON.stringify).join('\n'),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:jsonl_assertion_count');
+});
+
+test('v14 JSONL supports multiple declarations, cross-source references and forward references',()=>{
+ const b=fixture(),base=jsonl(b).split('\n').map(line=>JSON.parse(line));
+ const decision=structuredClone(base[0].assertions[0]);
+ const second={...structuredClone(decision),id:'followup',text:'The assistant reported completing the timer fix.',resolution:'explicit',actorRef:'assistant',status:'reported_done',spans:[{...structuredClone(decision.spans[0]),purpose:'assertion'}]};
+ base[0].assertions.push(second);base[0].kind='asserted';base[0].assertionIds=['followup'];
+ expect(parseContextualJsonl(base.map(JSON.stringify).join('\n'),b,now).assertions.map(a=>a.id)).toEqual(['decision','followup']);
+ const forward=jsonl(b).split('\n').map(line=>JSON.parse(line));
+ forward[1].assertions=forward[0].assertions;forward[0].assertions=[];
+ expect(parseContextualJsonl(forward.map(JSON.stringify).join('\n'),b,now).assertions[0]!.id).toBe('decision');
+ const skipped=structuredClone(forward);skipped[0]={type:'source',traceId:b.sourceRefs[0]!.traceId,kind:'skip',assertionIds:[],reason:'No durable fact.',assertions:[]};
+ skipped[1]={type:'source',traceId:b.sourceRefs[1]!.traceId,kind:'unresolved',assertionIds:[],reason:'Meaning is ambiguous.',assertions:[]};
+ expect(parseContextualJsonl(skipped.map(JSON.stringify).join('\n'),b,now).dispositions.map(d=>d.kind)).toEqual(['skip','unresolved']);
+});
+
+test('v14 JSONL still enforces actor, source, citation and disposition semantics',()=>{
+ const b=fixture();
+ const cases=(()=>{
+  const assistantApproval=output(b);assistantApproval.assertions[0]!.actorRef='assistant';
+  const unknownAssertion=output(b);unknownAssertion.dispositions[0]!.assertionIds=['unknown'];
+  const uncited=output(b);uncited.assertions[0]!.resolution='explicit';uncited.assertions[0]!.spans=uncited.assertions[0]!.spans.slice(1);
+  const extraField:any=output(b);extraField.assertions[0]!.authorized=true;
+  return [assistantApproval,unknownAssertion,uncited,extraField];
+ })();
+ for(const value of cases) expect(()=>parseContextualJsonl(jsonl(b,value),b,now)).toThrow();
+ const records=jsonl(b).split('\n').map(line=>JSON.parse(line));
+ records[1].traceId=sha256('foreign');
+ expect(()=>parseContextualJsonl(records.map(record=>JSON.stringify(record)).join('\n'),b,now)).toThrow('CONTEXTUAL_OUTPUT_DENIED:jsonl_unknown_trace');
 });

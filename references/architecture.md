@@ -70,6 +70,10 @@ Curated personal wisdom distilled from daily notes during memory maintenance:
 
 ## Data Flow
 
+For the proposed single read-only plugin owner that delivers KG, OLL, domain,
+and exact-session working context to model input, see
+[Context Delivery Owner design](context-delivery-owner-design.md).
+
 ```
 Session Activity
     ↓ daily-note-append.js (during session, explicit recording)

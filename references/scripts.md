@@ -146,6 +146,28 @@ bun skills/engram/scripts/watchdog.js --all --workspaces-dir /path/to/workspaces
 
 Audits drift around an Engram workspace without fixing anything: `validate.js` exit status, runtime hook drift, QMD collection references, registry ↔ domain folders, heartbeat-state ↔ session dirs, KG v2 schema / likely test pollution, and missing `cron.expectedJobName`. Options: `--output`, `--no-core`, `--no-qmd`, `--no-hooks`, `--exit-zero-on-warn`. Report schema: `engram.watchdog.v1`. Full reference: [watchdog.md](watchdog.md).
 
+## context-delivery-audit.ts — Model-input marker audit
+
+```bash
+bun skills/engram/scripts/context-delivery-audit.ts \
+  --rollout /absolute/path/to/rollout.jsonl \
+  --expect kg,oll,domain,session \
+  --json
+```
+
+Reads only system/developer/user messages before the first assistant message in
+a Codex rollout JSONL and reports versioned Engram context markers without
+printing prompt contents. Tool output after assistant start cannot satisfy the
+audit. `--expect` is optional. Marker classes are `kg`, `oll`, `domain`, and `session`.
+The first three also recognize their legacy delivery markers; `session` is the
+v1 owner marker. An unsupported JSONL format
+exits with code 3 rather than being treated as absent delivery; a missing
+expected marker exits with code 2. This proves only that a marker was in model
+input, not synthetic generation, source attribution, or answer utilization.
+It does not establish a session scope: use an evidence file with independently
+recorded main/direct/topic/peer/group identity for that. Utilization requires a
+separate answer probe.
+
 ## memory-signal.js — Signal detection (diagnostic only)
 
 ```bash

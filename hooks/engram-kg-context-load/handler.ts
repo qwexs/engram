@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { normalizeSessionSegment } from "../_lib/parse-agent-id.ts";
 import { resolveKgDefaultContext } from "../../src/kg-v3/context.ts";
 import type { KgRuntimeGrantRegistryV1 } from "../../src/kg-v3/trusted-runtime.ts";
+import { legacyDeliveryAllowed } from "../../src/context-delivery/legacy-policy.ts";
 
 const MAX_CONTEXT_BYTES = 32 * 1024;
 const SESSION_KEY_CONTRACT = "engram.kg-context.session-key.v3";
@@ -56,6 +57,7 @@ const handler = async (event: any) => {
   if (!messageCarrier && !bootstrapFileCarrier) return;
   const workspace = event?.context?.workspaceDir;
   if (!workspace) return;
+  if (!legacyDeliveryAllowed(workspace, event)) return;
   const configPath = join(workspace, "engram.json");
   const authorityPath = join(workspace, "memory-state", "kg-v3", "authority.json");
   const runtimeGrantsPath = join(workspace, "memory-state", "kg-v3", "runtime-grants.json");

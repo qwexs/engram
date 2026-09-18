@@ -77,4 +77,21 @@ describe("install-hooks mutation boundary", () => {
     expect(result.stdout).toContain("engram-kg-context-load");
     expect(existsSync(join(hooks, "engram-kg-context-load"))).toBe(false);
   });
+
+  test("--only replaces one selected hook and leaves other runtime entries byte-stable", () => {
+    const hooks = target();
+    for (const name of ["engram-rule-context-load", "engram-rule-rollback", "engram-daily-note"]) {
+      const directory = join(hooks, name);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, "handler.js"), `${name}-current\n`);
+      writeFileSync(join(directory, "HOOK.md"), `${name}-metadata\n`);
+    }
+    const result = spawnSync("bun", [
+      installer, "--skill-dir", skill, "--hooks-dir", hooks,
+      "--only", "engram-kg-context-load", "--force",
+    ], { encoding: "utf8" });
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(existsSync(join(hooks, "engram-kg-context-load", "handler.js"))).toBe(true);
+    expect(readFileSync(join(hooks, "engram-daily-note", "handler.js"), "utf8")).toBe("engram-daily-note-current\n");
+  });
 });

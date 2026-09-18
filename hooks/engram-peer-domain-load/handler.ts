@@ -7,6 +7,7 @@ import {
   buildDomainPayload,
   type DomainSourceFiles,
 } from "../_lib/domain-inject.js";
+import { legacyDeliveryAllowed } from "../../src/context-delivery/legacy-policy.js";
 
 /**
  * engram-peer-domain-load (v4 — bootstrap delivery)
@@ -22,9 +23,14 @@ import {
  *   - `group-direct` — groups without topic structure (negative chatId, no topicId)
  */
 const handler = async (event: any) => {
-  const resolved = resolveDomainFromEvent(event, {
+  const preflight = resolveDomainFromEvent(event, {
     kinds: ["peer-direct", "group-direct"],
+    reactivateArchived: false,
   });
+  if (!preflight || !legacyDeliveryAllowed(preflight.workspaceDir, event)) return;
+  const resolved = preflight.domainEntry.archived === true
+    ? resolveDomainFromEvent(event, { kinds: ["peer-direct", "group-direct"] })
+    : preflight;
   if (!resolved) return;
 
   const {

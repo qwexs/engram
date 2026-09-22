@@ -48,6 +48,17 @@ describe("exact domain source", () => {
     }
   });
 
+  test.skipIf(process.platform !== "win32")("accepts a case-insensitive Windows workspace root", () => {
+    const root = fixture({
+      topic: { type: "topic-thread", topic: { chatId: "-1001", topicId: "42" } },
+    });
+    const flipped = root.replace(/^[a-zA-Z]/, (letter) => (
+      letter === letter.toUpperCase() ? letter.toLowerCase() : letter.toUpperCase()
+    ));
+    const topic = parseCanonicalSessionKey("agent:project:telegram:group:-1001:topic:42")!;
+    expect(resolveExactDomainBinding({ workspace: flipped, workspaceId: "project", scope: topic })?.domainName).toBe("topic");
+  });
+
   test("fails closed on ambiguous exact bindings", () => {
     const root = fixture({
       first: { type: "peer-direct", peer: { chatId: "205" } },

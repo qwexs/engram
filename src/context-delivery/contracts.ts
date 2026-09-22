@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute } from "node:path";
+import { samePath } from "./paths.ts";
 
 export const DELIVERY_SOURCE_ORDER = ["oll", "domain", "session", "kg"] as const;
 
@@ -154,7 +155,7 @@ export function parseCanonicalSessionKey(sessionKey: string): CanonicalDeliveryS
 export function resolveDeliveryScope(identity: DeliveryHookIdentity): CanonicalDeliveryScope | null {
   if (!identity.runId.trim() || !identity.agentId.trim()
     || !isAbsolute(identity.workspaceDir) || !isAbsolute(identity.expectedWorkspaceDir)
-    || resolve(identity.workspaceDir) !== resolve(identity.expectedWorkspaceDir)) return null;
+    || !samePath(identity.workspaceDir, identity.expectedWorkspaceDir)) return null;
   const scope = parseCanonicalSessionKey(identity.sessionKey);
   if (!scope || scope.agentId !== identity.agentId) return null;
   if (scope.kind !== "main" && identity.channel !== undefined && identity.channel !== "telegram") return null;

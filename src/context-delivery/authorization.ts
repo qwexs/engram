@@ -1,5 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { isAbsolute, resolve } from "node:path";
+import { isInside, samePath } from "./paths.ts";
 import { loadActorRegistry } from "../oll/authorization.ts";
 import type { RuleContextTargetV1 } from "../oll/rule-context.ts";
 import { normalizeSessionSegment } from "../session-key.ts";
@@ -16,8 +17,7 @@ function readJson(path: string): JsonObject {
 function expandInsideStateRoot(setting: string, stateRoot: string): string {
   const root = realpathSync(resolve(stateRoot));
   const path = realpathSync(resolve(setting.replaceAll("${ENGRAM_STATE_ROOT}", root)));
-  const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
-  if (path !== root && !path.startsWith(prefix)) throw new Error("actor registry path escapes Engram state root");
+  if (!samePath(path, root) && !isInside(root, path)) throw new Error("actor registry path escapes Engram state root");
   return path;
 }
 

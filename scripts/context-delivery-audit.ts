@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import {
   CONTEXT_DELIVERY_MARKERS,
   inspectRolloutModelInput,
@@ -36,7 +36,7 @@ for (let index = 0; index < args.length; index += 1) {
   else usage();
 }
 
-if (!rollout || !rollout.startsWith("/")) usage();
+if (!rollout || !isAbsolute(rollout)) usage();
 const rolloutPath = resolve(rollout);
 if (!existsSync(rolloutPath)) throw new Error(`rollout not found: ${rolloutPath}`);
 const known = new Set(Object.keys(CONTEXT_DELIVERY_MARKERS));

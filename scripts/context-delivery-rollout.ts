@@ -14,6 +14,8 @@ import {
 } from "../src/context-delivery/rollout.ts";
 
 const PLUGIN_ID = "engram-context-delivery";
+const OPENCLAW_CHILD_TIMEOUT_MS = 30_000;
+const OPENCLAW_READ_TIMEOUT_MS = 5_000;
 const repository = resolve(import.meta.dir, "..");
 const command = process.argv[2] || "status";
 const { values } = parseArgs({
@@ -37,15 +39,26 @@ function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-function runOpenClaw(args: string[]): string {
-  const result = spawnSync("openclaw", args, { encoding: "utf8" });
+function runOpenClaw(args: string[], timeout = OPENCLAW_CHILD_TIMEOUT_MS): string {
+  const result = spawnSync("openclaw", args, { encoding: "utf8", timeout });
+  if (result.error) {
+    const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+    throw new Error(`openclaw ${args.join(" ")} ${timedOut ? `timed out after ${timeout}ms` : `failed: ${result.error.message}`}`);
+  }
   if (result.status !== 0) throw new Error(`openclaw ${args[0]} failed: ${(result.stderr || result.stdout).trim()}`);
   return result.stdout.trim();
 }
 
+function parseJsonPayload(text: string): any {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end < start) throw new Error("openclaw inspect returned no JSON object");
+  return JSON.parse(text.slice(start, end + 1));
+}
+
 function configBoolean(path: string): boolean {
   try {
-    return JSON.parse(runOpenClaw(["config", "get", path])) === true;
+    return JSON.parse(runOpenClaw(["config", "get", path], OPENCLAW_READ_TIMEOUT_MS)) === true;
   } catch {
     return false;
   }
@@ -67,20 +80,31 @@ async function buildPlugin(): Promise<{ bytes: Buffer; digest: `sha256:${string}
 }
 
 function inspectPlugin(): any {
-  const result = spawnSync("openclaw", ["plugins", "inspect", PLUGIN_ID, "--json", "--runtime"], { encoding: "utf8" });
-  if (result.status !== 0) return { installed: false, enabled: false, status: "absent", digest: null, rootDir: null, diagnostics: [] };
-  const value = JSON.parse(result.stdout);
-  const plugin = value?.plugin ?? value;
-  const source = typeof plugin?.source === "string" ? plugin.source : typeof value?.source === "string" ? value.source : null;
-  return {
-    installed: true,
-    enabled: plugin?.enabled !== false,
-    status: plugin?.status ?? value?.status ?? "unknown",
-    source,
-    rootDir: typeof plugin?.rootDir === "string" ? plugin.rootDir : source ? resolve(source, "..") : null,
-    digest: source && existsSync(source) ? sha256(readFileSync(source)) : null,
-    diagnostics: plugin?.diagnostics ?? value?.diagnostics ?? [],
-  };
+  // `--runtime` can wait indefinitely for the active Gateway's exclusive state
+  // lock on Windows. Regular inspect already returns loaded bytes and diagnostics.
+  const result = spawnSync("openclaw", ["plugins", "inspect", PLUGIN_ID, "--json"], {
+    encoding: "utf8",
+    timeout: OPENCLAW_READ_TIMEOUT_MS,
+  });
+  if (result.error || result.status !== 0 || !result.stdout.trim()) {
+    return { installed: false, enabled: false, status: "absent", digest: null, rootDir: null, diagnostics: [] };
+  }
+  try {
+    const value = parseJsonPayload(result.stdout);
+    const plugin = value?.plugin ?? value;
+    const source = typeof plugin?.source === "string" ? plugin.source : typeof value?.source === "string" ? value.source : null;
+    return {
+      installed: true,
+      enabled: plugin?.enabled !== false,
+      status: plugin?.status ?? value?.status ?? "unknown",
+      source,
+      rootDir: typeof plugin?.rootDir === "string" ? plugin.rootDir : source ? resolve(source, "..") : null,
+      digest: source && existsSync(source) ? sha256(readFileSync(source)) : null,
+      diagnostics: plugin?.diagnostics ?? value?.diagnostics ?? [],
+    };
+  } catch {
+    return { installed: false, enabled: false, status: "absent", digest: null, rootDir: null, diagnostics: [] };
+  }
 }
 
 function permissions() {

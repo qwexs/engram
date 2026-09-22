@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { CanonicalDeliveryScope } from "./contracts.ts";
+import { samePath } from "./paths.ts";
 
 type DomainRegistryEntry = {
   type?: unknown;
@@ -79,7 +80,7 @@ export function resolveExactDomainBinding(options: {
   const [domainName, raw] = matchesFound[0]!;
   const entry = raw as DomainRegistryEntry;
   const domainDir = join(workspace, "memory", "domains", domainName);
-  if (realpathSync(domainDir) !== domainDir) throw new Error("domain directory is not canonical");
+  if (!samePath(realpathSync(domainDir), domainDir)) throw new Error("domain directory is not canonical");
   return {
     domainName,
     domainType: entry.type as ExactDomainBinding["domainType"],

@@ -51,6 +51,21 @@ describe("session context source", () => {
     }
   });
 
+  test.skipIf(process.platform !== "win32")("reads session notes from a case-insensitive Windows workspace path", () => {
+    const root = workspace();
+    note(root, "telegram-direct-42", "2026-09-19", "# Daily\n\n## Next\n- case-insensitive path\n");
+    const flipped = root.replace(/^[a-zA-Z]/, (letter) => (
+      letter === letter.toUpperCase() ? letter.toLowerCase() : letter.toUpperCase()
+    ));
+    const outcome = resolveSessionContextSource({
+      workspace: flipped,
+      scope: parseCanonicalSessionKey("agent:main:telegram:direct:42")!,
+      now: "2026-09-19T00:00:00.000Z",
+    });
+    expect(outcome.status).toBe("selected");
+    if (outcome.status === "selected") expect(outcome.block.content).toContain("case-insensitive path");
+  });
+
   test("returns missing for an absent or empty exact-session note set", () => {
     const root = workspace();
     const scope = parseCanonicalSessionKey("agent:main:telegram:direct:42")!;

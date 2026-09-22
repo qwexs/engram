@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { resolveKgDefaultContext } from "../kg-v3/context.ts";
 import { defaultContextArchiveLeakage } from "../kg-v3/benchmark.ts";
 import { resolveRuleContext, type RuleContextTargetV1 } from "../oll/rule-context.ts";
@@ -18,6 +18,7 @@ import {
   h3MarkdownRecords,
   neutralizeDeliveryMarkers,
 } from "./markdown-records.ts";
+import { isInside, snapshotUnchanged } from "./paths.ts";
 
 export class DeliverySourceAdapterError extends Error {
   constructor(readonly reason: DeliveryReason, message: string) {
@@ -32,13 +33,12 @@ function sha256(value: string): `sha256:${string}` {
 function readInside(workspace: string, relativePath: string): string {
   const root = realpathSync(resolve(workspace));
   const path = realpathSync(resolve(join(root, relativePath)));
-  const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
-  if (!path.startsWith(prefix)) throw new DeliverySourceAdapterError("SOURCE_INVALID", "context source path escapes workspace");
+  if (!isInside(root, path)) throw new DeliverySourceAdapterError("SOURCE_INVALID", "context source path escapes workspace");
   const before = statSync(path);
   if (!before.isFile()) throw new DeliverySourceAdapterError("SOURCE_INVALID", "context source is not a regular file");
   const content = readFileSync(path, "utf8");
   const after = statSync(path);
-  if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+  if (!snapshotUnchanged(before, after)) {
     throw new DeliverySourceAdapterError("SNAPSHOT_UNAVAILABLE", "context source changed during snapshot read");
   }
   return content;

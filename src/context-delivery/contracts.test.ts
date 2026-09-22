@@ -64,6 +64,14 @@ describe("context delivery contracts", () => {
     expect(resolveDeliveryScope({ ...identity, channel: "discord" })).toBeNull();
   });
 
+  test.skipIf(process.platform !== "win32")("accepts case-insensitive Windows workspace identity", () => {
+    expect(resolveDeliveryScope({
+      ...identity,
+      workspaceDir: "C:\\Engram\\Workspace",
+      expectedWorkspaceDir: "c:/engram/workspace",
+    })?.kind).toBe("peer-direct");
+  });
+
   test("validates the whole policy and produces an order-stable digest", () => {
     const parsed = parseDeliveryOwnerPolicy(policy());
     const reordered = sealDeliveryOwnerPolicy({ ...parsed, canarySessionKeys: [...parsed.canarySessionKeys].reverse() });

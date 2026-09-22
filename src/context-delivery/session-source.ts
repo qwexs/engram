@@ -6,10 +6,11 @@ import {
   realpathSync,
   statSync,
 } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { normalizeSessionSegment } from "../session-key.ts";
 import type { CanonicalDeliveryScope, DeliveryReason, DeliverySourceOutcome } from "./contracts.ts";
 import { completeMarkdownRecords, extractUniqueH2Section } from "./markdown-records.ts";
+import { isInside, snapshotUnchanged } from "./paths.ts";
 
 const DAILY_NOTE = /^\d{4}-\d{2}-\d{2}\.md$/;
 const MAX_NOTES = 3;
@@ -30,18 +31,13 @@ function sha256(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-function inside(root: string, path: string): boolean {
-  const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
-  return path.startsWith(prefix);
-}
-
 function stableRead(path: string): { content: string; digest: `sha256:${string}` } {
   const before = statSync(path);
   if (!before.isFile()) throw new SessionSourceError("SOURCE_INVALID", "session context source is not a regular file");
   if (before.size > MAX_RAW_NOTE_BYTES) throw new SessionSourceError("BUDGET_SOURCE_CAP", "session note exceeds raw file cap");
   const content = readFileSync(path, "utf8");
   const after = statSync(path);
-  if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+  if (!snapshotUnchanged(before, after)) {
     throw new SessionSourceError("SNAPSHOT_UNAVAILABLE", "session context source changed during snapshot read");
   }
   const normalized = content.replace(/\r/g, "");
@@ -136,7 +132,7 @@ function dailySnapshots(workspace: string, scope: CanonicalDeliveryScope, now: s
   const candidate = resolve(join(root, "memory", `agent-${scope.agentId}`, segment));
   if (!existsSync(candidate)) return null;
   const directory = realpathSync(candidate);
-  if (!inside(root, directory)) throw new SessionSourceError("SOURCE_INVALID", "session note directory escapes workspace");
+  if (!isInside(root, directory)) throw new SessionSourceError("SOURCE_INVALID", "session note directory escapes workspace");
   const list = () => readdirSync(directory, { withFileTypes: true })
     .filter((entry) => entry.isFile() && validDailyName(entry.name, now))
     .map((entry) => entry.name)

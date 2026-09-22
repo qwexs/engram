@@ -7,6 +7,7 @@ import {
   buildDomainPayload,
   type DomainSourceFiles,
 } from "../_lib/domain-inject.js";
+import { legacyDeliveryAllowed } from "../../src/context-delivery/legacy-policy.js";
 
 /**
  * engram-topic-domain-load (v4 — bootstrap delivery)
@@ -20,9 +21,14 @@ import {
  * group-direct are handled by `engram-peer-domain-load`.
  */
 const handler = async (event: any) => {
-  const resolved = resolveDomainFromEvent(event, {
+  const preflight = resolveDomainFromEvent(event, {
     kinds: ["topic-thread"],
+    reactivateArchived: false,
   });
+  if (!preflight || !legacyDeliveryAllowed(preflight.workspaceDir, event)) return;
+  const resolved = preflight.domainEntry.archived === true
+    ? resolveDomainFromEvent(event, { kinds: ["topic-thread"] })
+    : preflight;
   if (!resolved) return;
 
   const {

@@ -268,7 +268,7 @@ process.exit(2);
     expect(installed).toContain("engram-rule-context-load");
     expect(installed).toContain("engram-rule-rollback");
     expect(existsSync(join(hooksDir, "engram-rule-context-load", "handler.js"))).toBe(true);
-    expect(result.stdout).toContain("verified: 11 runtime hook entries (2 required OLL hooks present)");
+    expect(result.stdout).toContain("verified: 11 selected runtime hook entries (2 required OLL hooks present)");
 
     const failedReadback = await runInit(workspace, ["--hooks-dir", hooksDir], {
       skipGatewayRestart: false,

@@ -57,6 +57,8 @@ export type ResolvedDomain = {
 export type ResolveOpts = {
   /** Restrict to specific session kinds. Default: all three. */
   kinds?: SessionKind[];
+  /** Read-only preflight for ownership gates; defaults to legacy reactivation. */
+  reactivateArchived?: boolean;
 };
 
 const ALL_KINDS: SessionKind[] = ["topic-thread", "peer-direct", "group-direct"];
@@ -260,7 +262,7 @@ export function resolveDomainFromEvent(
   if (!domainName || !domainEntry) return null;
 
   // --- Unarchive-on-message ---
-  if (domainEntry.archived === true) {
+  if (domainEntry.archived === true && opts?.reactivateArchived !== false) {
     delete domainEntry.archived;
     const archivesDir = join(
       workspaceDir,

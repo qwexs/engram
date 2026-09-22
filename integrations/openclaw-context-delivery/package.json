@@ -1,0 +1,11 @@
+{
+  "name": "@qwexs/engram-openclaw-context-delivery",
+  "version": "3.6.5",
+  "private": true,
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

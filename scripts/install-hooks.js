@@ -48,6 +48,7 @@
 //   bun skills/engram/scripts/install-hooks.js                       # copy all engram-* hooks to managedHooksDir
 //   bun skills/engram/scripts/install-hooks.js --dry-run             # preview only, no changes
 //   bun skills/engram/scripts/install-hooks.js --force               # overwrite existing entries (after backup)
+//   bun skills/engram/scripts/install-hooks.js --only a,b --force    # replace only named hooks
 //   bun skills/engram/scripts/install-hooks.js --hooks-dir <path>    # override gateway hooks dir
 //   bun skills/engram/scripts/install-hooks.js --no-backup           # skip backup (dangerous)
 //
@@ -77,6 +78,7 @@ const { values: args } = parseArgs({
     'no-backup': { type: 'boolean', default: false },
     'dry-run': { type: 'boolean', default: false },
     'build': { type: 'boolean', default: true },
+    'only': { type: 'string' },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -96,6 +98,7 @@ Options:
   --no-backup            Skip backup of non-junction entries (dangerous)
   --dry-run              Preview only, no filesystem changes
   --no-build             Skip handler.js build step
+  --only <a,b>           Build/install only the named engram hooks
   -h, --help             Show this help
 
 What it does:
@@ -245,10 +248,17 @@ if (!existsSync(SOURCE_HOOKS)) {
   process.exit(1);
 }
 
-const hookNames = readdirSync(SOURCE_HOOKS, { withFileTypes: true })
+const allHookNames = readdirSync(SOURCE_HOOKS, { withFileTypes: true })
   .filter((e) => e.isDirectory() && e.name.startsWith('engram-'))
   .map((e) => e.name)
   .sort();
+const requestedHooks = String(args.only || '').split(',').map((name) => name.trim()).filter(Boolean);
+const unknownRequestedHooks = requestedHooks.filter((name) => !allHookNames.includes(name));
+if (unknownRequestedHooks.length > 0) {
+  console.error(`install-hooks: unknown --only entries: ${unknownRequestedHooks.join(', ')}`);
+  process.exit(1);
+}
+const hookNames = requestedHooks.length > 0 ? [...new Set(requestedHooks)].sort() : allHookNames;
 
 const REQUIRED_OLL_HOOKS = [
   'engram-rule-context-load',
@@ -263,8 +273,8 @@ if (hookNames.length === 0) {
 // Fail before touching the runtime directory when the canonical source set is
 // incomplete. A successful fresh install must never silently omit the two OLL
 // delivery hooks or materialize an entry without both runtime inputs.
-const missingRequiredOllHooks = REQUIRED_OLL_HOOKS.filter((name) => !hookNames.includes(name));
-const invalidSourceHooks = hookNames.filter((name) => {
+const missingRequiredOllHooks = REQUIRED_OLL_HOOKS.filter((name) => !allHookNames.includes(name));
+const invalidSourceHooks = allHookNames.filter((name) => {
   const sourceDir = join(SOURCE_HOOKS, name);
   return !existsSync(join(sourceDir, 'handler.ts')) || !existsSync(join(sourceDir, 'HOOK.md'));
 });
@@ -280,7 +290,8 @@ if (missingRequiredOllHooks.length > 0 || invalidSourceHooks.length > 0) {
 
 console.log(`install-hooks:`);
 console.log(`  skill-dir:  ${SKILL_DIR}`);
-console.log(`  source:     ${SOURCE_HOOKS} (${hookNames.length} hooks)`);
+console.log(`  source:     ${SOURCE_HOOKS} (${allHookNames.length} hooks)`);
+console.log(`  selected:   ${hookNames.length === allHookNames.length ? 'all' : hookNames.join(', ')}`);
 console.log(`  target:     ${GATEWAY_HOOKS}`);
 console.log(`  install:    copy (default; --link removed — see header)`);
 console.log(`  mode:       ${args['dry-run'] ? 'dry-run' : args.force ? 'force' : 'safe'}`);
@@ -350,7 +361,7 @@ if (existsSync(GATEWAY_HOOKS)) {
     if (entry.name.startsWith('_pre-install-')) continue; // backup directories are intentional
     if (entry.name.startsWith('_pre-junction-')) continue; // legacy backup prefix from before --link removal
     if (entry.name.startsWith('_archived-')) continue;
-    if (!hookNames.includes(entry.name)) {
+    if (!allHookNames.includes(entry.name)) {
       orphans.push(entry.name);
     }
   }
@@ -463,7 +474,12 @@ if (orphans.length > 0) {
 }
 
 if (failed === 0 && !args['dry-run']) {
-  console.log(`  verified: ${hookNames.length} runtime hook entries (${REQUIRED_OLL_HOOKS.length} required OLL hooks present)`);
+  const missingRuntimeOll = REQUIRED_OLL_HOOKS.filter((name) => ['handler.js', 'HOOK.md'].some((file) => !existsSync(join(GATEWAY_HOOKS, name, file))));
+  if (missingRuntimeOll.length > 0) {
+    console.error(`  ❌ required runtime OLL hooks missing after install: ${missingRuntimeOll.join(', ')}`);
+    process.exit(1);
+  }
+  console.log(`  verified: ${hookNames.length} selected runtime hook entries (${REQUIRED_OLL_HOOKS.length} required OLL hooks present)`);
   console.log(`\nNext: openclaw gateway restart`);
 }
 

@@ -11,6 +11,7 @@ import {
   type RuleContextSessionKindV1,
   type RuleContextTargetV1,
 } from "../../src/oll/rule-context";
+import { legacyDeliveryAllowed } from "../../src/context-delivery/legacy-policy";
 
 type JsonObject = Record<string, any>;
 
@@ -126,10 +127,11 @@ const handler = async (event: any) => {
   if (event?.type !== "agent" || event?.action !== "bootstrap") return;
   const bootstrapFiles = event?.context?.bootstrapFiles;
   if (!Array.isArray(bootstrapFiles)) return;
-  const baseBootstrapFiles = bootstrapFiles.filter((file: any) => file?.name !== RULE_CONTEXT_BOOTSTRAP_NAME);
-  event.context.bootstrapFiles = baseBootstrapFiles;
   const workspace = event?.context?.workspaceDir;
   if (!workspace) return;
+  if (!legacyDeliveryAllowed(workspace, event)) return;
+  const baseBootstrapFiles = bootstrapFiles.filter((file: any) => file?.name !== RULE_CONTEXT_BOOTSTRAP_NAME);
+  event.context.bootstrapFiles = baseBootstrapFiles;
   const configPath = join(workspace, "engram.json");
   if (!existsSync(configPath)) return;
   const config = readJson(configPath);

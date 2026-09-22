@@ -1,0 +1,13 @@
+{
+  "id": "engram-context-delivery",
+  "name": "Engram Context Delivery",
+  "description": "Read-only, policy-gated KG, OLL, domain, and exact-session context owner.",
+  "activation": {
+    "onCapabilities": ["hook"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

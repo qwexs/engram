@@ -390,6 +390,14 @@ function supportedChannel(event: any, context: any): "telegram" | "openclaw" | n
   return null;
 }
 
+function isInternalCronWrite(event: any, context: any): boolean {
+  const eventSessionKey = typeof event?.sessionKey === "string" ? event.sessionKey : null;
+  const contextSessionKey = typeof context?.sessionKey === "string" ? context.sessionKey : null;
+  if (eventSessionKey && contextSessionKey && eventSessionKey !== contextSessionKey) return false;
+  const runtimeSessionKey = eventSessionKey ?? contextSessionKey;
+  return typeof runtimeSessionKey === "string" && runtimeSessionKey.includes(":cron:");
+}
+
 function safe(api: any, stage: string, operation: () => unknown): void {
   try {
     const result = operation() as any;
@@ -625,6 +633,9 @@ export default definePluginEntry({
     api.on("before_message_write", (event: any, context: any) => {
       // This hook also observes assistant/tool writes. They are not candidates.
       if (event?.message?.role !== "user") return;
+      // Cron prompts are persisted as user-shaped messages but do not represent
+      // channel users and intentionally carry no transport/source-turn identity.
+      if (isInternalCronWrite(event, context)) return;
       safe(api, "before_message_write", () => {
         const identity = resolveObservationPersistedUserIdentity(event || {}, context || {});
         const adapter = adapterFor(api, identity.runtimeSessionKey);

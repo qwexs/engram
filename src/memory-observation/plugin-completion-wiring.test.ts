@@ -35,8 +35,13 @@ test('production plugin adapter registers tool-delivered finals in its durable f
   plugin.default.register({...api,on:(name:string,fn:Function)=>hooks.set(name,fn),registerService(){},logger:{warn(){warnings++;}}});
   for(const role of ['assistant','tool'])hooks.get('before_message_write')!({message:{role}},{});
   expect(warnings).toBe(0);
+  const cronSessionKey='agent:fixture-main:cron:fixture-job:trigger';
+  hooks.get('before_message_write')!({message:{role:'user'}},{sessionKey:cronSessionKey});
+  expect(warnings).toBe(0); // Internal cron prompts are user-shaped but are not channel turns.
+  hooks.get('before_message_write')!({sessionKey:cronSessionKey,message:{role:'user'}},{sessionKey});
+  expect(warnings).toBe(1); // Conflicting runtime surfaces must not bypass fail-closed identity checks.
   hooks.get('before_message_write')!({message:{role:'user'}},{});
-  expect(warnings).toBe(1); // Invalid user identity must still fail closed.
+  expect(warnings).toBe(2); // Invalid user identity must still fail closed.
   const {adapterFor}=plugin;const adapter=adapterFor(api,sessionKey);expect(adapter).not.toBeNull();
   const context={sessionKey,sessionId:'fixture-session',runId:'fixture-run',trigger:'user'};
   const user={role:'user',idempotencyKey:sourceTurnId,content:'Prepare the agreed report',__openclaw:{senderIsOwner:true,transport:{channel:'telegram',messageId:'42'}}};

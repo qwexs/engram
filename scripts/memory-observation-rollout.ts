@@ -37,6 +37,7 @@ import {
 } from "../src/memory-observation/qmd-binding-preflight.ts";
 import { resolveQmdContext } from "../src/qmd/context.ts";
 import { personalBatchBinding, runtimeSourcePolicyDigest } from "./_lib/memory-observation-rollout-policy.ts";
+import { qualityTransitionInventory, rebindQualityRollout } from "../src/memory-observation/quality-rollout.ts";
 
 import { configuredTopicBindings } from "../src/memory-observation/topic-bindings.ts";
 
@@ -626,9 +627,37 @@ if (existsSync(projectionPath)) {
     throw new Error("existing projection has different authority; disable and review it before replacement");
   }
 }
+const currentProjection = existsSync(projectionPath) ? json(projectionPath) : null;
+const qualityRolloutPath = join(workspace, "memory-state", "memory-observation", "quality-rollout.json");
+let reboundQualityRollout: ReturnType<typeof rebindQualityRollout> | null = null;
+if (batchCommand && currentProjection && existsSync(qualityRolloutPath)) {
+  reboundQualityRollout = rebindQualityRollout(
+    json(qualityRolloutPath),
+    {
+      workspaceId: currentProjection.workspaceId,
+      pluginDigest: currentProjection.pluginDigest,
+      baseEvaluationPolicyDigest: currentProjection.evaluation?.policyDigest,
+      sourcePolicyDigest: currentProjection.evaluation?.batch?.sourcePolicyDigest,
+      applyAfter: currentProjection.consumers?.dailyNote?.applyAfter,
+    },
+    {
+      workspaceId: projection.workspaceId,
+      pluginDigest: projection.pluginDigest,
+      baseEvaluationPolicyDigest: projection.evaluation!.policyDigest,
+      sourcePolicyDigest: projection.evaluation!.batch!.sourcePolicyDigest,
+      applyAfter: projection.consumers!.dailyNote.applyAfter,
+    },
+    qualityTransitionInventory(workspace).inventoryDigest,
+    new Date().toISOString(),
+  );
+}
 atomicWrite(projectionPath, projection);
 const readBack = json(projectionPath);
 if (JSON.stringify(readBack) !== JSON.stringify(projection)) throw new Error("projection read-back mismatch");
+if (reboundQualityRollout) {
+  atomicWrite(qualityRolloutPath, reboundQualityRollout);
+  if (JSON.stringify(json(qualityRolloutPath)) !== JSON.stringify(reboundQualityRollout)) throw new Error("quality rollout read-back mismatch");
+}
 console.log(JSON.stringify({
   schema: "engram.memory-observation-activation.v1",
   status: batchCommand ? "enabled-batch-canary" : ownershipCommand ? "enabled-ownership" : canaryCommand ? "enabled-canary" : "enabled-shadow",
@@ -636,5 +665,6 @@ console.log(JSON.stringify({
   projectionPath,
   pluginDigest: bundle.digest,
   plugin,
+  qualityRolloutRebound: Boolean(reboundQualityRollout),
   readBack: true,
 }, null, 2));

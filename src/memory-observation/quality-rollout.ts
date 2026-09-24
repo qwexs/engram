@@ -14,6 +14,7 @@ export type QualityRollout = {
     preparedAt: string;
     inventoryDigest: Digest;
 };
+type QualityRolloutIdentity = Pick<QualityRollout, 'workspaceId' | 'pluginDigest' | 'baseEvaluationPolicyDigest' | 'sourcePolicyDigest' | 'applyAfter'>;
 const hash = (v: unknown) => sha256(v as JsonValue);
 export function contextualEvaluationDigest(base: Digest, promptVersion: ContextualPromptVersion = CONTEXTUAL_PROMPT_VERSION): Digest {
     return hash({ schema: 'engram.memory-contextual-policy.v2', baseEvaluationPolicyDigest: base, promptVersion, thinking: CONTEXTUAL_THINKING });
@@ -38,6 +39,20 @@ export function readQualityRollout(workspace: string, expected: Pick<QualityRoll
         || new Set(value.exactScopes.map(hash)).size !== value.exactScopes.length)
         throw Error('QUALITY_ROLLOUT_IDENTITY_CHANGED');
     return value;
+}
+/** Rebind an enabled quality sidecar during a verified projection rollout.
+ * The saved sidecar must still match the current projection exactly. */
+export function rebindQualityRollout(saved: unknown, current: QualityRolloutIdentity, next: QualityRolloutIdentity, inventoryDigest: Digest, preparedAt: string): QualityRollout & { digest: Digest } {
+    if (!saved || typeof saved !== 'object') throw Error('QUALITY_ROLLOUT_IDENTITY_CHANGED');
+    const { digest, ...value } = saved as any;
+    if (value.schema !== 'engram.memory-quality-rollout.v1' || !['active', 'drain'].includes(value.mode)
+        || Object.keys(value).sort().join(',') !== 'applyAfter,baseEvaluationPolicyDigest,exactScopes,inventoryDigest,mode,pluginDigest,preparedAt,schema,sourcePolicyDigest,workspaceId'
+        || digest !== hash(value)
+        || (['workspaceId', 'pluginDigest', 'baseEvaluationPolicyDigest', 'sourcePolicyDigest', 'applyAfter'] as const).some(k => value[k] !== current[k])
+        || !/^sha256:[a-f0-9]{64}$/.test(inventoryDigest) || !Number.isFinite(Date.parse(preparedAt)))
+        throw Error('QUALITY_ROLLOUT_IDENTITY_CHANGED');
+    const rebound: QualityRollout = { ...value, ...next, preparedAt, inventoryDigest };
+    return { ...rebound, digest: hash(rebound) };
 }
 export function qualityScopeEnabled(rollout: QualityRollout | null, scope: ObservationScope): boolean {
     return !!rollout?.exactScopes.some(s => hash(s) === hash(scope));

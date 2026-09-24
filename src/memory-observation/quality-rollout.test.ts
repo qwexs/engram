@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { sha256, type ObservationScope } from './ledger.ts';
-import { contextualEvaluationDigest, qualityProducerForScope, qualityTransitionInventory, readQualityRollout, type QualityRollout } from './quality-rollout.ts';
+import { contextualEvaluationDigest, qualityProducerForScope, qualityTransitionInventory, readQualityRollout, rebindQualityRollout, type QualityRollout } from './quality-rollout.ts';
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(r => rmSync(r, { recursive: true, force: true })));
 const scope: ObservationScope = { workspaceId: 'alpha', runtimeSessionKey: 'agent:alpha:telegram:direct:100000001', scopeClass: 'self', scopeId: 'workspace:alpha' };
@@ -30,6 +30,17 @@ test('binding, plugin, source-policy and activation-time drift fail closed', () 
     expect(readQualityRollout(f.workspace, f.rollout)).toEqual(f.rollout);
     for (const k of ['pluginDigest', 'baseEvaluationPolicyDigest', 'sourcePolicyDigest', 'applyAfter'] as const)
         expect(() => readQualityRollout(f.workspace, { ...f.rollout, [k]: k === 'applyAfter' ? '2026-09-02T12:00:00.000Z' : sha256('drift') })).toThrow();
+});
+test('verified projection rollout rebinds the quality sidecar and rejects drift', () => {
+    const f = setup();
+    const saved = { ...f.rollout, digest: sha256(f.rollout) };
+    const next = { workspaceId: 'alpha', pluginDigest: sha256('plugin-next'), baseEvaluationPolicyDigest: sha256('base-next'), sourcePolicyDigest: sha256('source-next'), applyAfter: '2026-09-02T12:00:00.000Z' };
+    const rebound = rebindQualityRollout(saved, f.rollout, next, sha256('inventory-next'), '2026-09-02T13:00:00.000Z');
+    expect(rebound).toMatchObject(next);
+    expect(rebound.inventoryDigest).toBe(sha256('inventory-next'));
+    const { digest, ...body } = rebound;
+    expect(digest).toBe(sha256(body));
+    expect(() => rebindQualityRollout(saved, { ...f.rollout, pluginDigest: sha256('drift') }, next, sha256('inventory-next'), '2026-09-02T13:00:00.000Z')).toThrow('QUALITY_ROLLOUT_IDENTITY_CHANGED');
 });
 test('old unfinished bundle drains under original policy; source and job bytes remain unchanged', () => {
     const f = setup();

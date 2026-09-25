@@ -3,6 +3,7 @@
 > Status: accepted research direction, not an implementation specification.
 > Recorded: 2026-09-25.
 > Scope: planning only; QMD, Engram runtime, decay policy, configuration, and production remain unchanged.
+> Canonical Wiki artifact: `Исследовательский артефакт: Jev и System One Models как управляющий слой Engram`, path `/doc/issledovatelskij-artefakt-jev-i-system-one-models-kak-upravlyayushij-sloj-engram-0X9Jd7s0Bq`, sections 18–23.
 
 ## Decision
 
@@ -236,4 +237,3 @@ merely if it produces plausible scores.
 - changing KG lifecycle or deleting assertions;
 - allowing JEV to refresh access counters without trusted utilization evidence;
 - production rollout before a side-effect-free corpus evaluation and contract review.
-

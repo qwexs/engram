@@ -65,11 +65,12 @@ function openclaw(argv: string[], input?: string): string {
     encoding: "utf8",
     input,
     shell: false,
-    timeout: 30_000,
+    timeout: process.platform === "win32" ? 90_000 : 30_000,
+    windowsHide: true,
   });
   if (result.error || result.status !== 0) {
     const timedOut = result.error && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
-    throw new Error(timedOut ? "openclaw command timed out after 30000ms"
+    throw new Error(timedOut ? `openclaw command timed out after ${process.platform === "win32" ? 90000 : 30000}ms`
       : result.stderr || result.error?.message || `openclaw exited ${result.status}`);
   }
   return result.stdout || "";

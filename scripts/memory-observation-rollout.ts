@@ -45,7 +45,7 @@ const DEFAULT_INFERENCE_MODEL = "openai/gpt-5.6-terra";
 const OPENCLAW_CHILD_TIMEOUT_MS = 30_000;
 const OPENCLAW_READ_TIMEOUT_MS = 5_000;
 // Windows CLI startup/plugin discovery can exceed the regular read budget.
-const OPENCLAW_PLUGIN_INSPECT_TIMEOUT_MS = 60_000;
+const OPENCLAW_PLUGIN_INSPECT_TIMEOUT_MS = 150_000;
 const OPENCLAW_PLUGIN_POLICY_READ_TIMEOUT_MS = 30_000;
 
 function args(argv: string[]): Record<string, string | boolean> {
@@ -227,6 +227,7 @@ function inspectPlugin() {
   const result = spawnSync("openclaw", ["plugins", "inspect", PLUGIN_ID, "--json"], {
     encoding: "utf8",
     timeout: OPENCLAW_PLUGIN_INSPECT_TIMEOUT_MS,
+    windowsHide: true,
   });
   if (result.error) {
     const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
@@ -636,7 +637,7 @@ if (canaryCommand) {
 }
 const plugin = inspectPlugin();
 if (!plugin.installed || !plugin.enabled || plugin.status !== "loaded" || plugin.digest !== bundle.digest || plugin.diagnostics.length > 0) {
-  throw new Error("installed plugin is not loaded with the planned bytes and clean diagnostics");
+  throw new Error(`installed plugin is not loaded with the planned bytes and clean diagnostics: ${JSON.stringify(plugin)}`);
 }
 if (!hostInferenceBoundary(projection).active) {
   throw new Error("host inference boundary read-back failed");

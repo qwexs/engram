@@ -87,6 +87,21 @@ console.log(JSON.stringify({
   }
 }, 15_000);
 
+test.skipIf(process.platform !== "win32")("stdin transport refuses a non-forwarding policy shim", () => {
+  const root = mkdtempSync(join(tmpdir(), "engram-model-run-shim-denial-"));
+  const shim = join(root, "openclaw.cmd");
+  writeFileSync(shim, "@echo off\r\necho denied\r\n", "utf8");
+  try {
+    const result = defaultOpenClawModelRunExecutor(shim, ["infer", "model", "run"], {
+      cwd: root, timeout: 10_000, maxBuffer: 1024, input: "private prompt",
+    });
+    expect(result.error?.message).toContain("could not resolve the CLI entry");
+    expect(result.stdout).toBe("");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test.skipIf(process.platform !== "win32")("stdin transport propagates the primary provider error on Windows", async () => {
   const root = mkdtempSync(join(tmpdir(), "engram-model-run-primary-error-"));
   const fixture = join(root, "fixture.mjs");
@@ -122,7 +137,7 @@ function success(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     ok: true,
     capability: "model.run",
-    transport: "gateway",
+    transport: "local",
     provider: "openai",
     model: "gpt-5.6-terra",
     attempts: [],
@@ -164,11 +179,11 @@ describe("OpenClaw raw model-run provider", () => {
       seen = { command, args, input: options.input };
       return { status: 0, signal: null, stdout: success(), stderr: "" };
     };
-    const provider = openClawRawModelRunProvider({ cwd: "/tmp", execute });
+    const provider = openClawRawModelRunProvider({ cwd: "/tmp", agentId: "main", execute });
     const result = await provider(request);
     expect(seen?.command).toBe("openclaw");
     expect(seen?.args).toEqual([
-      "infer", "model", "run", "--gateway", "--model", request.model,
+      "infer", "model", "run", "--local", "--agent", "main", "--model", request.model,
       "--thinking", "max", "--json",
     ]);
     expect(seen?.input).toBe(request.prompt);
@@ -194,6 +209,10 @@ describe("OpenClaw raw model-run provider", () => {
     });
     await expect(provider({ ...request, system: "hidden" })).rejects.toMatchObject({ code: "UNSUPPORTED_REQUEST" });
     await expect(provider(request)).rejects.toMatchObject({ code: "INVALID_READBACK" });
+    const wrongTransport = openClawRawModelRunProvider({ cwd: "/tmp", execute: () => ({
+      status: 0, signal: null, stdout: success({ transport: "gateway" }), stderr: "",
+    }) });
+    await expect(wrongTransport(request)).rejects.toMatchObject({ code: "INVALID_READBACK" });
 
     const failed = openClawRawModelRunProvider({
       cwd: "/tmp",

@@ -317,7 +317,7 @@ const evaluations: { result: Awaited<ReturnType<BatchLiveWorker["processOne"]>>;
 const maxBatchesPerWake = 3;
 const drainStarted = Date.now();
 
-const rawComplete = openClawRawModelRunProvider({ cwd: workspace });
+const rawComplete = openClawRawModelRunProvider({ cwd: workspace, agentId: workspaceId });
 const releaseInference = acquireProcessLease(join(tmpdir(), "engram-memory-batch-inference-" + (process.getuid?.() ?? "user")));
 try {
 for (let round = 0; releaseInference && round < maxBatchesPerWake; round++) {

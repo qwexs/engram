@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
   BATCH_SHADOW_THINKING_LEVELS,
@@ -53,7 +53,17 @@ function resolveOpenClawCliEntry(resolved: string): string | null {
   if (process.platform !== "win32" || !/\.(?:cmd|bat)$/i.test(resolved)
     || !["openclaw.cmd", "openclaw.bat"].includes(basename(resolved).toLowerCase())) return null;
   const candidate = join(dirname(resolved), "node_modules", "openclaw", "openclaw.mjs");
-  return existsSync(candidate) ? realpathSync(candidate) : null;
+  if (existsSync(candidate)) return realpathSync(candidate);
+  // The managed agent-cli shim may be a literal forwarding wrapper. Only use
+  // its exact Node/CLI targets when it has no additional policy logic.
+  const wrapper = readFileSync(resolved, "utf8").replaceAll("\r\n", "\n").trim();
+  const match = /^@echo off\nsetlocal DisableDelayedExpansion\n"([^"\n]+[\\/]node\.exe)" ([^\s"\n]+[\\/]node_modules[\\/]openclaw[\\/]dist[\\/]index\.js) %\*$/i.exec(wrapper);
+  if (!match || !existsSync(match[1]!) || !existsSync(match[2]!)) return null;
+  const node = Bun.which("node");
+  const appData = process.env.APPDATA;
+  if (!node || !appData || realpathSync(node) !== realpathSync(match[1]!)
+    || realpathSync(match[2]!) !== realpathSync(join(appData, "npm", "node_modules", "openclaw", "dist", "index.js"))) return null;
+  return realpathSync(match[2]!);
 }
 
 function row(value: unknown): Row | null {
@@ -144,12 +154,13 @@ export const defaultOpenClawModelRunExecutor = defaultOpenClawCommandExecutor;
 
 export function openClawRawModelRunProvider(options: {
   cwd: string;
+  agentId?: string;
   command?: string;
   timeoutMs?: number;
   maxBufferBytes?: number;
   execute?: OpenClawModelRunExecutor;
 }): (request: BatchShadowCompletionRequest) => Promise<BatchShadowProviderResult> {
-  if (!options.cwd) fail("INVALID_CONFIG", "an explicit model-run cwd is required");
+  if (!options.cwd || (options.agentId !== undefined && !TOKEN_RE.test(options.agentId))) fail("INVALID_CONFIG", "model-run cwd or agent id is invalid");
   const command = options.command ?? "openclaw";
   const timeout = options.timeoutMs ?? 120_000;
   const maxBuffer = options.maxBufferBytes ?? 2 * 1024 * 1024;
@@ -167,7 +178,8 @@ export function openClawRawModelRunProvider(options: {
     }
     const execution = execute(command, [
       "infer", "model", "run",
-      "--gateway",
+      "--local",
+      ...(options.agentId ? ["--agent", options.agentId] : []),
       "--model", request.model,
       "--thinking", request.thinking,
       "--json",
@@ -178,7 +190,7 @@ export function openClawRawModelRunProvider(options: {
     }
     const parsed = parseOpenClawJson(execution.stdout);
     const result = row(parsed);
-    if (!result || result.ok !== true || result.capability !== "model.run" || result.transport !== "gateway"
+    if (!result || result.ok !== true || result.capability !== "model.run" || result.transport !== "local"
       || typeof result.provider !== "string" || !TOKEN_RE.test(result.provider)
       || typeof result.model !== "string" || !TOKEN_RE.test(result.model)
       || !Array.isArray(result.attempts) || result.attempts.length !== 0

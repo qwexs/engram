@@ -6,19 +6,25 @@ import {
 } from "./inference-boundary.ts";
 
 describe("memory observation inference model boundary", () => {
-  test("requires a single exact plugin model override authorization", () => {
+  test("requires an exact explicit plugin authorization, including during a bounded model overlap", () => {
     const model = "openai/gpt-5.6-terra";
+    const next = "openai/gpt-6-luna";
+    for (const allowedModels of [[model], [model, next]]) {
+      expect(hasExactInferenceModelAuthorization({ allowModelOverride: true, allowedModels }, model)).toBe(true);
+    }
     expect(hasExactInferenceModelAuthorization({
-      allowModelOverride: true,
-      allowedModels: [model],
-    }, model)).toBe(true);
+      allowModelOverride: true, allowedModels: [model, next],
+    }, next)).toBe(true);
 
     for (const policy of [
       undefined,
       { allowModelOverride: false, allowedModels: [model] },
       { allowModelOverride: true, allowedModels: [] },
       { allowModelOverride: true, allowedModels: ["*"] },
-      { allowModelOverride: true, allowedModels: [model, "openai/gpt-5.6-sol"] },
+      { allowModelOverride: true, allowedModels: [model, "*"] },
+      { allowModelOverride: true, allowedModels: [model, model] },
+      { allowModelOverride: true, allowedModels: [model, null] },
+      { allowModelOverride: true, allowedModels: [next] },
     ]) expect(hasExactInferenceModelAuthorization(policy, model)).toBe(false);
   });
 

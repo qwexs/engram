@@ -100,7 +100,7 @@ process.exit(23);
   try {
     const provider = openClawRawModelRunProvider({ cwd: root, command: fixture.replaceAll("\\", "/") });
     await expect(provider({
-      model: "openai/gpt-5.6-terra", system: "", prompt: "Ошибка 🧊", maxTokens: 1_000, temperature: 0, tools: [],
+      model: "openai/gpt-5.6-terra", system: "", prompt: "Ошибка 🧊", maxTokens: 1_000, temperature: 0, tools: [], thinking: "max",
     })).rejects.toMatchObject({ code: "MODEL_RUN_FAILED", message: expect.stringContaining(marker) });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -115,6 +115,7 @@ const request: BatchShadowCompletionRequest = {
   maxTokens: 2_000,
   temperature: 0,
   tools: [],
+  thinking: "max",
 };
 
 function success(overrides: Record<string, unknown> = {}): string {
@@ -168,7 +169,7 @@ describe("OpenClaw raw model-run provider", () => {
     expect(seen?.command).toBe("openclaw");
     expect(seen?.args).toEqual([
       "infer", "model", "run", "--gateway", "--model", request.model,
-      "--thinking", "off", "--json",
+      "--thinking", "max", "--json",
     ]);
     expect(seen?.input).toBe(request.prompt);
     expect(seen?.args).not.toContain(request.prompt);
@@ -276,9 +277,9 @@ describe("OpenClaw gateway model-run provider", () => {
 });
 
 
-test('explicit evaluator thinking is passed to the supported CLI, while malformed levels are rejected',async()=>{
+test('explicit max evaluator thinking is passed to the supported CLI, while malformed levels are rejected',async()=>{
  let calls=0;
- const provider=openClawRawModelRunProvider({cwd:'/tmp',execute:(_command,args)=>{calls++;expect(args[args.indexOf('--thinking')+1]).toBe('medium');return {status:0,signal:null,stdout:success(),stderr:''};}});
- await provider({...request,thinking:'medium'});expect(calls).toBe(1);
+ const provider=openClawRawModelRunProvider({cwd:'/tmp',execute:(_command,args)=>{calls++;expect(args[args.indexOf('--thinking')+1]).toBe('max');return {status:0,signal:null,stdout:success(),stderr:''};}});
+ await provider(request);expect(calls).toBe(1);
  await expect(provider({...request,thinking:'unbounded' as any})).rejects.toMatchObject({code:'UNSUPPORTED_REQUEST'});expect(calls).toBe(1);
 });

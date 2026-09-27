@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { buildContextualObservation, contextualEvidenceCatalog, contextualPrompt, parseContextualJsonl, parseContextualLedger, parseContextualOutput, renderContextualObservation, runContextualShadow, type ContextualOutput } from './contextual-observation.ts';
+import { buildContextualObservation, CONTEXTUAL_THINKING, contextualEvidenceCatalog, contextualPrompt, parseContextualJsonl, parseContextualLedger, parseContextualOutput, renderContextualObservation, runContextualShadow, type ContextualOutput } from './contextual-observation.ts';
 import { compileBatchFrame, type CompiledBatchBundleV1 } from './batch-compiler.ts';
 import { deriveSourceDigest, sha256, type JsonValue } from './ledger.ts';
 import { fixture as promptFixture, now as promptNow } from '../../tests/fixtures/memory-observation/contextual/bundle.ts';
@@ -92,7 +92,7 @@ test('one tool-free call, separate policy identity, no writes, model mismatch de
     const b = fixture();
     let calls = 0;
     const o = output(b);
-    const r = await runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async (request) => { calls++; expect(request.tools).toEqual([]); expect(request.system).toBe(''); return { output: ledger(b, o), resolvedModel: request.model }; } });
+    const r = await runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async (request) => { calls++; expect(request.tools).toEqual([]); expect(request.system).toBe(''); expect(request.thinking).toBe(CONTEXTUAL_THINKING); return { output: ledger(b, o), resolvedModel: request.model }; } });
     expect(calls).toBe(1);
     expect(r.observation.schema).toBe('engram.memory-contextual-observation.v2');
     await expect(runContextualShadow({ bundle: b, model: 'fixture/model', maxTokens: 2048, now: () => now, complete: async () => ({ output: JSON.stringify(o), resolvedModel: 'different/model' }) })).rejects.toThrow('CONTEXTUAL_MODEL_MISMATCH');

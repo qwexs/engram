@@ -2,9 +2,10 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type {
-  BatchShadowCompletionRequest,
-  BatchShadowProviderResult,
+import {
+  BATCH_SHADOW_THINKING_LEVELS,
+  type BatchShadowCompletionRequest,
+  type BatchShadowProviderResult,
 } from "./batch-shadow-runner.ts";
 
 type Row = Record<string, unknown>;
@@ -61,6 +62,10 @@ function row(value: unknown): Row | null {
 
 function fail(code: string, message: string): never {
   throw new BatchShadowOpenClawProviderError(code, message);
+}
+
+function validThinking(value: unknown): boolean {
+  return typeof value === "string" && (BATCH_SHADOW_THINKING_LEVELS as readonly string[]).includes(value);
 }
 
 function parseOpenClawJson(stdout: string): unknown {
@@ -154,7 +159,7 @@ export function openClawRawModelRunProvider(options: {
   }
   const execute = options.execute ?? defaultOpenClawCommandExecutor;
   return async (request) => {
-    if ((request.thinking !== undefined && !["off", "low", "medium", "high"].includes(request.thinking))
+    if (!validThinking(request.thinking)
       || request.system !== "" || request.tools.length !== 0 || request.temperature !== 0
       || !TOKEN_RE.test(request.model) || !Number.isSafeInteger(request.maxTokens) || request.maxTokens < 1
       || typeof request.prompt !== "string" || !request.prompt.trim()) {
@@ -164,7 +169,7 @@ export function openClawRawModelRunProvider(options: {
       "infer", "model", "run",
       "--gateway",
       "--model", request.model,
-      "--thinking", request.thinking ?? "off",
+      "--thinking", request.thinking,
       "--json",
     ], { cwd: options.cwd, timeout, maxBuffer, input: request.prompt });
     if (execution.error || execution.status !== 0 || execution.signal !== null) {
@@ -212,7 +217,7 @@ export function openClawGatewayModelRunProvider(options: {
   }
   const execute = options.execute ?? defaultOpenClawCommandExecutor;
   return async (request) => {
-    if ((request.thinking !== undefined && !["off", "low", "medium", "high"].includes(request.thinking))
+    if (!validThinking(request.thinking)
       || request.system !== "" || request.tools.length !== 0 || request.temperature !== 0
       || !TOKEN_RE.test(request.model) || !Number.isSafeInteger(request.maxTokens) || request.maxTokens < 1
       || typeof request.prompt !== "string" || !request.prompt.trim()) {
@@ -224,7 +229,7 @@ export function openClawGatewayModelRunProvider(options: {
       sessionId,
       sessionKey: `agent:${options.agentId}:${sessionId}`,
       message: request.prompt,
-      thinking: request.thinking ?? "off",
+      thinking: request.thinking,
       modelRun: true,
       promptMode: "none",
       cleanupBundleMcpOnRunEnd: true,

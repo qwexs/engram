@@ -26,6 +26,8 @@ type Row = Record<string, unknown>;
 export const BATCH_SHADOW_OUTPUT_SCHEMA = "engram.memory-batch-shadow-output.v1" as const;
 export const BATCH_SHADOW_RESULT_SCHEMA = "engram.memory-batch-shadow-result.v1" as const;
 export const BATCH_SHADOW_PROMPT_VERSION = "memory-batch-shadow-prompt-v11" as const;
+export const BATCH_SHADOW_THINKING = "max" as const;
+export const BATCH_SHADOW_THINKING_LEVELS = ["off", "low", "medium", "high", "max"] as const;
 export const MAX_ASSERTIONS_PER_WRITE_GROUP = 8;
 
 export type BatchScopedCitationV1 = {
@@ -89,8 +91,11 @@ export type BatchShadowRunnerConfigV3 = {
 
 export type BatchShadowRunnerConfig = BatchShadowRunnerConfigV1 | BatchShadowRunnerConfigV2 | BatchShadowRunnerConfigV3;
 
+export type BatchShadowThinking = typeof BATCH_SHADOW_THINKING_LEVELS[number];
+
 export type BatchShadowCompletionRequest = {
-  thinking?: "off" | "low" | "medium" | "high";
+  /** Explicit evaluator reasoning is part of the stable request identity. */
+  thinking: BatchShadowThinking;
   model: string;
   system: string;
   prompt: string;
@@ -464,10 +469,11 @@ export function batchShadowPrompt(bundleValue: unknown, configValue: BatchShadow
   }) as unknown as JsonValue);
   const configDigest = sha256(configValue as unknown as JsonValue);
   const requestDigest = sha256({
-    schema: "engram.memory-batch-shadow-request.v1",
+    schema: "engram.memory-batch-shadow-request.v2",
     bundleId: bundle.bundleId,
     promptDigest,
     configDigest,
+    thinking: BATCH_SHADOW_THINKING,
   } as unknown as JsonValue);
   const resultKey = sha256(`engram.memory-batch-shadow-result-key.v1\0${requestDigest}`);
   const task = {
@@ -495,6 +501,7 @@ export function batchShadowPrompt(bundleValue: unknown, configValue: BatchShadow
       maxTokens: configValue.maxTokens,
       temperature: 0,
       tools: [],
+      thinking: BATCH_SHADOW_THINKING,
     },
     promptDigest,
     configDigest,
@@ -664,10 +671,11 @@ function validateResultValue(parsed: unknown): BatchShadowResultV1 {
     }
   }
   const expectedRequestDigest = sha256({
-    schema: "engram.memory-batch-shadow-request.v1",
+    schema: "engram.memory-batch-shadow-request.v2",
     bundleId: typed.bundleId,
     promptDigest: typed.promptDigest,
     configDigest: typed.configDigest,
+    thinking: BATCH_SHADOW_THINKING,
   } as unknown as JsonValue);
   const expectedBundleId = sha256({
     schema: BATCH_BUNDLE_SCHEMA,

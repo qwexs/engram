@@ -22,7 +22,9 @@ test('absent opt-in keeps v1; scoped active mode has a separate prompt-bound dig
     expect(qualityProducerForScope(f.workspace, scope, null)).toBe('v1');
     expect(qualityProducerForScope(f.workspace, scope, f.rollout)).toBe('v2');
     expect(qualityProducerForScope(f.workspace, { ...scope, runtimeSessionKey: scope.runtimeSessionKey + '-other' }, f.rollout)).toBe('v1');
+    const legacyMediumDigest = sha256({ schema: 'engram.memory-contextual-policy.v2', baseEvaluationPolicyDigest: f.rollout.baseEvaluationPolicyDigest, promptVersion: 'memory-contextual-shadow-v16', thinking: 'medium' });
     expect(contextualEvaluationDigest(f.rollout.baseEvaluationPolicyDigest)).not.toBe(f.rollout.baseEvaluationPolicyDigest);
+    expect(contextualEvaluationDigest(f.rollout.baseEvaluationPolicyDigest)).not.toBe(legacyMediumDigest);
 });
 test('binding, plugin, source-policy and activation-time drift fail closed', () => {
     const f = setup();

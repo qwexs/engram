@@ -12,6 +12,7 @@ import {
 import {
   BATCH_SHADOW_OUTPUT_SCHEMA,
   BATCH_SHADOW_RESULT_SCHEMA,
+  BATCH_SHADOW_THINKING,
   MAX_ASSERTIONS_PER_WRITE_GROUP,
   BatchShadowRunnerError,
   batchShadowPrompt,
@@ -166,6 +167,14 @@ describe("Terra paired shadow runner", () => {
     expect(second.resultKey).toBe(first.resultKey);
     expect(first.request.model).toBe("openai/gpt-5.6-terra");
     expect(first.request.tools).toEqual([]);
+    expect(first.request.thinking).toBe(BATCH_SHADOW_THINKING);
+    const legacyOffRequestDigest = sha256({
+      schema: "engram.memory-batch-shadow-request.v1",
+      bundleId: compiled.bundleId,
+      promptDigest: first.promptDigest,
+      configDigest: first.configDigest,
+    } as JsonValue);
+    expect(first.requestDigest).not.toBe(legacyOffRequestDigest);
     expect(parseBatchShadowOutput(JSON.stringify(validOutput()), compiled, new Date("2026-08-31T20:11:00.000Z"))).toEqual(validOutput());
   });
 
@@ -226,6 +235,7 @@ describe("Terra paired shadow runner", () => {
     const root = mkdtempSync(join(tmpdir(), "engram-batch-shadow-"));
     try {
       let requestTools: unknown = null;
+      let requestThinking: unknown = null;
       const result = await runBatchShadow({
         bundle: bundle(),
         config: runnerConfig,
@@ -233,6 +243,7 @@ describe("Terra paired shadow runner", () => {
         now: () => new Date("2026-08-31T20:11:00.000Z"),
         complete: async (request) => {
           requestTools = request.tools;
+          requestThinking = request.thinking;
           return {
             output: JSON.stringify(validOutput()),
             resolvedModel: "openai/gpt-5.6-terra",
@@ -243,6 +254,7 @@ describe("Terra paired shadow runner", () => {
       });
       expect(result.status).toBe("created");
       expect(requestTools).toEqual([]);
+      expect(requestThinking).toBe(BATCH_SHADOW_THINKING);
       expect(result.result.schema).toBe(BATCH_SHADOW_RESULT_SCHEMA);
       expect(result.result.usageReadback).toBe("measured");
       expect(result.result.monetaryCost).toBe("unknown");

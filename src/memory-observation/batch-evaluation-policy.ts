@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { BATCH_SHADOW_PROMPT_VERSION } from "./batch-shadow-runner.ts";
+import { BATCH_SHADOW_PROMPT_VERSION, BATCH_SHADOW_THINKING } from "./batch-shadow-runner.ts";
 
 export type BatchEvaluationPolicyIdentityV2 = {
   workspaceId: string;
@@ -23,8 +23,9 @@ export function deriveBatchEvaluationPolicyDigest(
   evaluatorContractVersion: string = BATCH_SHADOW_PROMPT_VERSION,
 ): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(JSON.stringify({
-    schema: "engram.memory-batch-live-policy.v2",
+    schema: "engram.memory-batch-live-policy.v3",
     evaluatorContractVersion,
+    thinking: BATCH_SHADOW_THINKING,
     pluginDigest: identity.pluginDigest,
     workspaceId: identity.workspaceId,
     sessionKey: identity.sessionKey,

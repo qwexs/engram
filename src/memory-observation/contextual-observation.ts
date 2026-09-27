@@ -2,7 +2,7 @@ import { sha256, type Digest, type JsonValue } from "./ledger.ts";
 import type { CompiledBatchBundleV1 } from "./batch-compiler.ts";
 import { validateCompiledBatchBundle } from "./batch-shadow-runner.ts";
 import type { BatchShadowCompletionRequest, BatchShadowProviderResult } from "./batch-shadow-runner.ts";
-export const CONTEXTUAL_THINKING = "medium" as const;
+export const CONTEXTUAL_THINKING = "max" as const;
 export const CONTEXTUAL_SCHEMA = "engram.memory-contextual-observation.v2" as const;
 export const CONTEXTUAL_JSONL_PROMPT_VERSION = "memory-contextual-shadow-v14" as const;
 export const CONTEXTUAL_SINGLE_ENVELOPE_PROMPT_VERSION = "memory-contextual-shadow-v15" as const;

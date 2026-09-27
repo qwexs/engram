@@ -44,6 +44,9 @@ const PLUGIN_ID = "engram-memory-observation";
 const DEFAULT_INFERENCE_MODEL = "openai/gpt-5.6-terra";
 const OPENCLAW_CHILD_TIMEOUT_MS = 30_000;
 const OPENCLAW_READ_TIMEOUT_MS = 5_000;
+// Windows CLI startup/plugin discovery can exceed the regular read budget.
+const OPENCLAW_PLUGIN_INSPECT_TIMEOUT_MS = 60_000;
+const OPENCLAW_PLUGIN_POLICY_READ_TIMEOUT_MS = 30_000;
 
 function args(argv: string[]): Record<string, string | boolean> {
   const output: Record<string, string | boolean> = {};
@@ -132,7 +135,12 @@ function configuredAgentModel(agentId: string): string | null {
 
 function configuredPluginLlmPolicy(): { allowModelOverride: boolean; allowedModels: unknown[] } {
   try {
-    const value = parsedConfigValue(runOpenClaw(["config", "get", `plugins.entries.${PLUGIN_ID}.llm`], OPENCLAW_READ_TIMEOUT_MS));
+    // `config get` initializes plugin discovery on Windows, so the ordinary 5s
+    // read budget can turn a valid policy into the conservative fallback.
+    const value = parsedConfigValue(runOpenClaw(
+      ["config", "get", `plugins.entries.${PLUGIN_ID}.llm`],
+      OPENCLAW_PLUGIN_POLICY_READ_TIMEOUT_MS,
+    ));
     return {
       allowModelOverride: value?.allowModelOverride === true,
       allowedModels: Array.isArray(value?.allowedModels) ? value.allowedModels : [],
@@ -218,12 +226,12 @@ function inspectPlugin() {
   // status, source bytes and diagnostics required by this rollout gate.
   const result = spawnSync("openclaw", ["plugins", "inspect", PLUGIN_ID, "--json"], {
     encoding: "utf8",
-    timeout: OPENCLAW_READ_TIMEOUT_MS,
+    timeout: OPENCLAW_PLUGIN_INSPECT_TIMEOUT_MS,
   });
   if (result.error) {
     const timedOut = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
     return { installed: false, status: "unverified", enabled: false, source: null, rootDir: null, digest: null,
-      diagnostics: [], error: timedOut ? `plugin inspection timed out after ${OPENCLAW_READ_TIMEOUT_MS}ms` : result.error.message };
+      diagnostics: [], error: timedOut ? `plugin inspection timed out after ${OPENCLAW_PLUGIN_INSPECT_TIMEOUT_MS}ms` : result.error.message };
   }
   if (result.status !== 0 || !result.stdout.trim()) {
     return { installed: false, status: "absent", enabled: false, source: null, rootDir: null, digest: null, diagnostics: [], error: (result.stderr || result.stdout).trim() };

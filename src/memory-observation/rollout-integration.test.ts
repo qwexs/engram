@@ -94,6 +94,9 @@ describe("memory observation shadow and daily-note canary rollout integration", 
     expect(rolloutSource).toContain("defineCanaryQmdRuntimeResolver");
     expect(rolloutSource).toContain("family canary QMD handoff requires only --qmd-manifest");
     expect(rolloutSource).toContain("pluginDigest: bundle.digest");
+    expect(rolloutSource).toContain("timeout: OPENCLAW_PLUGIN_INSPECT_TIMEOUT_MS");
+    expect(rolloutSource).toContain("OPENCLAW_PLUGIN_POLICY_READ_TIMEOUT_MS = 30_000");
+    expect(rolloutSource).toContain("OPENCLAW_PLUGIN_POLICY_READ_TIMEOUT_MS,");
     expect(rolloutSource).not.toContain("inference model must match the configured default main agent model");
   });
 

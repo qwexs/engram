@@ -61,6 +61,13 @@ bun bin/engram --workspace /path/to/workspace \
   qmd search "query" -c workspace-memory
 ```
 
+When QMD uses a cloud provider whose credential is kept in the OpenClaw
+protected secret store, run `query`, `vsearch`, and cloud-backed maintenance
+through OpenClaw managed Gateway exec. Native shell/terminal execution does not
+receive protected secret injection by design. Do not copy the credential into
+`.env`, command arguments, or an explicit command environment. Plain BM25
+`search` and credential-free diagnostics may run locally.
+
 Правила первой версии:
 
 - `resolve`, `capabilities`, `status` и `doctor` ничего не изменяют;

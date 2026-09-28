@@ -1,5 +1,15 @@
 # Engram QMD CLI
 
+## OpenClaw protected credentials
+
+Cloud-backed operations must run through OpenClaw managed Gateway exec when
+their provider credentials live in the protected secret store. Native
+shell/terminal processes intentionally do not receive those values. This
+applies to hybrid `query`, `vsearch` when the embedding provider is remote, and
+cloud-backed maintenance. Never copy protected credentials into `.env`, CLI
+arguments, or explicit command environments. Credential-free diagnostics and
+BM25 `search` remain safe to run locally.
+
 `engram qmd` is a thin operator interface over Engram's QMD core. The CLI parses arguments and formats output; workspace resolution, index identity, policy, invocation and process handling live in `src/qmd/`.
 
 ## Runtime and entrypoint

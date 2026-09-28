@@ -92,6 +92,26 @@ describe("executeQmdRead", () => {
     }, { env: { ...env } }), exitCode);
   });
 
+  test("maps a missing cloud credential to an actionable dependency error", async () => {
+    try {
+      await executeQmdRead(harness(), {
+        operation: "query", query: "term", collections: ["life"],
+      }, { env: { FAKE_QMD_MODE: "missing-credential" } });
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CliError);
+      expect(error).toMatchObject({
+        code: "DEPENDENCY_UNAVAILABLE",
+        exitCode: EXIT_CODES.DEPENDENCY_ERROR,
+        details: {
+          requiredEnvironment: "GONKA_API_KEY",
+          managedEnvironmentRequired: true,
+        },
+      });
+      expect((error as Error).message).toContain("managed Gateway exec");
+    }
+  });
+
   test("maps timeout", async () => {
     await expectCode(executeQmdRead(harness(), {
       operation: "search", query: "term", collections: ["life"], timeoutMs: 20,

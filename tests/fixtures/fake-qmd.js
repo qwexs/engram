@@ -29,6 +29,11 @@ if (process.env.FAKE_QMD_MODE === "non-zero") {
   process.exit(Number(process.env.FAKE_QMD_EXIT_CODE || 9));
 }
 
+if (process.env.FAKE_QMD_MODE === "missing-credential") {
+  console.error("GONKA_API_KEY environment variable is required");
+  process.exit(1);
+}
+
 if (process.env.FAKE_QMD_MODE === "timeout") {
   await Bun.sleep(Number(process.env.FAKE_QMD_DELAY_MS || 60000));
   process.exit(0);

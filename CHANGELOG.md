@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **fix(memory): account receipt-verified missing-evidence jobs without replay.**
+  An immutable ledger disposition and terminal source state can close an old
+  unfinished batch even when the missing evidence prevented exhausting retry
+  attempts. The original failures and admission gaps remain visible.
+
+- **fix(memory): bound slow Luna evaluations within one scheduled wake.**
+  Allow up to four minutes for a local model inference, process one batch per
+  wake, and wait for its completed exit before the scheduler deadline.
+
 - **fix(domains/windows): make topic-domain OpenClaw calls portable and bounded.**
   The new topic enrollment runtime now reuses the Windows shim-safe, headless
   OpenClaw executor for Gateway reads and restarts, applies explicit process

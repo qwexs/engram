@@ -313,11 +313,11 @@ let evaluation: Awaited<ReturnType<BatchLiveWorker["processOne"]>> = { status: "
 let evaluationScope: ObservationScope | null = null;
 const qualityBlockedScopes=new Set<string>();
 const evaluations: { result: Awaited<ReturnType<BatchLiveWorker["processOne"]>>; scope: ObservationScope }[] = [];
-// Bounded sequential drain; processOne still has one inference allowance.
-const maxBatchesPerWake = 3;
+// One inference per wake keeps the local model's upper bound inside the scheduler deadline.
+const maxBatchesPerWake = 1;
 const drainStarted = Date.now();
 
-const rawComplete = openClawRawModelRunProvider({ cwd: workspace, agentId: workspaceId });
+const rawComplete = openClawRawModelRunProvider({ cwd: workspace, agentId: workspaceId, timeoutMs: 240_000 });
 const releaseInference = acquireProcessLease(join(tmpdir(), "engram-memory-batch-inference-" + (process.getuid?.() ?? "user")));
 try {
 for (let round = 0; releaseInference && round < maxBatchesPerWake; round++) {

@@ -88,7 +88,7 @@ function buildScript(workspace: string): string {
 const execution = await exec({
   command: ${JSON.stringify(command)},
   workdir: ${JSON.stringify(workspace)},
-  yieldMs: 240000,
+  yieldMs: 270000,
   timeoutSeconds: 300,
 });
 if (!execution || execution.status !== "completed" || !Number.isInteger(execution.exitCode)) {

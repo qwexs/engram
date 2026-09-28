@@ -158,10 +158,30 @@ function observationsExist(workspace: string, bundleId: Digest): boolean {
     .some(name => readJson<any>(join(root, name)).bundleId === bundleId);
 }
 
+/** The ledger may terminalize missing evidence before exhausting retries.
+ * Require its immutable disposition receipt; a missing file alone is insufficient. */
+function verifiedMissingEvidenceDisposition(workspace: string, job: BatchLiveJobV1, state: SourceState): boolean {
+  if (state.reasonCode !== "batch_evidence_evidence_missing") return false;
+  const keyPart = key(state.traceId);
+  if (existsSync(join(workspace, "memory-state/memory-observation/v1/evidence", `${keyPart}.json`))) return false;
+  const path = join(workspace, "memory-state/memory-observation/v1/receipts/evidence-unavailable", `${keyPart}.json`);
+  if (!existsSync(path)) return false;
+  const receipt = readJson<any>(path);
+  const queue = readJson<LedgerQueueRecordV1>(join(workspace, "memory-state/memory-observation/v1/queues/evaluator", `${keyPart}.json`));
+  const { receiptId, ...base } = receipt;
+  const { producerEpoch, policyDigest, ...scope } = job.partition;
+  return receipt.schema === "engram.memory-evidence-unavailable.v1"
+    && receipt.traceId === state.traceId && receipt.reasonCode === state.reasonCode
+    && receipt.policyDigest === policyDigest && same(receipt.scope, scope)
+    && DIGEST_RE.test(receipt.queueDigest) && receiptId === digest(base)
+    && canonicalInstant(receipt.recordedAt) && queue.terminalAt === receipt.recordedAt
+    && queue.status === "terminal" && queue.reasonCode === receipt.reasonCode;
+}
+
 /** Close accounting for an old immutable job without replaying its source or
- * altering queue state. A job is eligible only when it is either an exhausted
- * terminal failure with no effects, or the identical bundle was completed by
- * a later digest-bound job. */
+ * altering queue state. Require an exhausted terminal failure, a verified
+ * missing-evidence disposition, or completion by an identical later job;
+ * reject any unaccounted effects. */
 export function reconcileBatchAccounting(options: {
   workspace: string;
   storeRoot: string;
@@ -216,8 +236,9 @@ export function reconcileBatchAccounting(options: {
     supersedingDoneDigest = digest(supersedingDone);
   } else {
     if (observationsExist(workspace, job.bundle.bundleId)) fail("EFFECTS_EXIST", "persisted observations require explicit supersession reconciliation");
-    if (states.some(state => state.attempt < state.maxAttempts || !FAILURE_REASONS.has(state.reasonCode)))
-      fail("FAILURE_INVALID", "only exhausted batch failures without effects may be accounted");
+    if (states.some(state => !(state.attempt >= state.maxAttempts && FAILURE_REASONS.has(state.reasonCode))
+      && !verifiedMissingEvidenceDisposition(workspace, job, state)))
+      fail("FAILURE_INVALID", "only exhausted failures or receipt-verified unavailable evidence without effects may be accounted");
     for (const directory of ["contextual-results", "terminals", "failures", "reconciliations"]) {
       if (existsSync(join(root, directory, `${key(job.jobId)}.json`))) fail("ARTIFACT_EXISTS", "job has an output artifact and cannot be sealed as an orphaned failure");
     }

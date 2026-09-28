@@ -43,6 +43,38 @@ test("accounts an exhausted orphaned failure without changing its source queue",
   expect(reconcileBatchAccounting({ ...authorization, workspace: f.workspace, storeRoot: f.storeRoot, jobId: f.jobId, apply: true }).status).toBe("accounted");
 });
 
+test("accounts a terminal missing-evidence source only with a verified ledger disposition", () => {
+  const f = fixture();
+  const recordedAt = "2026-09-01T10:03:00.000Z";
+  const queue = { ...f.queue, attempt: 1, reasonCode: "batch_evidence_evidence_missing" };
+  f.write(join(f.queueRoot, `${f.traceId.slice(7)}.json`), queue);
+  const input = { ...authorization, workspace: f.workspace, storeRoot: f.storeRoot, jobId: f.jobId };
+  expect(() => reconcileBatchAccounting(input)).toThrow(BatchAccountingReconciliationError);
+  const base = { schema: "engram.memory-evidence-unavailable.v1", traceId: f.traceId,
+    scope: { workspaceId: "test", runtimeSessionKey: "agent:test:main", scopeClass: "self", scopeId: "workspace:test" },
+    policyDigest: f.partition.policyDigest, queueDigest: sha256("prior-queue"),
+    reasonCode: queue.reasonCode, recordedAt };
+  const path = join(f.workspace, "memory-state/memory-observation/v1/receipts/evidence-unavailable", `${f.traceId.slice(7)}.json`);
+  f.write(path, { ...base, receiptId: sha256(base) });
+  expect(reconcileBatchAccounting(input).status).toBe("planned");
+  expect(reconcileBatchAccounting({ ...input, apply: true }).status).toBe("accounted");
+  expect(JSON.parse(readFileSync(join(f.queueRoot, `${f.traceId.slice(7)}.json`), "utf8"))).toEqual(queue);
+});
+
+test("refuses tampered or mismatched missing-evidence disposition", () => {
+  const f = fixture();
+  const queue = { ...f.queue, attempt: 1, reasonCode: "batch_evidence_evidence_missing" };
+  f.write(join(f.queueRoot, `${f.traceId.slice(7)}.json`), queue);
+  const base = { schema: "engram.memory-evidence-unavailable.v1", traceId: f.traceId,
+    scope: { workspaceId: "test", runtimeSessionKey: "agent:test:main", scopeClass: "self", scopeId: "workspace:test" },
+    policyDigest: f.partition.policyDigest, queueDigest: sha256("prior-queue"),
+    reasonCode: queue.reasonCode, recordedAt: "2026-09-01T10:04:00.000Z" };
+  const path = join(f.workspace, "memory-state/memory-observation/v1/receipts/evidence-unavailable", `${f.traceId.slice(7)}.json`);
+  f.write(path, { ...base, receiptId: sha256(base) });
+  expect(() => reconcileBatchAccounting({ ...authorization, workspace: f.workspace, storeRoot: f.storeRoot, jobId: f.jobId }))
+    .toThrow(BatchAccountingReconciliationError);
+});
+
 test("refuses failure accounting when the bundle already has observations", () => {
   const f = fixture();
   f.write(join(f.workspace, "memory-state/memory-observation/v1/observations/batch", `${sha256("observation").slice(7)}.json`), { bundleId: f.bundleId });

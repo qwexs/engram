@@ -9,6 +9,7 @@ import {
   BatchShadowOpenClawProviderError,
   openClawGatewayModelRunProvider,
   openClawRawModelRunProvider,
+  resolveOpenClawCliEntry,
   type OpenClawModelRunExecutor,
 } from "./batch-shadow-openclaw-provider.ts";
 
@@ -43,6 +44,27 @@ console.log("DIRECT_OPENCLAW_ENTRY");
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("DIRECT_OPENCLAW_ENTRY");
     expect(existsSync(shimMarker)).toBeFalse();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform !== "win32")("managed agent-cli forwards only to the exact OpenClaw npm entry", () => {
+  const root = mkdtempSync(join(tmpdir(), "engram-managed-cli-"));
+  const shim = join(root, "openclaw.cmd");
+  const directory = join(root, "npm", "node_modules", "openclaw");
+  const entry = join(directory, "openclaw.mjs");
+  const node = Bun.which("node")!;
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(entry, "// fixture", "utf8");
+  try {
+    writeFileSync(shim, `@echo off\r\nsetlocal DisableDelayedExpansion\r\n"${node}" ${entry} %*\r\n`, "utf8");
+    expect(resolveOpenClawCliEntry(shim, root)).toBe(entry);
+    const wrong = join(root, "other", "node_modules", "openclaw", "openclaw.mjs");
+    mkdirSync(join(root, "other", "node_modules", "openclaw"), { recursive: true });
+    writeFileSync(wrong, "// unexpected target", "utf8");
+    writeFileSync(shim, `@echo off\r\nsetlocal DisableDelayedExpansion\r\n"${node}" ${wrong} %*\r\n`, "utf8");
+    expect(resolveOpenClawCliEntry(shim, root)).toBeNull();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -26,6 +26,10 @@ import { memoryObservationBinding, resolveMemoryObservationProjection } from "./
 export const BATCH_TERMINAL_RECOVERY_SCHEMA = "engram.memory-batch-terminal-recovery.v1" as const;
 const BATCH_TERMINAL_RECOVERY_AUTHORIZATION_SCHEMA = "engram.memory-batch-terminal-recovery-authorization.v1" as const;
 const ALLOWED_FAILURES = new Set(["batch_provider_failure", "batch_invalid_json", "batch_invalid_assertion"]);
+// Reconciled batches never have a failure artifact to validate. Keep this
+// deliberately narrower than terminal recovery, but admit the legacy strict
+// JSON failure that can leave a mixed terminal/queued reconciliation.
+const RECONCILED_RECOVERABLE_FAILURES = new Set(["batch_contextual_evaluation_failed", "batch_invalid_json"]);
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 
 export type BatchTerminalRecoveryFaultPoint =
@@ -499,8 +503,11 @@ export function recoverReconciledBatch(options: {
   const observationRoot=join(state,'observations/batch');
   if (existsSync(observationRoot) && readdirSync(observationRoot).filter(n=>n.endsWith('.json')).some(n=>readJson<any>(join(observationRoot,n)).bundleId===job.bundle.bundleId))
     fail('EFFECTS_EXIST','observations already exist for this batch');
-  const eligible=reconciliation.sources.filter((s:any)=>s.status==='terminal' && s.reasonCode==='batch_contextual_evaluation_failed' && s.attempt>=s.maxAttempts);
-  if (!eligible.length || new Set(eligible.map((s:any)=>s.traceId)).size!==eligible.length) fail('QUEUE_INELIGIBLE','no unique exhausted contextual sources');
+  const eligible=reconciliation.sources.filter((s:any)=>s.status==='terminal'
+    && RECONCILED_RECOVERABLE_FAILURES.has(s.reasonCode) && s.attempt>=s.maxAttempts);
+  if (!eligible.length || new Set(eligible.map((s:any)=>s.traceId)).size!==eligible.length) {
+    fail('QUEUE_INELIGIBLE','no unique exhausted recoverable sources');
+  }
   const base={schema:'engram.memory-reconciled-recovery.v1',jobId:job.jobId,reconciliationId,
     authorizedBy:options.authorizedBy,authorizedAt:options.authorizedAt,reason:options.reason,traceIds:eligible.map((s:any)=>s.traceId)};
   const recoveryId=valueDigest(base),path=join(root,'recoveries',key,digestKey(recoveryId));

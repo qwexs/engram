@@ -47,7 +47,7 @@ function failedExecution(message: string): OpenClawModelRunExecution {
   return { status: null, signal: null, stdout: "", stderr: "", error: new Error(message) };
 }
 
-function resolveOpenClawCliEntry(resolved: string): string | null {
+export function resolveOpenClawCliEntry(resolved: string, appData = process.env.APPDATA): string | null {
   const canonical = existsSync(resolved) ? realpathSync(resolved) : resolved;
   if (/\.(?:c|m)?js$/i.test(canonical)) return canonical;
   if (process.platform !== "win32" || !/\.(?:cmd|bat)$/i.test(resolved)
@@ -57,12 +57,12 @@ function resolveOpenClawCliEntry(resolved: string): string | null {
   // The managed agent-cli shim may be a literal forwarding wrapper. Only use
   // its exact Node/CLI targets when it has no additional policy logic.
   const wrapper = readFileSync(resolved, "utf8").replaceAll("\r\n", "\n").trim();
-  const match = /^@echo off\nsetlocal DisableDelayedExpansion\n"([^"\n]+[\\/]node\.exe)" ([^\s"\n]+[\\/]node_modules[\\/]openclaw[\\/]dist[\\/]index\.js) %\*$/i.exec(wrapper);
+  const match = /^@echo off\nsetlocal DisableDelayedExpansion\n"([^"\n]+[\\/]node\.exe)" ([^\s"\n]+[\\/]node_modules[\\/]openclaw[\\/](?:dist[\\/]index\.js|openclaw\.mjs)) %\*$/i.exec(wrapper);
   if (!match || !existsSync(match[1]!) || !existsSync(match[2]!)) return null;
   const node = Bun.which("node");
-  const appData = process.env.APPDATA;
+  const entry = /[\\/]openclaw\.mjs$/i.test(match[2]!) ? ["openclaw.mjs"] : ["dist", "index.js"];
   if (!node || !appData || realpathSync(node) !== realpathSync(match[1]!)
-    || realpathSync(match[2]!) !== realpathSync(join(appData, "npm", "node_modules", "openclaw", "dist", "index.js"))) return null;
+    || realpathSync(match[2]!) !== realpathSync(join(appData, "npm", "node_modules", "openclaw", ...entry))) return null;
   return realpathSync(match[2]!);
 }
 

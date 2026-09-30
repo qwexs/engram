@@ -517,7 +517,10 @@ if (batchCommand) {
   const batch = {
     sourcePolicyDigest,
     inactivityGapSeconds: integer(options, "batch-inactivity-gap-seconds", 300, 1, 3_600),
-    maxTurns: integer(options, "batch-max-turns", 8, 2, 100),
+    // The evaluator response is deliberately one strict JSON document. Four
+    // sources bounds its shape while legacy projections remain readable by the
+    // runtime cap in BatchLiveWorker.
+    maxTurns: integer(options, "batch-max-turns", 4, 2, 100),
     maxEvidenceBytes: integer(options, "batch-max-evidence-bytes", 262_144, 1_024, 1_073_741_824),
     maxAgeSeconds: integer(options, "batch-max-age-seconds", 900, 1, 86_400),
     maxInferenceCallsPerRun: 1 as const,

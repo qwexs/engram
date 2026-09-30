@@ -168,8 +168,8 @@ describe("bounded terminal batch recovery", () => {
   });
 });
 
-function reconciledFixture() {
- const f=fixture('batch_contextual_evaluation_failed');
+function reconciledFixture(errorCode = 'batch_contextual_evaluation_failed') {
+ const f=fixture(errorCode);
  const root=join(f.storeRoot,'memory-batch-live/v1'),state=join(f.workspace,'memory-state/memory-observation/v1');
  const job=JSON.parse(readFileSync(join(root,'jobs',f.jobId.slice(7)+'.json'),'utf8'));
  const queue=JSON.parse(readFileSync(join(state,'queues/evaluator',f.traceId.slice(7)+'.json'),'utf8'));
@@ -188,6 +188,14 @@ for(const faultAt of [undefined,'after_authorization','after_queue_requeue','bef
  expect(paths.map(p=>readFileSync(p,'utf8'))).toEqual(before);
  expect(JSON.parse(readFileSync(join(f.state,'queues/evaluator',f.traceId.slice(7)+'.json'),'utf8')).attempt).toBe(0);
 });
+test('reconciled recovery accepts an exhausted legacy invalid-JSON source without changing expiry safeguards',async()=>{
+ const {recoverReconciledBatch}=await import('./batch-terminal-recovery.ts');
+ const f=reconciledFixture('batch_invalid_json'), input={...recoveryInput(f),now:f.now,apply:true};
+ expect(recoverReconciledBatch({...input,apply:false}).status).toBe('planned');
+ expect(recoverReconciledBatch(input).status).toBe('requeued');
+ expect(JSON.parse(readFileSync(join(f.state,'queues/evaluator',f.traceId.slice(7)+'.json'),'utf8'))).toMatchObject({status:'queued',attempt:0,terminalAt:null,reasonCode:'operator_recovery_requeued'});
+});
+
 test('reconciled recovery rejects expiry, changed queue and existing effects',async()=>{
  const {recoverReconciledBatch}=await import('./batch-terminal-recovery.ts');
  for(const mode of ['expired','changed','effects']) {

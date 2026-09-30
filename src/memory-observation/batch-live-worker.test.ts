@@ -995,6 +995,30 @@ test('v16 source-ledger envelope completes atomically and cached success replays
  expect(existsSync(join(workspace,'memory'))).toBe(false);
 });
 
+test('strict batch processing splits eight sources into bounded cited records without duplicates',async()=>{
+ const {workspace,ledger,policy}=setup();
+ for(let index=0;index<8;index++) admit(ledger,1_000+index,`2026-08-31T20:0${index+1}:00.000Z`);
+ const expected=ledger.listQueue().map(queue=>queue.traceId).sort();
+ const batches: string[][]=[];
+ const worker=new BatchLiveWorker({workspace,ledger,policy,storeRoot:join(workspace,'state'),now:()=>new Date('2026-08-31T20:20:00.000Z'),
+  complete:async request=>{
+   const sources=JSON.parse(request.prompt).task.sources;
+   batches.push(sources.map((source:any)=>source.sourceRef.traceId));
+   return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-batch-shadow-output.v1',groups:sources.map((source:any,index:number)=>({
+     groupId:`source-${index}`,decision:'write',sourceRefs:[source.sourceRef.traceId],assertions:[{section:'decisions',text:`Synthetic request ${index}.`,actorRef:'user',
+       outcomeStatus:'decided',confidence:1,reasonCodes:['explicit_decision'],citations:[{traceId:source.sourceRef.traceId,evidenceRef:source.evidenceRefs[0]}]}]}))})};
+  }});
+ expect((await worker.processOne()).status).toBe('completed');
+ expect((await worker.processOne()).status).toBe('completed');
+ expect(batches.map(batch=>batch.length)).toEqual([4,4]);
+ expect([...new Set(batches.flat())].sort()).toEqual(expected);
+ const observations=readdirSync(join(workspace,'memory-state/memory-observation/v1/observations/batch')).map(name=>JSON.parse(readFileSync(join(workspace,'memory-state/memory-observation/v1/observations/batch',name),'utf8')));
+ expect(observations).toHaveLength(8);
+ const cited=observations.flatMap(observation=>observation.citations.map((citation:any)=>citation.traceId));
+ expect([...new Set(cited)].sort()).toEqual(expected);
+ expect(cited).toHaveLength(expected.length);
+});
+
 function effectLedger(workspace: string) {
   return new MemoryObservationLedger({ workspace, workspaceId: "main", exactSessionKeys: [SCOPE.runtimeSessionKey],
     producerRegistry: REGISTRY, authorityPolicy: {...AUTHORITY, rules: [...AUTHORITY.rules, ...batchAuthorityContracts().authorityPolicy.rules]},

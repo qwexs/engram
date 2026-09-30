@@ -59,6 +59,9 @@ import {
 export const BATCH_LIVE_JOB_SCHEMA = "engram.memory-batch-live-job.v1" as const;
 export const BATCH_LIVE_TERMINAL_SCHEMA = "engram.memory-batch-live-terminal.v1" as const;
 export const BATCH_LIVE_FAILURE_SCHEMA = "engram.memory-batch-live-failure.v1" as const;
+// Provider output is one strict JSON document. Keep every new batch request
+// small enough that this contract remains practical without JSON repair.
+export const BATCH_MAX_TURNS = 4;
 const AUTHORITY_SCHEMA = "engram.memory-authority-policy.v1";
 const AUTHORITY_VERSION = "memory-observation-authority-v1";
 const REGISTRY_SCHEMA = "engram.memory-producer-registry.v1";
@@ -293,6 +296,12 @@ function selectCandidate(
   return flush ? selected : [];
 }
 
+function selectionPolicy(policy: BatchLivePolicyV1): BatchLivePolicyV1 {
+  return policy.maxTurns > BATCH_MAX_TURNS
+    ? { ...policy, maxTurns: BATCH_MAX_TURNS }
+    : policy;
+}
+
 function makeJob(candidate: EvaluationEvidenceV1[], policy: BatchLivePolicyV1, now: Date): BatchLiveJobV1 {
   const partition: BatchPartitionV1 = {
     ...policy.exactScope,
@@ -460,12 +469,13 @@ export class BatchLiveWorker {
         if (!fresh.length && due.some(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context" };
         // Reconsider waiting evidence with new text, reserving a slot for a fresh
         // source so cached results cannot endlessly reprocess a deferred batch.
-        const reconsider = this.options.policy.maxTurns > 1 ? due.filter(entry => waiting.has(entry.envelope.traceId)).slice(-(this.options.policy.maxTurns - 1)) : [];
-        const selectionPolicy = reconsider.length ? { ...this.options.policy, inactivityGapMs: this.options.policy.evidenceTtlMs } : this.options.policy;
-        const candidate = selectCandidate(reconsider.length ? [...reconsider, ...fresh] : fresh, selectionPolicy, now);
+        const boundedPolicy = selectionPolicy(this.options.policy);
+        const reconsider = boundedPolicy.maxTurns > 1 ? due.filter(entry => waiting.has(entry.envelope.traceId)).slice(-(boundedPolicy.maxTurns - 1)) : [];
+        const candidatePolicy = reconsider.length ? { ...boundedPolicy, inactivityGapMs: boundedPolicy.evidenceTtlMs } : boundedPolicy;
+        const candidate = selectCandidate(reconsider.length ? [...reconsider, ...fresh] : fresh, candidatePolicy, now);
         if (candidate.length && candidate.every(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context_budget" };
         if (candidate.length === 0) return { status: "idle", reason: "flush_not_due" };
-        job = makeJob(candidate, selectionPolicy, now);
+        job = makeJob(candidate, candidatePolicy, now);
         job = persistOrReuseJob(this.jobPath(job.jobId), job);
         this.options.fault?.("after_job");
       }

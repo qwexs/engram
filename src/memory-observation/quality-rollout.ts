@@ -16,8 +16,8 @@ export type QualityRollout = {
 };
 type QualityRolloutIdentity = Pick<QualityRollout, 'workspaceId' | 'pluginDigest' | 'baseEvaluationPolicyDigest' | 'sourcePolicyDigest' | 'applyAfter'>;
 const hash = (v: unknown) => sha256(v as JsonValue);
-export function contextualEvaluationDigest(base: Digest, promptVersion: ContextualPromptVersion = CONTEXTUAL_PROMPT_VERSION): Digest {
-    return hash({ schema: 'engram.memory-contextual-policy.v2', baseEvaluationPolicyDigest: base, promptVersion, thinking: CONTEXTUAL_THINKING });
+export function contextualEvaluationDigest(base: Digest, promptVersion: ContextualPromptVersion = CONTEXTUAL_PROMPT_VERSION, thinking: "medium" | "high" = CONTEXTUAL_THINKING): Digest {
+    return hash({ schema: 'engram.memory-contextual-policy.v2', baseEvaluationPolicyDigest: base, promptVersion, thinking });
 }
 /** An opt-in sidecar does not rewrite source admission, the v1 projection,
  * activation time or old receipts. Both consumer policy digests remain admitted
@@ -108,12 +108,20 @@ export function qualityProducerForScope(workspace: string, scope: ObservationSco
 /** Keep the immediately preceding shipped producer readable and resumable.
  * No widening to arbitrary policies and no re-labeling cached results. */
 export function readableContextualDigests(base: Digest): Digest[] {
-    return CONTEXTUAL_PROMPT_VERSIONS.map(v => contextualEvaluationDigest(base, v));
+    return CONTEXTUAL_PROMPT_VERSIONS.flatMap(v => [contextualEvaluationDigest(base, v, "medium"), contextualEvaluationDigest(base, v, "high")]);
 }
 export function contextualPromptForScope(workspace: string, scope: ObservationScope, base: Digest): ContextualPromptVersion {
     const scopeHash = hash(scope);
     const pending = qualityTransitionInventory(workspace).batches.find(j =>
         hash({workspaceId:j.partition.workspaceId,runtimeSessionKey:j.partition.runtimeSessionKey,scopeClass:j.partition.scopeClass,scopeId:j.partition.scopeId}) === scopeHash
         && readableContextualDigests(base).includes(j.policyDigest));
-    return pending ? CONTEXTUAL_PROMPT_VERSIONS.find(v => contextualEvaluationDigest(base, v) === pending.policyDigest)! : CONTEXTUAL_PROMPT_VERSION;
+    return pending ? CONTEXTUAL_PROMPT_VERSIONS.find(v => ["medium", "high"].some(t => contextualEvaluationDigest(base, v, t as "medium" | "high") === pending.policyDigest))! : CONTEXTUAL_PROMPT_VERSION;
+}
+
+export function contextualThinkingForScope(workspace: string, scope: ObservationScope, base: Digest, fallback: "medium" | "high" = CONTEXTUAL_THINKING): "medium" | "high" {
+    const pending = qualityTransitionInventory(workspace).batches.find(j =>
+        hash({workspaceId:j.partition.workspaceId,runtimeSessionKey:j.partition.runtimeSessionKey,scopeClass:j.partition.scopeClass,scopeId:j.partition.scopeId}) === hash(scope)
+        && readableContextualDigests(base).includes(j.policyDigest));
+    if (!pending) return fallback;
+    return CONTEXTUAL_PROMPT_VERSIONS.some(v => contextualEvaluationDigest(base, v, "medium") === pending.policyDigest) ? "medium" : "high";
 }

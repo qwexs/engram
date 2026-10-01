@@ -1,3 +1,4 @@
+import { readableEvaluationPolicies } from "./model-transition.ts";
 import {readQualityRollout,qualityScopeEnabled,readableContextualDigests} from "./quality-rollout.ts";
 import { groupDomainOf, isGroupProjectionSchema } from "./group-bindings.ts";
 import { renderRecentDomainStatus } from "./domain-recent.ts";
@@ -137,8 +138,7 @@ async function consumeLocked(options: DomainConsumerOptions) {
     const quality=readQualityRollout(workspace,{workspaceId:options.workspaceId,pluginDigest:active.pluginDigest,
       baseEvaluationPolicyDigest:active.evaluation!.policyDigest,sourcePolicyDigest:active.evaluation?.batch?.sourcePolicyDigest as Digest,
       applyAfter:active.consumers!.dailyNote.applyAfter});
-    const policyAllowed=observation.evaluationPolicyDigest===active.evaluation?.policyDigest
-      || (qualityScopeEnabled(quality,observation.scope) && readableContextualDigests(active.evaluation!.policyDigest).includes(observation.evaluationPolicyDigest));
+    const policyAllowed=readableEvaluationPolicies(workspace,active,observation.scope).includes(observation.evaluationPolicyDigest);
     if (receipt.schema !== "engram.memory-apply-receipt.v1" || receipt.consumer !== "daily-note" || receipt.status !== "applied"
       || receipt.canonicalMutation !== true || digest(receipt.producer) !== digest(DAILY_NOTE_APPLICATOR)
       || receipt.operationId !== expectedOperation || receipt.receiptId !== sha256("engram.memory-apply-receipt.v1\0" + expectedOperation)

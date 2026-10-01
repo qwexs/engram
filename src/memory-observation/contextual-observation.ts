@@ -2,7 +2,8 @@ import { sha256, type Digest, type JsonValue } from "./ledger.ts";
 import type { CompiledBatchBundleV1 } from "./batch-compiler.ts";
 import { validateCompiledBatchBundle } from "./batch-shadow-runner.ts";
 import type { BatchShadowCompletionRequest, BatchShadowProviderResult } from "./batch-shadow-runner.ts";
-export const CONTEXTUAL_THINKING = "medium" as const;
+export const CONTEXTUAL_THINKING = "high" as const;
+export type ContextualThinking = "medium" | "high";
 export const CONTEXTUAL_SCHEMA = "engram.memory-contextual-observation.v2" as const;
 export const CONTEXTUAL_JSONL_PROMPT_VERSION = "memory-contextual-shadow-v14" as const;
 export const CONTEXTUAL_SINGLE_ENVELOPE_PROMPT_VERSION = "memory-contextual-shadow-v15" as const;
@@ -427,6 +428,7 @@ export async function runContextualShadow(options: {
     bundle: CompiledBatchBundleV1;
     model: string;
     maxTokens: number;
+    thinking?: ContextualThinking;
     promptVersion?: ContextualPromptVersion;
     now?: () => Date;
     complete: (request: BatchShadowCompletionRequest) => Promise<BatchShadowProviderResult>;
@@ -440,8 +442,10 @@ export async function runContextualShadow(options: {
         reject();
     const now = options.now?.() ?? new Date();
     const promptVersion = options.promptVersion ?? CONTEXTUAL_PROMPT_VERSION;
+    const thinking = options.thinking ?? CONTEXTUAL_THINKING;
+    if (!["medium", "high"].includes(thinking)) reject();
     const prompt = contextualPrompt(options.bundle, now, promptVersion);
-    const request: BatchShadowCompletionRequest = { model: options.model, system: "", prompt, maxTokens: options.maxTokens, temperature: 0, tools: [], thinking: CONTEXTUAL_THINKING };
+    const request: BatchShadowCompletionRequest = { model: options.model, system: "", prompt, maxTokens: options.maxTokens, temperature: 0, tools: [], thinking };
     const requestDigest = sha256(request as unknown as JsonValue);
     const started = performance.now();
     let response: BatchShadowProviderResult;
@@ -456,7 +460,7 @@ export async function runContextualShadow(options: {
     const outputMeta = {outputLength: response.output.length, outputDigest: sha256(response.output)};
     if (response.resolvedModel !== options.model)
         throw new ContextualEvaluationError({stage: "provider", code: "CONTEXTUAL_MODEL_MISMATCH", ...outputMeta});
-    const evaluationPolicyDigest = sha256({ schema: CONTEXTUAL_SCHEMA, promptVersion, model: options.model, maxTokens: options.maxTokens, thinking: CONTEXTUAL_THINKING } as JsonValue);
+    const evaluationPolicyDigest = sha256({ schema: CONTEXTUAL_SCHEMA, promptVersion, model: options.model, maxTokens: options.maxTokens, thinking } as JsonValue);
     try {
         const output = promptVersion === CONTEXTUAL_JSONL_PROMPT_VERSION
             ? parseContextualJsonl(response.output, options.bundle, options.now?.() ?? new Date())

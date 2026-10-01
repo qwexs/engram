@@ -70,6 +70,7 @@ export type BatchShadowRunnerConfigV1 = {
 };
 
 export type BatchShadowRunnerConfigV2 = {
+  thinking?: "off" | "low" | "medium" | "high";
   schema: "engram.memory-batch-shadow-runner-config.v2";
   requestedModel: string;
   maxTokens: number;
@@ -434,11 +435,12 @@ export function batchShadowPrompt(bundleValue: unknown, configValue: BatchShadow
     || !exactKeys(config, new Set(v1
       ? ["schema", "requestedModel", "maxTokens", "temperature"]
       : v2
-        ? ["schema", "requestedModel", "maxTokens", "temperature", "messageMode"]
+        ? ["schema", "requestedModel", "maxTokens", "temperature", "messageMode", ...(Object.hasOwn(config, "thinking") ? ["thinking"] : [])]
         : ["schema", "requestedModel", "maxTokens", "temperature", "messageMode", "providerMode", "gatewayAgentId"]))
     || typeof config.requestedModel !== "string" || !TOKEN_RE.test(config.requestedModel)
     || !Number.isSafeInteger(config.maxTokens) || (config.maxTokens as number) < 1 || (config.maxTokens as number) > 16_384
     || config.temperature !== 0
+    || (v2 && Object.hasOwn(config, "thinking") && !["off", "low", "medium", "high"].includes(config.thinking as string))
     || (v2 && config.messageMode !== "system-user" && config.messageMode !== "single-user")
     || (v3 && (config.messageMode !== "single-user" || config.providerMode !== "gateway-agent-meta"
       || typeof config.gatewayAgentId !== "string" || !TOKEN_RE.test(config.gatewayAgentId)))) {
@@ -495,6 +497,7 @@ export function batchShadowPrompt(bundleValue: unknown, configValue: BatchShadow
       maxTokens: configValue.maxTokens,
       temperature: 0,
       tools: [],
+      ...(v2 && Object.hasOwn(config, "thinking") ? {thinking: config.thinking as BatchShadowCompletionRequest["thinking"]} : {}),
     },
     promptDigest,
     configDigest,

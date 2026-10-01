@@ -415,3 +415,12 @@ describe("Terra paired shadow runner", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+test('explicit high is sent and digested; absent legacy reasoning remains byte-compatible',()=>{
+ const b=bundle(); const at=new Date('2026-08-31T20:11:00.000Z');
+ const legacy=batchShadowPrompt(b,singlePromptConfig,at);
+ const high=batchShadowPrompt(b,{...singlePromptConfig,thinking:'high'},at);
+ expect(legacy.request.thinking).toBeUndefined();expect(high.request.thinking).toBe('high');
+ expect(high.configDigest).not.toBe(legacy.configDigest);expect(high.requestDigest).not.toBe(legacy.requestDigest);
+ expect(()=>batchShadowPrompt(b,{...singlePromptConfig,thinking:'max'} as any,at)).toThrow();
+});

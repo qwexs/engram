@@ -103,6 +103,7 @@ function authorizeBatchArtifact(contracts: BatchAuthorityContracts, artifactSche
 export type BatchLivePolicyV1 = {
   contextual?: boolean;
   contextualPromptVersion?: ContextualPromptVersion;
+  contextualThinking?: "medium" | "high";
   workspaceId: string;
   exactScope: ObservationScope;
   producerEpoch: string;
@@ -669,7 +670,7 @@ export class BatchLiveWorker {
         evaluated=saved.evaluated;
       } else {
         evaluated=await runContextualShadow({bundle:job.bundle,model:this.options.policy.runner.requestedModel,
-          maxTokens:this.options.policy.runner.maxTokens,promptVersion:this.options.policy.contextualPromptVersion,complete:this.options.complete,now:this.options.now});
+          thinking:this.options.policy.contextualThinking,maxTokens:this.options.policy.runner.maxTokens,promptVersion:this.options.policy.contextualPromptVersion,complete:this.options.complete,now:this.options.now});
         // Hash precisely the JSON bytes we can reload (provider usage is optional).
         evaluated=JSON.parse(JSON.stringify(evaluated));
         stage = "observations";
@@ -737,8 +738,8 @@ export class BatchLiveWorker {
     const result=evaluated.observation;
     const promptVersion=this.options.policy.contextualPromptVersion ?? CONTEXTUAL_PROMPT_VERSION;
     const expectedRequest={model:this.options.policy.runner.requestedModel,system:"",prompt:contextualPrompt(job.bundle,new Date(result.recordedAt),promptVersion),
-      maxTokens:this.options.policy.runner.maxTokens,temperature:0,tools:[],thinking:CONTEXTUAL_THINKING};
-    const expectedPolicy=sha256({schema:CONTEXTUAL_SCHEMA,promptVersion,model:expectedRequest.model,maxTokens:expectedRequest.maxTokens,thinking:CONTEXTUAL_THINKING} as JsonValue);
+      maxTokens:this.options.policy.runner.maxTokens,temperature:0,tools:[],thinking:this.options.policy.contextualThinking ?? CONTEXTUAL_THINKING};
+    const expectedPolicy=sha256({schema:CONTEXTUAL_SCHEMA,promptVersion,model:expectedRequest.model,maxTokens:expectedRequest.maxTokens,thinking:this.options.policy.contextualThinking ?? CONTEXTUAL_THINKING} as JsonValue);
     if(evaluated.requestDigest!==sha256(expectedRequest as JsonValue) || result.evaluationPolicyDigest!==expectedPolicy)
       fail("CONTEXTUAL_RESULT_INVALID","cached result belongs to a different request or evaluator contract");
     if(!DIGEST_RE.test(evaluated.requestDigest) || !Number.isFinite(evaluated.latencyMs) || evaluated.latencyMs<0

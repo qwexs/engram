@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import {readQualityRollout,qualityScopeEnabled,qualityProducerForScope,contextualEvaluationDigest,readableContextualDigests,contextualPromptForScope,qualityTransitionInventory} from "../src/memory-observation/quality-rollout.ts";
+import {readQualityRollout,qualityScopeEnabled,qualityProducerForScope,contextualEvaluationDigest,readableContextualDigests,contextualPromptForScope,contextualThinkingForScope,qualityTransitionInventory} from "../src/memory-observation/quality-rollout.ts";
+import { evaluationQuality, evaluationProjectionForScope, readableEvaluationPolicies } from "../src/memory-observation/model-transition.ts";
 import { isGroupProjectionSchema, assertGroupHostRoutes } from "../src/memory-observation/group-bindings.ts";
 import { memoryWorkerHealth } from "../src/memory-observation/worker-health.ts";
 import { memoryWorkerRunResult } from "../src/memory-observation/worker-run-result.ts";
@@ -226,24 +227,25 @@ function ledgerFor(scope: ObservationScope, current = projection): MemoryObserva
 }
 
 function qualityRollout(current = projection) {
-  return readQualityRollout(workspace,{workspaceId,pluginDigest:current.pluginDigest,baseEvaluationPolicyDigest:current.evaluation!.policyDigest,
-    sourcePolicyDigest:current.evaluation!.batch!.sourcePolicyDigest as Digest,applyAfter:memoryObservationDailyNoteCanary(current)!.applyAfter});
+  return evaluationQuality(workspace,current,readJson(projectionPath));
 }
 function readableBatchPolicy(digest:Digest,scope:ObservationScope,current=projection):boolean {
-  return digest===current.evaluation!.policyDigest || (qualityScopeEnabled(qualityRollout(current),scope) && readableContextualDigests(current.evaluation!.policyDigest).includes(digest));
+  return readableEvaluationPolicies(workspace,current,scope).includes(digest);
 }
 function livePolicy(scope: ObservationScope, current = projection): BatchLivePolicyV1 {
+  current = evaluationProjectionForScope(workspace,current,scope);
   const producer=qualityProducerForScope(workspace,scope,qualityRollout(current));
   if(producer==="blocked") throw Error("QUALITY_PENDING_BUNDLE_REQUIRES_RECONCILIATION");
   const currentBatch = current.evaluation!.batch!;
   const promptVersion = contextualPromptForScope(workspace,scope,current.evaluation!.policyDigest);
+  const thinking = contextualThinkingForScope(workspace,scope,current.evaluation!.policyDigest,current.inference.model==="openai/gpt-6-luna"?"high":"medium");
   return {
     workspaceId,
     exactScope: scope,
     producerEpoch: "v1",
     sourcePolicyDigest: currentBatch.sourcePolicyDigest as Digest,
-    evaluationPolicyDigest: producer==="v2"?contextualEvaluationDigest(current.evaluation!.policyDigest,promptVersion):current.evaluation!.policyDigest,
-    ...(producer==="v2"?{contextual:true,contextualPromptVersion:promptVersion}:{}),
+    evaluationPolicyDigest: producer==="v2"?contextualEvaluationDigest(current.evaluation!.policyDigest,promptVersion,thinking):current.evaluation!.policyDigest,
+    ...(producer==="v2"?{contextual:true,contextualPromptVersion:promptVersion,contextualThinking:thinking}:{}),
     inactivityGapMs: currentBatch.inactivityGapSeconds * 1_000,
     maxTurns: currentBatch.maxTurns,
     maxEvidenceBytes: currentBatch.maxEvidenceBytes,
@@ -257,6 +259,7 @@ function livePolicy(scope: ObservationScope, current = projection): BatchLivePol
       maxTokens: 8_192,
       temperature: 0,
       messageMode: "single-user",
+      ...(current.inference.model==="openai/gpt-6-luna"?{thinking:"high" as const}:{}),
     },
   };
 }
@@ -271,8 +274,8 @@ function dailyPolicy(scope: ObservationScope, current = projection) {
     allowedObservationClasses: currentDaily.allowedObservationClasses,
     maxAppliesPerWake: currentDaily.maxAppliesPerWake,
     allowedBatchEvaluationPolicyDigest: current.evaluation!.policyDigest,
-    ...(qualityScopeEnabled(qualityRollout(current),scope)?{allowContextualObservations:true,
-      allowedPreviousBatchEvaluationPolicyDigests:readableContextualDigests(current.evaluation!.policyDigest)}:{}),
+    allowContextualObservations: qualityScopeEnabled(qualityRollout(current),scope),
+    allowedPreviousBatchEvaluationPolicyDigests:readableEvaluationPolicies(workspace,current,scope).filter(d=>d!==current.evaluation!.policyDigest),
     ...(currentDaily.qmdBinding ? { qmdBinding: currentDaily.qmdBinding } : {}),
   });
 }
@@ -319,7 +322,10 @@ const priorCount = evaluations.length;
 for (const candidate of collectScopes()) {
   if (evaluations.length >= maxBatchesPerWake || Date.now() - drainStarted >= 90_000) break;
   const current = currentProjectionForScope(candidate.scope);
-  if(qualityProducerForScope(workspace,candidate.scope,qualityRollout(current))==="blocked") {
+  let selected;
+  try { selected=evaluationProjectionForScope(workspace,current,candidate.scope); }
+  catch { qualityBlockedScopes.add(candidate.scope.runtimeSessionKey); continue; }
+  if(qualityProducerForScope(workspace,candidate.scope,qualityRollout(selected))==="blocked") {
     qualityBlockedScopes.add(candidate.scope.runtimeSessionKey);
     continue;
   }

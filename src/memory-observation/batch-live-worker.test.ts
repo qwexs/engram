@@ -1051,3 +1051,12 @@ test('diagnostic persistence failure cannot consume an evaluator retry',async()=
  await expect(worker.processOne()).rejects.toThrow();
  expect(ledger.listQueue().every(q=>q.attempt===0)).toBe(true);
 });
+
+for(const thinking of ['medium','high'] as const) test('cached '+thinking+' result resumes without changing request or second model call',async()=>{
+ const {workspace,ledger,policy}=setup();admit(ledger,91,'2026-08-31T20:01:00.000Z');let stop=true,calls=0;
+ const worker=new BatchLiveWorker({workspace,ledger,policy:{...policy,contextual:true,contextualThinking:thinking},storeRoot:join(workspace,'state'),now:()=>new Date('2026-08-31T20:20:00.000Z'),
+  fault:p=>{if(stop&&p==='after_result'){stop=false;throw Error('interrupted');}},
+  complete:async request=>{calls++;expect(request.thinking).toBe(thinking);const sources=JSON.parse(request.prompt).sources;
+   return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-contextual-source-ledger.v1',assertions:[],sourceRecords:sources.map((s:any)=>({traceId:s.traceId,kind:'skip',assertionIds:[],reason:'Synthetic routine acknowledgement.'}))})};}});
+ await expect(worker.processOne()).rejects.toThrow('interrupted');expect((await worker.processOne()).status).toBe('duplicate');expect(calls).toBe(1);
+});

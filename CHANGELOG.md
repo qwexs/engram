@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **fix(memory): capture delayed native Codex finals through the visible-transcript SDK.**
+  Completion feeds now match an exact source/run/session and paired host mirror
+  provenance, retain source anchors across pages/restarts, rescan old cursors,
+  and scan before final-wait expiration. Native results use a typed admission
+  path instead of fabricated message-tool receipts. Lifecycle reconciliation
+  checks durable completion obligations independently of service caches and
+  retains corrupt/unavailable waits without publishing a false evidence gap.
+  Explicit gap recovery can opt into a marked head/tail projection for long
+  sources while pinning their full identity; default bounds remain unchanged.
+  Regression tests cover native finals, deadline/unavailable reads, real plugin
+  restoration callbacks, identity conflicts and bounded recovery.
+
 - **fix(kg): inject the current projection into canonical Telegram direct sessions.**
   The bootstrap hook now normalizes colon-form OpenClaw runtime keys and maps
   an actor-matched direct contour through the canonical runtime-grant registry

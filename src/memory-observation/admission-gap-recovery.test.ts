@@ -78,3 +78,17 @@ test('standard evaluator reads recovered evidence under unchanged source policy'
  const due=ledger.peekDueEvaluationEvidence(f.input.now);expect(due).toHaveLength(1);expect(due[0]!.envelope.traceId).toBe(r.traceId);expect(due[0]!.envelope.policyDigest).toBe(f.projection.evaluation.batch.sourcePolicyDigest);
  expect(due[0]!.evidence.payload.source.text).toBe(f.source.content);
 });
+
+test('long source requires explicit bounded projection, pins full identity and marks missing middle',()=>{
+ const f=fixture();f.source.content='Head decision '+ 'x'.repeat(52140)+' Tail instruction';f.input.inventoryDigest=sha256(f.input.inventory as any);
+ const before=snapshot(f.input.workspace);expect(()=>recoverAdmissionGap({...f.input,apply:true})).toThrow('opt-in');expect(snapshot(f.input.workspace)).toEqual(before);
+ const r=recoverAdmissionGap({...f.input,apply:true,allowBoundedSource:true}) as any;
+ const payload=JSON.parse(readFileSync(join(f.store.root,'evidence',r.traceId.slice(7)+'.json'),'utf8')).payload;
+ expect(payload.source.text.length).toBe(50000);expect(payload.source.text).toContain('MIDDLE OMITTED');expect(payload.source.text.endsWith('Tail instruction')).toBe(true);
+ expect(payload.source.projection.fullTextDigest).toBe(sha256(f.source.content));expect(payload.source.projection.fullChars).toBe(f.source.content.length);
+ expect(recoverAdmissionGap({...f.input,apply:true,allowBoundedSource:true})).toEqual(r);
+});
+test('long source over hard import cap is rejected even with projection opt-in',()=>{
+ const f=fixture();f.source.content='x'.repeat(200001);f.input.inventoryDigest=sha256(f.input.inventory as any);const before=snapshot(f.input.workspace);
+ expect(()=>recoverAdmissionGap({...f.input,apply:true,allowBoundedSource:true})).toThrow('bounded');expect(snapshot(f.input.workspace)).toEqual(before);
+});

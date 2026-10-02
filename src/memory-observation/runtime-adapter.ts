@@ -25,7 +25,7 @@ import {
 import type { Digest, JsonValue, ProducerRef, TrustedCompletedTurn } from "./ledger.ts";
 import { inspectMemoryObservationAdmission, ObservationLedgerError, sanitizeEvidence, sha256 } from "./ledger.ts";
 import { MAX_REPLY_CONTEXT_PAIRS, type ReplyContextResult } from "./reply-context.ts";
-import type { CompletionRequest } from "./completion-mirror-feed.ts";
+import { CompletionMirrorFeed, type CompletionRequest, type NativeCompletion } from "./completion-mirror-feed.ts";
 
 type Row = Record<string, unknown>;
 
@@ -678,6 +678,43 @@ export class OpenClawObservationRuntimeAdapter {
     return { status: "attached", sourceTurnId: completed.sourceTurnId };
   }
 
+  /** Called only with exact host-visible provenance validated by the feed. No
+   * fake message-tool receipt or inferred transport delivery is manufactured. */
+  completeNativeFinal(request: CompletionRequest, completion: NativeCompletion): RuntimeAdapterResult {
+    const checkpoint = this.admissionStore?.readCheckpoint(request.candidateId as Digest);
+    if (checkpoint && ["terminal_gap", "ledger_admitted"].includes(checkpoint.stage)) {
+      return {status: "ignored", reason: checkpoint.stage};
+    }
+    const bound = this.runs.get(request.runId) ?? this.boundFromDurableRun(request.runId, request.sessionKey);
+    if (!bound) return {status: "ignored", reason: "unbound_run"};
+    if (request.agentId !== /^agent:([^:]+):/.exec(request.sessionKey)?.[1]
+      || bound.candidateId !== request.candidateId || bound.sessionId !== request.sessionId
+      || bound.sourceTurnId !== request.sourceTurnId || bound.runtimeSessionKey !== request.sessionKey
+      || completion.kind !== "native_run_terminal" || completion.runId !== request.runId
+      || completion.sourceTurnId !== request.sourceTurnId || !completion.entryId || !completion.sourceEntryId
+      || !completion.sourceMirrorIdentity.endsWith(":prompt") || !completion.finalMirrorIdentity.endsWith(":assistant")
+      || completion.sourceMirrorIdentity.slice(0, -7) !== completion.finalMirrorIdentity.slice(0, -10)
+      || completion.sourceTextDigest !== sha256(bound.userText) || completion.text.length > 50000) {
+      throw new RuntimeAdapterError("IDENTITY_CONFLICT", "native terminal does not match the exact bound source");
+    }
+    const now = this.now();
+    if (checkpoint && Date.parse(checkpoint.expiresAt) <= now.getTime()) {
+      this.publishGap(checkpoint, this.failureStage(checkpoint), "expired_before_completion", now);
+      return {status: "ignored", reason: "expired_before_completion"};
+    }
+    const binding = this.options.resolveBinding(request.sessionKey);
+    if (!binding || this.bindingFingerprint(binding) !== bound.bindingFingerprint) {
+      if (!binding && this.missingBindingState(request.sessionKey) === "unavailable")
+        throw new RuntimeAdapterError("BINDING_UNAVAILABLE", "native final binding temporarily unavailable");
+      this.publishBoundGap(bound, "completion_observed", "scope_revoked", now);
+      throw new RuntimeAdapterError("SCOPE_REVOKED", "native final scope changed");
+    }
+    const {text, ...provenance} = completion;
+    const completed = this.recordCheckpoint(bound, "completion_observed", now);
+    return this.admitCompletedTurn({bound, binding, runtimeSessionKey: request.sessionKey,
+      assistantText: text, now: completed ? new Date(completed.updatedAt) : now, completion: provenance});
+  }
+
   completeWithoutDeliveredFinal(request: CompletionRequest): RuntimeAdapterResult {
     const checkpoint = this.admissionStore?.readCheckpoint(request.candidateId as Digest);
     if (!checkpoint || checkpoint.stage !== "completion_observed") return {status:"ignored",reason:"completion_not_observed"};
@@ -804,8 +841,17 @@ export class OpenClawObservationRuntimeAdapter {
           continue;
         }
         if (spool?.status === "completed") { result.retained++; continue; }
-        if (this.options.completionMirrorFeed?.hasPending(checkpoint.candidateId)
-          && Date.parse(checkpoint.expiresAt) > now.getTime()) { result.retained++; continue; }
+        if (Date.parse(checkpoint.expiresAt) > now.getTime()) {
+          // The service map is a cache, not ownership. A restart or temporarily
+          // unavailable active binding must not hide an exact durable wait.
+          const durablePending = this.options.workspace && checkpoint.sessionId && checkpoint.runId && checkpoint.sourceTurnId
+            ? CompletionMirrorFeed.hasDurablePending(join(this.options.workspace, "memory-state/memory-observation/v1/completion-mirrors"), {
+                agentId: /^agent:([^:]+):/.exec(checkpoint.scope.runtimeSessionKey)?.[1] ?? "",
+                sessionKey: checkpoint.scope.runtimeSessionKey, sessionId: checkpoint.sessionId,
+                candidateId: checkpoint.candidateId, runId: checkpoint.runId, sourceTurnId: checkpoint.sourceTurnId,
+              }) : false;
+          if (durablePending || this.options.completionMirrorFeed?.hasPending(checkpoint.candidateId)) { result.retained++; continue; }
+        }
         if (mode === "periodic" && checkpoint.stage !== "completion_observed" && Date.parse(checkpoint.expiresAt) > now.getTime()) {
           result.retained++;
           continue;
@@ -1035,6 +1081,7 @@ export class OpenClawObservationRuntimeAdapter {
     assistantText: string;
     now: Date;
     deliveryMessageId?: string;
+    completion?: Omit<NativeCompletion, "text">;
   }): RuntimeAdapterResult {
     const scope: TrustedCompletedTurn["scope"] = {
       workspaceId: params.binding.workspaceId,
@@ -1063,6 +1110,7 @@ export class OpenClawObservationRuntimeAdapter {
       sourceTurnId: params.bound.sourceTurnId,
       userText: params.bound.userText,
       assistantText: params.assistantText,
+      ...(params.completion ? {completion: params.completion} : {}),
       ...(replyContext ? { replyContext } : {}),
       ...(episodeContext?.pairs.length ? { episodeContext } : {}),
     });
@@ -1087,7 +1135,9 @@ export class OpenClawObservationRuntimeAdapter {
             ? { replyToMessageId: params.bound.replyToId } : {}),
           ...(groupDomainOf(params.binding) ? { actorId: params.bound.actorId, attribution: "speaker-only" } : {}) },
         outcome: { role: "assistant", text: params.assistantText,
+          ...(params.assistantText && params.completion ? {status: "reported_not_verified"} : {}),
           ...(!params.assistantText ? { status: "unknown", reasonCode: "assistant_text_unavailable" } : {}) },
+        ...(params.completion ? {completion: params.completion} : {}),
         ...(replyContext ? { replyContext } : {}),
         ...(episodeContext?.pairs.length ? { episodeContext } : {}),
       } as unknown as JsonValue),

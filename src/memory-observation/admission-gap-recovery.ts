@@ -17,7 +17,7 @@ const instant = (v: string) => Number.isFinite(Date.parse(v)) && new Date(v).toI
 
 /** Operator-pinned sanitized history export. Not an agent/model supplied assertion. */
 export type GapSourceInventory = {
-  schema: 'iss19.gap-source-review.v1'; source: 'OpenClaw sessions_history (sanitized)';
+  schema: 'iss19.gap-source-review.v1'; source: 'OpenClaw sessions_history (sanitized)' | 'OpenClaw visible-transcript SDK + sessions_history (sanitized)';
   sessionKey: string; sessionId: string; canonicalWrites: 0;
   records: { messageId: string; source: any; finalCandidates: any[]; checkpointComparison?: unknown }[];
 };
@@ -25,6 +25,9 @@ export type GapRecoveryOptions = {
   workspace: string; inventory: GapSourceInventory; inventoryDigest: Digest; messageId: string;
   authorizedBy: string; authorizedAt: string; reason: string; apply?: boolean; now?: Date;
   faultAt?: 'after_authorization' | 'after_admission' | LedgerFaultPoint;
+  /** Explicit operator opt-in: retain full source identity, use a marked bounded
+   * evidence projection. Never pretend a truncated export is the full source. */
+  allowBoundedSource?: boolean;
 };
 
 function textContent(record: any): string {
@@ -42,7 +45,7 @@ function checkHistory(record: any, role: 'user' | 'assistant') {
     || m.transcriptPosition.rawSeq < 0) fail('IMPORT_INVALID', 'record lacks exact runtime transcript provenance');
 }
 
-function checkSource(inventory: GapSourceInventory, row: GapSourceInventory['records'][number], cp: AdmissionCheckpointV1, requireOwner: boolean) {
+function checkSource(inventory: GapSourceInventory, row: GapSourceInventory['records'][number], cp: AdmissionCheckpointV1, requireOwner: boolean, allowBoundedSource = false) {
   checkHistory(row.source, 'user');
   const s = row.source, m = s.__openclaw, t = m.transport;
   const sourceId = s.idempotencyKey;
@@ -57,8 +60,12 @@ function checkSource(inventory: GapSourceInventory, row: GapSourceInventory['rec
     || (cp.replyToId !== null && cp.replyToId !== (t.replyToId ?? null))
     || (cp.sourceText !== null && cp.sourceText !== textContent(s))) fail('SOURCE_CONFLICT', 'source does not match the exact gap identity');
   const text = textContent(s);
-  if (!text.trim() || text.length > 50000) fail('IMPORT_INVALID', 'bounded nonempty source text required');
-  return { text, sourceId, metadata: m };
+  if (!text.trim() || text.length > 200000 || (text.length > 50000 && !allowBoundedSource)) fail('IMPORT_INVALID', 'bounded nonempty source text required; long-source projection needs explicit opt-in');
+  if (text.length <= 50000) return { text, sourceId, metadata: m, projection: null };
+  const marker='\n[RECOVERY SOURCE MIDDLE OMITTED; FULL IDENTITY PINNED]\n';
+  const headChars=48000,tailChars=50000-headChars-marker.length;
+  return {text:text.slice(0,headChars)+marker+text.slice(-tailChars),sourceId,metadata:m,
+    projection:{kind:'bounded_head_tail.v1',fullTextDigest:digest(text),fullChars:text.length,evidenceChars:50000,headChars,tailChars,omittedChars:text.length-headChars-tailChars}};
 }
 
 function writeImmutable(path: string, value: unknown) {
@@ -78,7 +85,7 @@ export function recoverAdmissionGap(options: GapRecoveryOptions) {
   if (!token(options.authorizedBy) || !token(options.reason) || !instant(options.authorizedAt)
     || Date.parse(options.authorizedAt) > now.getTime()) fail('INVALID_AUTHORIZATION', 'dated operator authorization required');
   if (digest(inv) !== options.inventoryDigest || inv?.schema !== 'iss19.gap-source-review.v1'
-    || inv.source !== 'OpenClaw sessions_history (sanitized)' || !token(inv.sessionId) || !token(inv.sessionKey)
+    || !['OpenClaw sessions_history (sanitized)', 'OpenClaw visible-transcript SDK + sessions_history (sanitized)'].includes(inv.source) || !token(inv.sessionId) || !token(inv.sessionKey)
     || inv.canonicalWrites !== 0 || !Array.isArray(inv.records) || inv.records.length > 100
     || new Set(inv.records.map(r => r.messageId)).size !== inv.records.length) fail('IMPORT_INVALID', 'exact pinned history inventory required');
   const row = inv.records.find(r => r.messageId === options.messageId);
@@ -102,7 +109,7 @@ export function recoverAdmissionGap(options: GapRecoveryOptions) {
       || !['identity_ambiguous', 'identity_conflict', 'evidence_missing', 'restart_before_completion', 'expired_before_completion'].includes(gap.reasonCode)) {
       fail('GAP_INELIGIBLE', 'retained matching terminal gap required');
     }
-    const sourceInfo = checkSource(inv, row, cp, binding.requireOwner);
+    const sourceInfo = checkSource(inv, row, cp, binding.requireOwner, options.allowBoundedSource === true);
     if (row.source.timestamp > now.getTime()) fail('IMPORT_INVALID', 'source timestamp is in the future');
     if (row.finalCandidates.length === 0) return { status: 'blocked_missing_completion' as const, candidateId, messageId: row.messageId };
     if (row.finalCandidates.length !== 1) fail('COMPLETION_AMBIGUOUS', 'one exact final record required');
@@ -114,7 +121,8 @@ export function recoverAdmissionGap(options: GapRecoveryOptions) {
     const body = { schema: GAP_RECOVERY_SCHEMA, candidateId, gapReceiptDigest: gap.receiptDigest, checkpointDigest: cp.checkpointDigest,
       inventoryDigest: options.inventoryDigest, recordDigest: digest(row), scope: cp.scope,
       sourceTurnId: sourceInfo.sourceId, runId: m.runId, sessionId: inv.sessionId,
-      authorizedBy: options.authorizedBy, authorizedAt: options.authorizedAt, reason: options.reason };
+      authorizedBy: options.authorizedBy, authorizedAt: options.authorizedAt, reason: options.reason,
+      ...(sourceInfo.projection ? {sourceProjection:sourceInfo.projection} : {}) };
     const recoveryId = digest(body);
     const traceId = deriveTraceId(workspaceId, inv.sessionKey, sourceInfo.sourceId);
     const reply = m.transport.replyToId && m.transport.replyToId !== binding.topicDomain?.topicId ? m.transport.replyToId : null;
@@ -122,6 +130,7 @@ export function recoverAdmissionGap(options: GapRecoveryOptions) {
     if (assistantText.length > 50000) fail('IMPORT_INVALID', 'bounded final text required');
     const evidence = sanitizeEvidence({
       source: { role: 'user', text: sourceInfo.text, messageId: row.messageId,
+        ...(sourceInfo.projection ? {projection:sourceInfo.projection} : {}),
         actorId: cp.actorId, attribution: 'speaker-only', ...(reply ? { replyToMessageId: reply } : {}) },
       outcome: { role: 'assistant', text: assistantText, status: assistantText ? 'reported_not_verified' : 'unknown',
         ...(!assistantText ? { reasonCode: 'assistant_text_unavailable' } : {}) },

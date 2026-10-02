@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AdmissionStore, deriveAdmissionGapReceiptId } from "./admission-store.ts";
 import { tmpdir } from "node:os";
+import {CompletionMirrorFeed, completionSourceDigest, type CompletionRequest, type NativeCompletion} from './completion-mirror-feed.ts';
 import {
   inspectMemoryObservationAdmission,
   deriveTraceId,
@@ -28,6 +29,39 @@ const policy = JSON.parse(readFileSync(join(repo, "contracts", "memory-observati
 const authority = registry.producers.find((entry: any) => entry.id === "openclaw-runtime");
 const sessionKey = "agent:fixture-main:telegram:direct:100000001";
 const sourceTurnId = `channel-user:v1:${"a".repeat(64)}`;
+
+test('durable completion obligation survives missing service cache; corrupt state cannot produce a false gap',()=>{
+ const f=hookFixtures(),context={...f.runContext,sessionId:'exact-session'};
+ const freshRoot=workspace(),pending:CompletionRequest[]=[];
+ const runtime=adapter({workspaceRoot:freshRoot,spoolRoot:join(freshRoot,'spool'),completionMirrorFeed:{enabled:true,register:r=>pending.push(r),hasPending:()=>false}});
+ runtime.captureMessageReceived(f.receivedEvent,f.receivedContext);runtime.adoptPersistedUser(f.persistedEvent,{sessionKey});runtime.attachRun({},context);
+ runtime.completeAgentEnd({...f.endEvent,messages:[f.endEvent.messages[0],{role:'assistant',content:[{type:'toolCall',name:'synthetic'}]}]},context);
+ expect(pending.length).toBe(1);
+ const feedRoot=join(freshRoot,'memory-state/memory-observation/v1/completion-mirrors');
+ const feed=new CompletionMirrorFeed({root:feedRoot,target:{agentId:'fixture-main',sessionKey,sessionId:'exact-session'},read:async()=>({kind:'missing'}),deliver:async()=> 'retry'});feed.register(pending[0]!);
+ const restored=adapter({workspaceRoot:freshRoot,spoolRoot:join(freshRoot,'spool')});
+ expect(restored.reconcileOrphanedCheckpoints()).toMatchObject({retained:1,gaps:0,errors:0});
+ const file=join(feedRoot,sha256({agentId:'fixture-main',sessionKey,sessionId:'exact-session'}).slice(7)+'.json');
+ writeFileSync(file,'{}');expect(restored.reconcileOrphanedCheckpoints()).toMatchObject({gaps:0,errors:1});
+});
+
+for(const change of ['none','source-digest','session','candidate','scope'] as const)
+test(`native final admission revalidates ${change}`,()=>{
+ const root=workspace(),admitted:TrustedCompletedTurn[]=[],requests:CompletionRequest[]=[];
+ const runtime=adapter({workspaceRoot:root,spoolRoot:join(root,'spool'),admitted,completionMirrorFeed:{enabled:true,register:r=>requests.push(r),hasPending:()=>true}});
+ const f=hookFixtures(),context={...f.runContext,sessionId:'exact-session'};
+ runtime.captureMessageReceived(f.receivedEvent,f.receivedContext);runtime.adoptPersistedUser(f.persistedEvent,{sessionKey});runtime.attachRun({},context);
+ runtime.completeAgentEnd({...f.endEvent,messages:[f.endEvent.messages[0],{role:'assistant',content:[{type:'toolCall',name:'synthetic'}]}]},context);
+ const request=requests[0]!,completion:NativeCompletion={kind:'native_run_terminal',entryId:'final',sourceEntryId:'source',sourceMirrorIdentity:'pair:prompt',finalMirrorIdentity:'pair:assistant',sourceTextDigest:completionSourceDigest(f.persistedEvent.message.content),sourceTurnId,runId:context.runId,text:'Completed result'};
+ if(change==='source-digest')completion.sourceTextDigest=sha256('other');
+ if(change==='session')request.sessionId='other';
+ if(change==='candidate')request.candidateId=sha256('other');
+ const restored=adapter({workspaceRoot:root,spoolRoot:join(root,'spool'),admitted,...(change==='scope'?{binding:null}:{})});
+ if(change==='none'){
+  expect(restored.completeNativeFinal(request,completion).status).toBe('admitted');
+  expect(admitted[0]!.redactedEvidence).toMatchObject({outcome:{text:'Completed result',status:'reported_not_verified'},completion:{kind:'native_run_terminal'}});
+ }else{expect(()=>restored.completeNativeFinal(request,completion)).toThrow();expect(admitted).toEqual([]);}
+});
 
 function workspace(): string {
   const path = join(tmpdir(), `engram-observation-runtime-${crypto.randomUUID()}`);

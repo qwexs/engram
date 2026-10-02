@@ -151,3 +151,58 @@ test('bounded catch-up reaches a late exact final without idle timer delays and 
  expect((await feed.tick()).delivered).toBe(1);expect(reads).toBe(13);
  await new CompletionMirrorFeed(options).tick();expect(delivered).toBe(1);
 });
+
+const nativeSource = () => ({entryId:'native-source',message:{role:'user',idempotencyKey:request.sourceTurnId,content:'Verified source',
+ __openclaw:{runId:request.runId,mirrorOrigin:'codex-app-server',mirrorIdentity:'native-turn:prompt'}}});
+const nativeFinal = (text='Native result') => ({entryId:'native-final',message:{role:'assistant',provider:'openai',stopReason:'stop',content:text,
+ __openclaw:{runId:request.runId,runTerminal:true,mirrorOrigin:'codex-app-server',mirrorIdentity:'native-turn:assistant'}}});
+
+test('delayed native terminal is captured across pages and restart with exact source provenance',async()=>{
+ const root=setup();let entries:any[]=[nativeSource()];const received:any[]=[];
+ const options={root,target,read:async()=>{const e=entries;entries=[];return page(e);},deliver:async(_r:any,m:any)=>{received.push(m);return 'done' as const;}};
+ const first=new CompletionMirrorFeed(options);first.register(request);await first.tick();
+ expect(received).toEqual([]);entries=[nativeFinal()];await new CompletionMirrorFeed(options).tick();
+ expect(received.length).toBe(1);expect(received[0].kind).toBe('native_run_terminal');expect(received[0].text).toBe('Native result');
+ expect(received[0].sourceEntryId).toBe('native-source');expect(received[0].runId).toBe(request.runId);
+});
+test('scans readable final before expiration at deadline',async()=>{
+ const root=setup();let time=new Date('2026-09-01T12:00:00Z'),reads=0,expired=0,delivered=0;
+ const feed=new CompletionMirrorFeed({root,target,now:()=>time,maxWaitMs:60000,read:async()=>page(++reads===1?[mirror()]:[]),
+ deliver:async()=>{delivered++;return 'done';},expire:async()=>{expired++;return 'done';}});
+ feed.register(request);time=new Date(time.getTime()+60000);await feed.tick();
+ expect(delivered).toBe(1);expect(expired).toBe(0);
+});
+test('SDK unavailable at deadline retains pending rather than fabricating missing completion',async()=>{
+ const root=setup();let time=new Date('2026-09-01T12:00:00Z'),expired=0;
+ const feed=new CompletionMirrorFeed({root,target,now:()=>time,maxWaitMs:60000,read:async()=>({kind:'unavailable'}),deliver:async()=> 'done',expire:async()=>{expired++;return 'done';}});
+ feed.register(request);time=new Date(time.getTime()+60000);await feed.tick();
+ expect(expired).toBe(0);expect(feed.status().pending).toBe(1);
+});
+for(const mode of ['foreign-run','foreign-mirror','nonterminal','commentary','duplicate-source','oversize-final','forged-provider'] as const)
+test(`native ${mode} never supplies an outcome`,async()=>{
+ const root=setup();const source:any=nativeSource(),final:any=nativeFinal();let reads=0,delivered=0;
+ if(mode==='foreign-run')final.message.__openclaw.runId='other';
+ if(mode==='foreign-mirror')final.message.__openclaw.mirrorIdentity='other:assistant';
+ if(mode==='nonterminal')final.message.__openclaw.runTerminal=false;
+ if(mode==='commentary')final.message.phase='commentary';
+ if(mode==='oversize-final')final.message.content='x'.repeat(50001);
+ if(mode==='forged-provider')final.message.provider='user';
+ const feed=new CompletionMirrorFeed({root,target,read:async()=>page(++reads===1?[source,...(mode==='duplicate-source'?[{...source,entryId:'source-other'}]:[]),final]:[]),deliver:async()=>{delivered++;return 'done';}});
+ feed.register(request);await feed.tick();expect(delivered).toBe(0);
+});
+test('new pending after old cursor rescans source anchor rather than relying on last-message proximity',async()=>{
+ const root=setup();let reads=0;const received:any[]=[];
+ const feed=new CompletionMirrorFeed({root,target,read:async(p)=>{
+  reads++;if(reads===1)return page([nativeSource()],'old-tail');
+  if(p.cursor===undefined)return page([nativeSource(),nativeFinal()],'tail');
+  return page([],'tail');
+ },deliver:async(_r,m)=>{received.push(m);return 'done';}});
+ await feed.tick();feed.register(request);await feed.tick();expect(received.length).toBe(1);
+});
+
+test('matched final admission retry never degrades into missing-final deadline',async()=>{
+ const root=setup();let time=new Date('2026-09-01T12:00:00Z'),reads=0,expired=0;
+ const feed=new CompletionMirrorFeed({root,target,now:()=>time,maxWaitMs:60000,read:async()=>page(++reads===1?[mirror()]:[]),deliver:async()=> 'retry',expire:async()=>{expired++;return 'done';}});
+ feed.register(request);await feed.tick();time=new Date(time.getTime()+180000);await feed.tick();
+ expect(expired).toBe(0);expect(feed.status()).toMatchObject({pending:1,matched:1});
+});

@@ -69,21 +69,33 @@ function completionFeedFor(api: any, workspace: string, target: CompletionTarget
       const adapter = adapterFor(api, request.sessionKey);
       if (!adapter) return "retry";
       const result = adapter.completeWithoutDeliveredFinal(request);
-      if (result.status === "admitted" || result.status === "duplicate") return "done";
+      if (result.status === "admitted" || result.status === "duplicate") {
+        api.logger.warn?.("engram-memory-observation: source admitted with unknown outcome after caught-up final deadline");
+        return "done";
+      }
       const checkpoint = new AdmissionStore(workspace, RUNTIME_AUTHORITY).readCheckpoint(request.candidateId as any);
       return checkpoint && ["ledger_admitted", "terminal_gap"].includes(checkpoint.stage) ? "done" : "retry";
     },
     deliver: async (request, mirror) => {
       const adapter = adapterFor(api, request.sessionKey);
       if (!adapter) return "retry";
-      const result = adapter.completeMessageSent({success: true, content: mirror.text,
+      const result = mirror.kind === "native_run_terminal" ? adapter.completeNativeFinal(request, mirror)
+        : adapter.completeMessageSent({success: true, content: mirror.text,
         sourceReply: {final: true, sourceTurnId: request.sourceTurnId, toolCallId: mirror.toolCallId}},
         {sessionKey: request.sessionKey, runId: request.runId, sessionId: request.sessionId});
-      if (result.status === "admitted" || result.status === "duplicate") return "done";
+      if (result.status === "admitted" || result.status === "duplicate") {
+        api.logger.info?.(`engram-memory-observation: exact final admitted (${mirror.kind ?? "message_tool_delivery"})`);
+        return "done";
+      }
       // A crash after admission can leave a matched feed item. Confirm the
       // candidate's durable disposition rather than treating any ignore as OK.
       const checkpoint = new AdmissionStore(workspace, RUNTIME_AUTHORITY).readCheckpoint(request.candidateId as any);
-      return checkpoint && ["ledger_admitted", "terminal_gap"].includes(checkpoint.stage) ? "done" : "retry";
+      if (checkpoint?.stage === "terminal_gap") {
+        api.logger.warn?.("engram-memory-observation: final accounted as terminal admission gap, not admitted");
+        return "done";
+      }
+      if (result.status === "ignored") api.logger.warn?.("engram-memory-observation: final admission pending; retry retained");
+      return checkpoint?.stage === "ledger_admitted" ? "done" : "retry";
     }});
   completionFeeds.set(key, feed); return feed;
 }
@@ -107,8 +119,10 @@ async function tickCompletionFeeds(api: any): Promise<void> {
   if (completionTickRunning) return;
   completionTickRunning = true;
   try { for (const feed of completionFeeds.values()) {
-    if (!feed.status().pending) continue;
-    try { const result = await feed.tick(); if (result.status === "blocked") api.logger.warn?.("engram-memory-observation: completion feed blocked; exact recovery required"); }
+    try { if (!feed.status().pending) continue;
+      const result = await feed.tick();
+      if (result.delivered) api.logger.info?.(`engram-memory-observation: exact completion feed dispositions ${result.delivered}`);
+      if (result.status === "blocked") api.logger.warn?.("engram-memory-observation: completion feed blocked; exact recovery required"); }
     catch { api.logger.warn?.("engram-memory-observation: completion feed read/admission failed; retained for retry"); }
   }} finally { completionTickRunning = false; }
 }
@@ -589,8 +603,9 @@ export default definePluginEntry({
   register(api: any) {
     api.registerService({
       id: "engram-memory-observation-evaluator",
-      start: () => {
+      start: async () => {
         restoreCompletionFeeds(api);
+        await tickCompletionFeeds(api);
         runLifecycleMaintenance(api, "startup");
         if (completionTimer) clearInterval(completionTimer);
         completionTimer = setInterval(() => { void tickCompletionFeeds(api); }, 15_000);

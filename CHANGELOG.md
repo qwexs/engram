@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **fix(memory): fence completion work across service stop/restart.**
+  Abort-aware feed reads drain without waiting for an unresponsive host SDK;
+  late results cannot admit, expire, mutate cursors, or rearm stopped timers.
+  Starts are single-flight, stop clears feed/retry caches, and empty feeds are
+  evicted without deleting durable state. Retry logs include an opaque feed ID,
+  operation stage and sanitized error code/fingerprint, with 15s–5m backoff.
+  Matched admission debt remains durable. This fixes a reproduced lifecycle
+  regression; it does not establish the cause of the observed Gateway OOM.
+
 - **fix(memory): capture delayed native Codex finals through the visible-transcript SDK.**
   Completion feeds now match an exact source/run/session and paired host mirror
   provenance, retain source anchors across pages/restarts, rescan old cursors,

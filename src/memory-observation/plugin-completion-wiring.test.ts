@@ -77,5 +77,5 @@ for (const mode of ['message-tool', 'native-restart'] as const) test(`production
    try {expect(readdirSync(gaps).filter(n=>n.endsWith('.json'))).toHaveLength(0);} catch(e:any){if(e.code!=='ENOENT')throw e;}
   }
 
- } finally {service?.stop();rmSync(root,{recursive:true,force:true});}
+ } finally {await service?.stop();rmSync(root,{recursive:true,force:true});}
 });

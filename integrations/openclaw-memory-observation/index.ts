@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/core";
 import { readSessionTranscriptVisibleMessageDelta } from "openclaw/plugin-sdk/session-transcript-runtime";
-import { CompletionMirrorFeed, type CompletionTarget, type CompletionPage } from "../../src/memory-observation/completion-mirror-feed.ts";
+import { CompletionMirrorFeed, CompletionFeedError, type CompletionTarget, type CompletionPage } from "../../src/memory-observation/completion-mirror-feed.ts";
 import {
   resolveObservationAgentRunIdentity,
   resolveObservationMessageReceivedIdentity,
@@ -56,16 +56,22 @@ const dailyNoteRunners = new Map<string, AutonomousDailyNoteCanaryRunner>();
 let lifecycleTimer: ReturnType<typeof setInterval> | null = null;
 let completionTimer: ReturnType<typeof setInterval> | null = null;
 const completionFeeds = new Map<string, CompletionMirrorFeed>();
-let completionTickRunning = false;
+let generation = new AbortController();
+let startWork: Promise<void> | null = null;
+let completionTickWork: Promise<void> | null = null;
+const completionRetries = new Map<string, { failures: number; nextAt: number }>();
 const LIFECYCLE_INTERVAL_MS = 60 * 60 * 1_000;
 
 function completionFeedFor(api: any, workspace: string, target: CompletionTarget): CompletionMirrorFeed {
+  const signal = generation.signal;
+  signal.throwIfAborted();
   target = {agentId: target.agentId, sessionKey: target.sessionKey, sessionId: target.sessionId};
   const key = JSON.stringify([workspace, target.agentId, target.sessionKey, target.sessionId]);
   const existing = completionFeeds.get(key); if (existing) return existing;
   const feed = new CompletionMirrorFeed({root: join(workspace, "memory-state/memory-observation/v1/completion-mirrors"), target,
     read: async request => await readSessionTranscriptVisibleMessageDelta(request) as CompletionPage,
     expire: async request => {
+      if (signal.aborted) return "retry";
       const adapter = adapterFor(api, request.sessionKey);
       if (!adapter) return "retry";
       const result = adapter.completeWithoutDeliveredFinal(request);
@@ -77,6 +83,7 @@ function completionFeedFor(api: any, workspace: string, target: CompletionTarget
       return checkpoint && ["ledger_admitted", "terminal_gap"].includes(checkpoint.stage) ? "done" : "retry";
     },
     deliver: async (request, mirror) => {
+      if (signal.aborted) return "retry";
       const adapter = adapterFor(api, request.sessionKey);
       if (!adapter) return "retry";
       const result = mirror.kind === "native_run_terminal" ? adapter.completeNativeFinal(request, mirror)
@@ -109,22 +116,73 @@ function restoreCompletionFeeds(api: any): void {
         const target = readJson(join(root, file)).target as CompletionTarget;
         if (agentIdFromSessionKey(target.sessionKey) !== target.agentId
           || resolveAgentWorkspace(currentConfig(api), target.agentId) !== workspace) throw Error("scope mismatch");
-        completionFeedFor(api, workspace, target).status();
-      } catch { api.logger.warn?.("engram-memory-observation: completion feed restore failed"); }
+        const feed = completionFeedFor(api, workspace, target);
+        if (!feed.status().pending) completionFeeds.delete(JSON.stringify([workspace, target.agentId, target.sessionKey, target.sessionId]));
+      } catch (error) { logCompletionFailure(api, file.slice(0, 16), "restore", error, 0); }
     }
   }
 }
 
-async function tickCompletionFeeds(api: any): Promise<void> {
-  if (completionTickRunning) return;
-  completionTickRunning = true;
-  try { for (const feed of completionFeeds.values()) {
-    try { if (!feed.status().pending) continue;
-      const result = await feed.tick();
-      if (result.delivered) api.logger.info?.(`engram-memory-observation: exact completion feed dispositions ${result.delivered}`);
-      if (result.status === "blocked") api.logger.warn?.("engram-memory-observation: completion feed blocked; exact recovery required"); }
-    catch { api.logger.warn?.("engram-memory-observation: completion feed read/admission failed; retained for retry"); }
-  }} finally { completionTickRunning = false; }
+// Never log exception text/stack: SDK errors can contain transcript content.
+function logCompletionFailure(api: any, feed: string, stage: string, error: unknown, retryMs: number): void {
+  const cause = error instanceof CompletionFeedError ? error.cause : error;
+  const raw = (cause as any)?.code ?? (cause instanceof Error ? cause.message : "");
+  const code = typeof raw === "string" && /^[A-Z][A-Z0-9_]{1,79}$/.test(raw) ? raw : "UNCLASSIFIED";
+  const errorId = createHash("sha256").update(String((cause as any)?.name ?? "") + ":" + String(raw)).digest("hex").slice(0, 16);
+  api.logger.warn?.(`engram-memory-observation: completion feed retry ${JSON.stringify({feed, stage: error instanceof CompletionFeedError ? error.stage : stage, code, errorId, retryMs})}`);
+}
+
+function tickCompletionFeeds(api: any): Promise<void> {
+  if (generation.signal.aborted) return Promise.resolve();
+  if (completionTickWork) return completionTickWork;
+  const signal = generation.signal;
+  const work = (async () => {
+    for (const [key, feed] of completionFeeds) {
+      if (signal.aborted) return;
+      if ((completionRetries.get(key)?.nextAt ?? 0) > Date.now()) continue;
+      try {
+        if (!feed.status().pending) { completionFeeds.delete(key); completionRetries.delete(key); continue; }
+        const result = await feed.tick(signal);
+        if (signal.aborted) return;
+        if (result.delivered) api.logger.info?.(`engram-memory-observation: exact completion feed dispositions ${result.delivered}`);
+        if (result.status === "blocked") throw new Error("COMPLETION_BLOCKED");
+        const status = feed.status();
+        if (status.matched) throw new Error("COMPLETION_ADMISSION_PENDING");
+        completionRetries.delete(key);
+        if (!status.pending) completionFeeds.delete(key);
+      } catch (error) {
+        if (signal.aborted) return;
+        const failures = Math.min((completionRetries.get(key)?.failures ?? 0) + 1, 6);
+        const retryMs = Math.min(15_000 * 2 ** (failures - 1), 300_000);
+        completionRetries.set(key, { failures, nextAt: Date.now() + retryMs });
+        logCompletionFailure(api, createHash("sha256").update(key).digest("hex").slice(0, 16), "state", error, retryMs);
+      }
+    }
+  })();
+  completionTickWork = work;
+  const settled = () => { if (completionTickWork === work) completionTickWork = null; };
+  void work.then(settled, settled);
+  return work;
+}
+
+function stopService(): Promise<void> {
+  generation.abort();
+  startWork = null;
+  if (completionTimer) clearInterval(completionTimer);
+  completionTimer = null;
+  if (lifecycleTimer) clearInterval(lifecycleTimer);
+  lifecycleTimer = null;
+  // Capture only this generation's drain. A subsequent start owns fresh caches.
+  const drain = completionTickWork;
+  completionTickWork = null;
+  completionFeeds.clear();
+  completionRetries.clear();
+  adapters.clear();
+  for (const runner of evaluatorRunners.values()) runner.stop();
+  evaluatorRunners.clear();
+  for (const runner of dailyNoteRunners.values()) runner.stop();
+  dailyNoteRunners.clear();
+  return drain ?? Promise.resolve();
 }
 
 function readJson(path: string): any { return JSON.parse(readFileSync(path, "utf8")); }
@@ -318,6 +376,7 @@ function bindingFor(api: any, active: ActiveWorkspace, runtimeSessionKey: string
 }
 
 function adapterFor(api: any, runtimeSessionKey: string): OpenClawObservationRuntimeAdapter | null {
+  if (generation.signal.aborted) return null;
   const active = activeWorkspace(api, runtimeSessionKey);
   if (!active) return null;
   const key = `${active.workspaceId}\0${active.workspace}`;
@@ -481,9 +540,10 @@ function runnerFor(api: any, runtimeSessionKey: string): AutonomousEpisodicRunne
   const key = evaluatorRunnerKey(initial.active, runtimeSessionKey);
   let runner = evaluatorRunners.get(key);
   if (runner) return runner;
+  const signal = generation.signal;
   runner = new AutonomousEpisodicRunner({
     isActive: () => {
-      try { return currentEvaluatorState(api, runtimeSessionKey) !== null; }
+      try { return !signal.aborted && currentEvaluatorState(api, runtimeSessionKey) !== null; }
       catch { return false; }
     },
     processOne: async () => {
@@ -510,7 +570,7 @@ function runnerFor(api: any, runtimeSessionKey: string): AutonomousEpisodicRunne
         },
       });
       const result = await evaluator.processOne();
-      if (result.status === "written" || result.status === "resumed") wakeDailyNoteCanary(api, runtimeSessionKey);
+      if (!signal.aborted && (result.status === "written" || result.status === "resumed")) wakeDailyNoteCanary(api, runtimeSessionKey);
       return result;
     },
     nextDueAt: () => currentEvaluatorState(api, runtimeSessionKey)?.ledger.nextEvaluationAt() ?? null,
@@ -531,8 +591,9 @@ function dailyNoteRunnerFor(api: any, runtimeSessionKey: string): AutonomousDail
     workspace: initial.active.workspace,
     resolveActivePolicy: () => currentDailyNotePolicy(api, runtimeSessionKey)?.policy ?? null,
   });
+  const signal = generation.signal;
   runner = new AutonomousDailyNoteCanaryRunner({
-    isActive: () => currentDailyNotePolicy(api, runtimeSessionKey) !== null,
+    isActive: () => !signal.aborted && currentDailyNotePolicy(api, runtimeSessionKey) !== null,
     processOne: async () => applicator.processOne(),
     nextDueAt: () => applicator.nextDueAt(),
     batchLimit: initial.policy.maxAppliesPerWake,
@@ -544,11 +605,13 @@ function dailyNoteRunnerFor(api: any, runtimeSessionKey: string): AutonomousDail
 }
 
 function wakeEpisodicEvaluation(api: any, runtimeSessionKey: string): void {
+  if (generation.signal.aborted) return;
   try { runnerFor(api, runtimeSessionKey)?.wake(); }
   catch (error) { api.logger.warn?.(`engram-memory-observation: evaluator boundary failed ${String(error)}`); }
 }
 
 function wakeDailyNoteCanary(api: any, runtimeSessionKey: string): void {
+  if (generation.signal.aborted) return;
   try { dailyNoteRunnerFor(api, runtimeSessionKey)?.wake(); }
   catch (error) { api.logger.warn?.(`engram-memory-observation: daily-note boundary failed ${String(error)}`); }
 }
@@ -603,32 +666,29 @@ export default definePluginEntry({
   register(api: any) {
     api.registerService({
       id: "engram-memory-observation-evaluator",
-      start: async () => {
-        restoreCompletionFeeds(api);
-        await tickCompletionFeeds(api);
-        runLifecycleMaintenance(api, "startup");
-        if (completionTimer) clearInterval(completionTimer);
-        completionTimer = setInterval(() => { void tickCompletionFeeds(api); }, 15_000);
-        completionTimer.unref?.();
-        if (lifecycleTimer) clearInterval(lifecycleTimer);
-        lifecycleTimer = setInterval(() => runLifecycleMaintenance(api, "periodic"), LIFECYCLE_INTERVAL_MS);
-        lifecycleTimer.unref?.();
-        for (const runtimeSessionKey of activeSessionKeys(api)) {
-          wakeEpisodicEvaluation(api, runtimeSessionKey);
-          wakeDailyNoteCanary(api, runtimeSessionKey);
-        }
+      start: () => {
+        if (startWork) return startWork;
+        if (generation.signal.aborted) generation = new AbortController();
+        const signal = generation.signal;
+        const work = (async () => {
+          restoreCompletionFeeds(api);
+          await tickCompletionFeeds(api);
+          if (signal.aborted) return;
+          runLifecycleMaintenance(api, "startup");
+          completionTimer = setInterval(() => { if (!signal.aborted) void tickCompletionFeeds(api); }, 15_000);
+          completionTimer.unref?.();
+          lifecycleTimer = setInterval(() => { if (!signal.aborted) runLifecycleMaintenance(api, "periodic"); }, LIFECYCLE_INTERVAL_MS);
+          lifecycleTimer.unref?.();
+          for (const runtimeSessionKey of activeSessionKeys(api)) {
+            wakeEpisodicEvaluation(api, runtimeSessionKey);
+            wakeDailyNoteCanary(api, runtimeSessionKey);
+          }
+        })();
+        startWork = work;
+        void work.catch(() => { if (generation.signal === signal) void stopService(); });
+        return work;
       },
-      stop: () => {
-        if (completionTimer) clearInterval(completionTimer);
-        completionTimer = null;
-        if (lifecycleTimer) clearInterval(lifecycleTimer);
-        lifecycleTimer = null;
-        adapters.clear();
-        for (const runner of evaluatorRunners.values()) runner.stop();
-        evaluatorRunners.clear();
-        for (const runner of dailyNoteRunners.values()) runner.stop();
-        dailyNoteRunners.clear();
-      },
+      stop: stopService,
     });
 
     api.on("message_received", (event: any, context: any) => {

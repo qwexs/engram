@@ -2,6 +2,27 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, openSyn
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { sanitizeEvidence, sha256, type JsonValue } from "./ledger.ts";
+/** Cancel our continuation; the host SDK itself exposes no cancellation contract.
+ * Late host results/rejections are consumed but cannot resume feed mutation. */
+function interruptible<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return work;
+    return new Promise<T>((resolve, reject) => {
+        const abort = () => { cleanup(); reject(new Error("COMPLETION_STOPPED")); };
+        const cleanup = () => signal.removeEventListener("abort", abort);
+        work.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+    });
+}
+function assertRunning(signal?: AbortSignal): void {
+    if (signal?.aborted) throw new Error("COMPLETION_STOPPED");
+}
+export class CompletionFeedError extends Error {
+    constructor(readonly stage: string, cause: unknown) {
+        super(cause instanceof Error ? cause.message : "COMPLETION_FEED_FAILED", { cause });
+    }
+}
+
 /** Host-owned visible transcript pages only. No tool arguments, raw database
  * reads, last-message lookup, or timestamp matching are accepted here. */
 export type CompletionTarget = {
@@ -138,13 +159,15 @@ export class CompletionMirrorFeed {
         const s = this.load();
         return { pending: s.pending.length, matched: s.pending.filter(p => p.mirror).length, blocked: s.blocked };
     }
-    async tick(): Promise<{
+    async tick(signal?: AbortSignal): Promise<{
         status: "busy" | "pending" | "caught_up" | "blocked";
         delivered: number;
     }> {
+        assertRunning(signal);
         if (this.busy)
             return { status: "busy", delivered: 0 };
         this.busy = true;
+        let stage = "state";
         try {
             let delivered = 0;
             // A missing final never means an unimportant source. The runtime may
@@ -172,10 +195,15 @@ export class CompletionMirrorFeed {
                     if (performance.now() - scanStarted >= 1000)
                         break;
                 }
+                assertRunning(signal);
+                stage = "state";
                 const before = this.load();
                 if (before.blocked)
                     return { status: "blocked", delivered };
-                const page = await this.options.read({ ...this.options.target, cursor: before.cursor, maxMessages: 1000, maxBytes: 4000000 });
+                stage = "read";
+                const page = await interruptible(this.options.read({ ...this.options.target, cursor: before.cursor, maxMessages: 1000, maxBytes: 4000000 }), signal);
+                assertRunning(signal);
+                stage = "validate_page";
                 // A request may have registered while awaiting the host read.
                 const state = this.load();
                 if (state.cursor !== before.cursor)
@@ -247,7 +275,10 @@ export class CompletionMirrorFeed {
                 if (!page.hasMore) {
                     // Revalidate the anchor after any restart and before admitting a
                     // stored match. A reset is surfaced, never silently rewound.
-                    const check = await this.options.read({ ...this.options.target, cursor: state.cursor, maxMessages: 1, maxBytes: 4000000 });
+                    stage = "revalidate";
+                    const check = await interruptible(this.options.read({ ...this.options.target, cursor: state.cursor, maxMessages: 1, maxBytes: 4000000 }), signal);
+                    assertRunning(signal);
+                    stage = "validate_page";
                     if (check.kind === "reset") {
                         const latest = this.load();
                         this.reset(latest, check);
@@ -259,33 +290,45 @@ export class CompletionMirrorFeed {
                     for (const pending of this.load().pending) {
                         if (!pending.mirror)
                             continue;
-                        if (await this.options.deliver(pending.request, pending.mirror) !== "done")
+                        assertRunning(signal);
+                        stage = "admission";
+                        const disposition = await interruptible(this.options.deliver(pending.request, pending.mirror), signal);
+                        assertRunning(signal);
+                        if (disposition !== "done")
                             continue;
+                        stage = "persist_disposition";
                         this.options.fault?.("after_delivery");
                         const latest = this.load();
                         latest.pending = latest.pending.filter(p => p.request.candidateId !== pending.request.candidateId);
                         this.save(latest);
                         delivered++;
                     }
-                    await this.expireCaughtUp(waitMs);
+                    stage = "expiry";
+                    await this.expireCaughtUp(waitMs, signal);
                     return { status: "caught_up", delivered };
                 }
             }
             return { status: "pending", delivered };
         }
+        catch (error) {
+            throw new CompletionFeedError(stage, error);
+        }
         finally {
             this.busy = false;
         }
     }
-    private async expireCaughtUp(waitMs: number): Promise<void> {
+    private async expireCaughtUp(waitMs: number, signal?: AbortSignal): Promise<void> {
         // Only a validated, caught-up SDK branch can prove no final is visible.
         for (const pending of this.load().pending) {
+                assertRunning(signal);
                 // A known final is admission debt, not missing-final debt. Its
                 // checkpoint TTL/lifecycle owns eventual expiry, not this timer.
                 if (pending.mirror || this.now().getTime() - Date.parse(pending.registeredAt) < waitMs || !this.options.expire)
                     continue;
                 const reason = this.load().blocked ?? "final_wait_deadline";
-                if (await this.options.expire(pending.request, reason) !== "done")
+                const disposition = await interruptible(this.options.expire(pending.request, reason), signal);
+                assertRunning(signal);
+                if (disposition !== "done")
                     continue;
                 const state = this.load();
                 const receipt = { schema: "engram.completion-unresolved.v1", request: pending.request, reason, closedAt: this.now().toISOString() };

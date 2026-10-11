@@ -216,6 +216,25 @@ immutable reconciliation receipt and the identical verified `done` marker
 under the evaluator-worker lock. Worker health rejects unknown or digest-invalid
 done records.
 
+The same operator command supports the narrow `--expire-unprocessed
+--job-digest sha256:...` disposition. It requires a pinned exact job, wholly
+expired sealed inputs, matching admitted envelopes, unclaimed queued sources,
+and no stored evaluation or downstream effects. It seals
+`expired_without_evaluation` in the existing accounting receipt and `done`
+marker, without changing source queues, old policy digests, or model admission.
+The normal evidence-unavailable pass then disposes the expired source rows.
+Expiry is an accounted processing failure, never a semantic skip or successful
+memory write; health remains degraded where terminal failures exist.
+
+Batch workers independently account pre-activation tails before selecting
+evaluation scopes. The existing `pre_activation_not_evaluated` disposition is
+receipt-first and restart-safe. Exact scope is checked, sealed batch sources
+and persisted evaluations are retained, and no inference is made. Content-free
+pre-activation receipts use the existing 180-day audit retention window.
+Queue-age, jobs/bytes limits, policy gates, schedulers and capture ownership are
+unchanged. These two narrow paths do not enable a generic quarantine or
+automatic recovery of unknown policies.
+
 `semantic_batch_defer` is an expected contextual wait, not a retry failure.
 Health takes its deadline from the retained evidence `expiresAt`; the generic
 pending-age threshold and stale `nextAttemptAt` do not degrade it before that

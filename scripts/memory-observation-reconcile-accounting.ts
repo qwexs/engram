@@ -27,6 +27,8 @@ const result = reconcileBatchAccounting({
   storeRoot: resolve(required(options, "store-root")),
   jobId: required(options, "job-id") as Digest,
   supersedingJobId: typeof options["superseding-job-id"] === "string" ? options["superseding-job-id"] as Digest : undefined,
+  expireUnprocessed: options["expire-unprocessed"] === true,
+  expectedJobDigest: typeof options["job-digest"] === "string" ? options["job-digest"] as Digest : undefined,
   authorizedBy: required(options, "authorized-by"),
   authorizedAt: required(options, "authorized-at"),
   reason: required(options, "reason"),

@@ -1,3 +1,4 @@
+import { RUNTIME_POLICY } from "../src/memory-observation/runtime-authority.ts";
 import { configuredGroupDirectBindings } from "../src/memory-observation/group-bindings.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -5,11 +6,52 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { BATCH_EVALUATOR_AUTHORITY, deriveBatchObservationId } from "../src/memory-observation/batch-observation.ts";
-import { sha256, type JsonValue } from "../src/memory-observation/ledger.ts";
+import { MemoryObservationLedger, sha256, type JsonValue } from "../src/memory-observation/ledger.ts";
 import { configuredTopicBindings } from "../src/memory-observation/topic-bindings.ts";
 
 const roots: string[] = [];
 const repository = resolve(import.meta.dir, "..");
+
+test("batch worker accounts a runtime-policy pre-activation source without host or model calls", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "memory-batch-pre-activation-")); roots.push(workspace);
+  const put = (relative: string, value: unknown) => {
+    const path = join(workspace, relative); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value));
+  };
+  const registry = JSON.parse(readFileSync(join(repository, "contracts/memory-observation/v1/producer-registry.json"), "utf8"));
+  const policy = RUNTIME_POLICY;
+  expect(sha256(policy)).not.toBe(sha256(JSON.parse(readFileSync(join(repository, "contracts/memory-observation/v1/authority-policy.json"), "utf8"))));
+  const authority = registry.producers.find((entry: any) => entry.id === "openclaw-runtime");
+  const sessionKey = "agent:fixture-main:telegram:direct:100000001";
+  const scope = { workspaceId: "fixture-main", runtimeSessionKey: sessionKey, scopeClass: "self" as const, scopeId: "telegram:100000001" };
+  const at = "2026-08-25T00:00:00.000Z", before = "2026-08-24T18:00:00.000Z";
+  put("engram.json", { workspace: { id: "fixture-main" } });
+  put("memory-state/memory-observation/projection.json", {
+    schema: "engram.memory-observation-rollout.v2", workspaceId: "fixture-main", enabled: true, mode: "canary",
+    bindings: [{ runtimeSessionKey: sessionKey, scopeClass: scope.scopeClass, scopeId: scope.scopeId, requireOwner: true, allowedChannels: ["telegram"] }],
+    pluginDigest: await sourcePluginDigest(), inference: { provider: "openai", model: "openai/gpt-5.6-terra", evaluateAfter: at },
+    evaluation: { mode: "batch-cron", policyDigest: sha256("evaluation"), batch: { sourcePolicyDigest: sha256(policy),
+      inactivityGapSeconds: 300, maxTurns: 8, maxEvidenceBytes: 262144, maxAgeSeconds: 900, maxInferenceCallsPerRun: 1, schedulerId: "fixture-batch" } },
+    limits: { evidenceTtlHours: 72, maxJobs: 1000, maxBytes: 67108864, maxQueueAgeHours: 168, maxAttempts: 2, claimTtlSeconds: 300, maxInferenceCalls: 1 },
+    consumers: { dailyNote: { mode: "canary", applyAfter: at, timezone: "UTC", allowedObservationClasses: ["episodic.event", "episodic.decision"], maxAppliesPerWake: 1 } },
+    captureOwnership: { owner: "observer", effectiveAfter: at, foregroundDailyNoteCapture: "disabled" }, approvedBy: "operator", approvedAt: at,
+  });
+  const ledger = new MemoryObservationLedger({ workspace, workspaceId: "fixture-main", exactSessionKeys: [sessionKey], producerRegistry: registry,
+    authorityPolicy: policy, limits: { evidenceTtlMs: 72 * 3600000, maxJobs: 1000, maxBytes: 67108864,
+      maxQueueAgeMs: 168 * 3600000, maxAttempts: 2, claimTtlMs: 300000, maxInferenceCalls: 0 } });
+  const sourceTurnId = `channel-user:v1:${"a".repeat(64)}`;
+  ledger.admit({ sourceTurnId, scope, sourceCompletedAt: before, authority,
+    evidenceRefs: [{ kind: "source-turn", ref: sourceTurnId, digest: sha256("evidence") }],
+    redactedEvidence: { source: { role: "user", text: "old request" }, outcome: { role: "assistant", text: "old completion" } },
+    trustedInputs: ["completed-source-turn", "runtime-session-key", "workspace-binding", "source-completion-time"] }, new Date(before));
+  const bin = join(workspace, "bin"); mkdirSync(bin);
+  writeFileSync(join(bin, "openclaw"), "#!/bin/sh\nexit 91\n", { mode: 0o755 });
+  const run = () => Bun.spawnSync([process.execPath, join(repository, "scripts/memory-observation-batch-worker.ts"), "--workspace", workspace],
+    { cwd: repository, env: { ...process.env, PATH: bin + ":" + process.env.PATH } });
+  const result = run(); expect(result.exitCode, result.stderr.toString()).toBe(0);
+  expect(JSON.parse(result.stdout.toString())).toMatchObject({ evaluation: { status: "idle" }, health: { pending: 0, terminalFailures: 0 } });
+  expect(ledger.listQueue()[0]).toMatchObject({ status: "terminal", attempt: 0, reasonCode: "pre_activation_not_evaluated" });
+  expect(run().exitCode).toBe(0);
+});
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

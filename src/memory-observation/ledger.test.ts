@@ -44,7 +44,7 @@ function source(seed = "a", overrides: Partial<TrustedCompletedTurn> = {}): Trus
   };
 }
 
-function ledger(root: string, options: { fault?: (point: LedgerFaultPoint) => void; evaluatorEnabled?: boolean; maxJobs?: number; maxBytes?: number; maxQueueAgeMs?: number; maxAttempts?: number } = {}) {
+function ledger(root: string, options: { fault?: (point: LedgerFaultPoint) => void; evaluatorEnabled?: boolean; maxJobs?: number; maxBytes?: number; maxQueueAgeMs?: number; maxAttempts?: number; evaluationStartedAt?: string } = {}) {
   return new MemoryObservationLedger({
     workspace: root,
     workspaceId: "fixture-main",
@@ -52,7 +52,7 @@ function ledger(root: string, options: { fault?: (point: LedgerFaultPoint) => vo
     producerRegistry: registry,
     authorityPolicy: policy,
     evaluatorEnabled: options.evaluatorEnabled,
-    ...(options.evaluatorEnabled ? { evaluationStartedAt: "2026-08-24T17:59:00.000Z" } : {}),
+    ...(options.evaluatorEnabled ? { evaluationStartedAt: options.evaluationStartedAt ?? "2026-08-24T17:59:00.000Z" } : {}),
     fault: options.fault,
     limits: {
       evidenceTtlMs: 72 * 60 * 60 * 1_000,
@@ -67,6 +67,53 @@ function ledger(root: string, options: { fault?: (point: LedgerFaultPoint) => vo
 }
 
 describe("Memory Observation Layer PR1 identities and admission", () => {
+  test("accounts a pre-activation tail without selecting it for inference and unblocks fresh admission", () => {
+    const root = workspace();
+    const store = ledger(root, { evaluatorEnabled: true, evaluationStartedAt: "2026-08-24T18:01:00.000Z", maxQueueAgeMs: 1_000 });
+    const old = store.admit(source("a"), new Date("2026-08-24T18:00:00.100Z"));
+    const now = new Date("2026-08-25T18:00:00.000Z");
+    expect(() => store.admit(source("b"), now)).toThrow("queue age high-water");
+    expect(store.reconcilePreActivationQueue(now)).toBe(1);
+    expect(store.listQueue()[0]).toMatchObject({ status: "terminal", attempt: 0, reasonCode: "pre_activation_not_evaluated" });
+    expect(store.readEnvelope(old.envelope.traceId)).toEqual(old.envelope);
+    expect(store.reconcilePreActivationQueue(now)).toBe(0);
+    expect(store.admit(source("b"), now).status).toBe("admitted");
+  });
+
+  test("pre-activation reconciliation retains sources owned by a sealed batch", () => {
+    const store = ledger(workspace(), { evaluatorEnabled: true, evaluationStartedAt: "2026-08-24T18:01:00.000Z" });
+    const admitted = store.admit(source(), new Date("2026-08-24T18:00:00.100Z"));
+    const before = store.listQueue();
+    expect(store.reconcilePreActivationQueue(new Date("2026-08-25T18:00:00.000Z"), new Set([admitted.envelope.traceId]))).toBe(0);
+    expect(store.listQueue()).toEqual(before);
+  });
+
+  test("pre-activation receipt survives a restart between receipt and queue disposition", () => {
+    const root = workspace();
+    const options = { evaluatorEnabled: true, evaluationStartedAt: "2026-08-24T18:01:00.000Z" };
+    const store = ledger(root, options);
+    const admitted = store.admit(source(), new Date("2026-08-24T18:00:00.100Z"));
+    const original = store.listQueue()[0];
+    store.reconcilePreActivationQueue(new Date("2026-08-25T18:00:00.000Z"));
+    const terminal = store.listQueue()[0];
+    // Simulate publication of the receipt followed by a crash before the queue write.
+    writeFileSync(join(store.root, "queues/evaluator", `${admitted.envelope.traceId.slice(7)}.json`), JSON.stringify(original));
+    expect(ledger(root, options).reconcilePreActivationQueue(new Date("2026-08-26T18:00:00.000Z"))).toBe(1);
+    expect(store.listQueue()[0]).toEqual(terminal);
+  });
+
+  test("pre-activation reconciliation does not alter foreign scopes or source policies", () => {
+    for (const kind of ["scope", "policy"]) {
+      const store = ledger(workspace(), { evaluatorEnabled: true, evaluationStartedAt: "2026-08-24T18:01:00.000Z" });
+      const { envelope } = store.admit(source(), new Date("2026-08-24T18:00:00.100Z"));
+      const changed = kind === "scope" ? { ...envelope, scope: { ...envelope.scope, runtimeSessionKey: "agent:other:main" } }
+        : { ...envelope, policyDigest: sha256("unknown-policy") };
+      writeFileSync(join(store.root, "envelopes", `${envelope.traceId.slice(7)}.json`), JSON.stringify(changed));
+      const before = store.listQueue();
+      expect(store.reconcilePreActivationQueue()).toBe(0);
+      expect(store.listQueue()).toEqual(before);
+    }
+  });
   test("matches the PR0 derivation control vectors", () => {
     const traceId = deriveTraceId("fixture-main", sessionKey, `channel-user:v1:${"a".repeat(64)}`);
     const sourceDigest = deriveSourceDigest(`channel-user:v1:${"a".repeat(64)}`, source().scope, completedAt);

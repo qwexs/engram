@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import {readQualityRollout,qualityScopeEnabled,qualityProducerForScope,contextualEvaluationDigest,readableContextualDigests,contextualPromptForScope,contextualThinkingForScope,qualityTransitionInventory} from "../src/memory-observation/quality-rollout.ts";
+import { RUNTIME_POLICY } from "../src/memory-observation/runtime-authority.ts";
 import { evaluationQuality, evaluationProjectionForScope, readableEvaluationPolicies } from "../src/memory-observation/model-transition.ts";
 import { isGroupProjectionSchema, assertGroupHostRoutes } from "../src/memory-observation/group-bindings.ts";
 import { memoryWorkerHealth } from "../src/memory-observation/worker-health.ts";
@@ -205,13 +206,13 @@ function collectScopes(): ScopeCandidate[] {
     || left.scope.runtimeSessionKey.localeCompare(right.scope.runtimeSessionKey));
 }
 
-function ledgerFor(scope: ObservationScope, current = projection): MemoryObservationLedger {
+function ledgerFor(scope: ObservationScope, current = projection, sourceAuthorityPolicy = authorityPolicy): MemoryObservationLedger {
   return new MemoryObservationLedger({
     workspace,
     workspaceId,
     exactSessionKeys: [scope.runtimeSessionKey],
     producerRegistry,
-    authorityPolicy,
+    authorityPolicy: sourceAuthorityPolicy,
     limits: {
       evidenceTtlMs: current.limits.evidenceTtlHours * 60 * 60 * 1_000,
       maxJobs: current.limits.maxJobs,
@@ -317,6 +318,28 @@ const drainStarted = Date.now();
 const rawComplete = openClawRawModelRunProvider({ cwd: workspace });
 const releaseInference = acquireProcessLease(join(tmpdir(), "engram-memory-batch-inference-" + (process.getuid?.() ?? "user")));
 try {
+// These sources are intentionally absent from collectScopes(), but must not
+// stay queued forever and trip the workspace-wide age guard. Retain every
+// source referenced by an immutable batch, whether or not its job is done.
+if (releaseInference) {
+  const protectedTraces = new Set<Digest>();
+  const jobsDirectory = join(storeRoot, "memory-batch-live/v1/jobs");
+  if (existsSync(jobsDirectory)) for (const name of readdirSync(jobsDirectory).filter(name => name.endsWith(".json"))) {
+    for (const ref of readJson(join(jobsDirectory, name)).bundle.sourceRefs) protectedTraces.add(ref.traceId);
+  }
+  const preActivationScopes = new Map<string, ObservationScope>();
+  const envelopeDirectory = join(workspace, "memory-state/memory-observation/v1/envelopes");
+  if (existsSync(envelopeDirectory)) for (const name of readdirSync(envelopeDirectory).filter(name => name.endsWith(".json"))) {
+    const envelope = readJson(join(envelopeDirectory, name));
+    const scope = admittedScope(envelope);
+    if (scope && envelope.policyDigest === batch.sourcePolicyDigest
+      && Date.parse(envelope.admittedAt) < Date.parse(projection.inference.evaluateAfter)) {
+      preActivationScopes.set(JSON.stringify(scope), scope);
+    }
+  }
+  // Admission pins RUNTIME_POLICY, not the full downstream-consumer policy.
+  for (const scope of preActivationScopes.values()) ledgerFor(scope, projection, RUNTIME_POLICY).reconcilePreActivationQueue(new Date(), protectedTraces);
+}
 for (let round = 0; releaseInference && round < maxBatchesPerWake; round++) {
 const priorCount = evaluations.length;
 for (const candidate of collectScopes()) {

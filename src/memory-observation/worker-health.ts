@@ -88,7 +88,7 @@ function verifiedDoneJobId(done: WorkerStateRow, jobs: WorkerStateRow[], errors:
       const { reconciliationId, ...base } = value;
       return reconciliationId === sha256(base) && value.jobDigest === sha256(job)
         && value.evaluationPolicyDigest === job.evaluationPolicyDigest
-        && ["terminal_failure_accounted", "superseded_by_completed_job"].includes(value.outcome)
+        && ["terminal_failure_accounted", "superseded_by_completed_job", "expired_without_evaluation"].includes(value.outcome)
         && sha256(value.sourceStates?.map((source: any) => source.traceId)) === sha256(job.bundle?.sourceRefs?.map((source: any) => source.traceId));
     }
     return false;

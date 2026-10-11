@@ -31,8 +31,8 @@ export class BatchAccountingReconciliationError extends Error {
 
 type SourceState = {
   traceId: Digest;
-  status: "terminal";
-  reasonCode: string;
+  status: "queued" | "terminal";
+  reasonCode: string | null;
   attempt: number;
   maxAttempts: number;
   queueDigest: Digest;
@@ -41,7 +41,7 @@ type SourceState = {
 export type BatchAccountingReconciliation = {
   schema: typeof BATCH_ACCOUNTING_RECONCILIATION_SCHEMA;
   reconciliationId: Digest;
-  outcome: "terminal_failure_accounted" | "superseded_by_completed_job";
+  outcome: "terminal_failure_accounted" | "superseded_by_completed_job" | "expired_without_evaluation";
   jobId: Digest;
   jobDigest: Digest;
   bundleId: Digest;
@@ -140,15 +140,68 @@ function validCompletedTerminal(value: any, job: BatchLiveJobV1): boolean {
   return terminalId === digest(base);
 }
 
-function sourceStates(workspace: string, job: BatchLiveJobV1): SourceState[] {
+function sourceStates(workspace: string, job: BatchLiveJobV1, expireUnprocessed = false): SourceState[] {
   const queueRoot = join(workspace, "memory-state/memory-observation/v1/queues/evaluator");
   return job.bundle.sourceRefs.map(source => {
     const queue = readJson<LedgerQueueRecordV1>(join(queueRoot, `${key(source.traceId)}.json`));
-    if (queue.traceId !== source.traceId || queue.status !== "terminal" || typeof queue.reasonCode !== "string"
-      || queue.claimToken !== null || queue.terminalAt === null) fail("QUEUE_INELIGIBLE", "all batch sources must be terminal and unclaimed");
-    return { traceId: source.traceId, status: "terminal", reasonCode: queue.reasonCode,
+    if (queue.traceId !== source.traceId || queue.schema !== "engram.memory-observation-ledger-queue.v1"
+      || queue.claimToken !== null || queue.claimedAt !== null
+      || (expireUnprocessed ? queue.status !== "queued" || queue.terminalAt !== null
+        : queue.status !== "terminal" || typeof queue.reasonCode !== "string" || queue.terminalAt === null)) {
+      fail("QUEUE_INELIGIBLE", "batch sources are not eligible unclaimed queue records");
+    }
+    return { traceId: source.traceId, status: expireUnprocessed ? "queued" : "terminal", reasonCode: queue.reasonCode,
       attempt: queue.attempt, maxAttempts: queue.maxAttempts, queueDigest: digest(queue) };
   });
+}
+
+/** Only a sealed, wholly expired input bundle without any output is eligible.
+ * Closing its accounting does not terminalize or requeue its source records:
+ * the existing evidence-unavailable path owns those dispositions. */
+function assertExpiredUnprocessed(workspace: string, root: string, job: BatchLiveJobV1, now: Date): void {
+  const refs = job.bundle.sourceRefs;
+  const inputs = job.bundle.inputs;
+  if (!refs.length || new Set(refs.map(ref => ref.traceId)).size !== refs.length
+    || !Array.isArray(inputs) || inputs.length !== refs.length
+    || new Set(inputs.map(input => input.traceId)).size !== inputs.length
+    || refs.some(ref => {
+      const input = inputs.find(input => input.traceId === ref.traceId);
+      return !input || !canonicalInstant(input.expiresAt) || Date.parse(input.expiresAt) > now.getTime();
+    })) fail("EVIDENCE_NOT_EXPIRED", "all exact sealed inputs must have expired");
+  for (const directory of ["contextual-results", "terminals", "failures", "reconciliations"]) {
+    if (existsSync(join(root, directory, `${key(job.jobId)}.json`))) fail("ARTIFACT_EXISTS", "job output must be resumed, not expired");
+  }
+  if (observationsExist(workspace, job.bundle.bundleId)) fail("EFFECTS_EXIST", "bundle already has observations");
+  const ledgerRoot = join(workspace, "memory-state/memory-observation/v1");
+  const sourceIds = new Set(refs.map(ref => ref.traceId));
+  for (const directory of [join(workspace, "memory-state/memory-observation/batch-live-store/memory-batch-shadow/v1/results"),
+    join(ledgerRoot, "observations/batch"), join(ledgerRoot, "consumers/daily-note/queue"), join(ledgerRoot, "receipts/by-operation")]) {
+    if (!existsSync(directory)) continue;
+    for (const name of readdirSync(directory).filter(name => name.endsWith(".json"))) {
+      const record = readJson<any>(join(directory, name));
+      if (record.bundleId === job.bundle.bundleId || sourceIds.has(record.traceId)
+        || (Array.isArray(record.sourceRefs) && record.sourceRefs.some((ref: any) => sourceIds.has(ref.traceId)))) {
+        fail("EFFECTS_EXIST", "source has a persisted result or downstream effect");
+      }
+    }
+  }
+  for (const ref of refs) {
+    const envelope = readJson<any>(join(ledgerRoot, "envelopes", `${key(ref.traceId)}.json`));
+    const expectedScope = { workspaceId: job.partition.workspaceId, runtimeSessionKey: job.partition.runtimeSessionKey,
+      scopeClass: job.partition.scopeClass, scopeId: job.partition.scopeId };
+    if (envelope.traceId !== ref.traceId || !same(envelope.scope, expectedScope)
+      || envelope.sourceTurnId !== ref.sourceTurnId || envelope.sourceDigest !== ref.sourceDigest
+      || envelope.evidenceDigest !== ref.evidenceDigest || envelope.policyDigest !== job.partition.policyDigest) {
+      fail("SOURCE_CONFLICT", "expired bundle does not match its admitted source");
+    }
+    const evidencePath = join(ledgerRoot, "evidence", `${key(ref.traceId)}.json`);
+    if (existsSync(evidencePath)) {
+      const evidence = readJson<any>(evidencePath);
+      if (evidence.traceId !== ref.traceId || !canonicalInstant(evidence.expiresAt)
+        || Date.parse(evidence.expiresAt) > now.getTime()) fail("EVIDENCE_NOT_EXPIRED", "ledger evidence is not expired");
+    }
+    if (existsSync(join(ledgerRoot, "observations/typed", `${key(ref.traceId)}.json`))) fail("EFFECTS_EXIST", "source has a persisted evaluation");
+  }
 }
 
 function observationsExist(workspace: string, bundleId: Digest): boolean {
@@ -167,6 +220,8 @@ export function reconcileBatchAccounting(options: {
   storeRoot: string;
   jobId: Digest;
   supersedingJobId?: Digest;
+  expireUnprocessed?: boolean;
+  expectedJobDigest?: Digest;
   authorizedBy: string;
   authorizedAt: string;
   reason: string;
@@ -186,13 +241,29 @@ export function reconcileBatchAccounting(options: {
   if (!existsSync(jobPath)) fail("JOB_MISSING", "batch job is unavailable");
   const job = readJson<BatchLiveJobV1>(jobPath);
   if (job.schema !== BATCH_LIVE_JOB_SCHEMA || job.jobId !== options.jobId) fail("JOB_INVALID", "batch job identity is invalid");
+  if (options.expireUnprocessed && (options.supersedingJobId || !options.expectedJobDigest || options.expectedJobDigest !== digest(job))) {
+    fail("JOB_DIGEST_MISMATCH", "expiry requires the exact reviewed job digest and no supersession");
+  }
   const donePath = join(root, "done", `${key(job.jobId)}.json`);
   const receiptPath = join(root, "accounting-reconciliations", `${key(job.jobId)}.json`);
-  const states = sourceStates(workspace, job);
+  // Once sealed, later source disposal must not change this historical receipt.
+  if (options.expireUnprocessed && existsSync(donePath)) {
+    const saved = readJson<BatchAccountingReconciliation>(receiptPath);
+    const { reconciliationId, ...base } = saved;
+    if (saved.schema !== BATCH_ACCOUNTING_RECONCILIATION_SCHEMA || reconciliationId !== digest(base)
+      || saved.outcome !== "expired_without_evaluation" || saved.jobId !== job.jobId || saved.jobDigest !== digest(job)
+      || saved.authorizedBy !== options.authorizedBy || saved.authorizedAt !== options.authorizedAt || saved.reason !== options.reason
+      || !same(saved, readJson(donePath))) fail("JOB_ALREADY_DONE", "job already has a different completion artifact");
+    return { ...saved, status: "accounted" };
+  }
+  const states = sourceStates(workspace, job, options.expireUnprocessed);
 
   let outcome: BatchAccountingReconciliation["outcome"];
   let supersedingDoneDigest: Digest | null = null;
-  if (options.supersedingJobId) {
+  if (options.expireUnprocessed) {
+    assertExpiredUnprocessed(workspace, root, job, now);
+    outcome = "expired_without_evaluation";
+  } else if (options.supersedingJobId) {
     if (options.supersedingJobId === job.jobId) fail("SUPERSESSION_INVALID", "a job cannot supersede itself");
     const supersedingPath = join(root, "jobs", `${key(options.supersedingJobId)}.json`);
     const supersedingDonePath = join(root, "done", `${key(options.supersedingJobId)}.json`);
@@ -216,7 +287,7 @@ export function reconcileBatchAccounting(options: {
     supersedingDoneDigest = digest(supersedingDone);
   } else {
     if (observationsExist(workspace, job.bundle.bundleId)) fail("EFFECTS_EXIST", "persisted observations require explicit supersession reconciliation");
-    if (states.some(state => state.attempt < state.maxAttempts || !FAILURE_REASONS.has(state.reasonCode)))
+    if (states.some(state => state.attempt < state.maxAttempts || typeof state.reasonCode !== "string" || !FAILURE_REASONS.has(state.reasonCode)))
       fail("FAILURE_INVALID", "only exhausted batch failures without effects may be accounted");
     for (const directory of ["contextual-results", "terminals", "failures", "reconciliations"]) {
       if (existsSync(join(root, directory, `${key(job.jobId)}.json`))) fail("ARTIFACT_EXISTS", "job has an output artifact and cannot be sealed as an orphaned failure");
@@ -251,6 +322,10 @@ export function reconcileBatchAccounting(options: {
 
   const release = acquireLock(join(workspace, "memory-state/memory-observation/v1/locks/evaluator.worker"), receipt.reconciliationId);
   try {
+    if (options.expireUnprocessed) {
+      if (digest(readJson(jobPath)) !== options.expectedJobDigest) fail("JOB_DIGEST_MISMATCH", "job changed before publication");
+      assertExpiredUnprocessed(workspace, root, job, now);
+    }
     for (const state of states) {
       const queue = readJson<LedgerQueueRecordV1>(join(workspace, "memory-state/memory-observation/v1/queues/evaluator", `${key(state.traceId)}.json`));
       if (digest(queue) !== state.queueDigest) fail("QUEUE_STATE_DIVERGED", "source queue changed before accounting publication");

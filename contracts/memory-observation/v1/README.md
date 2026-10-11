@@ -127,6 +127,18 @@ One workspace coordinator owns source admission, observation queues, evidence
 purge, and trace append ordering. Each consumer keeps a separate queue and sole
 mutator. The coordinator cannot call canonical writers directly.
 
+Pre-activation source exclusions must reach the existing explicit
+`pre_activation_not_evaluated` disposition even when batch scope selection
+excludes them. Receipt publication precedes queue disposition; exact scope,
+sealed batches and persisted results remain protected. This is lifecycle
+accounting, not evaluation or successful memory capture.
+An operator may account a pinned, wholly expired, unprocessed batch through
+the existing reconciliation command only after matching its admitted sources
+and disproving stored results/effects. Its original job and policy stay
+immutable; queued sources are left for ordinary evidence-unavailable disposal.
+Accounted failure is not completeness. This narrow exception does not relax
+capacity guards or authorize old policies.
+
 Admission candidate identity is
 `SHA256("engram.memory-admission-candidate.v1\0" + workspaceId + "\0" +
 runtimeSessionKey + "\0" + channel + "\0" + inboundMessageId)`.

@@ -570,14 +570,15 @@ export function purgeMemoryObservationLifecycle(workspace: string, now = new Dat
         if (readdirSync(directory).length === 0) { rmSync(directory, { recursive: false, force: true }); flushDirectory(tracesDir); }
       } catch { /* retain unexpected entries */ }
     }
-    for (const kind of ["by-operation", "by-entry", "admission-gap"] as const) {
+    for (const kind of ["by-operation", "by-entry", "admission-gap", "pre-activation"] as const) {
       const directory = join(root, "receipts", kind);
       if (!existsSync(directory)) continue;
       let changed = false;
       for (const name of readdirSync(directory).filter((value) => value.endsWith(".json"))) {
         const path = join(directory, name);
         const record = lifecycleJson(path);
-        const terminalAt = kind === "admission-gap" ? record?.terminalAt : record?.completedAt;
+        const terminalAt = kind === "admission-gap" ? record?.terminalAt
+          : kind === "pre-activation" ? record?.recordedAt : record?.completedAt;
         const retainedByIndexChain = kind !== "admission-gap"
           && typeof record?.receiptId === "string"
           && liveIndexHandoffForReceipt(record.receiptId);
@@ -725,6 +726,13 @@ export class MemoryObservationLedger {
       if (result.status === "admitted") admitted++; else duplicate++;
     }
     return { admitted, duplicate };
+  }
+
+  /** Batch scope discovery excludes pre-activation sources. Account those
+   * tails independently, without claiming them or touching sealed batches. */
+  reconcilePreActivationQueue(now = new Date(), protectedTraceIds: ReadonlySet<Digest> = new Set()): number {
+    if (!this.evaluatorEnabled) return 0;
+    return this.withStateLock(() => this.disposePreActivationQueue(now, protectedTraceIds));
   }
 
   acquireWorkerLease(queueClass: "evaluator", ownerToken: string, ttlMs: number, now = new Date()): boolean {
@@ -1196,20 +1204,42 @@ export class MemoryObservationLedger {
     }
   }
 
-  private disposePreActivationQueue(now: Date): void {
-    if (this.evaluationStartedAt === null) return;
+  private disposePreActivationQueue(now: Date, protectedTraceIds: ReadonlySet<Digest> = new Set()): number {
+    if (this.evaluationStartedAt === null) return 0;
+    let disposed = 0;
     for (const current of this.listQueue()) {
       if (current.status !== "queued" || Date.parse(current.createdAt) >= this.evaluationStartedAt) continue;
+      const envelope = this.requireEnvelope(current.traceId);
+      if (envelope.scope.workspaceId !== this.workspaceId || !this.exactSessionKeys.has(envelope.scope.runtimeSessionKey)
+        || envelope.policyDigest !== this.policyDigest || protectedTraceIds.has(current.traceId) || this.readEvaluationResult(current.traceId)) continue;
+      const receiptPath = join(this.root, "receipts", "pre-activation", `${digestKey(current.traceId)}.json`);
+      const base = { schema: "engram.memory-pre-activation-disposition.v1", traceId: current.traceId,
+        scope: envelope.scope, envelopeDigest: sha256(envelope as unknown as JsonValue), queueDigest: sha256(current as unknown as JsonValue),
+        evaluateAfter: new Date(this.evaluationStartedAt).toISOString(),
+        reasonCode: "pre_activation_not_evaluated", recordedAt: now.toISOString() };
+      let receipt = { ...base, receiptId: sha256(base as unknown as JsonValue) };
+      if (existsSync(receiptPath)) {
+        receipt = readJson<typeof receipt>(receiptPath);
+        const { receiptId, ...saved } = receipt;
+        if (receiptId !== sha256(saved as unknown as JsonValue)
+          || !jsonEqual({ ...saved, recordedAt: base.recordedAt }, base)) {
+          throw new ObservationLedgerError("CONTENT_CONFLICT", "pre-activation disposition changed");
+        }
+      } else if (!writeImmutable(receiptPath, receipt as unknown as JsonValue)) {
+        throw new ObservationLedgerError("CONTENT_CONFLICT", "pre-activation disposition already exists");
+      }
       writeAtomic(this.queuePath(current.traceId), {
         ...current,
         status: "terminal",
-        updatedAt: now.toISOString(),
+        updatedAt: receipt.recordedAt,
         claimedAt: null,
         claimToken: null,
-        terminalAt: now.toISOString(),
+        terminalAt: receipt.recordedAt,
         reasonCode: "pre_activation_not_evaluated",
       });
+      disposed++;
     }
+    return disposed;
   }
 
   private hasPersistedEvaluation(traceId: Digest): boolean {

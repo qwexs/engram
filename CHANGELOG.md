@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **fix(memory): retire drained model transitions before projection changes.**
+  Non-main topic setup and canonical projection rollout archive the exact
+  completed transition and a retirement receipt before publishing new bytes.
+  Worker/domain leases, projection and inventory read-back, verified batch
+  accounting and completed domain effects prevent dropping pending lineage.
+  Outstanding work fails preflight; unknown or stale markers are never bypassed.
+  Existing topic authority and model lineage rules stay unchanged. Batch reports
+  now include sanitized per-scope transition blocker codes. Regressions cover
+  real topic/CLI rollout, pending work, corrupt completion accounting, domain
+  effects, restart after retirement and idempotence; no model/schedule changes.
+
 - **fix(memory): fence completion work across service stop/restart.**
   Abort-aware feed reads drain without waiting for an unresponsive host SDK;
   late results cannot admit, expire, mutate cursors, or rearm stopped timers.

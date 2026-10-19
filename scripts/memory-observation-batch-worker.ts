@@ -2,6 +2,7 @@
 import {readQualityRollout,qualityScopeEnabled,qualityProducerForScope,contextualEvaluationDigest,readableContextualDigests,contextualPromptForScope,contextualThinkingForScope,qualityTransitionInventory} from "../src/memory-observation/quality-rollout.ts";
 import { RUNTIME_POLICY } from "../src/memory-observation/runtime-authority.ts";
 import { evaluationQuality, evaluationProjectionForScope, readableEvaluationPolicies } from "../src/memory-observation/model-transition.ts";
+import { modelTransitionBlockReason } from "../src/memory-observation/model-transition-retirement.ts";
 import { isGroupProjectionSchema, assertGroupHostRoutes } from "../src/memory-observation/group-bindings.ts";
 import { memoryWorkerHealth } from "../src/memory-observation/worker-health.ts";
 import { memoryWorkerRunResult } from "../src/memory-observation/worker-run-result.ts";
@@ -310,6 +311,7 @@ function applicatorFor(scope: ObservationScope): DailyNoteCanaryApplicator {
 let evaluation: Awaited<ReturnType<BatchLiveWorker["processOne"]>> = { status: "idle" };
 let evaluationScope: ObservationScope | null = null;
 const qualityBlockedScopes=new Set<string>();
+const qualityBlockers=new Map<string,string>();
 const evaluations: { result: Awaited<ReturnType<BatchLiveWorker["processOne"]>>; scope: ObservationScope }[] = [];
 // Bounded sequential drain; processOne still has one inference allowance.
 const maxBatchesPerWake = 3;
@@ -347,9 +349,14 @@ for (const candidate of collectScopes()) {
   const current = currentProjectionForScope(candidate.scope);
   let selected;
   try { selected=evaluationProjectionForScope(workspace,current,candidate.scope); }
-  catch { qualityBlockedScopes.add(candidate.scope.runtimeSessionKey); continue; }
+  catch (error) {
+    qualityBlockedScopes.add(candidate.scope.runtimeSessionKey);
+    qualityBlockers.set(candidate.scope.runtimeSessionKey, modelTransitionBlockReason(error));
+    continue;
+  }
   if(qualityProducerForScope(workspace,candidate.scope,qualityRollout(selected))==="blocked") {
     qualityBlockedScopes.add(candidate.scope.runtimeSessionKey);
+    qualityBlockers.set(candidate.scope.runtimeSessionKey,"QUALITY_PENDING_POLICY_REQUIRES_RECONCILIATION");
     continue;
   }
   const workerPolicy = livePolicy(candidate.scope, current);
@@ -397,7 +404,7 @@ const apply = applications[0]?.result ?? { status: "idle" }, applyScope = applic
 const domains = isGroupProjectionSchema(projection.schema)
   ? await consumeTopicDomainReceipts({ workspace, workspaceId, expectedPluginDigest }) : null;
 const health = memoryWorkerHealth(workspace);
-if(qualityBlockedScopes.size){health.status="degraded";health.reasons.push("quality_pending_bundle_requires_reconciliation");}
+if(qualityBlockedScopes.size){health.status="degraded";health.reasons.push("quality_pending_bundle_requires_reconciliation",...new Set(qualityBlockers.values()));}
 const execution = memoryWorkerRunResult({ evaluations: evaluations.map(entry => entry.result),
   applications: applications.map(entry => entry.result), domains });
 process.exitCode = execution.exitCode;
@@ -412,6 +419,7 @@ process.stdout.write(`${JSON.stringify({
   execution,
   maxBatchesPerWake,
   qualityBlockedScopes:[...qualityBlockedScopes],
+  qualityBlockers:[...qualityBlockers].map(([runtimeSessionKey,reason])=>({runtimeSessionKey,reason})),
   domains,
   apply,
   applyScope,

@@ -12,6 +12,49 @@ import { configuredTopicBindings } from "../src/memory-observation/topic-binding
 const roots: string[] = [];
 const repository = resolve(import.meta.dir, "..");
 
+test("a stale transition reports its precise blocker without inference or queue mutation", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "memory-batch-transition-blocker-")); roots.push(workspace);
+  const put = (relative: string, value: unknown) => {
+    const path = join(workspace, relative); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value));
+  };
+  const registry = JSON.parse(readFileSync(join(repository, "contracts/memory-observation/v1/producer-registry.json"), "utf8"));
+  const scope = { workspaceId: "main", runtimeSessionKey: "agent:main:telegram:direct:100000001", scopeClass: "self" as const, scopeId: "telegram:100000001" };
+  const at = "2026-09-01T00:00:00.000Z";
+  put("engram.json", { workspace: { id: "main" } });
+  put("memory-state/memory-observation/projection.json", {
+    schema: "engram.memory-observation-rollout.v2", workspaceId: "main", enabled: true, mode: "canary",
+    bindings: [{ runtimeSessionKey: scope.runtimeSessionKey, scopeClass: scope.scopeClass, scopeId: scope.scopeId, requireOwner: true, allowedChannels: ["telegram"] }],
+    pluginDigest: await sourcePluginDigest(), inference: { provider: "openai", model: "openai/gpt-6-luna", evaluateAfter: at },
+    evaluation: { mode: "batch-cron", policyDigest: sha256("evaluation"), batch: { sourcePolicyDigest: sha256(RUNTIME_POLICY),
+      inactivityGapSeconds: 300, maxTurns: 8, maxEvidenceBytes: 262144, maxAgeSeconds: 900, maxInferenceCallsPerRun: 1, schedulerId: "fixture" } },
+    limits: { evidenceTtlHours: 72, maxJobs: 1000, maxBytes: 67108864, maxQueueAgeHours: 168, maxAttempts: 2, claimTtlSeconds: 300, maxInferenceCalls: 1 },
+    consumers: { dailyNote: { mode: "canary", applyAfter: at, timezone: "UTC", allowedObservationClasses: ["episodic.event", "episodic.decision"], maxAppliesPerWake: 1 } },
+    captureOwnership: { owner: "observer", effectiveAfter: at, foregroundDailyNoteCapture: "disabled" }, approvedBy: "operator", approvedAt: at,
+  });
+  const ledger = new MemoryObservationLedger({ workspace, workspaceId: "main", exactSessionKeys: [scope.runtimeSessionKey], producerRegistry: registry,
+    authorityPolicy: RUNTIME_POLICY, limits: { evidenceTtlMs: 72 * 3600000, maxJobs: 1000, maxBytes: 67108864,
+      maxQueueAgeMs: 168 * 3600000, maxAttempts: 2, claimTtlMs: 300000, maxInferenceCalls: 0 } });
+  const now = new Date(), sourceTurnId = `channel-user:v1:${"d".repeat(64)}`;
+  const admitted = ledger.admit({ sourceTurnId, scope, sourceCompletedAt: now.toISOString(),
+    authority: registry.producers.find((entry: any) => entry.id === "openclaw-runtime"),
+    evidenceRefs: [{ kind: "source-turn", ref: sourceTurnId, digest: sha256("evidence") }],
+    redactedEvidence: { source: { role: "user", text: "request" }, outcome: { role: "assistant", text: "completion" } },
+    trustedInputs: ["completed-source-turn", "runtime-session-key", "workspace-binding", "source-completion-time"] }, now);
+  const queuePath = join(workspace, "memory-state/memory-observation/v1/queues/evaluator", admitted.envelope.traceId.slice(7) + ".json");
+  const queueBefore = readFileSync(queuePath, "utf8");
+  put("memory-state/memory-observation/model-transition.json", { schema: "engram.memory-model-transition.v1", digest: sha256("stale") });
+  const bin = join(workspace, "bin"); mkdirSync(bin);
+  writeFileSync(join(bin, "openclaw"), "#!/bin/sh\nexit 91\n", { mode: 0o755 });
+  const result = Bun.spawnSync([process.execPath, join(repository, "scripts/memory-observation-batch-worker.ts"), "--workspace", workspace],
+    { cwd: repository, env: { ...process.env, PATH: bin + ":" + process.env.PATH } });
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  const report = JSON.parse(result.stdout.toString());
+  expect(report.qualityBlockers).toEqual([{ runtimeSessionKey: scope.runtimeSessionKey, reason: "MODEL_TRANSITION_IDENTITY_CHANGED" }]);
+  expect(report.health.reasons).toContain("MODEL_TRANSITION_IDENTITY_CHANGED");
+  expect(report.evaluation.status).toBe("idle");
+  expect(readFileSync(queuePath, "utf8")).toBe(queueBefore);
+});
+
 test("batch worker accounts a runtime-policy pre-activation source without host or model calls", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "memory-batch-pre-activation-")); roots.push(workspace);
   const put = (relative: string, value: unknown) => {

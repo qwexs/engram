@@ -38,6 +38,7 @@ import {
 import { resolveQmdContext } from "../src/qmd/context.ts";
 import { personalBatchBinding, runtimeSourcePolicyDigest } from "./_lib/memory-observation-rollout-policy.ts";
 import { qualityTransitionInventory, rebindQualityRollout } from "../src/memory-observation/quality-rollout.ts";
+import { assertModelTransitionRetirable, publishAfterModelTransitionDrain } from "../src/memory-observation/model-transition-retirement.ts";
 
 import { configuredTopicBindings } from "../src/memory-observation/topic-bindings.ts";
 
@@ -628,6 +629,9 @@ if (existsSync(projectionPath)) {
   }
 }
 const currentProjection = existsSync(projectionPath) ? json(projectionPath) : null;
+if (currentProjection && JSON.stringify(currentProjection) !== JSON.stringify(projection)) {
+  assertModelTransitionRetirable(workspace, currentProjection);
+}
 const qualityRolloutPath = join(workspace, "memory-state", "memory-observation", "quality-rollout.json");
 let reboundQualityRollout: ReturnType<typeof rebindQualityRollout> | null = null;
 if (batchCommand && currentProjection && existsSync(qualityRolloutPath)) {
@@ -651,13 +655,17 @@ if (batchCommand && currentProjection && existsSync(qualityRolloutPath)) {
     new Date().toISOString(),
   );
 }
-atomicWrite(projectionPath, projection);
+const publish = () => {
+  atomicWrite(projectionPath, projection);
+  if (reboundQualityRollout) {
+    atomicWrite(qualityRolloutPath, reboundQualityRollout);
+    if (JSON.stringify(json(qualityRolloutPath)) !== JSON.stringify(reboundQualityRollout)) throw new Error("quality rollout read-back mismatch");
+  }
+};
+if (currentProjection) publishAfterModelTransitionDrain(workspace, currentProjection, projection, publish);
+else publish();
 const readBack = json(projectionPath);
 if (JSON.stringify(readBack) !== JSON.stringify(projection)) throw new Error("projection read-back mismatch");
-if (reboundQualityRollout) {
-  atomicWrite(qualityRolloutPath, reboundQualityRollout);
-  if (JSON.stringify(json(qualityRolloutPath)) !== JSON.stringify(reboundQualityRollout)) throw new Error("quality rollout read-back mismatch");
-}
 console.log(JSON.stringify({
   schema: "engram.memory-observation-activation.v1",
   status: batchCommand ? "enabled-batch-canary" : ownershipCommand ? "enabled-ownership" : canaryCommand ? "enabled-canary" : "enabled-shadow",

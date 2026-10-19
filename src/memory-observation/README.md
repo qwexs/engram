@@ -226,6 +226,19 @@ The normal evidence-unavailable pass then disposes the expired source rows.
 Expiry is an accounted processing failure, never a semantic skip or successful
 memory write; health remains degraded where terminal failures exist.
 
+Canonical projection rollout and non-main topic setup retire a completed
+model transition before publishing a different projection. The original marker
+and a retirement receipt are retained in `model-transition-history/`; empty
+evaluator/batch/daily inventories, verified completion accounting and completed
+domain apply/dirty receipts are required. Publication rechecks projection and
+inventory under the inference/domain leases. An interruption after retirement
+leaves the previous projection usable and the operation can be retried.
+Outstanding work blocks the mutation rather than losing historical model/policy
+readability. Existing topic authority and model lineage rules are unchanged.
+Unknown, corrupt or already-stale markers remain fail-closed. Batch reports add
+`qualityBlockers` with exact scopes and allowlisted error codes; arbitrary
+exception text is never emitted there.
+
 Batch workers independently account pre-activation tails before selecting
 evaluation scopes. The existing `pre_activation_not_evaluated` disposition is
 receipt-first and restart-safe. Exact scope is checked, sealed batch sources

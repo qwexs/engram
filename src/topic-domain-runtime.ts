@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { assertModelTransitionRetirable, publishAfterModelTransitionDrain } from "./memory-observation/model-transition-retirement.ts";
 import { auditQmdGlobalRegistry, type QmdGlobalRegistry } from "./qmd/global-registry.ts";
 import { resolveQmdContext } from "./qmd/context.ts";
 import { markWorkspaceQmdDirty } from "./qmd/maintenance-integration.ts";
@@ -292,6 +293,9 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
   const registry = manifestRegistry(globalManifest);
   const owner = registry.workspaces.find((item) => item.id === workspaceId && resolve(item.path) === workspace);
   if (!owner) throw new Error("workspace is missing from the QMD global registry");
+  // Reject outstanding model work before host routes, collections or manifests
+  // change. Recheck under the worker leases at projection publication below.
+  assertModelTransitionRetirable(workspace, projection);
 
   const gatewayCall = options.gatewayCall ?? defaultGatewayCall;
   const restartGateway = options.restartGateway ?? defaultRestartGateway;
@@ -380,7 +384,8 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
     };
     const wasActive = activeAlready(currentProjection, options.domain, topic.chatId, topic.topicId)
       && JSON.stringify(currentQmdBinding) === JSON.stringify(nextResolver);
-    atomicWrite(memoryObservationProjectionPath(workspace), nextProjection);
+    publishAfterModelTransitionDrain(workspace, currentProjection, nextProjection,
+      () => atomicWrite(memoryObservationProjectionPath(workspace), nextProjection));
 
     const readBack = resolveMemoryObservationProjection({ workspace, workspaceId, expectedPluginDigest: currentProjection.pluginDigest });
     assertTopicDomainRegistry(workspace, workspaceId, readBack.bindings);

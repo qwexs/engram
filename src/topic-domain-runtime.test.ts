@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureTopicDomainRuntime } from "./topic-domain-runtime.ts";
+import { sha256 } from "./memory-observation/ledger.ts";
+import { readModelTransition } from "./memory-observation/model-transition.ts";
 
 const DIGEST = `sha256:${"1".repeat(64)}` as const;
 let root = "";
@@ -116,6 +118,49 @@ afterEach(() => {
 });
 
 describe("topic-domain runtime", () => {
+  test("non-main topic creation archives a completed model migration and repeat stays readable", async () => {
+    const f = fixture();
+    const projectionPath = join(f.workspace, "memory-state/memory-observation/projection.json");
+    const before = read(projectionPath), old = structuredClone(before);
+    old.inference.model = "openai/previous"; old.pluginDigest = sha256("previous-plugin"); old.evaluation.policyDigest = sha256("previous-policy");
+    const body = { schema: "engram.memory-model-transition.v1", targetProjectionDigest: sha256(before),
+      previousProjection: old, previousQuality: null, approvedBy: "operator", approvedAt: before.approvedAt };
+    const transition = { ...body, digest: sha256(body) };
+    const transitionPath = join(f.workspace, "memory-state/memory-observation/model-transition.json");
+    json(transitionPath, transition);
+    const common = { workspace: f.workspace, domain: "project-new", chatId: "-1001", topicId: "2",
+      gatewayCall: f.gatewayCall, restartGateway: f.restartGateway, registerCollection: async () => ({ ok: true }),
+      markDirty: async (input: any) => ({ schema: "engram.qmd.dirty-mark.v1" as const, status: "marked" as const,
+        mode: "coordinated" as const, workspace: input.workspace, collections: input.collections, generation: 1 }) };
+    const first = await ensureTopicDomainRuntime(common), after = read(projectionPath);
+    expect(first.status).toBe("active");
+    expect(after.bindings).toHaveLength(2);
+    expect(after.inference).toEqual(before.inference);
+    expect(after.evaluation).toEqual(before.evaluation);
+    expect(after.captureOwnership).toEqual(before.captureOwnership);
+    expect(readModelTransition(f.workspace, after)).toBeNull();
+    expect(read(join(f.workspace, "memory-state/memory-observation/model-transition-history", transition.digest.slice(7) + ".json"))).toEqual(transition);
+    expect((await ensureTopicDomainRuntime(common)).status).toBe("already-active");
+  });
+
+  test("pending model work rejects non-main topic setup before host, QMD or configuration mutations", async () => {
+    const f = fixture();
+    const projectionPath = join(f.workspace, "memory-state/memory-observation/projection.json");
+    const before = read(projectionPath), old = structuredClone(before); old.inference.model = "openai/previous";
+    const body = { schema: "engram.memory-model-transition.v1", targetProjectionDigest: sha256(before),
+      previousProjection: old, previousQuality: null, approvedBy: "operator", approvedAt: before.approvedAt };
+    json(join(f.workspace, "memory-state/memory-observation/model-transition.json"), { ...body, digest: sha256(body) });
+    json(join(f.workspace, "memory-state/memory-observation/v1/queues/evaluator/pending.json"), { traceId: sha256("source"), status: "queued" });
+    const manifestBefore = readFileSync(f.globalManifestPath, "utf8");
+    await expect(ensureTopicDomainRuntime({ workspace: f.workspace, domain: "project-new", chatId: "-1001", topicId: "2",
+      gatewayCall: async () => { throw Error("host mutation must not run"); },
+      registerCollection: async () => { throw Error("QMD mutation must not run"); },
+    })).rejects.toThrow("MODEL_TRANSITION_DRAIN_REQUIRED");
+    expect(read(projectionPath)).toEqual(before);
+    expect(readFileSync(f.globalManifestPath, "utf8")).toBe(manifestBefore);
+    expect(existsSync(join(f.workspace, "memory-state/memory-observation/model-transition.json"))).toBe(true);
+  });
+
   test("one call adds the route, exact QMD collections and Memory Worker binding", async () => {
     const f = fixture();
     const result = await ensureTopicDomainRuntime({

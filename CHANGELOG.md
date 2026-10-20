@@ -13,6 +13,12 @@
   real topic/CLI rollout, pending work, corrupt completion accounting, domain
   effects, restart after retirement and idempotence; no model/schedule changes.
 
+- **fix(qmd): resume exact existing collection registration.** The canonical
+  provisioning helper checks physical registration metadata after authorization;
+  an identical name/root/mask is a no-op, while root or mask drift fails closed.
+  This allows activation of an already scaffolded topic without removing its
+  existing collection. Both async and sync paths have regression coverage.
+
 - **fix(memory): fence completion work across service stop/restart.**
   Abort-aware feed reads drain without waiting for an unresponsive host SDK;
   late results cannot admit, expire, mutate cursors, or rearm stopped timers.

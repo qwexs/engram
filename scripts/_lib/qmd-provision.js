@@ -1,4 +1,6 @@
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { Database } from "bun:sqlite";
 import { resolveQmdContext } from "../../src/qmd/context.ts";
 import { createBootstrapQmdContext } from "../../src/qmd/bootstrap.ts";
 import { buildQmdInvocation } from "../../src/qmd/invocation.ts";
@@ -7,6 +9,21 @@ import { runQmdInvocation, runQmdInvocationSync } from "../../src/qmd/runner.ts"
 
 function diagnosticsCaller() {
   return { kind: "provisioning", allowedCollections: [], capabilities: ["diagnostics"] };
+}
+
+// A resumed provisioning run must not recreate an exact existing collection.
+// Read only registration metadata; a name collision with another root/mask
+// remains an error, never a successful no-op.
+function existingCollection(context, collection, path, mask) {
+  if (!existsSync(context.physicalIndex.path)) return null;
+  const db = new Database(context.physicalIndex.path, { readonly: true });
+  try {
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='store_collections'").get()) return null;
+    const row = db.query("SELECT path, pattern FROM store_collections WHERE name = ?").get(collection);
+    if (!row) return null;
+    const matches = resolve(row.path) === resolve(path) && row.pattern === mask;
+    return { ok: matches, exitCode: matches ? 0 : 1, stdout: "", stderr: matches ? "" : `QMD collection drift: ${collection}` };
+  } finally { db.close(); }
 }
 
 /**
@@ -31,6 +48,8 @@ export async function addQmdCollection({ workspace, collection, path, mask, time
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
   const decision = authorizeQmdInvocation(context, invocation, caller);
+  const existing = existingCollection(context, collection, path, mask);
+  if (existing) return existing;
   return runQmdInvocation(context, invocation, { caller, decision });
 }
 
@@ -50,6 +69,8 @@ export function addQmdCollectionSync({ workspace, collection, path, mask, timeou
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
   const decision = authorizeQmdInvocation(context, invocation, caller);
+  const existing = existingCollection(context, collection, path, mask);
+  if (existing) return existing;
   return runQmdInvocationSync(context, invocation, { caller, decision });
 }
 

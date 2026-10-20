@@ -82,9 +82,15 @@ async function consumeLocked(options: DomainConsumerOptions) {
       const manifest = json(resolver.manifestPath), registry = manifest.registry ?? manifest;
       const exact = registry.collections.filter((c: any) => c.owner === options.workspaceId && c.path === domainDir);
       if (exact.length !== 1) throw new Error("domain requires one exact owned QMD collection");
-      const collections = registry.collections.filter((c: any) => c.owner === options.workspaceId
-        && (c.path === domainDir || c.path === join(workspace, "memory/domains"))).map((c: any) => c.name).sort();
-      if (collections.some((name: string) => !context.policy.ownedCollections.includes(name) || !context.policy.readableCollections.includes(name))) throw new Error("domain collection is not owned/readable");
+      const authorized = (name: string) => context.policy.ownedCollections.includes(name)
+        && context.policy.readableCollections.includes(name);
+      // The exact domain is mandatory. A historical cross-domain aggregate is
+      // only an additional index effect where current policy still permits it;
+      // its registry presence cannot expand access or block an isolated domain.
+      if (!authorized(exact[0].name)) throw new Error("domain collection is not owned/readable");
+      const aggregates = registry.collections.filter((c: any) => c.owner === options.workspaceId
+        && c.path === join(workspace, "memory/domains") && authorized(c.name));
+      const collections = [exact[0].name, ...aggregates.map((c: any) => c.name)].sort();
       return { indexKey: context.physicalIndex.key, collections };
     })();
   }

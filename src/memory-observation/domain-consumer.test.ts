@@ -10,26 +10,28 @@ import { configuredGroupDirectBindings } from "./group-bindings.ts";
 import { configuredTopicBindings } from "./topic-bindings.ts";
 import { scanDomains, applyDomainWriteHandoff } from "../../scripts/domains-runner.js";
 import { refreshAutoDerivedStatus } from "../../scripts/heartbeat-runner.js";
+import { resolveNamedQmdIndexPath, resolveQmdContext } from "../qmd/context.ts";
+import { defineCanaryQmdRuntimeResolver } from "./qmd-binding-preflight.ts";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
 function put(path: string, value: unknown) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, typeof value === "string" ? value : JSON.stringify(value)); }
-function fixture(groupDirect = false) {
+function fixture(groupDirect = false, workspaceId = "project") {
   const workspace = mkdtempSync(join(tmpdir(), "engram-domain-consumer-")); roots.push(workspace);
   const domainDir = join(workspace, "memory/domains/smm");
   mkdirSync(domainDir, { recursive: true });
-  put(join(workspace, "engram.json"), { workspace: { id: "project" } });
+  put(join(workspace, "engram.json"), { workspace: { id: workspaceId } });
   put(join(workspace, "memory/domains/registry.json"), { domains: { smm: groupDirect ? { type: "group-direct", group: { chatId: "-100123" } } : { type: "topic-thread", topic: { chatId: "-100123", topicId: "2" } } } });
   put(join(domainDir, "status.md"), "# Ручная передача\n\nСохранить назначенного исполнителя.\n");
   put(join(domainDir, "decisions.md"), "# Решения руководителя\n");
   put(join(domainDir, "changelog.md"), "# История\n");
-  const config = { agents: { entries: { project: { workspace } } }, channels: { telegram: { groups: { "-100123": {
-    enabled: true, topics: { "2": { enabled: true, agentId: "project" } } } } } } };
+  const config = { agents: { entries: { [workspaceId]: { workspace } } }, channels: { telegram: { groups: { "-100123": {
+    enabled: true, topics: { "2": { enabled: true, agentId: workspaceId } } } } } } };
   const groupConfig = { agents: config.agents, channels: { telegram: { groups: { "-100123": { enabled: true } } } },
-    bindings: [{ type: "route", agentId: "project", match: { channel: "telegram", peer: { kind: "group", id: "-100123" } } }] };
-  const bindings = groupDirect ? configuredGroupDirectBindings(groupConfig, workspace, "project", ["smm"]) : configuredTopicBindings(config, workspace, "project", ["smm"]), hash = sha256("policy");
+    bindings: [{ type: "route", agentId: workspaceId, match: { channel: "telegram", peer: { kind: "group", id: "-100123" } } }] };
+  const bindings = groupDirect ? configuredGroupDirectBindings(groupConfig, workspace, workspaceId, ["smm"]) : configuredTopicBindings(config, workspace, workspaceId, ["smm"]), hash = sha256("policy");
   const at = "2026-09-01T00:00:00.000Z", completedAt = "2026-09-07T10:30:00.000Z";
-  const p = { schema: groupDirect ? "engram.memory-observation-rollout.v5" : "engram.memory-observation-rollout.v4", workspaceId: "project", enabled: true, mode: "canary", bindings,
+  const p = { schema: workspaceId === "main" ? "engram.memory-observation-rollout.v6" : groupDirect ? "engram.memory-observation-rollout.v5" : "engram.memory-observation-rollout.v4", workspaceId, enabled: true, mode: "canary", bindings: workspaceId === "main" ? [{ runtimeSessionKey: "agent:main:*", scopeClass: "self", scopeId: "workspace:main", requireOwner: true, allowedChannels: ["telegram", "openclaw"] }, ...bindings] : bindings,
     pluginDigest: hash, inference: { provider: "openai", model: "openai/gpt-5.6-terra", evaluateAfter: at },
     evaluation: { mode: "batch-cron", policyDigest: hash, batch: { sourcePolicyDigest: hash, inactivityGapSeconds: 300, maxTurns: 8,
       maxEvidenceBytes: 262144, maxAgeSeconds: 900, maxInferenceCallsPerRun: 1, schedulerId: "group-worker" } },
@@ -38,7 +40,7 @@ function fixture(groupDirect = false) {
       qmdBinding: { resolver: "exact-session-registry", manifestPath: join(workspace, "manifest.json"), workspaceRegistryDigest: hash } } },
     captureOwnership: { owner: "observer", effectiveAfter: at, foregroundDailyNoteCapture: "disabled" }, approvedBy: "operator", approvedAt: at };
   put(join(workspace, "memory-state/memory-observation/projection.json"), p);
-  const scope = { workspaceId: "project", runtimeSessionKey: bindings[0]!.runtimeSessionKey, scopeClass: "project", scopeId: bindings[0]!.scopeId };
+  const scope = { workspaceId, runtimeSessionKey: bindings[0]!.runtimeSessionKey, scopeClass: "project", scopeId: bindings[0]!.scopeId };
   const identity: any = { bundleId: sha256("bundle"), groupId: "decision", assertionIndex: 0, observationClass: "episodic.decision", evaluationPolicyDigest: hash };
   const sourceTurnId = "channel-user:v1:" + "a".repeat(64), traceId = sha256("trace"), sourceCompletedAt = "2026-09-04T20:00:00.000Z";
   const base: any = { schema: "engram.memory-batch-observation.v1", ...identity, observationId: deriveBatchObservationId(identity), scope,
@@ -51,7 +53,7 @@ function fixture(groupDirect = false) {
   const destinationEntryId = sha256("engram.daily-note-entry.v1\0" + observation.observationId);
   const operationId = sha256("engram.memory-apply.v1\0daily-note\0" + observation.observationId + "\0" + destinationEntryId);
   const rendered = renderDailyNoteEntry(observation, destinationEntryId);
-  const destinationRef = "memory/agent-project/telegram-group--100123" + (groupDirect ? "" : "-topic-2") + "/2026-09-04.md#engram-entry:" + destinationEntryId;
+  const destinationRef = "memory/agent-" + workspaceId + "/telegram-group--100123" + (groupDirect ? "" : "-topic-2") + "/2026-09-04.md#engram-entry:" + destinationEntryId;
   const receipt: any = { schema: "engram.memory-apply-receipt.v1", receiptId: sha256("engram.memory-apply-receipt.v1\0" + operationId),
     traceId, sourceObservationRef: observation.observationId, scope, producer: DAILY_NOTE_APPLICATOR, sourceProvenance: { observationDigest: observation.observationDigest },
     consumer: "daily-note", operationId, destinationDate: "2026-09-04", destinationRef, destinationEntryId, status: "applied",
@@ -61,11 +63,81 @@ function fixture(groupDirect = false) {
   put(join(root, "observations/batch", observation.observationId.slice(7) + ".json"), observation);
   const receiptPath = join(root, "receipts/by-operation", operationId.slice(7) + ".json"); put(receiptPath, receipt);
   let dirtyCalls = 0;
-  const options: DomainConsumerOptions = { workspace, workspaceId: "project", qmdPreflight: () => ({ indexKey: "index-key", collections: ["domain-smm", "project-domains"] }),
+  const options: DomainConsumerOptions = { workspace, workspaceId, qmdPreflight: () => ({ indexKey: "index-key", collections: ["domain-smm", "project-domains"] }),
     dirtyMarker: async input => { dirtyCalls++; return { schema: "engram.qmd.dirty-mark.v1", status: "marked", mode: "coordinated", workspace,
       indexKey: "index-key", generation: dirtyCalls, collections: input.collections }; } };
   return { workspace, domainDir, options, receipt, receiptPath, dirtyCalls: () => dirtyCalls };
 }
+
+// Exercise the production resolver, not the qmdPreflight test seam: the pinned
+// registry can retain an aggregate that the effective workspace policy excludes.
+function pinnedQmdFixture(workspaceId: string, aggregateAllowed: boolean, exactAllowed = true) {
+  const f = fixture(false, workspaceId);
+  const index = f.workspace.split("/").pop()!;
+  const indexPath = resolveNamedQmdIndexPath(index);
+  put(indexPath, ""); roots.push(indexPath);
+  const sessionDir = join(f.workspace, f.receipt.destinationRef.split("#")[0], "..");
+  const collections = [
+    { name: "topic-memory-smm", owner: workspaceId, path: sessionDir, mask: "*.md" },
+    { name: "domain-smm", owner: workspaceId, path: f.domainDir, mask: "**/*.md" },
+    { name: "domains", owner: workspaceId, path: join(f.workspace, "memory/domains"), mask: "**/*.md" },
+  ];
+  const manifestPath = join(f.workspace, "manifest.json");
+  put(manifestPath, { schema: "engram.qmd.global-registry.v1", index: { name: index }, collections,
+    workspaces: [{ id: workspaceId, path: f.workspace, kind: "technical", parents: [], readableCollections: collections.map(c => c.name) }] });
+  put(join(f.workspace, "engram.json"), { workspace: { id: workspaceId }, qmd: {
+    index, localIndex: false, collection: "topic-memory-smm",
+    collections: ["topic-memory-smm", ...(exactAllowed ? ["domain-smm"] : []), ...(aggregateAllowed ? ["domains"] : [])],
+    verticalAccess: { enabled: false }, maintenance: { mode: "coordinated" },
+  } });
+  const context = resolveQmdContext({ value: f.workspace, source: "explicit" });
+  const projectionPath = join(f.workspace, "memory-state/memory-observation/projection.json");
+  const projection = JSON.parse(readFileSync(projectionPath, "utf8"));
+  projection.consumers.dailyNote.qmdBinding = defineCanaryQmdRuntimeResolver({ workspace: f.workspace, workspaceId, manifestPath, context });
+  put(projectionPath, projection);
+  const marked: string[][] = [];
+  const options: DomainConsumerOptions = { ...f.options, qmdPreflight: undefined,
+    dirtyMarker: async input => {
+      marked.push(input.collections!);
+      return { schema: "engram.qmd.dirty-mark.v1", status: "marked", mode: "coordinated", workspace: f.workspace,
+        indexKey: context.physicalIndex.key, generation: marked.length, collections: input.collections };
+    } };
+  return { ...f, options, marked };
+}
+
+test("main v6 uses its exact domain without requiring a forbidden aggregate", async () => {
+  const f = pinnedQmdFixture("main", false);
+  expect(await consumeTopicDomainReceipts(f.options)).toMatchObject({ status: "ok", applied: 1, indexedPending: 0 });
+  expect(f.marked).toEqual([["domain-smm"]]);
+  expect((await consumeTopicDomainReceipts(f.options)).applied).toBe(0);
+  expect(f.marked).toHaveLength(1);
+  expect(readFileSync(join(f.domainDir, "changelog.md"), "utf8")).toContain("Согласовал срок");
+});
+
+test("an authorized project aggregate is still marked with the exact domain", async () => {
+  const f = pinnedQmdFixture("project", true);
+  expect((await consumeTopicDomainReceipts(f.options)).applied).toBe(1);
+  expect(f.marked).toEqual([["domain-smm", "domains"]]);
+});
+
+test("an authorized aggregate cannot replace an unauthorized exact domain", async () => {
+  const f = pinnedQmdFixture("main", true, false);
+  await expect(consumeTopicDomainReceipts(f.options)).rejects.toThrow("domain collection is not owned/readable");
+  expect(f.marked).toHaveLength(0);
+  expect(readFileSync(join(f.domainDir, "changelog.md"), "utf8")).toBe("# История\n");
+});
+
+test("main dirty-only recovery does not require the excluded aggregate", async () => {
+  const f = pinnedQmdFixture("main", false);
+  const failed = await consumeTopicDomainReceipts({ ...f.options, dirtyMarker: async () => ({
+    schema: "engram.qmd.dirty-mark.v1", status: "error", mode: "coordinated", workspace: f.workspace,
+  }) });
+  expect(failed).toMatchObject({ applied: 1, indexedPending: 1 });
+  rmSync(join(f.workspace, "memory-state/memory-observation/v1"), { recursive: true });
+  expect(await consumeTopicDomainReceipts(f.options)).toMatchObject({ status: "ok", applied: 0, indexedPending: 0 });
+  expect(f.marked).toEqual([["domain-smm"]]);
+  expect(readFileSync(join(f.domainDir, "changelog.md"), "utf8").split("Согласовал срок.")).toHaveLength(2);
+});
 
 test("legacy auto-derived refresh respects domain ownership and resumes after rollback", async () => {
   const f = fixture(), status = join(f.domainDir, "status.md");

@@ -48,6 +48,13 @@ main sessions).
    - `domain-{slug}` (per-domain) — just this domain, the default for topic-agents.
    - `topic-memory-{slug}` (exact session, `*.md`) — daily notes of this topic only.
    - `life-projects-{slug}` (per-entity, opt-in via `--kg-entity`) — just the bound KG entity.
+   - Worker domain effects require the exact `domain-{slug}` collection to be
+     owned and readable, in addition to the pinned exact-session preflight.
+     A registered aggregate rooted at `memory/domains` is marked dirty only
+     when the effective workspace policy also owns and permits it. It is not
+     a prerequisite for isolated domains (including main v6), and its presence
+     in a historical manifest never grants access. Missing or unauthorized
+     exact domain collections still fail closed; an aggregate is no fallback.
 6. **Files**: `decisions.md` (pinned facts, append-only on explicit markers), `status.md` (handover, update on thematic block close or explicit `статус?`), `changelog.md` (curated log of significant exchanges). `workflow.md` is NOT created for topic-thread.
 
 ## Lifecycle

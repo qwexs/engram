@@ -13,6 +13,13 @@
   real topic/CLI rollout, pending work, corrupt completion accounting, domain
   effects, restart after retirement and idempotence; no model/schedule changes.
 
+- **fix(memory): keep isolated domain effects independent of aggregate access.**
+  The domain consumer requires its exact owned/readable collection, but marks
+  historical cross-domain aggregates only when current workspace policy allows
+  them. Main v6 no longer fails on a registered but excluded `domains` collection.
+  Production-resolver tests cover isolated main apply, dirty-only recovery,
+  authorized project aggregate maintenance, and denied exact-domain access.
+
 - **fix(qmd): resume exact existing collection registration.** The canonical
   provisioning helper checks physical registration metadata after authorization;
   an identical name/root/mask is a no-op, while root or mask drift fails closed.

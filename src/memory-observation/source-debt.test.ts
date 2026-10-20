@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { deriveSourceDigest, deriveTraceId, purgeMemoryObservationLifecycle, sha256 } from "./ledger.ts";
-import { assertSourceDebtPurgeSafe, scanSourceDebt, sourceDebtSnapshot } from "./source-debt.ts";
+import { assertSourceDebtPurgeSafe, linkSourceDebtRestoration, scanSourceDebt, sourceDebtSnapshot } from "./source-debt.ts";
 import { AdmissionStore } from "./admission-store.ts";
 import { RUNTIME_AUTHORITY, RUNTIME_POLICY } from "./runtime-authority.ts";
 import { memoryWorkerHealth } from "./worker-health.ts";
@@ -45,7 +45,7 @@ function fixture() {
     put(join(batch, "done", jobId.slice(7) + ".json"), done);
     return { batch, job, done, doneFile: join(batch, "done", jobId.slice(7) + ".json") };
   }
-  return { workspace, base, op, at, scope, sourceTurnId, traceId, envelope, envelopeFile, queueFile, queue, put, skip };
+  return { workspace, base, op, at, scope, sourceTurnId, traceId, envelope, evidence, evidenceRef, envelopeFile, queueFile, queue, put, skip };
 }
 test("immutable exact source failure survives empty queues, 72h evidence and 31d queue purge", () => {
   const f = fixture(), initial = scanSourceDebt(f.workspace, new Date(f.at));
@@ -150,6 +150,61 @@ test("same exact source identity with changed source proof fails closed, preserv
   f.put(f.envelopeFile, { ...f.envelope, evidenceDigest: sha256("changed-evidence") });
   expect(() => scanSourceDebt(f.workspace)).toThrow("DEBT_SOURCE_CONFLICT");
   expect(sourceDebtSnapshot(f.workspace).openIds).toEqual(before.openIds);
+});
+
+function restoredFixture(){
+ const f=fixture();scanSourceDebt(f.workspace,new Date(f.at));
+ const original=structuredClone(f.envelope),oldQueue={...f.queue,reasonCode:"batch_evidence_evidence_missing"};
+ const authorization={authorizedBy:"telegram:100000001/message:2",authorizedAt:"2026-01-02T00:00:00.000Z"};
+ const archive=join(f.op,"history-restorations/synthetic",f.traceId.slice(7));
+ const auth={schema:"engram.exact-native-restoration.v1",...authorization,traceId:f.traceId,recordDigest:sha256("record"),planDigest:sha256("plan")};
+ const payload={source:{role:"user",text:"Synthetic status confirmation."},outcome:{role:"assistant",text:"Acknowledged."},
+  recovery:{kind:"operator_authorized_native_history_restoration",...authorization,originalTraceId:f.traceId,originalEnvelopeDigest:sha256(original),originalQueueDigest:sha256(oldQueue)}};
+ Object.assign(f.evidence,payload);f.evidenceRef.digest=sha256(payload);
+ const evidence={schema:"engram.memory-evidence-envelope.v1",traceId:f.traceId,scope:f.scope,payload:f.evidence};
+ Object.assign(f.envelope,{evidenceDigest:sha256(evidence),admittedAt:authorization.authorizedAt,evidenceRefs:[f.evidenceRef]});
+ const completed={schema:"engram.exact-native-restoration-result.v1",traceId:f.traceId,status:"restored",recordDigest:auth.recordDigest,envelopeDigest:sha256(f.envelope),restoredAt:authorization.authorizedAt,canonicalWrites:0};
+ f.put(f.envelopeFile,f.envelope);f.put(join(f.op,"evidence",f.traceId.slice(7)+".json"),{...evidence,expiresAt:"2026-01-05T00:00:00Z"});
+ f.put(join(archive,"authorization.json"),auth);f.put(join(archive,"completed.json"),completed);f.put(join(archive,"envelopes.json"),original);f.put(join(archive,"queues-evaluator.json"),oldQueue);
+ const unavailable={schema:"engram.memory-evidence-unavailable.v1",traceId:f.traceId};
+ f.put(join(archive,"receipts-evidence-unavailable.json"),{...unavailable,receiptId:sha256(unavailable)});
+ return {...f,archive,authorization};
+}
+test("explicit exact restoration link preserves old debt and is not closure",()=>{
+ const f=restoredFixture(),directory=join(f.base,"source-debt/v1/failures"),name=readdirSync(directory)[0]!,originalBytes=readFileSync(join(directory,name));
+ expect(()=>scanSourceDebt(f.workspace)).toThrow("DEBT_SOURCE_CONFLICT");
+ expect(linkSourceDebtRestoration(f.workspace,f.archive,f.authorization).status).toBe("linked");
+ expect(linkSourceDebtRestoration(f.workspace,f.archive,f.authorization).status).toBe("already_linked");
+ const pending=scanSourceDebt(f.workspace);expect(pending.openIds).toHaveLength(1);expect(pending.closedIds).toHaveLength(0);
+ expect(readFileSync(join(directory,name))).toEqual(originalBytes);
+});
+test("restoration debt closes only after exact source-effect proof, retaining certificate across TTL",()=>{
+ const f=restoredFixture();linkSourceDebtRestoration(f.workspace,f.archive,f.authorization);f.skip();
+ const final=scanSourceDebt(f.workspace);expect(final.closedIds).toHaveLength(1);expect(final.openIds).toHaveLength(0);
+ rmSync(f.op,{recursive:true});rmSync(join(f.base,"batch-live-store"),{recursive:true});
+ expect(sourceDebtSnapshot(f.workspace).closedIds).toEqual(final.closedIds);
+});
+test("wrong authorization, changed stable identity and altered journal cannot authorize proof drift",()=>{
+ for(const mode of ["authorization","identity","journal"]){
+  const f=restoredFixture();
+  if(mode==="identity")f.put(f.envelopeFile,{...f.envelope,scope:{...f.scope,scopeId:"domain:alpha:other"}});
+  if(mode==="journal")f.put(join(f.archive,"completed.json"),{schema:"wrong"});
+  expect(()=>linkSourceDebtRestoration(f.workspace,f.archive,mode==="authorization"?{...f.authorization,authorizedBy:"telegram:100000002/message:2"}:f.authorization)).toThrow("DEBT_RESTORATION_LINK_INVALID");
+  expect(sourceDebtSnapshot(f.workspace).openIds).toHaveLength(1);
+ }
+});
+test("restoration link rejects symlinked archives and mismatched original source proof",()=>{
+ for(const mode of ["symlink","original"]){
+  const f=restoredFixture();let path=f.archive;
+  if(mode==="symlink"){path=join(f.op,"history-restorations/synthetic","alias");symlinkSync(f.archive,path);}
+  else{const original=JSON.parse(readFileSync(join(f.archive,"envelopes.json"),"utf8"));f.put(join(f.archive,"envelopes.json"),{...original,sourceCompletedAt:"2026-01-01T01:00:00Z"});}
+  expect(()=>linkSourceDebtRestoration(f.workspace,path,f.authorization)).toThrow("DEBT_RESTORATION_LINK_INVALID");
+ }
+});
+test("a sealed restoration link cannot accept a third unreviewed evidence change",()=>{
+ const f=restoredFixture();linkSourceDebtRestoration(f.workspace,f.archive,f.authorization);
+ f.put(f.envelopeFile,{...f.envelope,evidenceDigest:sha256("unreviewed-third-proof")});
+ expect(()=>scanSourceDebt(f.workspace)).toThrow("DEBT_SOURCE_CONFLICT");
 });
 
 test("orphan temporary metadata blocks destructive lifecycle rather than hiding failed publication", () => {

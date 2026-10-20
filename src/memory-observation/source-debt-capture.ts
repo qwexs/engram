@@ -1,7 +1,7 @@
 /** Protected administrative accounting. No transcript/model text is copied here.
  * The operational queue is NOT the source of truth for completeness. */
-import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isAdmissionGapRecovered } from "./admission-gap-recovery.ts";
 import { acquireProcessLease } from "./process-lease.ts";
@@ -25,9 +25,14 @@ export type SourceDebtRecord = {
   sourceProof: null | { envelopeDigest: Digest; sourceDigest: Digest; evidenceDigest: Digest; policyDigest: Digest };
   batchParents: Array<{ jobId: Digest; jobDigest: Digest; bundleId: Digest; failureDigest: Digest | null }>;
 };
-type SourceDebtLink = { schema: "engram.memory-source-debt-link.v1"; linkId: Digest; debtId: Digest; candidateId: Digest;
+type AdmissionDebtLink = { schema: "engram.memory-source-debt-link.v1"; linkId: Digest; debtId: Digest; candidateId: Digest;
   scope: ObservationScope; traceId: Digest; sourceTurnId: string; envelopeDigest: Digest; checkpointDigest: Digest;
   gapReceiptDigest: Digest; authorizationDigest: Digest; completionDigest: Digest };
+type RestorationDebtLink = { schema: "engram.memory-source-debt-restoration-link.v1"; linkId: Digest; debtId: Digest;
+  scope: ObservationScope; traceId: Digest; sourceTurnId: string; envelopeDigest: Digest;
+  previousSourceProof: NonNullable<SourceDebtRecord["sourceProof"]>; restoredSourceProof: NonNullable<SourceDebtRecord["sourceProof"]>;
+  authorizationDigest: Digest; completionDigest: Digest; archiveDigest: Digest };
+type SourceDebtLink = AdmissionDebtLink | RestorationDebtLink;
 export type SourceDebtSnapshot = {
   schema: "engram.memory-source-debt-snapshot.v1"; workspaceId: string | null;
   observed: boolean; debtIds: Digest[]; openIds: Digest[]; closedIds: Digest[]; verifiedAt: string;
@@ -110,11 +115,23 @@ function inventory(workspace: string, owner: string, limits: { maxRecords: numbe
     if (kind === "failures") { validateRecord(row.value, owner); if (row.file !== join(directory, kind, row.value.recordId.slice(7) + ".json")) throw new SourceDebtError("DEBT_FILENAME_INVALID"); records.push(row.value as SourceDebtRecord); }
     else if (kind === "links") {
       const { linkId, ...base } = row.value;
-      if (row.value.schema !== "engram.memory-source-debt-link.v1" || linkId !== sha256(base) || !scopeValid(row.value.scope)
-        || row.value.scope.workspaceId !== owner || !HASH.test(row.value.candidateId) || !SOURCE.test(row.value.sourceTurnId)
+      const restoration=row.value.schema === "engram.memory-source-debt-restoration-link.v1";
+      const proofValid=(p:Row)=>p&&Object.keys(p).sort().join()==="envelopeDigest,evidenceDigest,policyDigest,sourceDigest"&&Object.values(p).every(v=>HASH.test(String(v)));
+      const kindValid=restoration
+        ? proofValid(row.value.previousSourceProof)&&proofValid(row.value.restoredSourceProof)
+          &&row.value.envelopeDigest===row.value.restoredSourceProof.envelopeDigest
+          &&row.value.previousSourceProof.envelopeDigest!==row.value.restoredSourceProof.envelopeDigest
+          &&row.value.previousSourceProof.sourceDigest===row.value.restoredSourceProof.sourceDigest
+          &&row.value.previousSourceProof.policyDigest===row.value.restoredSourceProof.policyDigest&&HASH.test(row.value.archiveDigest)
+          &&row.value.debtId===sourceDebtId(row.value.scope,{kind:"source",id:row.value.sourceTurnId})
+        : row.value.schema === "engram.memory-source-debt-link.v1"&&HASH.test(row.value.candidateId)
+          &&row.value.debtId===sourceDebtId(row.value.scope,{kind:"candidate",id:row.value.candidateId})
+          &&[row.value.checkpointDigest,row.value.gapReceiptDigest].every(v=>HASH.test(v));
+      const expectedKeys=restoration?"archiveDigest,authorizationDigest,completionDigest,debtId,envelopeDigest,linkId,previousSourceProof,restoredSourceProof,schema,scope,sourceTurnId,traceId":"authorizationDigest,candidateId,checkpointDigest,completionDigest,debtId,envelopeDigest,gapReceiptDigest,linkId,schema,scope,sourceTurnId,traceId";
+      if (!scopeValid(row.value.scope) || !kindValid || linkId !== sha256(base) || Object.keys(row.value).sort().join()!==expectedKeys
+        || row.value.scope.workspaceId !== owner || !SOURCE.test(row.value.sourceTurnId)
         || row.value.traceId !== deriveTraceId(owner, row.value.scope.runtimeSessionKey, row.value.sourceTurnId)
-        || row.value.debtId !== sourceDebtId(row.value.scope, { kind: "candidate", id: row.value.candidateId })
-        || ![row.value.envelopeDigest, row.value.checkpointDigest, row.value.gapReceiptDigest, row.value.authorizationDigest, row.value.completionDigest].every(v => HASH.test(v))
+        || ![row.value.envelopeDigest,row.value.authorizationDigest,row.value.completionDigest].every(v=>HASH.test(v))
         || row.file !== join(directory, kind, row.value.debtId.slice(7) + ".json")) throw new SourceDebtError("DEBT_LINK_INVALID");
       links.push(row.value as SourceDebtLink);
     } else {
@@ -157,8 +174,67 @@ function validCertificate(c: Row, records: SourceDebtRecord[], links: SourceDebt
   if (failures.every(r => r.identity.kind === "source" && r.traceId === proof.traceId && r.sourceTurnId === proof.sourceTurnId
     && r.sourceProof?.envelopeDigest === proof.envelopeDigest)) return c.linkId === null;
   const link = links.find(l => l.linkId === c.linkId && l.debtId === c.debtId);
+  if(link?.schema==="engram.memory-source-debt-restoration-link.v1")return failures.every(r=>restorationMatches(link,r))
+    &&link.traceId===proof.traceId&&link.sourceTurnId===proof.sourceTurnId&&link.envelopeDigest===proof.envelopeDigest;
   return !!link && failures.every(r => r.identity.kind === "candidate" && r.candidateId === link.candidateId && r.classification !== "failed_run")
     && link.traceId === proof.traceId && link.sourceTurnId === proof.sourceTurnId && link.envelopeDigest === proof.envelopeDigest;
+}
+function restorationMatches(link:RestorationDebtLink,record:SourceDebtRecord){
+ return record.identity.kind==="source"&&record.debtId===link.debtId&&record.traceId===link.traceId
+  &&record.sourceTurnId===link.sourceTurnId&&sha256(record.scope)===sha256(link.scope)
+  &&[sha256(link.previousSourceProof),sha256(link.restoredSourceProof)].includes(sha256(record.sourceProof));
+}
+/** Explicit operator accounting link, NOT replay, evaluation or debt closure.
+ * A native evidence refresh keeps exact source identity but legitimately changes
+ * its envelope hash. Seal only an already completed, exact restoration journal;
+ * never infer this permission from an arbitrary changed live envelope. */
+export function linkSourceDebtRestoration(workspace:string,archivePath:string,authorization:{authorizedBy:string;authorizedAt:string},now=new Date()){
+ const owner=workspaceId(workspace),op=join(workspace,"memory-state/memory-observation/v1"),archive=resolve(archivePath);
+ const fail=()=>{throw new SourceDebtError("DEBT_RESTORATION_LINK_INVALID");};
+ if(realpathSync(workspace)!==resolve(workspace)||!archive.startsWith(join(op,"history-restorations")+"/")
+   ||realpathSync(archive)!==archive||lstatSync(archive).isSymbolicLink()||!lstatSync(archive).isDirectory())fail();
+ const safe=(name:string)=>{const p=join(archive,name);if(realpathSync(p)!==p||!lstatSync(p).isFile()||lstatSync(p).isSymbolicLink())fail();return json(p);};
+ const auth=safe("authorization.json"),completion=safe("completed.json"),original=safe("envelopes.json"),q=safe("queues-evaluator.json"),unavailable=safe("receipts-evidence-unavailable.json");
+ if(auth.schema!=="engram.exact-native-restoration.v1"||completion.schema!=="engram.exact-native-restoration-result.v1"
+  ||auth.authorizedBy!==authorization.authorizedBy||auth.authorizedAt!==authorization.authorizedAt||!TOKEN.test(auth.authorizedBy)
+  ||!instant(auth.authorizedAt)||Date.parse(auth.authorizedAt)>now.getTime()||!HASH.test(auth.planDigest)||!HASH.test(auth.recordDigest)
+  ||completion.recordDigest!==auth.recordDigest||completion.traceId!==auth.traceId||completion.status!=="restored"
+  ||!instant(completion.restoredAt)||Date.parse(completion.restoredAt)<Date.parse(auth.authorizedAt)||Date.parse(completion.restoredAt)>now.getTime()
+  ||completion.canonicalWrites!==0||original.traceId!==auth.traceId||!HASH.test(auth.traceId)||archive.split('/').at(-1)!==auth.traceId.slice(7))fail();
+ const file=join(op,"envelopes",auth.traceId.slice(7)+".json");
+ if(realpathSync(file)!==file||!lstatSync(file).isFile()||lstatSync(file).isSymbolicLink())fail();
+ const current=json(file),stable=(e:Row)=>{const {admittedAt,evidenceDigest,evidenceRefs,...identity}=e;return identity;};
+ if(current.schema!=="engram.memory-observation-job.v1"||!scopeValid(current.scope)||current.scope.workspaceId!==owner
+  ||!SOURCE.test(current.sourceTurnId)||current.traceId!==deriveTraceId(owner,current.scope.runtimeSessionKey,current.sourceTurnId)
+  ||current.sourceDigest!==sha256({sourceTurnId:current.sourceTurnId,scope:current.scope,sourceCompletedAt:current.sourceCompletedAt})
+  ||sha256(stable(current))!==sha256(stable(original))||sha256(current)!==completion.envelopeDigest
+  ||q.traceId!==current.traceId||q.status!=="terminal"||q.reasonCode!=="batch_evidence_evidence_missing"
+  ||unavailable.schema!=="engram.memory-evidence-unavailable.v1"||unavailable.traceId!==current.traceId)fail();
+ const evidenceFile=join(op,"evidence",auth.traceId.slice(7)+".json");
+ if(realpathSync(evidenceFile)!==evidenceFile||!lstatSync(evidenceFile).isFile()||lstatSync(evidenceFile).isSymbolicLink())fail();
+ const evidence=json(evidenceFile),recovery=evidence.payload?.recovery;
+ const {receiptId,...unavailableBody}=unavailable;
+ if(current.evidenceDigest!==sha256({schema:evidence.schema,traceId:evidence.traceId,scope:evidence.scope,payload:evidence.payload})
+  ||receiptId!==sha256(unavailableBody)||!instant(current.admittedAt)||Date.parse(current.admittedAt)<Date.parse(auth.authorizedAt)
+  ||evidence.traceId!==current.traceId||sha256(evidence.scope)!==sha256(current.scope)
+  ||sha256(current.evidenceRefs)!==sha256([{kind:"source-turn",ref:current.sourceTurnId,digest:sha256(evidence.payload)}])
+  ||recovery?.kind!=="operator_authorized_native_history_restoration"||recovery.authorizedBy!==auth.authorizedBy||recovery.authorizedAt!==auth.authorizedAt
+  ||recovery.originalTraceId!==current.traceId||recovery.originalEnvelopeDigest!==sha256(original)||recovery.originalQueueDigest!==sha256(q))fail();
+ const proof=(e:Row)=>({envelopeDigest:sha256(e),sourceDigest:e.sourceDigest,evidenceDigest:e.evidenceDigest,policyDigest:e.policyDigest});
+ const previousSourceProof=proof(original),restoredSourceProof=proof(current),debtId=sourceDebtId(current.scope,{kind:"source",id:current.sourceTurnId});
+ durableDirectory(root(workspace));const release=acquireProcessLease(join(root(workspace),"writer.lock"));if(!release)throw new SourceDebtError("DEBT_WRITER_BUSY");
+ try{
+  const state=inventory(workspace,owner,SOURCE_DEBT_LIMITS),records=state.records.filter(r=>r.debtId===debtId);
+  if(!records.length)return {status:"no_existing_debt" as const};
+  const base={schema:"engram.memory-source-debt-restoration-link.v1" as const,debtId,scope:current.scope,traceId:current.traceId,sourceTurnId:current.sourceTurnId,
+   envelopeDigest:sha256(current),previousSourceProof,restoredSourceProof,authorizationDigest:sha256(auth),completionDigest:sha256(completion),archiveDigest:sha256({auth,completion,original,q,unavailable})};
+  const link={...base,linkId:sha256(base)};
+  if(!records.every(r=>restorationMatches(link,r))||!records.some(r=>sha256(r.sourceProof)===sha256(previousSourceProof)))fail();
+  const existing=state.links.find(l=>l.debtId===debtId);if(existing){if(sha256(existing)!==sha256(link))fail();return {status:"already_linked" as const,linkId:link.linkId};}
+  if(existsSync(join(root(workspace),"closures",debtId.slice(7)+".json")))fail();
+  if(state.count+1>SOURCE_DEBT_LIMITS.maxRecords||state.bytes+Buffer.byteLength(JSON.stringify(link)+"\n")>SOURCE_DEBT_LIMITS.maxBytes)throw new SourceDebtError("DEBT_CAPACITY_EXCEEDED");
+  immutable(join(root(workspace),"links",debtId.slice(7)+".json"),link);return {status:"linked" as const,linkId:link.linkId};
+ }finally{release();}
 }
 /** Single synchronous writer, bounded and fail-closed. It never requeues or writes
  * memory. Call before any lifecycle deletion and again after Worker effects. */
@@ -177,7 +253,9 @@ export function captureSourceDebt(workspace: string, now = new Date(), options: 
     const state = inventory(workspace, owner, limits), op = join(workspace, "memory-state/memory-observation/v1");
     const append = (record: SourceDebtRecord) => {
       validateRecord(record, owner);
-      if (state.records.some(r => r.debtId === record.debtId && (sha256(r.scope) !== sha256(record.scope) || sha256(r.sourceProof) !== sha256(record.sourceProof)))) throw new SourceDebtError("DEBT_SOURCE_CONFLICT");
+      const restoration=state.links.find((l):l is RestorationDebtLink=>l.debtId===record.debtId&&l.schema==="engram.memory-source-debt-restoration-link.v1");
+      if (state.records.some(r => r.debtId === record.debtId && (sha256(r.scope) !== sha256(record.scope) || sha256(r.sourceProof) !== sha256(record.sourceProof))
+        &&!(restoration&&restorationMatches(restoration,r)&&restorationMatches(restoration,record)))) throw new SourceDebtError("DEBT_SOURCE_CONFLICT");
       if (state.records.some(r => r.recordId === record.recordId || (r.debtId === record.debtId && r.stage === record.stage && r.reasonCode === record.reasonCode))) return;
       const bytes = Buffer.byteLength(JSON.stringify(record) + "\n");
       if (state.count + 1 > limits.maxRecords || state.bytes + bytes > limits.maxBytes) throw new SourceDebtError("DEBT_CAPACITY_EXCEEDED");

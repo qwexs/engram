@@ -122,6 +122,25 @@ done publication resume the exact operation without deleting debt or
 recomputing an unrelated plan. New source/effect bytes cause refusal, not an
 implicit extension of approval. The old policy is not added to readability.
 
+## Native evidence restoration and immutable source debt
+
+Refreshing missing evidence from exact authorized native history legitimately
+changes the evidence/envelope hash, not source identity. Ordinary debt capture
+continues to reject arbitrary proof drift with `DEBT_SOURCE_CONFLICT`.
+`linkSourceDebtRestoration` is an explicit operator-only accounting step for an
+already completed `engram.exact-native-restoration.v1` journal. It requires the
+caller's exact authorization actor/time, canonical owner-only archive files,
+unchanged source identity/scope/authority/policy, original envelope/queue hashes,
+the current evidence recovery metadata and the completed restoration digest.
+
+The immutable metadata link contains only identities/digests. Original failure
+records remain byte-identical; further unreviewed evidence changes still fail
+closed. The link is neither replay permission nor debt closure. Only the normal
+exact source-effect verifier can close the debt against the restored envelope;
+the resulting compact certificate retains the linked lineage after raw proof
+retention. Unsupported multi-step restoration or existing conflicting links
+require separate review rather than automatic overwrite.
+
 ## Code-only plugin release rebind
 
 `scripts/memory-observation-code-only-plugin-rebind.ts` has `plan` and `apply`

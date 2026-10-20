@@ -12,6 +12,8 @@
   retaining the old exhaustion marker. Finite recovery can explicitly process
   independent fresh evidence during backoff with every pending job's sources
   reserved; default scheduled behavior and retry/inference budgets are unchanged.
+  An explicit native-restoration debt link authenticates the old/new envelope
+  lineage without rewriting failures or declaring recovery itself successful.
 
 - **feat(memory): retain source debt and prove applicable effects before closure.**
   Node-safe metadata capture guards lifecycle and standalone evidence deletion;

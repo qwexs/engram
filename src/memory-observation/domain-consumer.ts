@@ -124,6 +124,10 @@ async function consumeLocked(options: DomainConsumerOptions) {
     const active = projection();
     const binding = memoryObservationBinding(active, receipt.scope?.runtimeSessionKey);
     if (!binding || !groupDomainOf(binding) || receipt.scope.workspaceId !== options.workspaceId) continue;
+    // Historical family receipts are not domain receipts. Never promote them
+    // when an exact main topic is added later; all domain-scope mismatches still fail closed.
+    if (active.schema === "engram.memory-observation-rollout.v6"
+      && receipt.scope.scopeClass === "self" && receipt.scope.scopeId === "workspace:main") continue;
     const operationKey = key(receipt.operationId);
     const applyPath = join(state, "receipts", operationKey + ".json"), dirtyPath = join(state, "dirty", operationKey + ".json");
     if (existsSync(applyPath)) continue;

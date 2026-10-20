@@ -203,3 +203,45 @@ describe("topic-domain runtime", () => {
     expect(read(join(f.workspace, "memory-state/memory-observation/projection.json")).bindings).toHaveLength(2);
   });
 });
+
+test("main addition retains family, epoch, scheduler and model lineage; repeat is idempotent", async () => {
+  const f = fixture();
+  const cfgPath = join(f.workspace, "engram.json"), regPath = join(f.workspace, "memory/domains/registry.json");
+  const projPath = join(f.workspace, "memory-state/memory-observation/projection.json");
+  const cfg = read(cfgPath); cfg.workspace.id = "main"; cfg.agent = "agent-main"; json(cfgPath, cfg);
+  const manifest = read(f.globalManifestPath);
+  manifest.registry.workspaces = manifest.registry.workspaces.filter((w: any) => w.id !== "main");
+  manifest.registry.collections = manifest.registry.collections.filter((c: any) => c.owner !== "main");
+  const owner = manifest.registry.workspaces.find((w: any) => w.id === "project"); owner.id = "main"; owner.kind = "technical"; owner.parents = [];
+  for (const col of manifest.registry.collections) if (col.owner === "project") col.owner = "main";
+  json(f.globalManifestPath, manifest);
+  const before = read(projPath); before.schema = "engram.memory-observation-rollout.v3"; before.workspaceId = "main";
+  before.bindings = [{ runtimeSessionKey: "agent:main:*", scopeClass: "self", scopeId: "workspace:main", requireOwner: true, allowedChannels: ["telegram", "openclaw"] }];
+  json(before.consumers.dailyNote.qmdBinding.manifestPath, manifest); json(projPath, before);
+  const registry = read(regPath); registry.domains["project-new"].pending = true; json(regPath, registry);
+  const host: any = { agents: { entries: { main: { workspace: f.workspace } } }, channels: { telegram: { groups: {
+    "-1001": { enabled: true, topics: { "2": { enabled: true, agentId: "main" } } },
+  } } } };
+  const common = { workspace: f.workspace, domain: "project-new", chatId: "-1001", topicId: "2",
+    gatewayCall: async () => ({ config: host, hash: "test" }), registerCollection: async () => ({ ok: true }),
+    markDirty: async (input: any) => ({ schema: "engram.qmd.dirty-mark.v1" as const, status: "marked" as const, mode: "coordinated" as const, workspace: input.workspace, collections: input.collections, generation: 1 }) };
+  const envelope = join(f.workspace, "memory-state/memory-observation/v1/envelopes/test.json");
+  const queue = join(f.workspace, "memory-state/memory-observation/v1/queues/evaluator/test.json");
+  json(envelope, {traceId:"old",scope:{runtimeSessionKey:"agent:main:telegram:group:-1001:topic:2",scopeClass:"self",scopeId:"workspace:main"}});
+  json(queue, {traceId:"old",status:"queued"});
+  await expect(ensureTopicDomainRuntime(common)).rejects.toThrow("pending family evaluator work");
+  expect(read(projPath)).toEqual(before);
+  json(queue, {traceId:"old",status:"terminal"});
+  const result = await ensureTopicDomainRuntime(common);
+  expect(result.status).toBe("active");
+  const after = read(projPath);
+  expect(after.schema).toBe("engram.memory-observation-rollout.v6");
+  expect(after.bindings).toHaveLength(2); expect(after.bindings).toContainEqual(before.bindings[0]);
+  expect(after.evaluation).toEqual(before.evaluation); expect(after.inference).toEqual(before.inference);
+  expect(after.captureOwnership).toEqual(before.captureOwnership);
+  expect(read(regPath).domains["project-new"].pending).toBeUndefined();
+  const global = read(f.globalManifestPath);
+  expect(global.registry.workspaces.find((w: any) => w.id === "main").readableCollections).not.toContain("company-memory");
+  expect((await ensureTopicDomainRuntime(common)).status).toBe("already-active");
+  expect(read(projPath)).toEqual(after);
+});

@@ -3,7 +3,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {join,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {sha256} from './ledger.ts';
-import {evaluationProjectionForScope,readModelTransition,readableEvaluationPolicies} from './model-transition.ts';
+import {evaluationProjectionForScope,readModelTransition,readableEvaluationPolicies,extendModelTransitionForMainTopics} from './model-transition.ts';
 import {contextualEvaluationDigest,contextualThinkingForScope} from './quality-rollout.ts';
 const roots:string[]=[];afterEach(()=>roots.splice(0).forEach(r=>rmSync(r,{recursive:true,force:true})));
 function fixture(){
@@ -40,4 +40,27 @@ test('unknown live policy blocks duplicate production; historical terminal debt 
  expect(()=>evaluationProjectionForScope(f.workspace,f.current,f.scope)).toThrow('MODEL_TRANSITION_PENDING_POLICY_DENIED');
  f.put('v1/queues/evaluator/'+f.traceId.slice(7)+'.json',{traceId:f.traceId,status:'terminal'});
  expect(evaluationProjectionForScope(f.workspace,f.current,f.scope)).toEqual(f.current);expect(readFileSync(path,'utf8')).toContain('evaluationPolicyDigest');
+});
+
+test('explicit main topic extension preserves original immutable lineage and rejects unrelated mutations',()=>{
+ const f=fixture();
+ for(const p of [f.old,f.current]) {
+  p.schema='engram.memory-observation-rollout.v3';p.workspaceId='main';
+  p.bindings=[{runtimeSessionKey:'agent:main:*',scopeClass:'self',scopeId:'workspace:main',requireOwner:true,allowedChannels:['telegram','openclaw']}];
+  p.consumers.dailyNote.qmdBinding={resolver:'exact-session-registry',manifestPath:'/old.json',workspaceRegistryDigest:sha256('old')};
+ }
+ f.body.targetProjectionDigest=sha256(f.current);f.body.previousQuality=null as any;f.save();
+ const next=structuredClone(f.current);next.schema='engram.memory-observation-rollout.v6';
+ // Synthetic topic identity; no deployment-specific domain or chat identifiers.
+ next.bindings.push({runtimeSessionKey:'agent:main:telegram:group:-123:topic:2',scopeClass:'project',scopeId:'domain:main:example',requireOwner:false,allowedChannels:['telegram'],topicDomain:{domain:'example',chatId:'-123',topicId:'2'}});
+ next.consumers.dailyNote.qmdBinding.manifestPath='/new.json';
+ const extended=extendModelTransitionForMainTopics(f.workspace,f.current,next)!;
+ f.put('model-transition.json',extended);
+ expect(readModelTransition(f.workspace,next)?.previousProjection).toEqual(f.old);
+ expect(extendModelTransitionForMainTopics(f.workspace,next,next)).toEqual(extended);
+ for(const mutate of [(p:any)=>p.inference.evaluateAfter='2026-10-15T00:00:00Z',(p:any)=>p.bindings[0].requireOwner=false,(p:any)=>p.consumers.dailyNote.applyAfter='2026-10-15T00:00:00Z']) {
+  const bad=structuredClone(next);mutate(bad);
+  const body={...extended,targetProjectionDigest:sha256(bad)};delete (body as any).digest;f.put('model-transition.json',{...body,digest:sha256(body)});
+  expect(()=>readModelTransition(f.workspace,bad)).toThrow('MODEL_TRANSITION_SCOPE_CHANGED');
+ }
 });

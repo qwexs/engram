@@ -54,8 +54,8 @@ export function assertTopicHostRoutes(config: any, workspace: string, workspaceI
 }
 
 export function configuredTopicBindings(config: any, workspace: string, workspaceId: string, names: string[]): MemoryObservationBindingV1[] {
-  if (!names.length || names.length > 20 || new Set(names).size !== names.length || workspaceId === "main") {
-    throw new Error("topic rollout requires 1–20 unique domains in a non-main workspace");
+  if (!names.length || names.length > 20 || new Set(names).size !== names.length) {
+    throw new Error("topic rollout requires 1–20 unique domains in a configured workspace");
   }
   const registry = JSON.parse(readFileSync(join(workspace, "memory/domains/registry.json"), "utf8"));
   const scopeClass = workspaceId === "managers" ? "managers" : workspaceId === "company" ? "company" : "project";

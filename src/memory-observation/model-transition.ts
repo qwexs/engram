@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { sha256, type JsonValue, type ObservationScope } from "./ledger.ts";
-import type { MemoryObservationProjectionV1 } from "./projection.ts";
+import { validMainFamilyBinding, type MemoryObservationProjectionV1 } from "./projection.ts";
 import { readQualityRollout, rebindQualityRollout, qualityScopeEnabled, qualityTransitionInventory, readableContextualDigests, type QualityRollout } from "./quality-rollout.ts";
 
 // Operator-approved lineage only. Old immutable jobs/results retain their exact
@@ -13,6 +13,7 @@ export type ModelTransition = {
   previousQuality: (QualityRollout & {digest: ReturnType<typeof sha256>}) | null;
   approvedBy: string;
   approvedAt: string;
+  authorityExtension?: { baselineProjection: MemoryObservationProjectionV1 };
   digest: ReturnType<typeof sha256>;
 };
 const hash = (v: unknown) => sha256(v as JsonValue);
@@ -24,12 +25,19 @@ export function readModelTransition(workspace: string, current: MemoryObservatio
   if (!existsSync(path)) return null;
   const saved=JSON.parse(readFileSync(path,"utf8")); const {digest,...body}=saved;
   if (saved.schema!=="engram.memory-model-transition.v1" || digest!==hash(body)
-    || Object.keys(body).sort().join(",")!=="approvedAt,approvedBy,previousProjection,previousQuality,schema,targetProjectionDigest"
+    || Object.keys(body).filter(key=>key!=="authorityExtension").sort().join(",")!=="approvedAt,approvedBy,previousProjection,previousQuality,schema,targetProjectionDigest"
     || saved.targetProjectionDigest!==hash(current) || !saved.approvedBy || !Number.isFinite(Date.parse(saved.approvedAt)))
     throw Error("MODEL_TRANSITION_IDENTITY_CHANGED");
   const old=saved.previousProjection as MemoryObservationProjectionV1;
   if (!old?.evaluation?.batch || !old.consumers || !current.evaluation?.batch) throw Error("MODEL_TRANSITION_IDENTITY_CHANGED");
-  const comparable=JSON.parse(JSON.stringify(current));
+  let authority = current;
+  if (saved.authorityExtension !== undefined) {
+    const baseline = saved.authorityExtension?.baselineProjection;
+    if (!baseline || Object.keys(saved.authorityExtension).join(",") !== "baselineProjection") throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
+    assertAdditiveMainTopics(baseline, current);
+    authority = baseline;
+  }
+  const comparable=JSON.parse(JSON.stringify(authority));
   comparable.pluginDigest=old.pluginDigest; comparable.inference.model=old.inference.model; comparable.inference.provider=old.inference.provider;
   comparable.evaluation.policyDigest=old.evaluation.policyDigest;
   if (hash(comparable)!==hash(old)) throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
@@ -66,4 +74,39 @@ export function evaluationProjectionForScope(workspace: string, current: MemoryO
   const allowed=readableEvaluationPolicies(workspace,current,scope);
   if (pending.some(j=>!allowed.includes(j.policyDigest))) throw Error("MODEL_TRANSITION_PENDING_POLICY_DENIED");
   return pending.some(j=>oldPolicies.includes(j.policyDigest)) ? old : current;
+}
+
+/** Explicit additive main-topic authority only; no epoch, ownership, model,
+ * scheduler or existing exact-binding changes may hide in this transition. */
+export function assertAdditiveMainTopics(before: MemoryObservationProjectionV1, after: MemoryObservationProjectionV1): void {
+  if (before.workspaceId !== "main" || after.workspaceId !== "main"
+    || !["engram.memory-observation-rollout.v3", "engram.memory-observation-rollout.v6"].includes(before.schema)
+    || after.schema !== "engram.memory-observation-rollout.v6"
+    || before.bindings.filter(validMainFamilyBinding).length !== 1
+    || after.bindings.filter(validMainFamilyBinding).length !== 1
+    || after.bindings.length <= before.bindings.length
+    || before.bindings.some(b => !after.bindings.some(a => hash(a) === hash(b)))
+    || after.bindings.some(b => !validMainFamilyBinding(b) && (!b.topicDomain || b.groupDomain
+      || !b.runtimeSessionKey.startsWith("agent:main:telegram:group:") || b.scopeClass !== "project"
+      || b.scopeId !== `domain:main:${b.topicDomain.domain}` || b.requireOwner !== false))) throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
+  const comparable = structuredClone(after);
+  comparable.schema = before.schema; comparable.bindings = before.bindings;
+  // A release may rebind installed bytes and model identity separately.
+  comparable.pluginDigest = before.pluginDigest; comparable.inference.model = before.inference.model;
+  comparable.inference.provider = before.inference.provider; comparable.evaluation!.policyDigest = before.evaluation!.policyDigest;
+  const resolver = comparable.consumers?.dailyNote.qmdBinding;
+  if (!resolver || !("resolver" in resolver) || resolver.resolver !== "exact-session-registry") throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
+  comparable.consumers!.dailyNote.qmdBinding = before.consumers!.dailyNote.qmdBinding;
+  if (hash(comparable) !== hash(before)) throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
+}
+
+/** Preserve immutable model lineage while adding exact main-topic authority. */
+export function extendModelTransitionForMainTopics(workspace: string, before: MemoryObservationProjectionV1, after: MemoryObservationProjectionV1): ModelTransition | null {
+  const current = readModelTransition(workspace, before);
+  if (!current || hash(before) === hash(after)) return current;
+  const { digest, ...body } = current;
+  const baselineProjection = current.authorityExtension?.baselineProjection ?? before;
+  assertAdditiveMainTopics(baselineProjection, after);
+  const next = { ...body, targetProjectionDigest: hash(after), authorityExtension: { baselineProjection } };
+  return { ...next, digest: hash(next) };
 }

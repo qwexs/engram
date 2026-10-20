@@ -7,7 +7,7 @@ export type GroupDirectDomainBinding = { domain: string; chatId: string };
 const GROUP_KEY = /^agent:([A-Za-z0-9._-]+):telegram:group:(-[1-9][0-9]*)$/;
 
 export function isGroupProjectionSchema(schema: unknown): boolean {
-  return schema === "engram.memory-observation-rollout.v4" || schema === "engram.memory-observation-rollout.v5";
+  return schema === "engram.memory-observation-rollout.v4" || schema === "engram.memory-observation-rollout.v5" || schema === "engram.memory-observation-rollout.v6";
 }
 
 export function groupDomainOf(binding: { topicDomain?: { domain: string; chatId: string }; groupDomain?: GroupDirectDomainBinding } | null | undefined) {

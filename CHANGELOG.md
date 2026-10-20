@@ -19,6 +19,14 @@
   This allows activation of an already scaffolded topic without removing its
   existing collection. Both async and sync paths have regression coverage.
 
+- **feat(memory): additive main topic domains.** Projection v6 retains the
+  owner-only main family and gives validated exact topics precedence. The
+  canonical topic provisioner adds domain/exact QMD collections without a new
+  scheduler or a family replacement; it preserves model lineage and epochs,
+  refuses pending family transfers, and excludes historical self receipts from
+  domain effects. Registry/route drift remains fail-closed. Main-topic isolation,
+  provisioner idempotence and transition mutation tests cover the new path.
+
 - **fix(memory): fence completion work across service stop/restart.**
   Abort-aware feed reads drain without waiting for an unresponsive host SDK;
   late results cannot admit, expire, mutate cursors, or rearm stopped timers.

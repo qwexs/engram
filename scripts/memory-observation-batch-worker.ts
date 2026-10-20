@@ -78,7 +78,7 @@ if (!existsSync(projectionPath) || readJson(projectionPath)?.enabled !== true) {
 const repository = resolve(import.meta.dir, "..");
 const expectedPluginDigest = await sourcePluginDigest(repository);
 const projection = resolveMemoryObservationProjection({ workspace, workspaceId, expectedPluginDigest });
-if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4, "engram.memory-observation-rollout.v5"].includes(projection.schema as any)
+if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4, "engram.memory-observation-rollout.v5", "engram.memory-observation-rollout.v6"].includes(projection.schema as any)
   || projection.mode !== "canary"
   || memoryObservationEvaluationMode(projection) !== "batch-cron"
   || projection.limits.maxInferenceCalls !== 1
@@ -112,7 +112,7 @@ if (topicWorkspace) {
     return JSON.parse(result.stdout);
   };
   assertGroupHostRoutes({ agents: { entries: get("agents.entries") },
-    bindings: get("bindings"), channels: { telegram: { groups: get("channels.telegram.groups") } } }, workspace, workspaceId, projection.bindings);
+    bindings: get("bindings"), channels: { telegram: { groups: get("channels.telegram.groups") } } }, workspace, workspaceId, projection.bindings.filter(b => b.topicDomain || b.groupDomain));
 }
 const contracts = join(repository, "contracts", "memory-observation", "v1");
 const producerRegistry = readJson(join(contracts, "producer-registry.json"));

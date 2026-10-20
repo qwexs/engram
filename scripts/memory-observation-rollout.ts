@@ -150,7 +150,7 @@ function hostInferenceBoundary(marker: MemoryObservationProjectionV1 | null): {
   let topicAuthorized = false;
   if (isGroupProjectionSchema(marker?.schema)) {
     try {
-      assertGroupHostRoutes(configuredTopicRoutes(), workspace, workspaceId, marker.bindings);
+      assertGroupHostRoutes(configuredTopicRoutes(), workspace, workspaceId, marker.bindings.filter(b => b.topicDomain || b.groupDomain));
       topicAuthorized = true;
     } catch { /* Changed host routes revoke group activation. */ }
   }
@@ -424,6 +424,7 @@ const groupNames = typeof options["group-domains"] === "string" ? String(options
 if (topicNames && groupNames) throw new Error("choose topic-domains or group-domains, not both");
 const topicBindings = groupNames ? configuredGroupDirectBindings(configuredTopicRoutes(), workspace, workspaceId, groupNames)
   : topicNames ? configuredTopicBindings(configuredTopicRoutes(), workspace, workspaceId, topicNames) : null;
+if (topicBindings && workspaceId === "main") throw new Error("main topics require additive ensureTopicDomainRuntime; family replacement is forbidden");
 if (topicBindings && (!batchCommand || options["session-key"] || options["scope-id"])) throw new Error("topic domains require batch mode without session-key/scope-id overrides");
 const sessionKey = topicBindings ? topicBindings.map(b => b.runtimeSessionKey).join(",") : required(options, "session-key");
 if (!sessionKey.startsWith("agent:")) throw new Error("--session-key must be a full canonical agent session key");

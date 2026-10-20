@@ -145,3 +145,22 @@ for (const point of [null, "after_changelog", "after_status", "after_receipt", "
     expect((await scanDomains({ workspace: f.workspace, dryRun: true })).domains[0].due).toBe(false);
   });
 }
+
+test("main v6 never promotes historical self receipts into a newly exact domain", async () => {
+  const f = fixture();
+  const path = join(f.workspace, "memory-state/memory-observation/projection.json");
+  const p = JSON.parse(readFileSync(path, "utf8"));
+  p.workspaceId = "main"; p.schema = "engram.memory-observation-rollout.v6";
+  p.bindings[0].runtimeSessionKey = "agent:main:telegram:group:-100123:topic:2";
+  p.bindings[0].scopeId = "domain:main:smm";
+  p.bindings.unshift({runtimeSessionKey:"agent:main:*",scopeClass:"self",scopeId:"workspace:main",requireOwner:true,allowedChannels:["telegram","openclaw"]});
+  put(path, p);
+  const receipt = structuredClone(f.receipt);
+  receipt.scope = {workspaceId:"main",runtimeSessionKey:"agent:main:telegram:group:-100123:topic:2",scopeClass:"self",scopeId:"workspace:main"};
+  put(f.receiptPath,receipt);
+  const before = readFileSync(join(f.domainDir,"changelog.md"),"utf8");
+  const result = await consumeTopicDomainReceipts({...f.options,workspaceId:"main"});
+  expect(result.applied).toBe(0);expect(f.dirtyCalls()).toBe(0);
+  expect(readFileSync(join(f.domainDir,"changelog.md"),"utf8")).toBe(before);
+  expect(readFileSync(f.receiptPath,"utf8")).toContain('workspace:main');
+});

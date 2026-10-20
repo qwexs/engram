@@ -12,6 +12,8 @@ export const MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 = "engram.memory-observatio
 
 export const MEMORY_OBSERVATION_PROJECTION_SCHEMA_V5 = "engram.memory-observation-rollout.v5" as const;
 
+export const MEMORY_OBSERVATION_PROJECTION_SCHEMA_V6 = "engram.memory-observation-rollout.v6" as const;
+
 export type MemoryObservationQmdBindingV1 = {
   collection: string;
 };
@@ -37,7 +39,8 @@ export type MemoryObservationProjectionV1 = {
     | typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2
     | typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3
     | typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4
-    | typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA_V5;
+    | typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA_V5
+    | typeof MEMORY_OBSERVATION_PROJECTION_SCHEMA_V6;
   workspaceId: string;
   enabled: boolean;
   mode: "shadow" | "canary";
@@ -112,6 +115,13 @@ function integer(value: unknown, min: number, max: number): value is number {
   return Number.isInteger(value) && Number(value) >= min && Number(value) <= max;
 }
 
+export function validMainFamilyBinding(binding: MemoryObservationBindingV1): boolean {
+  return binding.runtimeSessionKey === "agent:main:*" && binding.scopeClass === "self"
+    && binding.scopeId === "workspace:main" && binding.requireOwner === true
+    && !binding.topicDomain && !binding.groupDomain && binding.allowedChannels?.length === 2
+    && binding.allowedChannels.includes("telegram") && binding.allowedChannels.includes("openclaw");
+}
+
 function validBinding(
   value: unknown,
   schema: MemoryObservationProjectionV1["schema"],
@@ -121,10 +131,11 @@ function validBinding(
   const exactSession = token(binding.runtimeSessionKey)
     && /^agent:[A-Za-z0-9._-]+:.+$/.test(binding.runtimeSessionKey)
     && !binding.runtimeSessionKey.includes("*");
-  const agentFamily = schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3
+  const agentFamily = (schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3 || schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V6)
     && /^agent:[A-Za-z0-9._-]+:\*$/.test(binding.runtimeSessionKey);
   return (exactSession || agentFamily)
-    && (schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V5 ? validV5GroupBinding(binding)
+    && (schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V6 ? (validMainFamilyBinding(binding) || validTopicBinding(binding, "main") && binding.groupDomain === undefined)
+      : schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V5 ? validV5GroupBinding(binding)
       : schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4 ? validTopicBinding(binding) && binding.groupDomain === undefined
       : binding.topicDomain === undefined && binding.groupDomain === undefined)
     && ["self", "managers", "company", "project"].includes(binding.scopeClass)
@@ -215,7 +226,7 @@ export function resolveMemoryObservationProjection(options: {
   const projection = value as MemoryObservationProjectionV1;
   const limits = projection.limits;
   const inference = projection.inference;
-  if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V5].includes(projection.schema as any)
+  if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V5, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V6].includes(projection.schema as any)
     || projection.workspaceId !== options.workspaceId
     || projection.enabled !== true
     || !["shadow", "canary"].includes(projection.mode)
@@ -267,7 +278,12 @@ export function resolveMemoryObservationProjection(options: {
       || !("resolver" in projection.consumers.dailyNote.qmdBinding)) {
       throw new MemoryObservationProjectionError("topic projection requires batch ownership and exact-session QMD resolver");
     }
-    try { assertGroupDomainRegistry(options.workspace, options.workspaceId, projection.bindings); }
+    if (projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V6
+      && (projection.workspaceId !== "main" || projection.bindings.length < 2
+        || projection.bindings.filter(validMainFamilyBinding).length !== 1)) {
+      throw new MemoryObservationProjectionError("main topic projection requires one retained main family and exact topics");
+    }
+    try { assertGroupDomainRegistry(options.workspace, options.workspaceId, projection.bindings.filter(b => !validMainFamilyBinding(b))); }
     catch (error) { throw new MemoryObservationProjectionError(`topic registry authorization failed: ${String(error)}`); }
   }
   return projection;
@@ -284,10 +300,12 @@ export function memoryObservationBinding(
   runtimeSessionKey: string,
 ): MemoryObservationBindingV1 | null {
   if (!projection.enabled || !["shadow", "canary"].includes(projection.mode)) return null;
-  const binding = projection.bindings.find((candidate) => candidate.runtimeSessionKey === runtimeSessionKey
-    || (projection.schema === MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3
-      && candidate.runtimeSessionKey.endsWith(":*")
-      && runtimeSessionKey.startsWith(candidate.runtimeSessionKey.slice(0, -1)))) ?? null;
+  // Exact authority wins independently of file order. A revoked exact route must
+  // never be retried through the family selector by runtime callers.
+  const binding = projection.bindings.find(candidate => candidate.runtimeSessionKey === runtimeSessionKey)
+    ?? ([MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V6].includes(projection.schema as any)
+      ? projection.bindings.find(candidate => candidate.runtimeSessionKey.endsWith(":*")
+        && runtimeSessionKey.startsWith(candidate.runtimeSessionKey.slice(0, -1))) : null);
   return binding ? { ...binding, runtimeSessionKey } : null;
 }
 

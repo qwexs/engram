@@ -5,11 +5,13 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { extendModelTransitionForMainTopics } from "./memory-observation/model-transition.ts";
 import { assertModelTransitionRetirable, publishAfterModelTransitionDrain } from "./memory-observation/model-transition-retirement.ts";
 import { auditQmdGlobalRegistry, type QmdGlobalRegistry } from "./qmd/global-registry.ts";
 import { resolveQmdContext } from "./qmd/context.ts";
@@ -19,6 +21,7 @@ import {
   resolveCanaryQmdRuntimeBinding,
 } from "./memory-observation/qmd-binding-preflight.ts";
 import {
+  validMainFamilyBinding,
   memoryObservationProjectionPath,
   resolveMemoryObservationProjection,
   type MemoryObservationProjectionV1,
@@ -258,8 +261,26 @@ export function hasActiveTopicMemoryWorker(workspace: string): boolean {
   try {
     const projection = readJson(path);
     return projection.enabled === true
-      && ["engram.memory-observation-rollout.v4", "engram.memory-observation-rollout.v5"].includes(projection.schema);
+      && ["engram.memory-observation-rollout.v4", "engram.memory-observation-rollout.v5", "engram.memory-observation-rollout.v6"].includes(projection.schema)
+      || projection.enabled === true && projection.workspaceId === "main" && projection.schema === "engram.memory-observation-rollout.v3";
   } catch { return false; }
+}
+
+/** Refuse to strand queued family work when changing an existing session's scope. */
+function assertMainTopicTransferIdle(workspace: string, runtimeSessionKey: string): void {
+  const root = join(workspace, "memory-state/memory-observation/v1");
+  const rows = (directory: string): Json[] => existsSync(join(root, directory))
+    ? readdirSync(join(root, directory)).filter(n => n.endsWith(".json")).map(n => readJson(join(root, directory, n))) : [];
+  const prior = (scope: any) => scope?.runtimeSessionKey === runtimeSessionKey && scope.scopeClass === "self" && scope.scopeId === "workspace:main";
+  const queued = new Map(rows("queues/evaluator").map(q => [q.traceId, q]));
+  if (rows("envelopes").some(e => prior(e.scope) && queued.get(e.traceId)?.status !== "terminal")) {
+    throw new Error("main topic has pending family evaluator work; drain the existing worker before transfer");
+  }
+  const daily = new Map(rows("consumers/daily-note/queue").map(q => [q.observationId, q]));
+  if ([...rows("observations/batch"), ...rows("observations/typed")]
+    .some(o => prior(o.scope) && daily.has(o.observationId) && daily.get(o.observationId)?.status !== "terminal")) {
+    throw new Error("main topic has pending family daily work; drain the existing worker before transfer");
+  }
 }
 
 export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOptions): Promise<TopicDomainRuntimeResult> {
@@ -267,7 +288,8 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
   const configPath = join(workspace, "engram.json");
   const config = readJson(configPath);
   const workspaceId = String(config.workspace?.id || config.agent || "").replace(/^agent-/, "");
-  if (!workspaceId || workspaceId === "main") throw new Error("topic-domain runtime requires an existing non-main workspace");
+  if (!workspaceId) throw new Error("topic-domain runtime requires an existing workspace");
+  const mainTopics = workspaceId === "main";
   const topic = { chatId: String(options.chatId), topicId: String(options.topicId) };
   const domainRegistry = readJson(join(workspace, "memory", "domains", "registry.json"));
   const entry = domainRegistry.domains?.[options.domain];
@@ -275,11 +297,12 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
     throw new Error("topic domain registry entry is missing or changed");
   }
   const projection = resolveMemoryObservationProjection({ workspace, workspaceId });
-  if (projection.schema !== "engram.memory-observation-rollout.v4") {
+  if (!(mainTopics ? ["engram.memory-observation-rollout.v3", "engram.memory-observation-rollout.v6"].includes(projection.schema) : projection.schema === "engram.memory-observation-rollout.v4")) {
     throw new Error(projection.schema === "engram.memory-observation-rollout.v5"
       ? "group-direct workspace does not support Telegram topics"
       : "workspace is not connected to the topic Memory Worker fleet");
   }
+  if (mainTopics && projection.bindings.filter(validMainFamilyBinding).length !== 1) throw new Error("main topics require the existing owner-only main family");
   if (projection.bindings.length >= 20 && !activeAlready(projection, options.domain, topic.chatId, topic.topicId)) {
     throw new Error("workspace already has the maximum 20 Memory Worker bindings");
   }
@@ -295,7 +318,7 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
   if (!owner) throw new Error("workspace is missing from the QMD global registry");
   // Reject outstanding model work before host routes, collections or manifests
   // change. Recheck under the worker leases at projection publication below.
-  assertModelTransitionRetirable(workspace, projection);
+  if (!mainTopics) assertModelTransitionRetirable(workspace, projection);
 
   const gatewayCall = options.gatewayCall ?? defaultGatewayCall;
   const restartGateway = options.restartGateway ?? defaultRestartGateway;
@@ -305,7 +328,7 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
   const lock = openSync(lockPath, "wx", 0o600);
   try {
     const currentProjection = resolveMemoryObservationProjection({ workspace, workspaceId });
-    if (currentProjection.schema !== "engram.memory-observation-rollout.v4") {
+    if (!(mainTopics ? ["engram.memory-observation-rollout.v3", "engram.memory-observation-rollout.v6"].includes(currentProjection.schema) : currentProjection.schema === "engram.memory-observation-rollout.v4")) {
       throw new Error("topic Memory Worker projection changed during setup");
     }
     if (currentProjection.bindings.length >= 20 && !activeAlready(currentProjection, options.domain, topic.chatId, topic.topicId)) {
@@ -322,6 +345,7 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
 
     const sessionKey = `telegram-group--${topic.chatId.replace(/^-/, "")}-topic-${topic.topicId}`;
     const runtimeSessionKey = `agent:${workspaceId}:telegram:group:${topic.chatId}:topic:${topic.topicId}`;
+    if (mainTopics && !activeAlready(currentProjection, options.domain, topic.chatId, topic.topicId)) assertMainTopicTransferIdle(workspace, runtimeSessionKey);
     const sessionPath = join(workspace, "memory", `agent-${workspaceId}`, sessionKey);
     mkdirSync(sessionPath, { recursive: true });
     const domainCollection = `domain-${options.domain}`;
@@ -375,7 +399,7 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
     const existing = currentProjection.bindings.filter((binding) => binding.runtimeSessionKey !== runtimeSessionKey);
     const nextProjection: MemoryObservationProjectionV1 = {
       ...currentProjection,
-      schema: "engram.memory-observation-rollout.v4",
+      schema: mainTopics ? "engram.memory-observation-rollout.v6" : "engram.memory-observation-rollout.v4",
       bindings: [...existing, newBinding].sort((left, right) => left.runtimeSessionKey.localeCompare(right.runtimeSessionKey)),
       consumers: {
         ...currentProjection.consumers!,
@@ -384,13 +408,20 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
     };
     const wasActive = activeAlready(currentProjection, options.domain, topic.chatId, topic.topicId)
       && JSON.stringify(currentQmdBinding) === JSON.stringify(nextResolver);
-    publishAfterModelTransitionDrain(workspace, currentProjection, nextProjection,
-      () => atomicWrite(memoryObservationProjectionPath(workspace), nextProjection));
+    // Do not reset the family epoch or overwrite pending model/quality lineage.
+    if (mainTopics) {
+      const transition = extendModelTransitionForMainTopics(workspace, currentProjection, nextProjection);
+      if (transition) atomicWrite(join(workspace, "memory-state/memory-observation/model-transition.json"), transition);
+      atomicWrite(memoryObservationProjectionPath(workspace), nextProjection);
+    } else {
+      publishAfterModelTransitionDrain(workspace, currentProjection, nextProjection,
+        () => atomicWrite(memoryObservationProjectionPath(workspace), nextProjection));
+    }
 
     const readBack = resolveMemoryObservationProjection({ workspace, workspaceId, expectedPluginDigest: currentProjection.pluginDigest });
-    assertTopicDomainRegistry(workspace, workspaceId, readBack.bindings);
-    assertTopicHostRoutes(host.config, workspace, workspaceId, readBack.bindings);
-    for (const binding of readBack.bindings) {
+    assertTopicDomainRegistry(workspace, workspaceId, readBack.bindings.filter(b => b.topicDomain));
+    assertTopicHostRoutes(host.config, workspace, workspaceId, readBack.bindings.filter(b => b.topicDomain));
+    for (const binding of readBack.bindings.filter(b => b.topicDomain)) {
       resolveCanaryQmdRuntimeBinding({
         workspace,
         runtimeSessionKey: binding.runtimeSessionKey,
@@ -406,6 +437,9 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
       reason: `topic-domain:${options.domain}:configured`,
     });
     if (dirty.status !== "marked") throw new Error(`QMD dirty mark failed: ${dirty.error || dirty.status}`);
+    const readyRegistry = readJson(join(workspace, "memory/domains/registry.json"));
+    delete readyRegistry.domains[options.domain].pending;
+    atomicWrite(join(workspace, "memory/domains/registry.json"), readyRegistry);
     return {
       status: wasActive && !host.changed ? "already-active" : "active",
       workspaceId,

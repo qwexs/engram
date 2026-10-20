@@ -61,3 +61,34 @@ test("v4 transfers only listed topics and revokes ownership after registry drift
   expect(() => resolveMemoryObservationProjection({ workspace: f.workspace, workspaceId: "project" })).toThrow("registry authorization");
   expect(observerOwnsDailyCapture(f.workspace, "project", "telegram-group--100123-topic-2", now)).toBe(false);
 });
+
+
+test("v6 preserves main family but exact topic authority wins in either order", () => {
+  const f = fixture();
+  f.config.agents.entries.main = { workspace: f.workspace };
+  f.config.channels.telegram.groups["-100123"].topics["2"].agentId = "main";
+  const topic = configuredTopicBindings(f.config, f.workspace, "main", ["smm"])[0]!;
+  const family: any = { runtimeSessionKey: "agent:main:*", scopeClass: "self", scopeId: "workspace:main", requireOwner: true, allowedChannels: ["telegram", "openclaw"] };
+  const at = "2026-09-07T10:00:00.000Z", hash = `sha256:${"a".repeat(64)}`;
+  const p: any = { schema: "engram.memory-observation-rollout.v6", workspaceId: "main", enabled: true, mode: "canary", bindings: [family, topic],
+    pluginDigest: hash, inference: { provider: "openai", model: "openai/test", evaluateAfter: at },
+    evaluation: { mode: "batch-cron", policyDigest: hash, batch: { sourcePolicyDigest: hash, inactivityGapSeconds: 300, maxTurns: 8, maxEvidenceBytes: 262144, maxAgeSeconds: 900, maxInferenceCallsPerRun: 1, schedulerId: "existing-main" } },
+    limits: { evidenceTtlHours: 72, maxJobs: 1000, maxBytes: 67108864, maxQueueAgeHours: 168, maxAttempts: 2, claimTtlSeconds: 300, maxInferenceCalls: 1 },
+    consumers: { dailyNote: { mode: "canary", applyAfter: at, timezone: "UTC", allowedObservationClasses: ["episodic.event", "episodic.decision"], maxAppliesPerWake: 1, qmdBinding: { resolver: "exact-session-registry", manifestPath: join(f.workspace, "manifest.json"), workspaceRegistryDigest: hash } } },
+    captureOwnership: { owner: "observer", effectiveAfter: at, foregroundDailyNoteCapture: "disabled" }, approvedBy: "operator", approvedAt: at };
+  const path = join(f.workspace, "memory-state/memory-observation/projection.json"); mkdirSync(join(f.workspace, "memory-state/memory-observation"), { recursive: true });
+  const load = (value: any = p) => { writeFileSync(path, JSON.stringify(value)); return resolveMemoryObservationProjection({ workspace: f.workspace, workspaceId: value.workspaceId }); };
+  for (const bindings of [[family, topic], [topic, family]]) {
+    const active = load({ ...p, bindings });
+    expect(memoryObservationBinding(active, topic.runtimeSessionKey)?.scopeId).toBe("domain:main:smm");
+    expect(memoryObservationBinding(active, "agent:main:telegram:direct:123")?.scopeId).toBe("workspace:main");
+    expect(memoryObservationBinding(active, "agent:other:telegram:direct:123")).toBeNull();
+    expect(memoryObservationCaptureOwner(active, topic.runtimeSessionKey, new Date(at))).toBe("observer");
+    const changed = structuredClone(f.config); changed.channels.telegram.groups["-100123"].topics["2"].agentId = "other";
+    expect(() => assertTopicHostRoutes(changed, f.workspace, "main", [memoryObservationBinding(active, topic.runtimeSessionKey)!])).toThrow();
+  }
+  for (const value of [ { ...p, bindings: [topic] }, { ...p, bindings: [family] }, { ...p, workspaceId: "other" },
+    { ...p, bindings: [{ ...family, requireOwner: false }, topic] }, { ...p, schema: "engram.memory-observation-rollout.v4" } ]) expect(() => load(value)).toThrow();
+  f.domains.smm.topic.topicId = "9"; f.writeRegistry();
+  expect(() => load()).toThrow("registry authorization");
+});

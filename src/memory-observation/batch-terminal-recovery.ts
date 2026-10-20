@@ -24,7 +24,8 @@ import {
   type BatchLiveJobV1,
 } from "./batch-live-worker.ts";
 import { deriveTraceId, sha256, type Digest, type JsonValue, type LedgerQueueRecordV1 } from "./ledger.ts";
-import { AdmissionStore } from "./admission-store.ts";
+import { AdmissionStore, deriveAdmissionGapReceiptId } from "./admission-store.ts";
+import { isAdmissionGapRecovered } from "./admission-gap-recovery.ts";
 import { RUNTIME_AUTHORITY } from "./runtime-authority.ts";
 import { compileBatchFrame } from "./batch-compiler.ts";
 import { memoryObservationBinding, memoryObservationCaptureOwner, resolveMemoryObservationProjection } from "./projection.ts";
@@ -436,12 +437,19 @@ export function recoverTerminalBatch(options: {
     if (Array.isArray(value)) return value.some(touchesSource);
     return Boolean(value && typeof value === "object" && Object.values(value).some(touchesSource));
   };
+  // A verified admission-recovery receipt proves provenance, not a downstream
+  // evaluation effect. Only the exact authenticated candidate directory is
+  // exempt; arbitrary receipts (including other recovery candidates) still block.
+  const verifiedAdmissionRecoveryPaths = new Set<string>();
   const rejectMatchingArtifact = (directory: string, traces = false) => {
     if (!existsSync(directory)) return;
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       if (entry.isSymbolicLink()) fail("STATE_CORRUPT", "effect directories must not contain symlinks");
-      if (entry.isDirectory()) rejectMatchingArtifact(path, traces);
+      if (verifiedAdmissionRecoveryPaths.has(path)) continue;
+      if (entry.isDirectory()) {
+        rejectMatchingArtifact(path, traces);
+      }
       else if (entry.name.endsWith(".json")) {
         const record = readJson<any>(path);
         if ((!traces || record.stage !== "source_completed") && touchesSource(record)) {
@@ -468,15 +476,22 @@ export function recoverTerminalBatch(options: {
       ...(binding.groupDomain ? { groupDomain: binding.groupDomain } : {}), allowedChannels: [...binding.allowedChannels].sort() });
     const checkpoints = new AdmissionStore(workspace, RUNTIME_AUTHORITY).scanCheckpoints();
     if (checkpoints.corrupt.length) fail("STATE_CORRUPT", "retained source admission checkpoint is corrupt");
+    verifiedAdmissionRecoveryPaths.clear();
     for (const source of job.bundle.sourceRefs) {
       const matches = checkpoints.records.filter(checkpoint => checkpoint.sourceTurnId === source.sourceTurnId);
-      if (matches.length !== 1 || matches[0]!.stage !== "ledger_admitted"
+      const checkpoint = matches.length === 1 ? matches[0]! : null;
+      const recovered = checkpoint?.stage === "terminal_gap" && isAdmissionGapRecovered(workspace, checkpoint);
+      if (!checkpoint || (checkpoint.stage !== "ledger_admitted" && !recovered)
         || matches[0]!.bindingFingerprint !== bindingFingerprint
         || matches[0]!.scope.workspaceId !== workspaceId
         || matches[0]!.scope.runtimeSessionKey !== job.partition.runtimeSessionKey
         || matches[0]!.scope.scopeClass !== binding.scopeClass || matches[0]!.scope.scopeId !== binding.scopeId
         || !binding.allowedChannels.includes(matches[0]!.channel)) {
         fail("SCOPE_MISMATCH", "source admission checkpoint does not match the current exact binding fingerprint");
+      }
+      if (recovered) {
+        verifiedAdmissionRecoveryPaths.add(join(stateRoot, "receipts/admission-recovery", checkpoint.candidateId.slice(7)));
+        verifiedAdmissionRecoveryPaths.add(join(stateRoot, "receipts/admission-gap", deriveAdmissionGapReceiptId(checkpoint.candidateId).slice(7) + ".json"));
       }
     }
     if (!sameValue(readJson(jobPath), job)

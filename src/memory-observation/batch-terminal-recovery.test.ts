@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BATCH_LIVE_FAILURE_SCHEMA, BATCH_LIVE_JOB_SCHEMA } from "./batch-live-worker.ts";
-import { recoverTerminalBatch, type BatchTerminalRecoveryFaultPoint } from "./batch-terminal-recovery.ts";
+import { recoverTerminalBatch, recoverReconciledBatch, type BatchTerminalRecoveryFaultPoint } from "./batch-terminal-recovery.ts";
+import {publishReconciledCompletion} from './reconciled-completion.ts';
+import {buildContextualObservation} from './contextual-observation.ts';
 import { deriveAdmissionCandidateId } from "./admission-store.ts";
 import { compileBatchFrame } from "./batch-compiler.ts";
 import { deriveSourceDigest, deriveTraceId, sha256, type JsonValue } from "./ledger.ts";
@@ -364,4 +366,40 @@ describe("terminal recovery admission guards", () => {
   test("quote mismatch is still excluded from generic recovery", () => {
     expect(() => recoverTerminalBatch(recoveryInput(fixture("batch_quote_mismatch")))).toThrow("not eligible");
   });
+});
+
+function recoveredCompletionFixture(){
+ const f=reconciledFixture(),recovery=recoverReconciledBatch({...recoveryInput(f),now:f.now,apply:true});
+ const job=JSON.parse(readFileSync(join(f.root,'jobs',f.jobId.slice(7)+'.json'),'utf8'));
+ const output={schema:'engram.memory-contextual-output.v2' as const,assertions:[],dispositions:[{traceId:f.traceId,kind:'skip' as const,assertionIds:[],reason:'Synthetic non-durable acknowledgement.'}]};
+ const observed=buildContextualObservation(output,job.bundle,sha256('inner contextual model contract'),new Date('2026-09-03T20:01:00.000Z'));
+ const evaluated={requestDigest:sha256('synthetic request'),observation:observed};
+ const saved={schema:'engram.memory-contextual-result.v2',jobId:f.jobId,policyDigest:job.evaluationPolicyDigest,evaluated};
+ write(join(f.root,'contextual-results',f.jobId.slice(7)+'.json'),{...saved,digest:sha256(saved)});
+ const base={schema:'engram.memory-batch-live-terminal.v2',jobId:f.jobId,bundleId:job.bundle.bundleId,resultKey:sha256({schema:'engram.memory-contextual-result-key.v2',requestDigest:evaluated.requestDigest}),resultDigest:sha256(evaluated),dispositions:[{traceId:f.traceId,decision:'skip',reasonCode:'semantic_contextual_skip',observationRefs:[]}],sourceDispositions:observed.dispositions,completedAt:observed.recordedAt};
+ const terminal={...base,terminalId:sha256(base)};write(join(f.root,'terminals',f.jobId.slice(7)+'.json'),terminal);
+ const qpath=join(f.state,'queues/evaluator',f.traceId.slice(7)+'.json'),q=JSON.parse(readFileSync(qpath,'utf8'));
+ write(qpath,{...q,status:'terminal',reasonCode:'semantic_contextual_skip',terminalAt:observed.recordedAt,claimToken:null});
+ const donePath=join(f.root,'done',f.jobId.slice(7)+'.json'),old=readFileSync(donePath,'utf8');
+ const journal=join(f.root,'recoveries',f.jobId.slice(7),recovery.recoveryId.slice(7));
+ return {f,options:{workspace:f.workspace,batchRoot:f.root,job,terminal},donePath,old,journal};
+}
+for(const faultAt of [undefined,'after_archive','after_publish'] as const)test('same-job recovery publishes proven completion and preserves exhaustion after '+faultAt,()=>{
+ const {options,donePath,old,journal}=recoveredCompletionFixture();
+ if(faultAt)expect(()=>publishReconciledCompletion({...options,faultAt})).toThrow('FAULT_INJECTED');
+ publishReconciledCompletion(options);
+ expect(JSON.parse(readFileSync(donePath,'utf8'))).toEqual(options.terminal);
+ expect(JSON.parse(readFileSync(join(journal,'superseded-done.json'),'utf8'))).toEqual(JSON.parse(old));
+ expect(publishReconciledCompletion(options)).toBe(false);
+});
+for(const mode of ['missing_authorization','changed_queue','changed_result','changed_terminal','changed_recovery'] as const)test('same-job completion refuses '+mode+' before replacing history',()=>{
+ const {f,options,donePath,old,journal}=recoveredCompletionFixture();
+ const change=(path:string,mutate:(v:any)=>any)=>write(path,mutate(JSON.parse(readFileSync(path,'utf8'))));
+ if(mode==='missing_authorization')rmSync(join(journal,'completed.json'));
+ if(mode==='changed_queue')change(join(f.state,'queues/evaluator',f.traceId.slice(7)+'.json'),q=>({...q,reasonCode:'semantic_contextual_asserted'}));
+ if(mode==='changed_result')change(join(f.root,'contextual-results',f.jobId.slice(7)+'.json'),r=>({...r,digest:sha256('foreign')}));
+ if(mode==='changed_terminal')options.terminal.completedAt='2026-09-03T20:02:00.000Z';
+ if(mode==='changed_recovery')change(join(journal,'authorization.json'),a=>({...a,reason:'foreign'}));
+ expect(()=>publishReconciledCompletion(options)).toThrow();expect(readFileSync(donePath,'utf8')).toBe(old);
+ expect(existsSync(join(journal,'superseded-done.json'))).toBe(false);
 });

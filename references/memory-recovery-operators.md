@@ -26,10 +26,56 @@ results, observations or downstream effects require effect reconciliation
 instead of blind replay. A locked second preflight detects source/queue/policy
 changes. Immutable authorization pins envelope, job and projection digests.
 
+A historical source whose original checkpoint remains `terminal_gap` can be
+retried only when `isAdmissionGapRecovered` verifies its exact completed native
+history admission and current envelope. The original checkpoint stays immutable.
+Only that authenticated candidate's admission-recovery directory and original
+gap receipt are provenance rather than downstream effects. Missing/corrupt
+admission proof, unrelated receipts and real evaluation effects still block.
+
 An already completed requeue receipt is history, not a new admission: idempotent
 replay does not reset progressed queues or require expired raw evidence again.
 An incomplete operation resumes its original authorization; it cannot silently
 adopt unrelated live bytes. Failed eligibility preserves the original failure.
+
+## Reviewed invalid admission evidence
+
+`scripts/memory-observation-recover-gap.ts --review-invalid-evidence` is an
+explicit opt-in for one original `evidence_invalid` admission gap. Default
+eligibility is unchanged. The original failure must be at `completion_observed`
+with known source-turn, run and session identities; pinned native-history import,
+exact binding/actor/transport, same-run terminal completion, source bounds,
+current source policy and fresh evidence remain mandatory. The immutable
+authorization records `completion_evidence_invalid_native_history.v1` and pins
+the original gap/checkpoint plus imported record. It never admits textless
+sources, revokes scope checks, repairs model output or claims semantic closure.
+
+Pinned imports may explicitly identify the supported visible-transcript SDK as
+their source, without claiming a separate `sessions_history` read. Native SDK
+sequence references must be labelled as such. All same-run terminal, actor,
+transport, identity, bounds and exact-binding validators remain identical.
+
+## Completion after an identical-job contextual retry
+
+A reconciled contextual retry can produce the same job ID as its original
+exhaustion. `reconciled-completion.ts` accepts this only with the exact completed
+recovery authorization, original reconciliation/queue proofs, rebuilt persisted
+contextual result, terminal and observations, and completed current source claims.
+The old exhaustion `done` marker is first retained in that recovery journal as
+`superseded-done.json`; only then is the proven terminal published atomically.
+An unrelated conflicting done marker still fails closed. Crash resume does not
+call the model again or overwrite old failure history. This is a publication
+repair, not a new successful outcome, skip, scheduler or producer policy.
+
+Finite recovery adapters can explicitly opt into
+`BatchLiveWorker.allowIndependentFreshDuringBackoff`. Default scheduled behavior
+is unchanged. The adapter can process due jobs or new unreserved sources while
+another exact-scope job waits for its real retry time. Every source in every
+unfinished scoped job stays reserved, including a mixed job's already-due rows;
+sealed jobs, attempt counters, backoff times, policies, TTL and inference budget
+are unchanged. Deferred context that cannot fit with fresh evidence stays waiting
+while a fitting fresh-only frame proceeds. No source is silently requeued or
+declared skipped/closed by this scheduling option.
 
 ## Exact quote-producer migration
 

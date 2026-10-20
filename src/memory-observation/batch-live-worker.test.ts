@@ -1060,3 +1060,51 @@ for(const thinking of ['medium','high'] as const) test('cached '+thinking+' resu
    return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-contextual-source-ledger.v1',assertions:[],sourceRecords:sources.map((s:any)=>({traceId:s.traceId,kind:'skip',assertionIds:[],reason:'Synthetic routine acknowledgement.'}))})};}});
  await expect(worker.processOne()).rejects.toThrow('interrupted');expect((await worker.processOne()).status).toBe('duplicate');expect(calls).toBe(1);
 });
+
+for(const mode of ['default','recovery','mixed-reservation'] as const)test('finite recovery fresh-source backoff isolation: '+mode,async()=>{
+ const {workspace,ledger,policy}=setup();let current=new Date('2026-08-31T20:20:00.000Z'),calls=0;
+ admit(ledger,701,'2026-08-31T20:01:00.000Z');admit(ledger,702,'2026-08-31T20:02:00.000Z');
+ const captured:string[][]=[],storeRoot=join(workspace,'state');
+ const worker=new BatchLiveWorker({workspace,ledger,policy:{...policy,maxTurns:2},storeRoot,now:()=>current,
+  allowIndependentFreshDuringBackoff:mode!=='default',complete:async request=>{
+   calls++;const sources=JSON.parse(request.prompt).task.sources,ids=sources.map((s:any)=>s.sourceRef.traceId);captured.push(ids);
+   if(calls===1)return {resolvedModel:request.model,output:'not-json'};
+   return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-batch-shadow-output.v1',groups:[{groupId:'synthetic-skip',decision:'skip',sourceRefs:ids,reason:'not_durable'}]})};
+  }});
+ const first=await worker.processOne();expect(first.status).toBe('retry');
+ if(!('jobId' in first))throw Error('fixture job missing');
+ const originalJobPath=join(storeRoot,'memory-batch-live/v1/jobs',first.jobId.slice(7)+'.json'),originalJob=readFileSync(originalJobPath,'utf8');
+ const root=join(workspace,'memory-state/memory-observation/v1/queues/evaluator'),oldIds=captured[0]!;
+ if(mode==='mixed-reservation'){
+  const path=join(root,oldIds[0]!.slice(7)+'.json'),q=JSON.parse(readFileSync(path,'utf8'));
+  writeFileSync(path,JSON.stringify({...q,nextAttemptAt:'2026-08-31T20:20:30.000Z'}));
+ }
+ const oldBytes=oldIds.map(id=>readFileSync(join(root,id.slice(7)+'.json'),'utf8'));
+ admit(ledger,703,'2026-08-31T20:03:00.000Z');current=new Date('2026-08-31T20:21:00.000Z');
+ const next=await worker.processOne();
+ if(mode==='default'){
+  expect(next).toEqual({status:'idle',reason:'pending_retry_not_due'});expect(calls).toBe(1);return;
+ }
+ expect(next).toMatchObject({status:'completed',sourceCount:1});expect(captured[1]!.some(id=>oldIds.includes(id))).toBe(false);
+ expect(oldIds.map(id=>readFileSync(join(root,id.slice(7)+'.json'),'utf8'))).toEqual(oldBytes);
+ expect(readFileSync(originalJobPath,'utf8')).toBe(originalJob);expect(calls).toBe(2);
+ expect(await worker.processOne()).toEqual({status:'idle',reason:'pending_retry_not_due'});expect(calls).toBe(2);
+ current=new Date('2026-08-31T20:26:00.000Z');expect(await worker.processOne()).toMatchObject({status:'completed',sourceCount:2});
+ expect(captured[2]).toEqual(oldIds);expect(calls).toBe(3);expect(ledger.listQueue().every(q=>q.status==='terminal')).toBe(true);
+ expect(readFileSync(originalJobPath,'utf8')).toBe(originalJob);
+});
+
+for(const enabled of [false,true])test('finite recovery fresh source is not starved by deferred context byte budget: '+enabled,async()=>{
+ const {workspace,ledger,policy}=setup();let current=new Date('2026-08-31T20:20:00.000Z'),calls=0;const captured:string[][]=[];
+ admit(ledger,801,'2026-08-31T20:01:00.000Z');
+ const worker=new BatchLiveWorker({workspace,ledger,policy:{...policy,maxTurns:2,maxEvidenceBytes:125},storeRoot:join(workspace,'state'),now:()=>current,allowIndependentFreshDuringBackoff:enabled,
+  complete:async request=>{calls++;const sources=JSON.parse(request.prompt).task.sources,ids=sources.map((s:any)=>s.sourceRef.traceId);captured.push(ids);
+   return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-batch-shadow-output.v1',groups:[{groupId:'bounded-case',decision:calls===1?'defer':'skip',sourceRefs:ids,reason:calls===1?'awaiting_continuation':'not_durable'}]})};}});
+ expect(await worker.processOne()).toMatchObject({status:'completed',deferredCount:1});
+ const oldId=captured[0]![0]!,qpath=join(workspace,'memory-state/memory-observation/v1/queues/evaluator',oldId.slice(7)+'.json'),oldBytes=readFileSync(qpath,'utf8');
+ admit(ledger,802,'2026-08-31T20:02:00.000Z');current=new Date('2026-08-31T20:26:00.000Z');
+ const result=await worker.processOne();
+ if(enabled){expect(result).toMatchObject({status:'completed',sourceCount:1});expect(captured[1]).not.toContain(oldId);expect(calls).toBe(2);}
+ else {expect(result).toEqual({status:'idle',reason:'waiting_context_budget'});expect(calls).toBe(1);}
+ expect(readFileSync(qpath,'utf8')).toBe(oldBytes);
+});

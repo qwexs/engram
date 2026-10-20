@@ -1,4 +1,5 @@
 import { producerMigrationBarrier } from "./producer-migration-barrier.ts";
+import { publishReconciledCompletion } from "./reconciled-completion.ts";
 import { ContextualEvaluationError, type ContextualFailureDiagnostic } from "./contextual-observation.ts";
 import { contextualBatchObservations, validateReadableBatchObservation, CONTEXTUAL_BATCH_SCHEMA, CONTEXTUAL_EVALUATOR_AUTHORITY } from "./contextual-batch-observation.ts";
 import { buildContextualObservation, contextualPrompt, CONTEXTUAL_SCHEMA, CONTEXTUAL_PROMPT_VERSION, CONTEXTUAL_THINKING, runContextualShadow, type ContextualPromptVersion, type ContextualObservationV2 } from "./contextual-observation.ts";
@@ -427,6 +428,9 @@ export class BatchLiveWorker {
     leaseTtlMs?: number;
     fault?: (point: BatchLiveFaultPoint) => void;
     resolveAuthorityContracts?: () => BatchAuthorityContracts;
+    /** Explicit finite recovery only: future-retry jobs retain all their
+     * sources; unrelated fresh evidence may use the unchanged inference budget. */
+    allowIndependentFreshDuringBackoff?: boolean;
   }) {
     this.root = join(resolve(options.storeRoot), "memory-batch-live", "v1");
     if (options.policy.maxInferenceCallsPerRun !== 1 || options.policy.runner.messageMode !== "single-user") {
@@ -443,7 +447,8 @@ export class BatchLiveWorker {
     try {
       const migration = producerMigrationBarrier(this.options.storeRoot, this.options.policy.exactScope);
       if (migration) return { status: "blocked", reason: migration.reason };
-      const pending = this.pendingJob(this.options.policy);
+      const reserved = new Set<Digest>();
+      const pending = this.pendingJob(this.options.policy, now, reserved);
       let job = pending;
       if (job) {
         this.authorizeCurrentBatchEffects();
@@ -460,14 +465,23 @@ export class BatchLiveWorker {
         this.authorizeCurrentBatchEffects();
         this.options.ledger.disposeUnavailableBatchEvidence(ownerToken, this.options.policy.exactScope, now, this.options.policy.sourcePolicyDigest);
         const waiting = new Set(this.options.ledger.listQueue().filter(record => record.reasonCode === "semantic_batch_defer").map(record => record.traceId));
-        const due = this.options.ledger.peekDueEvaluationEvidence(now, this.options.policy.exactScope, this.options.policy.sourcePolicyDigest);
+        const due = this.options.ledger.peekDueEvaluationEvidence(now, this.options.policy.exactScope, this.options.policy.sourcePolicyDigest)
+          .filter(entry => !reserved.has(entry.envelope.traceId));
+        if (!due.length && reserved.size) return { status: "idle", reason: "pending_retry_not_due" };
         const fresh = due.filter(entry => !waiting.has(entry.envelope.traceId));
         if (!fresh.length && due.some(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context" };
         // Reconsider waiting evidence with new text, reserving a slot for a fresh
         // source so cached results cannot endlessly reprocess a deferred batch.
         const reconsider = this.options.policy.maxTurns > 1 ? due.filter(entry => waiting.has(entry.envelope.traceId)).slice(-(this.options.policy.maxTurns - 1)) : [];
-        const selectionPolicy = reconsider.length ? { ...this.options.policy, inactivityGapMs: this.options.policy.evidenceTtlMs } : this.options.policy;
-        const candidate = selectCandidate(reconsider.length ? [...reconsider, ...fresh] : fresh, selectionPolicy, now);
+        let selectionPolicy = reconsider.length ? { ...this.options.policy, inactivityGapMs: this.options.policy.evidenceTtlMs } : this.options.policy;
+        let candidate = selectCandidate(reconsider.length ? [...reconsider, ...fresh] : fresh, selectionPolicy, now);
+        if (this.options.allowIndependentFreshDuringBackoff && reconsider.length
+          && (!candidate.length || candidate.every(entry => waiting.has(entry.envelope.traceId)))) {
+          // If retained context consumes the byte/turn budget, leave it waiting
+          // rather than starving fresh evidence that fits the unchanged bounds.
+          selectionPolicy = this.options.policy;
+          candidate = selectCandidate(fresh, selectionPolicy, now);
+        }
         if (candidate.length && candidate.every(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context_budget" };
         if (candidate.length === 0) return { status: "idle", reason: "flush_not_due" };
         job = makeJob(candidate, selectionPolicy, now);
@@ -732,7 +746,8 @@ export class BatchLiveWorker {
       this.options.ledger.completeBatchClaim(ownerToken,claim,CONTEXTUAL_EVALUATOR_AUTHORITY,{ref:terminal.terminalId,digest:terminal.resultDigest},d,this.options.now?.()??new Date());
       this.options.fault?.("after_source");
     }
-    writeImmutable(this.donePath(job.jobId),terminal as unknown as JsonValue);
+    if (!publishReconciledCompletion({workspace:this.options.workspace,batchRoot:this.root,job,terminal}))
+      writeImmutable(this.donePath(job.jobId),terminal as unknown as JsonValue);
     this.options.fault?.("after_done");
     return {status:duplicate?"duplicate":"completed",jobId:job.jobId,sourceCount:job.bundle.sourceRefs.length,
       observationCount:observations.length,deferredCount:0,resultKey};
@@ -811,15 +826,25 @@ export class BatchLiveWorker {
       exhaustedCount: receipt.sources.filter(source => source.status === "terminal").length };
   }
 
-  private pendingJob(policy: BatchLivePolicyV1): BatchLiveJobV1 | null {
+  private pendingJob(policy: BatchLivePolicyV1, now: Date, reserved: Set<Digest>): BatchLiveJobV1 | null {
     const directory = join(this.root, "jobs");
     if (!existsSync(directory)) return null;
     const jobs = readdirSync(directory).filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).sort();
+    const candidates: BatchLiveJobV1[] = [];
     for (const name of jobs) {
       const job = readJson<BatchLiveJobV1>(join(directory, name));
-      if (!existsSync(this.donePath(job.jobId))
-        && job.evaluationPolicyDigest === policy.evaluationPolicyDigest
-        && sameScope(scopeFromPartition(job.partition), policy.exactScope)) return job;
+      if (existsSync(this.donePath(job.jobId)) || !sameScope(scopeFromPartition(job.partition), policy.exactScope)) continue;
+      if (this.options.allowIndependentFreshDuringBackoff) job.bundle.sourceRefs.forEach(source => reserved.add(source.traceId));
+      if (job.evaluationPolicyDigest !== policy.evaluationPolicyDigest) continue;
+      if (!this.options.allowIndependentFreshDuringBackoff) return job;
+      candidates.push(job);
+    }
+    if (candidates.length) {
+      const queues = new Map(this.options.ledger.listQueue().map(q => [q.traceId, q]));
+      return candidates.find(job => !job.bundle.sourceRefs.some(source => {
+        const queue = queues.get(source.traceId);
+        return queue?.status === "queued" && Date.parse(queue.nextAttemptAt) > now.getTime();
+      })) ?? null;
     }
     return null;
   }

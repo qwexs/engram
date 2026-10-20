@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **fix(memory): finish authenticated historical admission recovery.** Terminal
+  retry recognizes a verified native-history admission without rewriting its
+  original terminal-gap checkpoint or treating its exact provenance receipts as
+  downstream effects. Explicit invalid-admission review requires completion-stage
+  source/run/session identity and the unchanged native provenance validators;
+  defaults, evidence TTL, evaluator output validation and scope authority stay strict.
+  Same-job contextual recovery publishes only a rebuilt proven terminal while
+  retaining the old exhaustion marker. Finite recovery can explicitly process
+  independent fresh evidence during backoff with every pending job's sources
+  reserved; default scheduled behavior and retry/inference budgets are unchanged.
+
 - **feat(memory): retain source debt and prove applicable effects before closure.**
   Node-safe metadata capture guards lifecycle and standalone evidence deletion;
   a separate Bun verifier checks source/job/result, explicit disposition,

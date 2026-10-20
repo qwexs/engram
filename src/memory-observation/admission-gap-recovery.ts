@@ -17,7 +17,7 @@ const instant = (v: string) => Number.isFinite(Date.parse(v)) && new Date(v).toI
 
 /** Operator-pinned sanitized history export. Not an agent/model supplied assertion. */
 export type GapSourceInventory = {
-  schema: 'iss19.gap-source-review.v1'; source: 'OpenClaw sessions_history (sanitized)' | 'OpenClaw visible-transcript SDK + sessions_history (sanitized)';
+  schema: 'iss19.gap-source-review.v1'; source: 'OpenClaw sessions_history (sanitized)' | 'OpenClaw visible-transcript SDK + sessions_history (sanitized)' | 'OpenClaw visible-transcript SDK (sanitized)';
   sessionKey: string; sessionId: string; canonicalWrites: 0;
   records: { messageId: string; source: any; finalCandidates: any[]; checkpointComparison?: unknown }[];
 };
@@ -28,6 +28,10 @@ export type GapRecoveryOptions = {
   /** Explicit operator opt-in: retain full source identity, use a marked bounded
    * evidence projection. Never pretend a truncated export is the full source. */
   allowBoundedSource?: boolean;
+  /** Explicit review of an expired admission failure, not an evaluation retry.
+   * Requires a completion-stage gap with fully known exact source/run/session
+   * identity plus the same authenticated native-history checks as other imports. */
+  reviewInvalidEvidence?: boolean;
 };
 
 function textContent(record: any): string {
@@ -85,7 +89,7 @@ export function recoverAdmissionGap(options: GapRecoveryOptions) {
   if (!token(options.authorizedBy) || !token(options.reason) || !instant(options.authorizedAt)
     || Date.parse(options.authorizedAt) > now.getTime()) fail('INVALID_AUTHORIZATION', 'dated operator authorization required');
   if (digest(inv) !== options.inventoryDigest || inv?.schema !== 'iss19.gap-source-review.v1'
-    || !['OpenClaw sessions_history (sanitized)', 'OpenClaw visible-transcript SDK + sessions_history (sanitized)'].includes(inv.source) || !token(inv.sessionId) || !token(inv.sessionKey)
+    || !['OpenClaw sessions_history (sanitized)', 'OpenClaw visible-transcript SDK + sessions_history (sanitized)', 'OpenClaw visible-transcript SDK (sanitized)'].includes(inv.source) || !token(inv.sessionId) || !token(inv.sessionKey)
     || inv.canonicalWrites !== 0 || !Array.isArray(inv.records) || inv.records.length > 100
     || new Set(inv.records.map(r => r.messageId)).size !== inv.records.length) fail('IMPORT_INVALID', 'exact pinned history inventory required');
   const row = inv.records.find(r => r.messageId === options.messageId);
@@ -101,12 +105,16 @@ export function recoverAdmissionGap(options: GapRecoveryOptions) {
   const store = new AdmissionStore(workspace, RUNTIME_AUTHORITY);
   const prepare = () => {
     const cp = store.readCheckpoint(candidateId), gap = store.readGapReceiptForCandidate(candidateId);
+    const reviewedInvalidEvidence = options.reviewInvalidEvidence === true && gap?.reasonCode === 'evidence_invalid'
+      && gap.failureStage === 'completion_observed' && typeof cp?.sourceTurnId === 'string'
+      && typeof cp.runId === 'string' && typeof cp.sessionId === 'string';
     const fingerprint = digest({ workspaceId, scopeClass: binding.scopeClass, scopeId: binding.scopeId,
       requireOwner: binding.requireOwner, ...(binding.topicDomain ? { topicDomain: binding.topicDomain } : {}),
       ...(binding.groupDomain ? { groupDomain: binding.groupDomain } : {}), allowedChannels: [...binding.allowedChannels].sort() });
     if (!cp || !gap || cp.stage !== 'terminal_gap' || cp.bindingFingerprint !== fingerprint || gap.bindingFingerprint !== fingerprint
       || cp.scope.scopeId !== binding.scopeId || cp.scope.scopeClass !== binding.scopeClass || digest(gap.scope) !== digest(cp.scope)
-      || !['identity_ambiguous', 'identity_conflict', 'evidence_missing', 'restart_before_completion', 'expired_before_completion'].includes(gap.reasonCode)) {
+      || (!['identity_ambiguous', 'identity_conflict', 'evidence_missing', 'restart_before_completion', 'expired_before_completion'].includes(gap.reasonCode)
+        && !reviewedInvalidEvidence)) {
       fail('GAP_INELIGIBLE', 'retained matching terminal gap required');
     }
     const sourceInfo = checkSource(inv, row, cp, binding.requireOwner, options.allowBoundedSource === true);
@@ -122,6 +130,7 @@ export function recoverAdmissionGap(options: GapRecoveryOptions) {
       inventoryDigest: options.inventoryDigest, recordDigest: digest(row), scope: cp.scope,
       sourceTurnId: sourceInfo.sourceId, runId: m.runId, sessionId: inv.sessionId,
       authorizedBy: options.authorizedBy, authorizedAt: options.authorizedAt, reason: options.reason,
+      ...(reviewedInvalidEvidence ? {reviewedAdmissionFailure: 'completion_evidence_invalid_native_history.v1'} : {}),
       ...(sourceInfo.projection ? {sourceProjection:sourceInfo.projection} : {}) };
     const recoveryId = digest(body);
     const traceId = deriveTraceId(workspaceId, inv.sessionKey, sourceInfo.sourceId);

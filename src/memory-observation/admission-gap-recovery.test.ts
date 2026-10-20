@@ -4,6 +4,8 @@ import {join,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {AdmissionStore} from './admission-store.ts';
 import {sha256} from './ledger.ts';
+import {compileBatchFrame} from './batch-compiler.ts';
+import {recoverTerminalBatch} from './batch-terminal-recovery.ts';
 import {RUNTIME_AUTHORITY,RUNTIME_POLICY} from './runtime-authority.ts';
 import {recoverAdmissionGap,isAdmissionGapRecovered,type GapRecoveryOptions} from './admission-gap-recovery.ts';
 import {memoryWorkerHealth} from './worker-health.ts';
@@ -11,7 +13,7 @@ const roots:string[]=[];
 afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
 const write=(path:string,v:any)=>{mkdirSync(dirname(path),{recursive:true});writeFileSync(path,JSON.stringify(v));};
 const snapshot=(path:string):any=>Object.fromEntries(readdirSync(path,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name)).map(d=>[d.name,d.isDirectory()?snapshot(join(path,d.name)):readFileSync(join(path,d.name),'utf8')]));
-function fixture(){
+function fixture(knownSource = false, gapReason: 'identity_ambiguous' | 'evidence_invalid' | 'scope_revoked' = 'identity_ambiguous'){
  const workspace=mkdtempSync(join(tmpdir(),'engram-gap-recovery-'));roots.push(workspace);
  const sessionKey='agent:main:telegram:direct:100000001';
  const binding={runtimeSessionKey:sessionKey,scopeClass:'self' as const,scopeId:'telegram:100000001',requireOwner:true,allowedChannels:['telegram']};
@@ -27,8 +29,8 @@ function fixture(){
  const projectionPath=join(workspace,'memory-state/memory-observation/projection.json');write(projectionPath,projection);
  const store=new AdmissionStore(workspace,RUNTIME_AUTHORITY);
  const {runtimeSessionKey,...fp}=binding;
- const checkpoint=store.recordCheckpoint({scope,bindingFingerprint:sha256({workspaceId:'main',...fp}),channel:'telegram',inboundMessageId:'42',actorId:'100000001',replyToId:'40',sourceTurnId:null,runId:null,sessionId:null,sourceText:null,stage:'received',now:new Date('2026-09-07T11:00:00.000Z')}).checkpoint;
- store.publishGapReceipt({checkpoint,failureStage:'received',reasonCode:'identity_ambiguous',terminalAt:new Date('2026-09-07T11:01:00.000Z')});
+ const checkpoint=store.recordCheckpoint({scope,bindingFingerprint:sha256({workspaceId:'main',...fp}),channel:'telegram',inboundMessageId:'42',actorId:'100000001',replyToId:'40',sourceTurnId:knownSource?'channel-user:v1:'+'a'.repeat(64):null,runId:knownSource?'run-a':null,sessionId:knownSource?'session-a':null,sourceText:null,stage:'received',now:new Date('2026-09-07T11:00:00.000Z')}).checkpoint;
+ store.publishGapReceipt({checkpoint,failureStage:gapReason==='evidence_invalid'?'completion_observed':'received',reasonCode:gapReason,terminalAt:new Date('2026-09-07T11:01:00.000Z')});
  const sourceId='channel-user:v1:'+'a'.repeat(64);
  const source={role:'user',content:'Во втором абзаце убери последнее предложение',timestamp:Date.parse('2026-09-07T11:00:00.000Z'),idempotencyKey:sourceId,__openclaw:{idempotencyKey:sourceId,senderId:'100000001',senderIsOwner:true,runId:'run-a',mirrorOrigin:'codex-app-server',mirrorIdentity:'turn-a:prompt',transcriptPosition:{source:'transcript-a',rawSeq:10},transport:{channel:'telegram',messageId:'42',replyToId:'40'}}};
  const final={role:'assistant',content:'Готово',stopReason:'stop',timestamp:Date.parse('2026-09-07T11:00:30.000Z'),__openclaw:{runId:'run-a',mirrorOrigin:'codex-app-server',mirrorIdentity:'turn-a:assistant',runTerminal:true,transcriptPosition:{source:'transcript-a',rawSeq:14}}};
@@ -91,4 +93,74 @@ test('long source requires explicit bounded projection, pins full identity and m
 test('long source over hard import cap is rejected even with projection opt-in',()=>{
  const f=fixture();f.source.content='x'.repeat(200001);f.input.inventoryDigest=sha256(f.input.inventory as any);const before=snapshot(f.input.workspace);
  expect(()=>recoverAdmissionGap({...f.input,apply:true,allowBoundedSource:true})).toThrow('bounded');expect(snapshot(f.input.workspace)).toEqual(before);
+});
+
+function failedRecoveredSource(){
+ const f=fixture(true),admission=recoverAdmissionGap({...f.input,apply:true}) as any;
+ const root=f.store.root,traceId=admission.traceId,key=traceId.slice(7);
+ const envelope=JSON.parse(readFileSync(join(root,'envelopes',key+'.json'),'utf8'));
+ const evidence=JSON.parse(readFileSync(join(root,'evidence',key+'.json'),'utf8'));
+ const partition={...envelope.scope,producerEpoch:'v1' as const,policyDigest:envelope.policyDigest};
+ const createdAt=f.input.authorizedAt;
+ const compiled=compileBatchFrame({schema:'engram.memory-batch-source-frame.v1',partition,sealedAt:createdAt,sources:[{envelope,evidence}]},
+  {schema:'engram.memory-batch-compiler-config.v1',inactivityGapMs:Number.MAX_SAFE_INTEGER,maxTurns:100000,maxEvidenceBytes:Number.MAX_SAFE_INTEGER,maxAgeMs:Number.MAX_SAFE_INTEGER});
+ const bundle=compiled.bundles[0]!,evaluationPolicyDigest=f.projection.evaluation.policyDigest;
+ const jobId=sha256({schema:'engram.memory-batch-live-job.v1',partition,evaluationPolicyDigest,bundleId:bundle.bundleId});
+ const job={schema:'engram.memory-batch-live-job.v1',jobId,partition,evaluationPolicyDigest,bundle,createdAt};
+ const failedAt=f.input.now!.toISOString(),failureBody={schema:'engram.memory-batch-live-failure.v1',jobId,bundleId:bundle.bundleId,errorCode:'batch_invalid_json',attempt:2,maxAttempts:2,traceIds:[traceId],failedAt};
+ const failure={...failureBody,failureId:sha256(failureBody)},storeRoot=join(f.input.workspace,'memory-state/memory-observation/batch-live-store'),batchRoot=join(storeRoot,'memory-batch-live/v1');
+ for(const [folder,value] of [['jobs',job],['failures',failure],['done',failure]] as const)write(join(batchRoot,folder,jobId.slice(7)+'.json'),value);
+ const queuePath=join(root,'queues/evaluator',key+'.json'),q=JSON.parse(readFileSync(queuePath,'utf8'));
+ write(queuePath,{...q,status:'terminal',attempt:2,terminalAt:failedAt,updatedAt:failedAt,reasonCode:'batch_invalid_json',claimedAt:null,claimToken:null});
+ const options={workspace:f.input.workspace,storeRoot,jobId,authorizedBy:'operator:message:100',authorizedAt:failedAt,reason:'bounded retry of authenticated historical recovery',now:f.input.now};
+ return {f,options,traceId,queuePath,authRoot:join(root,'receipts/admission-recovery',f.checkpoint.candidateId.slice(7))};
+}
+
+test('terminal retry accepts authenticated recovered gap without rewriting its original checkpoint',()=>{
+ const {f,options,queuePath}=failedRecoveredSource(),checkpoint=f.store.readCheckpoint(f.checkpoint.candidateId);
+ expect(checkpoint!.stage).toBe('terminal_gap');
+ const before=snapshot(f.input.workspace);expect(recoverTerminalBatch(options).status).toBe('planned');expect(snapshot(f.input.workspace)).toEqual(before);
+ const result=recoverTerminalBatch({...options,apply:true});expect(result.status).toBe('requeued');
+ expect(f.store.readCheckpoint(f.checkpoint.candidateId)).toEqual(checkpoint);
+ expect(JSON.parse(readFileSync(queuePath,'utf8')).status).toBe('queued');
+ expect(recoverTerminalBatch({...options,apply:true})).toEqual(result);
+});
+
+for(const corrupt of ['missing_completion','changed_authorization','downstream_receipt'] as const)test('historical terminal retry refuses '+corrupt+' without mutation',()=>{
+ const {f,options,authRoot,traceId}=failedRecoveredSource();
+ if(corrupt==='missing_completion')rmSync(join(authRoot,'completed.json'));
+ else if(corrupt==='changed_authorization'){const a=JSON.parse(readFileSync(join(authRoot,'authorization.json'),'utf8'));a.sourceTurnId='channel-user:v1:'+'b'.repeat(64);write(join(authRoot,'authorization.json'),a);}
+ else write(join(f.store.root,'receipts','synthetic-effect.json'),{traceId,kind:'downstream_write'});
+ const before=snapshot(f.input.workspace);expect(()=>recoverTerminalBatch({...options,apply:true})).toThrow();expect(snapshot(f.input.workspace)).toEqual(before);
+});
+
+test('invalid admission evidence requires explicit native-history review and preserves the original gap',()=>{
+ const f=fixture(true,'evidence_invalid'),before=snapshot(f.input.workspace);
+ expect(()=>recoverAdmissionGap({...f.input,apply:true})).toThrow('terminal gap');expect(snapshot(f.input.workspace)).toEqual(before);
+ const input={...f.input,reviewInvalidEvidence:true};expect(recoverAdmissionGap(input).status).toBe('planned');expect(snapshot(f.input.workspace)).toEqual(before);
+ const r=recoverAdmissionGap({...input,apply:true}) as any;
+ expect(isAdmissionGapRecovered(f.input.workspace,f.checkpoint)).toBe(true);
+ expect(f.store.readCheckpoint(f.checkpoint.candidateId)).toEqual(f.checkpoint);
+ expect(f.store.readGapReceiptForCandidate(f.checkpoint.candidateId)!.reasonCode).toBe('evidence_invalid');
+ const auth=JSON.parse(readFileSync(join(f.store.root,'receipts/admission-recovery',f.checkpoint.candidateId.slice(7),'authorization.json'),'utf8'));
+ expect(auth.reviewedAdmissionFailure).toBe('completion_evidence_invalid_native_history.v1');
+ expect(recoverAdmissionGap({...input,apply:true})).toEqual(r);
+});
+
+test('pinned native SDK inventory is admitted with the same exact provenance checks',()=>{
+ const f=fixture(true);f.input.inventory.source='OpenClaw visible-transcript SDK (sanitized)';f.input.inventoryDigest=sha256(f.input.inventory as any);
+ expect(recoverAdmissionGap({...f.input,apply:true}).status).toBe('admitted');expect(isAdmissionGapRecovered(f.input.workspace,f.checkpoint)).toBe(true);
+});
+test('native SDK inventory cannot bypass terminal completion identity',()=>{
+ const f=fixture(true);f.input.inventory.source='OpenClaw visible-transcript SDK (sanitized)';f.final.__openclaw.runId='foreign';f.input.inventoryDigest=sha256(f.input.inventory as any);
+ const before=snapshot(f.input.workspace);expect(()=>recoverAdmissionGap({...f.input,apply:true})).toThrow();expect(snapshot(f.input.workspace)).toEqual(before);
+});
+
+for(const invalid of ['unknown_identity','revoked_scope','empty_source','foreign_actor','foreign_completion'] as const)test('invalid-evidence review still rejects '+invalid+' before writing',()=>{
+ const f=fixture(invalid!=='unknown_identity',invalid==='revoked_scope'?'scope_revoked':'evidence_invalid');
+ if(invalid==='empty_source')f.source.content='';
+ if(invalid==='foreign_actor')f.source.__openclaw.senderId='999';
+ if(invalid==='foreign_completion')f.final.__openclaw.runId='foreign';
+ f.input.inventoryDigest=sha256(f.input.inventory as any);const before=snapshot(f.input.workspace);
+ expect(()=>recoverAdmissionGap({...f.input,reviewInvalidEvidence:true,apply:true})).toThrow();expect(snapshot(f.input.workspace)).toEqual(before);
 });

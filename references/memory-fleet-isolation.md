@@ -30,7 +30,12 @@ semantics. Configure only after a delivery probe with the deployment identity.
   emitted to stderr to avoid no-output timeouts in a long pass.
 - `passes.jsonl` is append-only metadata, `latest.json` the atomic current pass.
   Neither contains source text. Existing per-workspace queues/receipts retain
-  processing details; the normal fleet stdout still contains bounded diagnostics.
+  processing details. The fleet requests Worker `--summary` and emits complete
+  compact JSON with `reportMode: "compact-status-counts"`, not sliced child JSON.
+  Per-workspace summaries retain execution status, blocked reasons, evaluated
+  source count, pending count and open-debt count. Consumers of old `output`
+  strings must switch to these explicit fields; raw bodies remain in canonical
+  private stores rather than the compact scheduler result.
 - All healthy: status `ok`, exit 0.
 - Some failed: `partial_failure`, exit 0 **only after** durable reporting and a
   confirmed operator alert, or a matching previously confirmed alert in cooldown.
@@ -41,6 +46,38 @@ semantics. Configure only after a delivery probe with the deployment identity.
 - Reporting failure, corrupted alert state, or failed/unconfirmed notification:
   exit 1. Do not claim partial success without visibility. This deliberately means
   failure of the shared monitoring infrastructure can still stop the fleet.
+
+An active scope blocked on model/quality lineage or a producer-migration barrier
+is not healthy idle. The CLI returns sanitized scope blocker codes and a failing
+execution result. Fleet independently checks the JSON schema, workspace identity,
+execution status and blockers, so even a zero child exit cannot conceal a
+reported block. Unparseable/truncated or foreign output is `unverified`, not
+green. Migration barrier outcomes are explicit `blocked` results before ordinary
+discovery/claim; no model is called and no source budget is spent.
+
+## Historical completeness is separate from execution
+
+Opt in to administrative source-debt reporting with an explicit subset of
+existing manifest owners:
+
+```json
+{
+  "memoryCompletenessWorkspaceIds": ["example-project"]
+}
+```
+
+This option requires the configured `failureIsolation` direct operator route;
+unknown/duplicate workspace IDs are rejected. It does not add readers, model
+context or QMD grants between workspaces. A successful or empty Worker pass
+does not close historical incidents.
+
+`memory-incidents.json` retains per-workspace debt IDs and delivery acknowledgements.
+Fresh, digest-verified `sourceDebtSnapshot` results alone can prove closure;
+missing, corrupt, stale or foreign snapshots stay unverified. Notifications can
+report partial recovery without declaring every source restored. A history with
+no incident is `not_observed`, not proof of a complete historical inventory.
+All live incident files contain private administrative identities and must stay
+outside public source/fixtures. See [source debt](memory-source-debt.md).
 
 Alerts are sent with shell-free `openclaw message send` using existing host auth;
 no keys are passed in argv/env or copied into state. A real matching Telegram
@@ -58,7 +95,8 @@ real operator delivery separately without running project workers. After opt-in,
 inspect a naturally scheduled `latest.json` and the fleet's next completed run;
 do not inject failures into production memory for this test.
 
-Rollback: remove only `failureIsolation` from the approved manifest atomically.
+Rollback: remove `memoryCompletenessWorkspaceIds` together with `failureIsolation`
+from the approved manifest atomically if completeness reporting was enabled.
 Old fail-closed aggregate exit policy resumes. Preserve health history; no memory
 queue, projection, or assertion rollback is needed. No Gateway restart is needed:
 this is a standalone command-cron entrypoint, not a loaded plugin change.

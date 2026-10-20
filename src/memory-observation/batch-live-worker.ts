@@ -1,3 +1,4 @@
+import { producerMigrationBarrier } from "./producer-migration-barrier.ts";
 import { ContextualEvaluationError, type ContextualFailureDiagnostic } from "./contextual-observation.ts";
 import { contextualBatchObservations, validateReadableBatchObservation, CONTEXTUAL_BATCH_SCHEMA, CONTEXTUAL_EVALUATOR_AUTHORITY } from "./contextual-batch-observation.ts";
 import { buildContextualObservation, contextualPrompt, CONTEXTUAL_SCHEMA, CONTEXTUAL_PROMPT_VERSION, CONTEXTUAL_THINKING, runContextualShadow, type ContextualPromptVersion, type ContextualObservationV2 } from "./contextual-observation.ts";
@@ -71,7 +72,7 @@ export type BatchAuthorityContracts = { producerRegistry: unknown; authorityPoli
 
 function row(value: unknown): Row | null { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : null; }
 
-function authorizeBatchArtifact(contracts: BatchAuthorityContracts, artifactSchema: string, stage: string, trustedInputs: string[], requiredObservationClasses: string[] = [], expectedProducer = BATCH_EVALUATOR_AUTHORITY): void {
+export function authorizeBatchArtifact(contracts: BatchAuthorityContracts, artifactSchema: string, stage: string, trustedInputs: string[], requiredObservationClasses: string[] = [], expectedProducer = BATCH_EVALUATOR_AUTHORITY): void {
   const registry = row(contracts.producerRegistry);
   const policy = row(contracts.authorityPolicy);
   const producers = registry?.producers;
@@ -166,6 +167,7 @@ export type BatchLiveReconciliationV1 = {
 export type BatchLiveRunResult =
   | { status: "reconciled"; jobId: Digest; sourceCount: number; exhaustedCount: number }
   | { status: "idle" | "busy"; reason?: string }
+  | { status: "blocked"; reason: "producer_migration_incomplete" | "producer_migration_invalid" }
   | {
       status: "retry" | "terminal_failure";
       jobId: Digest;
@@ -439,6 +441,8 @@ export class BatchLiveWorker {
       return { status: "busy" };
     }
     try {
+      const migration = producerMigrationBarrier(this.options.storeRoot, this.options.policy.exactScope);
+      if (migration) return { status: "blocked", reason: migration.reason };
       const pending = this.pendingJob(this.options.policy);
       let job = pending;
       if (job) {

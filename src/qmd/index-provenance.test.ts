@@ -20,6 +20,7 @@ afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, f
 
 function workspace(): string {
   const root = mkdtempSync(join(tmpdir(), "engram-index-provenance-"));
+  writeFileSync(join(root, "engram.json"), JSON.stringify({ workspace: { id: "main" } }));
   roots.push(root);
   return root;
 }

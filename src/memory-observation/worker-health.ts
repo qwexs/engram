@@ -1,3 +1,4 @@
+import { sourceDebtSnapshot } from "./source-debt.ts";
 import { isAdmissionGapRecovered } from "./admission-gap-recovery.ts";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -91,6 +92,22 @@ function verifiedDoneJobId(done: WorkerStateRow, jobs: WorkerStateRow[], errors:
         && ["terminal_failure_accounted", "superseded_by_completed_job", "expired_without_evaluation"].includes(value.outcome)
         && sha256(value.sourceStates?.map((source: any) => source.traceId)) === sha256(job.bundle?.sourceRefs?.map((source: any) => source.traceId));
     }
+    if(value.schema === "engram.memory-expired-orphan-accounting.v1"){
+      const {accountingId,...base}=value;
+      if(accountingId!==sha256(base)||value.jobDigest!==sha256(job)||value.evaluationPolicyDigest!==job.evaluationPolicyDigest
+        ||value.outcome!=="historical_orphan_quarantined"||value.closedSources!==0||value.canonicalWrites!==0
+        ||sha256(value.traceIds)!==sha256(job.bundle.sourceRefs.map((s:any)=>s.traceId))
+        ||!Array.isArray(value.debtRecordIds)||value.debtRecordIds.length!==value.traceIds.length
+        ||!Array.isArray(value.debtIds)||value.debtIds.length!==value.traceIds.length)return false;
+      return value.debtRecordIds.every((id:string,index:number)=>{
+        if(!/^sha256:[a-f0-9]{64}$/.test(id))return false;
+        const path=join(dirname(done.path),'../../../../source-debt/v1/failures',id.slice(7)+'.json');
+        if(!existsSync(path))return false;
+        const r=JSON.parse(readFileSync(path,'utf8')),{recordId,...body}=r;
+        return recordId===id&&recordId===sha256(body)&&r.traceId===value.traceIds[index]&&r.debtId===value.debtIds[index]
+          &&r.reasonCode==='expired_orphan_batch_source'&&r.batchParents?.some((p:any)=>p.jobId===job.jobId&&p.jobDigest===sha256(job));
+      });
+    }
     return false;
   })();
   if (!identity) {
@@ -102,6 +119,7 @@ function verifiedDoneJobId(done: WorkerStateRow, jobs: WorkerStateRow[], errors:
 /** Accounting only: never mutates queues or changes the process-success contract. */
 export function memoryWorkerHealth(workspace: string, now = new Date(), options: { staleAfterSeconds?: number; claimTtlSeconds?: number } = {}) {
   const snapshot = memoryWorkerSnapshot(workspace);
+  const completeness = sourceDebtSnapshot(workspace, now);
   const { evaluator, daily, admission, envelopes, jobs, done, errors } = snapshot;
   for(const row of snapshot.completionFeeds) if(!["engram.completion-mirror-feed.v1","engram.completion-unresolved.v1"].includes(row.value.schema))
     errors.push({path:row.path,error:"invalid_completion_record_schema"});
@@ -192,7 +210,8 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
     && Number.isFinite(Date.parse(row.value.claimedAt)) && now.getTime() - Date.parse(row.value.claimedAt) > claimTtlSeconds * 1000).length;
   const stalled = Object.values(stages).some(stage => stage.stale || stage.overdue);
   const totalPending = pending.length + dailyPending.length + admissionPending.length + batchPending.length + completionPending;
-  return { status: failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims || completionUnresolved || completionBlocked ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending || completionPending ? "pending" : "ok",
+  return { completeness, sourceDebtOpen: completeness.openIds.length, sourceDebtClosed: completeness.closedIds.length,
+    status: completeness.corrupt || completeness.openIds.length || failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims || completionUnresolved || completionBlocked ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending || completionPending ? "pending" : "ok",
     completionPending, completionBlocked, completionUnresolved, historicalCompletionUnresolved, accountedCompletionUnresolved,
     pending: pending.length, totalPending, waitingContext: waiting.length, expiredWaitingContext, terminalFailures: failures.length, admissionGaps: gaps.length,
     recoveredAdmissionGaps: recovered.length, historicalAdmissionGaps: historicalGaps.length, nativeCommandGaps: nativeCommandGaps.length,

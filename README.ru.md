@@ -239,6 +239,10 @@ Scaffolding, пустой проход Worker или scheduler `ok` не явл�
 | Реализация и гарантии Memory Worker | [`src/memory-observation/README.md`](src/memory-observation/README.md) |
 | Контекстный Memory Worker v2 | [`contracts/memory-observation/v2/README.md`](contracts/memory-observation/v2/README.md) |
 | Контракты полномочий memory observation | [`contracts/memory-observation/v1/README.md`](contracts/memory-observation/v1/README.md) |
+| Учёт долга и доказательства эффектов | [`references/memory-source-debt.md`](references/memory-source-debt.md) |
+| Явные операторы восстановления и plugin release | [`references/memory-recovery-operators.md`](references/memory-recovery-operators.md) |
+| Runtime, topic lineage и ограниченный контекст | [`references/memory-runtime-lineage.md`](references/memory-runtime-lineage.md) |
+| Fleet-статусы и историческая полнота | [`references/memory-fleet-isolation.md`](references/memory-fleet-isolation.md) |
 | Архитектура | [`references/architecture.md`](references/architecture.md) |
 | Установка | [`references/setup.md`](references/setup.md) |
 | Workspace watchdog | [`references/watchdog.md`](references/watchdog.md) |

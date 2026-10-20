@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BATCH_LIVE_FAILURE_SCHEMA, BATCH_LIVE_JOB_SCHEMA } from "./batch-live-worker.ts";
 import { recoverTerminalBatch, type BatchTerminalRecoveryFaultPoint } from "./batch-terminal-recovery.ts";
-import { sha256, type JsonValue } from "./ledger.ts";
+import { deriveAdmissionCandidateId } from "./admission-store.ts";
+import { compileBatchFrame } from "./batch-compiler.ts";
+import { deriveSourceDigest, deriveTraceId, sha256, type JsonValue } from "./ledger.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -16,19 +18,55 @@ function write(path: string, value: unknown): void {
 
 function fixture(errorCode = "batch_invalid_json") {
   const workspace = mkdtempSync(join(tmpdir(), "batch-recovery-workspace-"));
-  const storeRoot = mkdtempSync(join(tmpdir(), "batch-recovery-store-"));
-  roots.push(workspace, storeRoot);
-  const traceId = sha256("recovery-trace");
-  const bundleId = sha256("recovery-bundle");
-  const jobId = sha256("recovery-job");
-  const job = {
-    schema: BATCH_LIVE_JOB_SCHEMA,
-    jobId,
-    partition: { workspaceId: "main", runtimeSessionKey: "agent:main:telegram:direct:1", scopeClass: "self", scopeId: "telegram:1", producerEpoch: "v1", policyDigest: sha256("policy") },
-    evaluationPolicyDigest: sha256("evaluation-policy"),
-    bundle: { schema: "engram.memory-batch-bundle.v1", bundleId, partitionId: sha256("partition"), sourceRefs: [{ traceId }] },
-    createdAt: "2026-09-03T10:00:00.000Z",
-  };
+  const storeRoot = join(workspace, "memory-state/memory-observation/batch-live-store");
+  mkdirSync(storeRoot, {recursive: true});
+  roots.push(workspace);
+  const scope = { workspaceId: "main", runtimeSessionKey: "agent:main:telegram:direct:1", scopeClass: "self" as const, scopeId: "telegram:1" };
+  const partition = {...scope, producerEpoch: "v1", policyDigest: sha256("policy")};
+  const sourceTurnId = "channel-user:v1:" + "a".repeat(64);
+  const traceId = deriveTraceId("main", scope.runtimeSessionKey, sourceTurnId);
+  const timestamp = "2026-09-03T10:00:00.000Z";
+  const identity = {schema: "engram.memory-evidence-envelope.v1", traceId, scope, payload: {user: "synthetic source"}};
+  const evidence = {...identity, createdAt: timestamp, expiresAt: "2026-09-06T10:00:00.000Z"};
+  const envelope = {schema: "engram.memory-observation-job.v1", traceId, sourceTurnId, scope,
+    sourceCompletedAt: timestamp, sourceDigest: deriveSourceDigest(sourceTurnId, scope, timestamp), evidenceDigest: sha256(identity),
+    policyVersion: "memory-observation-authority-v1", policyDigest: partition.policyDigest,
+    evidenceRefs: [{kind: "source-turn", ref: sourceTurnId, digest: sha256("synthetic source")}],
+    authority: {id: "synthetic-source", version: "v1", digest: sha256("producer")}, admittedAt: timestamp};
+  const bundle = compileBatchFrame({schema: "engram.memory-batch-source-frame.v1", partition, sealedAt: timestamp,
+    sources: [{envelope, evidence}]}, {schema: "engram.memory-batch-compiler-config.v1", inactivityGapMs: 1000,
+    maxTurns: 100, maxEvidenceBytes: 100000, maxAgeMs: 1000}).bundles[0]!;
+  const bundleId = bundle.bundleId;
+  const evaluationPolicyDigest = sha256("evaluation-policy");
+  const jobId = sha256({schema: BATCH_LIVE_JOB_SCHEMA, partition, evaluationPolicyDigest, bundleId});
+  const job = {schema: BATCH_LIVE_JOB_SCHEMA, jobId, partition, evaluationPolicyDigest, bundle, createdAt: timestamp};
+  write(join(workspace, "engram.json"), {workspace: {id: "main"}});
+  const activation = "2026-09-01T00:00:00.000Z";
+  write(join(workspace, "memory-state/memory-observation/projection.json"), {
+    schema: "engram.memory-observation-rollout.v2", workspaceId: "main", enabled: true, mode: "canary",
+    bindings: [{runtimeSessionKey: scope.runtimeSessionKey, scopeClass: scope.scopeClass, scopeId: scope.scopeId,
+      requireOwner: true, allowedChannels: ["telegram"]}], pluginDigest: sha256("plugin"),
+    inference: {provider: "openai", model: "openai/synthetic", evaluateAfter: activation},
+    evaluation: {mode: "batch-cron", policyDigest: evaluationPolicyDigest, batch: {sourcePolicyDigest: partition.policyDigest,
+      inactivityGapSeconds: 1, maxTurns: 100, maxEvidenceBytes: 100000, maxAgeSeconds: 1000,
+      maxInferenceCallsPerRun: 1, schedulerId: "synthetic"}},
+    limits: {evidenceTtlHours: 72, maxJobs: 1000, maxBytes: 67108864, maxQueueAgeHours: 168,
+      maxAttempts: 2, claimTtlSeconds: 300, maxInferenceCalls: 1},
+    consumers: {dailyNote: {mode: "canary", applyAfter: activation, timezone: "UTC",
+      allowedObservationClasses: ["episodic.event", "episodic.decision"], maxAppliesPerWake: 1,
+      qmdBinding: {collection: "synthetic-memory"}}},
+    captureOwnership: {owner: "observer", effectiveAfter: activation, foregroundDailyNoteCapture: "disabled"},
+    approvedBy: "operator", approvedAt: activation,
+  });
+  const bindingFingerprint = sha256({workspaceId: "main", scopeClass: scope.scopeClass, scopeId: scope.scopeId,
+    requireOwner: true, allowedChannels: ["telegram"]});
+  const candidateId = deriveAdmissionCandidateId({workspaceId: "main", runtimeSessionKey: scope.runtimeSessionKey, channel: "telegram", inboundMessageId: "1"});
+  const checkpointBody = {schema: "engram.memory-admission-checkpoint.v1", candidateId, scope, bindingFingerprint,
+    channel: "telegram", inboundMessageId: "1", actorId: "1", replyToId: null, sourceTurnId,
+    runId: "synthetic-run", sessionId: "synthetic-session", sourceText: null, stage: "ledger_admitted",
+    createdAt: timestamp, updatedAt: timestamp, expiresAt: evidence.expiresAt};
+  write(join(workspace, "memory-state/memory-observation/v1/pre-admission/checkpoints", candidateId.slice(7)+".json"),
+    {...checkpointBody, checkpointDigest: sha256(checkpointBody)});
   const failureBase = {
     schema: BATCH_LIVE_FAILURE_SCHEMA,
     jobId,
@@ -50,13 +88,15 @@ function fixture(errorCode = "batch_invalid_json") {
     attempt: 2, maxAttempts: 2, nextAttemptAt: "2026-09-03T10:00:00.000Z", createdAt: "2026-09-03T10:00:00.000Z",
     updatedAt: "2026-09-03T10:05:00.000Z", claimedAt: null, claimToken: null, terminalAt: "2026-09-03T10:05:00.000Z", reasonCode: errorCode,
   });
-  write(join(stateRoot, "evidence", `${traceId.slice(7)}.json`), { traceId, expiresAt: "2026-09-06T10:00:00.000Z" });
+  write(join(stateRoot, "evidence", `${traceId.slice(7)}.json`), evidence);
+  write(join(stateRoot, "envelopes", `${traceId.slice(7)}.json`), envelope);
   return { workspace, storeRoot, jobId, traceId };
 }
 
 function recoveryInput(input: ReturnType<typeof fixture>) {
   return {
     ...input,
+    now: new Date("2026-09-03T20:00:00.000Z"),
     authorizedBy: "operator",
     authorizedAt: "2026-09-03T19:00:00.000Z",
     reason: "retry after provider stabilization",
@@ -220,4 +260,108 @@ test('reviewed skip recovery preserves other batch effects and survives partial 
 test('skip review cannot requeue written sources or another source',async()=>{
  const {recoverReviewedSkip}=await import('./batch-terminal-recovery.ts');const f=fixture();
  expect(()=>recoverReviewedSkip({...recoveryInput(f),traceId:sha256('foreign'),apply:true})).toThrow();
+});
+
+
+describe("terminal recovery admission guards", () => {
+  const state = (f: ReturnType<typeof fixture>) => join(f.workspace, "memory-state/memory-observation/v1");
+  const projectionPath = (f: ReturnType<typeof fixture>) => join(f.workspace, "memory-state/memory-observation/projection.json");
+  const change = (path: string, update: (value: any) => any) => write(path, update(JSON.parse(readFileSync(path, "utf8"))));
+
+  test("expiry is checked at actual now, not old authorization", () => {
+    const f = fixture(), common = recoveryInput(f);
+    expect(() => recoverTerminalBatch({...common, apply: true, now: new Date("2026-09-07T00:00:00.000Z")})).toThrow("expired");
+    expect(() => recoverTerminalBatch({...common, apply: true, now: new Date("2026-09-03T18:00:00.000Z")})).toThrow("authorizedBy");
+  });
+
+  test("default clock cannot replay retained historical evidence", () => {
+    const f = fixture(), {now, ...common} = recoveryInput(f);
+    expect(() => recoverTerminalBatch({...common, apply: true})).toThrow("expired");
+  });
+
+  test("rejects foreign or symlinked stores", () => {
+    const f = fixture(), other = fixture();
+    expect(() => recoverTerminalBatch({...recoveryInput(f), storeRoot: other.storeRoot})).toThrow("workspace-owned");
+    rmSync(f.storeRoot, {recursive:true});
+    symlinkSync(other.storeRoot, f.storeRoot);
+    expect(() => recoverTerminalBatch(recoveryInput(f))).toThrow("workspace-owned");
+  });
+
+  for (const mode of ["disabled", "foreign-workspace", "binding", "binding-fingerprint", "foreground", "not-yet-effective", "policy", "evaluation-policy"] as const) {
+    test("rejects inactive or mismatched scope: " + mode, () => {
+      const f = fixture();
+      change(projectionPath(f), p => {
+        if(mode === "disabled") p.enabled = false;
+        if(mode === "foreign-workspace") p.workspaceId = "foreign";
+        if(mode === "binding") p.bindings[0].scopeId = "telegram:2";
+        if(mode === "binding-fingerprint") p.bindings[0].requireOwner = false;
+        if(mode === "foreground") delete p.captureOwnership;
+        if(mode === "not-yet-effective") {p.captureOwnership.effectiveAfter = "2026-09-04T00:00:00.000Z"; p.consumers.dailyNote.applyAfter = p.captureOwnership.effectiveAfter;}
+        if(mode === "policy") p.evaluation.batch.sourcePolicyDigest = sha256("changed-policy");
+        if(mode === "evaluation-policy") p.evaluation.policyDigest = sha256("changed-evaluation");
+        return p;
+      });
+      expect(() => recoverTerminalBatch({...recoveryInput(f), apply: true})).toThrow();
+    });
+  }
+
+  for (const mode of ["evidence", "envelope", "checkpoint", "scope", "failure", "job", "queue", "result", "observation", "receipt"] as const) {
+    test("rechecks changed " + mode + " under evaluator lock before any mutation", () => {
+      const f = fixture(), common = recoveryInput(f);
+      const failurePath = join(f.storeRoot, "memory-batch-live/v1/failures", f.jobId.slice(7)+".json");
+      const before = readFileSync(failurePath, "utf8");
+      const mutate = () => {
+        if(mode === "evidence") change(join(state(f), "evidence", f.traceId.slice(7)+".json"), e => ({...e, payload: {user:"changed"}}));
+        if(mode === "envelope") change(join(state(f), "envelopes", f.traceId.slice(7)+".json"), e => ({...e, admittedAt:"2026-09-03T10:00:01.000Z"}));
+        if(mode === "checkpoint") {
+          const directory = join(state(f), "pre-admission/checkpoints");
+          rmSync(join(directory, readdirSync(directory)[0]!));
+        }
+        if(mode === "scope") change(projectionPath(f), p => ({...p, approvedBy:"changed-approval"}));
+        if(mode === "failure") change(failurePath, p => ({...p, attempt:9}));
+        if(mode === "job") change(join(f.storeRoot, "memory-batch-live/v1/jobs", f.jobId.slice(7)+".json"), p => ({...p, createdAt:"2026-09-03T10:00:01.000Z"}));
+        if(mode === "queue") change(join(state(f), "queues/evaluator", f.traceId.slice(7)+".json"), p => ({...p, attempt:1}));
+        if(mode === "result") write(join(f.storeRoot, "memory-batch-shadow/v1/results/result.json"), {sourceRefs:[{traceId:f.traceId}]});
+        if(mode === "observation") write(join(state(f), "observations/batch/observation.json"), {sourceRefs:[{traceId:f.traceId}]});
+        if(mode === "receipt") write(join(state(f), "receipts/by-operation/receipt.json"), {provenance:{sourceTurnId:"channel-user:v1:"+"a".repeat(64)}});
+      };
+      expect(() => recoverTerminalBatch({...common, apply:true, beforeLock:mutate})).toThrow();
+      if(mode !== "failure") expect(readFileSync(failurePath, "utf8")).toBe(before);
+      expect(() => readFileSync(join(f.storeRoot, "memory-batch-live/v1/recoveries", f.jobId.slice(7)), "utf8")).toThrow();
+    });
+  }
+
+  test("completed operation remains idempotent after downstream advancement and evidence purge", () => {
+    const f = fixture(), common = recoveryInput(f), result = recoverTerminalBatch({...common, apply:true});
+    const queuePath = join(state(f), "queues/evaluator", f.traceId.slice(7)+".json");
+    change(queuePath, q => ({...q, status:"terminal", attempt:1, reasonCode:"semantic_batch_asserted"}));
+    const advanced = readFileSync(queuePath,"utf8");
+    rmSync(join(state(f), "evidence", f.traceId.slice(7)+".json"));
+    rmSync(join(state(f), "envelopes", f.traceId.slice(7)+".json"));
+    write(join(state(f), "observations/batch/observation.json"), {sourceRefs:[{traceId:f.traceId}]});
+    expect(recoverTerminalBatch({...common, apply:true, now:new Date("2026-09-08T00:00:00.000Z")})).toEqual(result);
+    expect(readFileSync(queuePath,"utf8")).toBe(advanced);
+  });
+
+  test("retained source needs original binding fingerprint, not just matching scope", () => {
+    const f = fixture(), directory = join(state(f), "pre-admission/checkpoints");
+    const path = join(directory, readdirSync(directory)[0]!);
+    change(path, checkpoint => {
+      const {checkpointDigest, ...body} = {...checkpoint, bindingFingerprint:sha256("revoked-binding")};
+      return {...body, checkpointDigest:sha256(body)};
+    });
+    expect(() => recoverTerminalBatch({...recoveryInput(f), apply:true})).toThrow("binding fingerprint");
+  });
+
+  test("crash authorization pins envelope provenance across a later process invocation", () => {
+    const f = fixture(), common = recoveryInput(f);
+    expect(() => recoverTerminalBatch({...common, apply:true, faultAt:"after_authorization"})).toThrow("fault injection");
+    change(join(state(f), "envelopes", f.traceId.slice(7)+".json"), envelope => ({...envelope,
+      authority: {...envelope.authority, digest:sha256("changed-authority")}}));
+    expect(() => recoverTerminalBatch({...common, apply:true})).toThrow("changed since recovery authorization");
+  });
+
+  test("quote mismatch is still excluded from generic recovery", () => {
+    expect(() => recoverTerminalBatch(recoveryInput(fixture("batch_quote_mismatch")))).toThrow("not eligible");
+  });
 });

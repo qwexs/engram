@@ -2,7 +2,20 @@ import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } fr
 import { isAbsolute, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
-export type FleetResult = { workspaceId: string; exitCode?: number; output?: string; error?: string; timedOut?: boolean };
+export type FleetResult = { workspaceId: string; exitCode?: number; output?: string; error?: string; timedOut?: boolean;
+  semanticStatus?: "ok"|"blocked"|"error"|"unverified"; blockedReasons?: string[] };
+/** A zero child exit is not proof that active scopes were processable. */
+export function classifyFleetWorkerOutput(workspaceId:string,result:Omit<FleetResult,"workspaceId">):Omit<FleetResult,"workspaceId"> {
+  try {
+    const r=JSON.parse(result.output??'');
+    if(r.schema!=="engram.memory-batch-live-run.v1"||r.workspaceId!==workspaceId
+      ||!["ok","error"].includes(r.execution?.status)||!Array.isArray(r.execution?.errors))throw Error('unverified');
+    const blockers=r.qualityBlockers??[];
+    if(!Array.isArray(blockers)||blockers.some((b:any)=>!/^[-A-Z0-9_:]+$/.test(b.reason??'')))throw Error('unverified');
+    const blockedReasons:string[]=[...new Set<string>(blockers.map((b:any)=>b.reason))].sort();
+    return {...result,semanticStatus:blockedReasons.length?'blocked':r.execution.status,blockedReasons};
+  }catch{return {...result,semanticStatus:'unverified',blockedReasons:[]};}
+}
 export type FleetIsolation = { stateDir: string; operator: { channel: "telegram"; target: string; accountId: string }; cooldownMs: number };
 type AlertState = { schema: "engram.fleet-alert.v1"; fingerprint: string; notifiedAt: number };
 
@@ -38,11 +51,12 @@ export async function reportFleetResults(args: {
   const config = parseFleetIsolation(args.config), now = args.now ?? Date.now();
   if (!args.results.length || new Set(args.results.map(r => r.workspaceId)).size !== args.results.length)
     throw new Error("invalid fleet results");
-  const failures = args.results.filter(r => r.exitCode !== 0 || r.timedOut === true);
+  const failures = args.results.filter(r => r.exitCode !== 0 || r.timedOut === true || r.semanticStatus && r.semanticStatus !== 'ok');
   const status = failures.length === 0 ? "ok" : failures.length === args.results.length ? "failed" : "partial_failure";
   // Never copy source messages/provider diagnostics into notifications or the summary journal.
   const summary = { schema: "engram.fleet-pass.v1", schedulerId: args.schedulerId, at: new Date(now).toISOString(), status,
-    results: args.results.map(r => ({ workspaceId: r.workspaceId, exitCode: r.exitCode ?? null, timedOut: r.timedOut === true })) };
+    results: args.results.map(r => ({ workspaceId: r.workspaceId, exitCode: r.exitCode ?? null, timedOut: r.timedOut === true,
+      ...(r.semanticStatus?{semanticStatus:r.semanticStatus,blockedReasons:r.blockedReasons??[]}: {}) })) };
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   appendFileSync(join(config.stateDir, "passes.jsonl"), JSON.stringify(summary) + "\n", { mode: 0o600 });
   atomicJson(join(config.stateDir, "latest.json"), summary);
@@ -58,11 +72,11 @@ export async function reportFleetResults(args: {
     return { ...summary, notification: "not_needed", exitCode: 0 };
   }
   const fingerprint = createHash("sha256").update(JSON.stringify({ schedulerId: args.schedulerId, route: config.operator,
-    failures: failures.map(r => [r.workspaceId, r.timedOut ? "timeout" : r.exitCode ?? "exception"]).sort() })).digest("hex");
+    failures: failures.map(r => [r.workspaceId, r.timedOut ? "timeout" : r.exitCode ?? "exception",r.semanticStatus??null,r.blockedReasons??[]]).sort() })).digest("hex");
   if (previous?.fingerprint === fingerprint && now >= previous.notifiedAt && now - previous.notifiedAt < config.cooldownMs)
     return { ...summary, notification: "cooldown", exitCode: status === "failed" ? 1 : 0 };
   const message = `Memory Worker: ${status === "failed" ? "сбой всех проектов" : "частичный сбой"}.\n`
-    + `Ошибки: ${failures.map(r => r.workspaceId + (r.timedOut ? " (таймаут)" : "")).join(", ")}.\n`
+    + `Ошибки: ${failures.map(r => r.workspaceId + (r.timedOut ? " (таймаут)" : r.semanticStatus==='blocked'?' (блокировка: '+r.blockedReasons?.join(', ')+')':r.semanticStatus==='unverified'?' (результат не подтверждён)':"")).join(", ")}.\n`
     + `Успешно: ${args.results.length - failures.length}/${args.results.length}. `
     + (status === "failed" ? "Общий запуск завершён с ошибкой." : "Остальные проекты обработаны; общее расписание продолжает работу.")
     + "\nИстория сбоев сохранена. ISS-19.";

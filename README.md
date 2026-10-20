@@ -239,6 +239,10 @@ Do not treat scaffolding, an empty worker pass, or scheduler `ok` as end-to-end 
 | Memory Worker implementation and guarantees | [`src/memory-observation/README.md`](src/memory-observation/README.md) |
 | Contextual Memory Worker v2 | [`contracts/memory-observation/v2/README.md`](contracts/memory-observation/v2/README.md) |
 | Memory observation authority contracts | [`contracts/memory-observation/v1/README.md`](contracts/memory-observation/v1/README.md) |
+| Source debt and verified effect closure | [`references/memory-source-debt.md`](references/memory-source-debt.md) |
+| Explicit recovery and plugin-release operators | [`references/memory-recovery-operators.md`](references/memory-recovery-operators.md) |
+| Runtime durability, topic lineage and bounded context | [`references/memory-runtime-lineage.md`](references/memory-runtime-lineage.md) |
+| Fleet execution and historical completeness reporting | [`references/memory-fleet-isolation.md`](references/memory-fleet-isolation.md) |
 | Architecture | [`references/architecture.md`](references/architecture.md) |
 | Setup | [`references/setup.md`](references/setup.md) |
 | Workspace watchdog | [`references/watchdog.md`](references/watchdog.md) |

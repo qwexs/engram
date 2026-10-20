@@ -9,10 +9,12 @@ export function memoryWorkerRunResult(input: {
   evaluations?: readonly Pick<BatchLiveRunResult, "status">[];
   applications?: readonly Pick<DailyNoteApplicatorResult, "status">[];
   domains?: { indexedPending: number } | null;
+  blockers?: readonly {reason:string}[];
 } = {}) {
   const errors = new Set<string>();
+  for (const blocker of input.blockers ?? []) errors.add(`blocked:${blocker.reason}`);
   for (const result of input.evaluations ?? []) {
-    if (result.status === "retry" || result.status === "terminal_failure") errors.add(`evaluation:${result.status}`);
+    if (["retry", "terminal_failure", "blocked"].includes(result.status)) errors.add(`evaluation:${result.status}`);
   }
   for (const result of input.applications ?? []) {
     if (["retry", "terminal_failure", "qmd_pending", "disabled"].includes(result.status)) errors.add(`daily_note:${result.status}`);

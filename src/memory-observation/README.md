@@ -12,6 +12,14 @@ write still retains its exact runtime session scope.
 
 ## Implemented
 
+Current operational contracts: [source debt and effect closure](../../references/memory-source-debt.md),
+[explicit recovery/release operators](../../references/memory-recovery-operators.md),
+[runtime/lineage/context](../../references/memory-runtime-lineage.md), and
+[fleet execution versus completeness](../../references/memory-fleet-isolation.md).
+Administrative retry, quarantine or release handoff never means restored memory
+without the applicable canonical proof. Migration barriers return `blocked`,
+not healthy idle, and flow through the CLI and fleet reporting.
+
 - exact workspace/session trusted-source admission;
 - minimal immutable envelope and evidence records under
   `memory-state/memory-observation/v1/`;

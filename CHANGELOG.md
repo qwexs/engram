@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **feat(memory): retain source debt and prove applicable effects before closure.**
+  Node-safe metadata capture guards lifecycle and standalone evidence deletion;
+  a separate Bun verifier checks source/job/result, explicit disposition,
+  canonical daily/domain effects and exact QMD index proof. Immutable compact
+  certificates survive ordinary retention; ambiguous or grouped-no-assertion
+  outcomes stay open. Legacy origins append proof without rewriting old records.
+
+- **fix(memory): harden explicit recovery and release handoffs.** Terminal retry
+  pins exact current source/binding/policy and rechecks TTL under its lease.
+  Quote-producer migration journals block ordinary claim across partial handoff.
+  Historical orphan quarantine keeps unresolved debt and archived effects,
+  validates owner/canonical paths, rechecks drift and resumes its exact receipt.
+  Code-only plugin rebind uses a complete approved fleet and durable per-artifact
+  journal; the named CLI builds canonical bytes independently of caller cwd.
+
+- **fix(memory): expose blocked scopes and separate fleet completeness.** Worker
+  and fleet reports no longer treat lineage or incomplete/invalid migration
+  barriers as healthy idle/zero-exit success. Blocked scopes use no inference
+  budget; healthy scopes continue. Explicit completeness owners retain private
+  incident history and verified closure independently of process success.
+  Opt-in compact reports retain statuses/counts rather than truncated JSON.
+  Idle passes can reconcile source proof after the shared QMD coordinator finishes.
+
+- **fix(memory): preserve durable waits and additive topic lineage.** Runtime
+  cache TTL/restart cannot expire a still-valid admission checkpoint. Exact
+  additive project-topic extensions require the original target snapshot and
+  preserve previous model/quality lineage, epochs and existing authority.
+  Bounded episode context can cross a completed batch boundary without requeue;
+  missing native transport provenance remains unavailable, never guessed.
+
 - **fix(memory): retire drained model transitions before projection changes.**
   Non-main topic setup and canonical projection rollout archive the exact
   completed transition and a retirement receipt before publishing new bytes.

@@ -26,7 +26,9 @@ const completedAt = "2026-08-24T18:00:00.000Z";
 
 function workspace(): string {
   const path = join(tmpdir(), `engram-observation-ledger-${crypto.randomUUID()}`);
+  mkdirSync(path, { recursive: true });
   roots.push(path);
+  writeFileSync(join(path, "engram.json"), JSON.stringify({ workspace: { id: "fixture-main" } }));
   return path;
 }
 
@@ -326,7 +328,7 @@ describe("Memory Observation Layer PR1 recovery and queue reliability", () => {
     const observationKey = observationId.slice(7);
     const consumerPath = join(state, "consumers", "daily-note", "queue", `${observationKey}.json`);
     mkdirSync(join(state, "consumers", "daily-note", "queue"), { recursive: true });
-    writeFileSync(consumerPath, JSON.stringify({ schema: "engram.memory-observation-consumer-queue.v1", observationId, status: "terminal", terminalAt: "2026-01-01T01:00:00.000Z" }));
+    writeFileSync(consumerPath, JSON.stringify({ schema: "engram.memory-observation-consumer-queue.v1", observationId, traceId: admitted.envelope.traceId, status: "terminal", reasonCode: "canonical_applied", terminalAt: "2026-01-01T01:00:00.000Z" }));
     const linkPath = join(state, "transport-links", `${sha256("link").slice(7)}.json`);
     mkdirSync(join(state, "transport-links"), { recursive: true });
     writeFileSync(linkPath, JSON.stringify({ createdAt: "2026-01-01T00:00:00.000Z", expiresAt: "2026-01-04T00:00:00.000Z" }));

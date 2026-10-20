@@ -199,3 +199,19 @@ test("missing and corrupt candidates are omitted without blocking current captur
  const result=replies.recentCandidates({scope,channel:"telegram",before:new Date("2026-08-24T12:10:00Z"),now:new Date("2026-08-24T13:00:00Z")});
  expect(result.pairs.map(p=>p.traceId)).toEqual([c.link.traceId]);
 });
+
+test('a completed earlier batch remains context for a later correction without requeueing or recopying it as a new source',()=>{
+ const {root,ledger,replies}=setup();
+ const first=admitPair(ledger,replies,1,undefined,'user','Launch on Friday.');
+ const queue=join(root,'memory-state/memory-observation/v1/queues/evaluator',first.link.traceId.slice(7)+'.json');
+ const q=JSON.parse(readFileSync(queue,'utf8'));
+ writeFileSync(queue,JSON.stringify({...q,status:'terminal',reasonCode:'semantic_batch_skip',terminalAt:'2026-08-24T12:01:30.000Z'}));
+ const prior=readFileSync(queue,'utf8');
+ const correction=admitPair(ledger,replies,2,undefined,'user','No, move the launch to Monday.');
+ const r=replies.recentCandidates({scope,channel:'telegram',before:new Date('2026-08-24T12:02:00.000Z'),now:new Date('2026-08-24T12:03:00.000Z')});
+ expect(r.pairs.map(p=>p.traceId)).toEqual([first.link.traceId]);
+ expect(r.pairs[0]!.source.text).toBe('Launch on Friday.');
+ expect(r.pairs.some(p=>p.traceId===correction.link.traceId)).toBe(false);
+ expect(readFileSync(queue,'utf8')).toBe(prior);
+ expect(ledger.listQueue().filter(q=>q.status!=='terminal').map(q=>q.traceId)).toEqual([correction.link.traceId]);
+});

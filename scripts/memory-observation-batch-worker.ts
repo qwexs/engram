@@ -4,6 +4,7 @@ import { RUNTIME_POLICY } from "../src/memory-observation/runtime-authority.ts";
 import { evaluationQuality, evaluationProjectionForScope, readableEvaluationPolicies } from "../src/memory-observation/model-transition.ts";
 import { modelTransitionBlockReason } from "../src/memory-observation/model-transition-retirement.ts";
 import { isGroupProjectionSchema, assertGroupHostRoutes } from "../src/memory-observation/group-bindings.ts";
+import { assertSourceDebtPurgeSafe, scanSourceDebt } from "../src/memory-observation/source-debt.ts";
 import { memoryWorkerHealth } from "../src/memory-observation/worker-health.ts";
 import { memoryWorkerRunResult } from "../src/memory-observation/worker-run-result.ts";
 import { tmpdir } from "node:os";
@@ -61,7 +62,25 @@ async function sourcePluginDigest(repository: string): Promise<`sha256:${string}
   return `sha256:${createHash("sha256").update(Buffer.from(await build!.outputs[0]!.arrayBuffer())).digest("hex")}`;
 }
 
-if (process.argv.length !== 4 || process.argv[2] !== "--workspace") {
+const compactSummary = process.argv.length === 5 && process.argv[4] === "--summary";
+function emitRun(report:any) {
+  if(compactSummary){
+    const c=report.health?.completeness;
+    if(c)report.health={...report.health,completeness:{observed:c.observed,open:c.openIds.length,closed:c.closedIds.length,corrupt:c.corrupt,errors:c.errors,verifiedAt:c.verifiedAt}};
+    // Status/counts plus diagnostic pointers remain complete; large assertion
+    // and receipt bodies stay in their canonical stores, not scheduler stdout.
+    const summarize=(r:any)=>Object.fromEntries(Object.entries(r).filter(([k])=>['status','jobId','sourceCount','reason','attempt','maxAttempts','diagnostic','diagnosticRef','operationId','indexedPending'].includes(k)));
+    for(const key of ['evaluation','apply'])if(report[key])report[key]=summarize(report[key]);
+    if(report.evaluations)report.evaluations=report.evaluations.map((x:any)=>({...x,result:summarize(x.result)}));
+    if(report.applications){
+      report.applicationStatusCounts=report.applications.reduce((counts:any,x:any)=>{counts[x.result.status]=(counts[x.result.status]??0)+1;return counts;},{});
+      delete report.applications;
+    }
+    if(report.domains)report.domains={status:report.domains.status,applied:report.domains.applied,indexedPending:report.domains.indexedPending};
+  }
+  process.stdout.write(JSON.stringify(report)+'\n');
+}
+if ((!compactSummary && process.argv.length !== 4) || process.argv[2] !== "--workspace") {
   throw new Error("usage: memory-observation-batch-worker.ts --workspace <absolute-workspace>");
 }
 const workspaceArgument = argument("--workspace");
@@ -69,6 +88,7 @@ if (!isAbsolute(workspaceArgument)) throw new Error("--workspace must be absolut
 const workspace = resolve(workspaceArgument);
 const workspaceId = readJson(join(workspace, "engram.json"))?.workspace?.id;
 if (typeof workspaceId !== "string" || !workspaceId) throw new Error("workspace id is unavailable");
+assertSourceDebtPurgeSafe(workspace);
 purgeMemoryObservationLifecycle(workspace);
 const projectionPath = join(workspace, "memory-state", "memory-observation", "projection.json");
 if (!existsSync(projectionPath) || readJson(projectionPath)?.enabled !== true) {
@@ -94,15 +114,18 @@ if (!dailyNote || projection.captureOwnership?.owner !== "observer") {
 const topicWorkspace = isGroupProjectionSchema(projection.schema);
 if (memoryBatchIsIdle(workspace, topicWorkspace)) {
   const idle = { status: "idle" };
+  // Indexing completes outside this Worker. An empty evaluator queue must not
+  // prevent later proof/certificate reconciliation of already-written sources.
+  scanSourceDebt(workspace);
   const health = memoryWorkerHealth(workspace);
   const execution = memoryWorkerRunResult();
-  process.stdout.write(`${JSON.stringify({
+  emitRun({
     schema: "engram.memory-batch-live-run.v1", workspaceId, schedulerId: batch.schedulerId,
     health, execution, fastPath: "no_pending_work", evaluation: idle, evaluationScope: null,
     apply: idle, applyScope: null,
     domains: topicWorkspace ? { status: "idle", applied: 0, indexedPending: 0 } : null,
     ...(topicWorkspace ? { applications: [{ result: idle, scope: null }] } : {}),
-  })}\n`);
+  });
   process.exit(execution.exitCode);
 }
 if (topicWorkspace) {
@@ -346,6 +369,7 @@ for (let round = 0; releaseInference && round < maxBatchesPerWake; round++) {
 const priorCount = evaluations.length;
 for (const candidate of collectScopes()) {
   if (evaluations.length >= maxBatchesPerWake || Date.now() - drainStarted >= 90_000) break;
+  if (qualityBlockedScopes.has(candidate.scope.runtimeSessionKey)) continue;
   const current = currentProjectionForScope(candidate.scope);
   let selected;
   try { selected=evaluationProjectionForScope(workspace,current,candidate.scope); }
@@ -375,6 +399,14 @@ for (const candidate of collectScopes()) {
     leaseTtlMs: current.limits.claimTtlSeconds * 1_000,
   });
   const result = await worker.processOne();
+  if (result.status === "blocked") {
+    qualityBlockedScopes.add(candidate.scope.runtimeSessionKey);
+    qualityBlockers.set(candidate.scope.runtimeSessionKey, result.reason.toUpperCase());
+    if (!evaluations.length) { evaluation = result; evaluationScope = candidate.scope; }
+    // A blocked scope uses no inference budget and must not starve healthy
+    // scopes. Preserve its reason separately through execution/fleet reporting.
+    continue;
+  }
   if (result.status !== "idle") {
     evaluation = result;
     evaluationScope = candidate.scope;
@@ -403,12 +435,14 @@ if (!applyTarget || ["idle", "busy", "disabled"].includes(apply.status)) break;
 const apply = applications[0]?.result ?? { status: "idle" }, applyScope = applications[0]?.scope ?? null;
 const domains = isGroupProjectionSchema(projection.schema)
   ? await consumeTopicDomainReceipts({ workspace, workspaceId, expectedPluginDigest }) : null;
+scanSourceDebt(workspace);
 const health = memoryWorkerHealth(workspace);
 if(qualityBlockedScopes.size){health.status="degraded";health.reasons.push("quality_pending_bundle_requires_reconciliation",...new Set(qualityBlockers.values()));}
 const execution = memoryWorkerRunResult({ evaluations: evaluations.map(entry => entry.result),
-  applications: applications.map(entry => entry.result), domains });
+  applications: applications.map(entry => entry.result), domains,
+  blockers:[...qualityBlockers.values()].map(reason=>({reason})) });
 process.exitCode = execution.exitCode;
-process.stdout.write(`${JSON.stringify({
+emitRun({
   schema: "engram.memory-batch-live-run.v1",
   workspaceId,
   schedulerId: batch.schedulerId,
@@ -424,4 +458,4 @@ process.stdout.write(`${JSON.stringify({
   apply,
   applyScope,
   applications,
-})}\n`);
+});

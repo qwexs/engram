@@ -8,6 +8,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   readlinkSync,
   renameSync,
   rmSync,
@@ -22,8 +23,11 @@ import {
   type BatchLiveFailureV1,
   type BatchLiveJobV1,
 } from "./batch-live-worker.ts";
-import { sha256, type Digest, type JsonValue, type LedgerQueueRecordV1 } from "./ledger.ts";
-import { memoryObservationBinding, resolveMemoryObservationProjection } from "./projection.ts";
+import { deriveTraceId, sha256, type Digest, type JsonValue, type LedgerQueueRecordV1 } from "./ledger.ts";
+import { AdmissionStore } from "./admission-store.ts";
+import { RUNTIME_AUTHORITY } from "./runtime-authority.ts";
+import { compileBatchFrame } from "./batch-compiler.ts";
+import { memoryObservationBinding, memoryObservationCaptureOwner, resolveMemoryObservationProjection } from "./projection.ts";
 
 export const BATCH_TERMINAL_RECOVERY_SCHEMA = "engram.memory-batch-terminal-recovery.v1" as const;
 const BATCH_TERMINAL_RECOVERY_AUTHORIZATION_SCHEMA = "engram.memory-batch-terminal-recovery-authorization.v1" as const;
@@ -61,6 +65,8 @@ export type BatchTerminalRecoveryPlan = {
 };
 
 type RecoveryQueueSnapshot = {
+  /** New admissions pin the full envelope/job/projection across crash recovery. */
+  sourceProofDigest?: Digest;
   traceId: Digest;
   evidenceDigest: Digest;
   evidenceExpiresAt: string;
@@ -94,12 +100,12 @@ function digestKey(value: Digest): string {
   return value.slice("sha256:".length);
 }
 
-function readJson<T>(path: string): T {
+export function readJson<T>(path: string): T {
   try { return JSON.parse(readFileSync(path, "utf8")) as T; }
   catch { fail("STATE_CORRUPT", `invalid JSON artifact: ${path}`); }
 }
 
-function valueDigest(value: unknown): Digest {
+export function valueDigest(value: unknown): Digest {
   return sha256(value as JsonValue);
 }
 
@@ -113,7 +119,7 @@ function flushDirectory(path: string): void {
   try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
-function writeAtomic(path: string, value: unknown): void {
+export function writeAtomic(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temp = `${path}.tmp-${process.pid}-${randomUUID()}`;
   const descriptor = openSync(temp, "wx", 0o600);
@@ -123,7 +129,7 @@ function writeAtomic(path: string, value: unknown): void {
   flushDirectory(dirname(path));
 }
 
-function writeImmutableExact(path: string, value: unknown): void {
+export function writeImmutableExact(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temp = `${path}.tmp-${process.pid}-${randomUUID()}`;
   const descriptor = openSync(temp, "wx", 0o600);
@@ -142,7 +148,7 @@ function writeImmutableExact(path: string, value: unknown): void {
   flushDirectory(dirname(path));
 }
 
-function instant(value: string): boolean {
+export function instant(value: string): boolean {
   return Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 }
 
@@ -150,7 +156,7 @@ function injectFault(options: { faultAt?: BatchTerminalRecoveryFaultPoint }, poi
   if (options.faultAt === point) fail("FAULT_INJECTED", `fault injection at ${point}`);
 }
 
-function acquireRecoveryLock(path: string, recoveryId: Digest): () => void {
+export function acquireRecoveryLock(path: string, recoveryId: Digest): () => void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const owner = JSON.stringify({ schema: "engram.memory-batch-terminal-recovery-lock.v1", pid: process.pid, recoveryId, token: randomUUID() });
   while (true) {
@@ -311,7 +317,8 @@ function validateAuthorization(authorization: BatchTerminalRecoveryAuthorization
   }
   for (const traceId of expected.traceIds) {
     const entry = queues.find((candidate) => candidate.traceId === traceId);
-    if (!entry || !DIGEST_RE.test(entry.evidenceDigest) || !instant(entry.evidenceExpiresAt)
+    if (!entry || (entry.sourceProofDigest !== undefined && !DIGEST_RE.test(entry.sourceProofDigest))
+      || !DIGEST_RE.test(entry.evidenceDigest) || !instant(entry.evidenceExpiresAt)
       || Date.parse(entry.evidenceExpiresAt) <= Date.parse(expected.authorizedAt)
       || entry.originalDigest !== valueDigest(entry.original) || entry.requeuedDigest !== valueDigest(entry.requeued)
       || entry.original.traceId !== traceId || entry.original.status !== "terminal"
@@ -330,11 +337,23 @@ export function recoverTerminalBatch(options: {
   authorizedAt: string;
   reason: string;
   apply?: boolean;
+  now?: Date;
+  /** Synthetic race hook; invoked before the locked second preflight. */
+  beforeLock?: () => void;
   faultAt?: BatchTerminalRecoveryFaultPoint;
 }): BatchTerminalRecoveryPlan {
-  const workspace = resolve(options.workspace);
+  const workspace = realpathSync(resolve(options.workspace));
   const storeRoot = resolve(options.storeRoot);
-  if (!options.authorizedBy.trim() || !options.reason.trim() || !instant(options.authorizedAt)) {
+  const now = () => options.now ?? new Date();
+  const checkStore = () => {
+    const expected = join(workspace, "memory-state/memory-observation/batch-live-store");
+    if (storeRoot !== expected || !existsSync(expected) || realpathSync(expected) !== expected) {
+      fail("SCOPE_MISMATCH", "expected canonical workspace-owned batch store");
+    }
+  };
+  checkStore();
+  if (!options.authorizedBy.trim() || !options.reason.trim() || !instant(options.authorizedAt)
+    || !Number.isFinite(now().getTime()) || Date.parse(options.authorizedAt) > now().getTime()) {
     fail("INVALID_AUTHORIZATION", "authorizedBy, canonical authorizedAt, and reason are required");
   }
   const key = digestKey(options.jobId);
@@ -393,6 +412,112 @@ export function recoverTerminalBatch(options: {
     failureDigest,
     doneDigest,
   };
+  // A completed operation is an immutable requeue receipt, not a new admission.
+  // Downstream queues/evidence may already have advanced or expired.
+  if (existsSync(completedPath)) {
+    if (!existsSync(authorizationPath)) fail("AUTHORIZATION_CONFLICT", "completed recovery has no authorization");
+    validateAuthorization(readJson(authorizationPath), authorizationBase);
+    const completed = readJson<BatchTerminalRecoveryPlan>(completedPath);
+    if (!sameValue(completed, { ...plan, status: "requeued" })) fail("COMPLETION_CONFLICT", "completed recovery artifact does not match the authorized recovery");
+    return completed;
+  }
+  const stateRoot = join(workspace, "memory-state/memory-observation/v1");
+  const workspaceId = readJson<any>(join(workspace, "engram.json")).workspace?.id;
+  const projection = resolveMemoryObservationProjection({ workspace, workspaceId });
+  const projectionDigest = valueDigest(projection);
+  const sourcePaths = failure.traceIds.map(traceId => ({
+    envelope: join(stateRoot, "envelopes", `${digestKey(traceId)}.json`),
+    evidence: join(evidenceRoot, `${digestKey(traceId)}.json`),
+  }));
+  const sourceDigests = sourcePaths.map(paths => valueDigest(readJson(paths.envelope)));
+  const touchesSource = (value: unknown): boolean => {
+    if (typeof value === "string") return value === job.bundle.bundleId || value === job.jobId || failure.traceIds.includes(value as Digest)
+      || job.bundle.sourceRefs.some(source => source.sourceTurnId === value);
+    if (Array.isArray(value)) return value.some(touchesSource);
+    return Boolean(value && typeof value === "object" && Object.values(value).some(touchesSource));
+  };
+  const rejectMatchingArtifact = (directory: string, traces = false) => {
+    if (!existsSync(directory)) return;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) fail("STATE_CORRUPT", "effect directories must not contain symlinks");
+      if (entry.isDirectory()) rejectMatchingArtifact(path, traces);
+      else if (entry.name.endsWith(".json")) {
+        const record = readJson<any>(path);
+        if ((!traces || record.stage !== "source_completed") && touchesSource(record)) {
+          fail("EFFECTS_EXIST", "source already has persisted results, observations or effects");
+        }
+      }
+    }
+  };
+  const checkSourcesAndScope = () => {
+    checkStore();
+    const currentProjection = resolveMemoryObservationProjection({ workspace, workspaceId });
+    const binding = memoryObservationBinding(currentProjection, job.partition.runtimeSessionKey);
+    if (readJson<any>(join(workspace, "engram.json")).workspace?.id !== workspaceId
+      || valueDigest(currentProjection) !== projectionDigest || job.partition.workspaceId !== workspaceId
+      || !binding || binding.scopeId !== job.partition.scopeId || binding.scopeClass !== job.partition.scopeClass
+      || memoryObservationCaptureOwner(currentProjection, job.partition.runtimeSessionKey, now()) !== "observer"
+      || currentProjection.evaluation?.mode !== "batch-cron"
+      || currentProjection.evaluation.batch?.sourcePolicyDigest !== job.partition.policyDigest
+      || currentProjection.evaluation.policyDigest !== job.evaluationPolicyDigest) {
+      fail("SCOPE_MISMATCH", "current observer binding or source/evaluation policy does not match the failed job");
+    }
+    const bindingFingerprint = valueDigest({ workspaceId, scopeClass: binding.scopeClass, scopeId: binding.scopeId,
+      requireOwner: binding.requireOwner, ...(binding.topicDomain ? { topicDomain: binding.topicDomain } : {}),
+      ...(binding.groupDomain ? { groupDomain: binding.groupDomain } : {}), allowedChannels: [...binding.allowedChannels].sort() });
+    const checkpoints = new AdmissionStore(workspace, RUNTIME_AUTHORITY).scanCheckpoints();
+    if (checkpoints.corrupt.length) fail("STATE_CORRUPT", "retained source admission checkpoint is corrupt");
+    for (const source of job.bundle.sourceRefs) {
+      const matches = checkpoints.records.filter(checkpoint => checkpoint.sourceTurnId === source.sourceTurnId);
+      if (matches.length !== 1 || matches[0]!.stage !== "ledger_admitted"
+        || matches[0]!.bindingFingerprint !== bindingFingerprint
+        || matches[0]!.scope.workspaceId !== workspaceId
+        || matches[0]!.scope.runtimeSessionKey !== job.partition.runtimeSessionKey
+        || matches[0]!.scope.scopeClass !== binding.scopeClass || matches[0]!.scope.scopeId !== binding.scopeId
+        || !binding.allowedChannels.includes(matches[0]!.channel)) {
+        fail("SCOPE_MISMATCH", "source admission checkpoint does not match the current exact binding fingerprint");
+      }
+    }
+    if (!sameValue(readJson(jobPath), job)
+      || valueDigest(readArtifactCandidate(failurePath, archivedFailureRef, "terminal failure")) !== failureDigest
+      || valueDigest(readArtifactCandidate(donePath, archivedDoneRef, "done marker")) !== doneDigest) {
+      fail("ARTIFACT_DIVERGED", "job or terminal artifacts changed since preflight");
+    }
+    if (!sameValue(failure.traceIds, job.bundle.sourceRefs.map(source => source.traceId))) {
+      fail("SOURCE_MISMATCH", "failure must cover the exact sealed source set");
+    }
+    const sources = sourcePaths.map((paths, index) => {
+      const envelope = readJson<any>(paths.envelope), evidence = readJson<any>(paths.evidence);
+      if (valueDigest(envelope) !== sourceDigests[index]
+        || envelope.traceId !== deriveTraceId(workspaceId, job.partition.runtimeSessionKey, envelope.sourceTurnId)) {
+        fail("SOURCE_MISMATCH", "source envelope changed or trace identity is invalid");
+      }
+      if (!instant(evidence.expiresAt) || Date.parse(evidence.expiresAt) <= Math.max(Date.parse(options.authorizedAt), now().getTime())) {
+        fail("EVIDENCE_EXPIRED", "terminal source evidence is unavailable or expired");
+      }
+      return { envelope, evidence };
+    });
+    // Reuse the strict compiler to verify every envelope/evidence field and digest,
+    // then compare the complete reconstructed immutable bundle, not only its ID.
+    const compiled = compileBatchFrame({ schema: "engram.memory-batch-source-frame.v1", partition: job.partition,
+      sealedAt: job.createdAt, sources }, { schema: "engram.memory-batch-compiler-config.v1",
+      inactivityGapMs: Number.MAX_SAFE_INTEGER, maxTurns: 100_000,
+      maxEvidenceBytes: Number.MAX_SAFE_INTEGER, maxAgeMs: Number.MAX_SAFE_INTEGER });
+    if (compiled.bundles.length !== 1 || compiled.exclusions.length || !sameValue(compiled.bundles[0], job.bundle)
+      || job.jobId !== valueDigest({ schema: BATCH_LIVE_JOB_SCHEMA, partition: job.partition,
+        evaluationPolicyDigest: job.evaluationPolicyDigest, bundleId: job.bundle.bundleId })) {
+      fail("SOURCE_MISMATCH", "sealed bundle or job digest does not match retained sources");
+    }
+    for (const kind of ["contextual-results", "terminals", "reconciliations"]) {
+      if (existsSync(join(batchRoot, kind, `${key}.json`))) fail("EFFECTS_EXIST", "persisted result requires effect reconciliation");
+    }
+    rejectMatchingArtifact(join(storeRoot, "memory-batch-shadow/v1/results"));
+    rejectMatchingArtifact(join(stateRoot, "observations"));
+    rejectMatchingArtifact(join(stateRoot, "receipts"));
+    rejectMatchingArtifact(join(stateRoot, "traces"), true);
+    rejectMatchingArtifact(join(workspace, "memory-state/domain-effects/v1"));
+  };
   let authorization: BatchTerminalRecoveryAuthorization;
   if (existsSync(authorizationPath)) {
     authorization = readJson<BatchTerminalRecoveryAuthorization>(authorizationPath);
@@ -408,10 +533,11 @@ export function recoverTerminalBatch(options: {
       if (queue.traceId !== traceId || queue.status !== "terminal" || queue.reasonCode !== failure.errorCode
         || queue.claimToken !== null || queue.terminalAt === null) fail("QUEUE_INELIGIBLE", "terminal queue is not in the recorded failure state");
       if (evidence.traceId !== traceId || !instant(evidence.expiresAt)
-        || Date.parse(evidence.expiresAt) <= Date.parse(options.authorizedAt)) fail("EVIDENCE_EXPIRED", "terminal source evidence is unavailable or expired");
+        || Date.parse(evidence.expiresAt) <= Math.max(Date.parse(options.authorizedAt), now().getTime())) fail("EVIDENCE_EXPIRED", "terminal source evidence is unavailable or expired");
       const requeued = recoveredQueue(queue, options.authorizedAt);
       return {
         traceId,
+        sourceProofDigest: valueDigest({ envelope: readJson(join(stateRoot, "envelopes", `${traceKey}.json`)), job, projection }),
         evidenceDigest: valueDigest(evidence),
         evidenceExpiresAt: evidence.expiresAt,
         originalDigest: valueDigest(queue),
@@ -422,31 +548,37 @@ export function recoverTerminalBatch(options: {
     });
     authorization = { ...authorizationBase, queues };
   }
-  if (existsSync(completedPath)) {
-    const completed = readJson<BatchTerminalRecoveryPlan>(completedPath);
-    if (!sameValue(completed, { ...plan, status: "requeued" })) fail("COMPLETION_CONFLICT", "completed recovery artifact does not match the authorized recovery");
-    return completed;
-  }
-  for (const queueSnapshot of authorization.queues) {
-    const queuePath = join(queueRoot, `${digestKey(queueSnapshot.traceId)}.json`);
-    const evidencePath = join(evidenceRoot, `${digestKey(queueSnapshot.traceId)}.json`);
-    if (!existsSync(queuePath)) fail("SOURCE_MISSING", "terminal queue is unavailable");
-    if (!existsSync(evidencePath)) fail("SOURCE_MISSING", "terminal evidence is unavailable");
-    const currentDigest = valueDigest(readJson<LedgerQueueRecordV1>(queuePath));
-    const evidence = readJson<{ traceId: Digest; expiresAt: string }>(evidencePath);
-    if (evidence.traceId !== queueSnapshot.traceId || evidence.expiresAt !== queueSnapshot.evidenceExpiresAt
-      || valueDigest(evidence) !== queueSnapshot.evidenceDigest || Date.parse(evidence.expiresAt) <= Date.parse(options.authorizedAt)) {
-      fail("EVIDENCE_DIVERGED", `evidence changed or expired after recovery authorization: ${queueSnapshot.traceId}`);
+  const check = () => {
+    checkSourcesAndScope();
+    if (existsSync(authorizationPath) && !sameValue(readJson(authorizationPath), authorization)) fail("AUTHORIZATION_CONFLICT", "recovery authorization changed");
+    for (const queueSnapshot of authorization.queues) {
+      const envelope = readJson(join(stateRoot, "envelopes", `${digestKey(queueSnapshot.traceId)}.json`));
+      if (queueSnapshot.sourceProofDigest !== valueDigest({ envelope, job, projection })) {
+        fail("SOURCE_MISMATCH", "source envelope, job or projection changed since recovery authorization");
+      }
+      const queuePath = join(queueRoot, `${digestKey(queueSnapshot.traceId)}.json`);
+      const evidencePath = join(evidenceRoot, `${digestKey(queueSnapshot.traceId)}.json`);
+      if (!existsSync(queuePath)) fail("SOURCE_MISSING", "terminal queue is unavailable");
+      if (!existsSync(evidencePath)) fail("SOURCE_MISSING", "terminal evidence is unavailable");
+      const currentDigest = valueDigest(readJson<LedgerQueueRecordV1>(queuePath));
+      const evidence = readJson<{ traceId: Digest; expiresAt: string }>(evidencePath);
+      if (evidence.traceId !== queueSnapshot.traceId || evidence.expiresAt !== queueSnapshot.evidenceExpiresAt
+        || valueDigest(evidence) !== queueSnapshot.evidenceDigest || Date.parse(evidence.expiresAt) <= Math.max(Date.parse(options.authorizedAt), now().getTime())) {
+        fail("EVIDENCE_DIVERGED", `evidence changed or expired after recovery authorization: ${queueSnapshot.traceId}`);
+      }
+      if (currentDigest !== queueSnapshot.originalDigest && currentDigest !== queueSnapshot.requeuedDigest) {
+        fail("QUEUE_STATE_DIVERGED", `queue state changed after recovery authorization: ${queueSnapshot.traceId}`);
+      }
     }
-    if (currentDigest !== queueSnapshot.originalDigest && currentDigest !== queueSnapshot.requeuedDigest) {
-      fail("QUEUE_STATE_DIVERGED", `queue state changed after recovery authorization: ${queueSnapshot.traceId}`);
-    }
-  }
+  };
+  check();
   if (!options.apply) return plan;
+  options.beforeLock?.();
 
   const lockPath = join(workspace, "memory-state", "memory-observation", "v1", "locks", "evaluator.worker");
   const releaseLock = acquireRecoveryLock(lockPath, recoveryId);
   try {
+    check();
     writeImmutableExact(authorizationPath, authorization);
     injectFault(options, "after_authorization");
     archiveArtifact(failurePath, archivedFailureRef, authorization.failureDigest, "terminal failure");

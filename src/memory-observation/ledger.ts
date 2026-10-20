@@ -1,3 +1,4 @@
+import { assertSourceDebtPurgeSafe } from "./source-debt-capture.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -443,6 +444,9 @@ export function purgeMemoryObservationLifecycle(workspace: string, now = new Dat
   const result: MemoryObservationPurgeResult = { evidence: 0, transportLinks: 0, envelopes: 0, observations: 0, evaluatorQueue: 0, consumerQueue: 0, traces: 0, receipts: 0, preAdmission: 0 };
   if (!existsSync(root)) return result;
   return withLifecycleLock(root, () => {
+    // Node-safe capture only. Canonical effect closure stays in the Bun Worker.
+    // Failure to preserve exact metadata aborts all destructive lifecycle work.
+    assertSourceDebtPurgeSafe(workspace, now);
     const cutoff30 = now.getTime() - OBSERVATION_RETENTION_MS;
     const cutoff180 = now.getTime() - TRACE_RECEIPT_RETENTION_MS;
     const liveIndexGenerationForHandoff = (handoffId: string): boolean => {
@@ -1096,16 +1100,15 @@ export class MemoryObservationLedger {
     return this.withStateLock(() => {
       const directory = join(this.root, "evidence");
       if (!existsSync(directory)) return 0;
-      let removed = 0;
-      for (const name of readdirSync(directory).filter((entry) => entry.endsWith(".json"))) {
-        const path = join(directory, name);
-        const record = readJson<{ expiresAt: string }>(path);
-        if (Date.parse(record.expiresAt) <= now.getTime()) {
-          unlinkSync(path);
-          removed++;
-        }
-      }
-      return removed;
+      const expired = readdirSync(directory).filter((entry) => entry.endsWith(".json"))
+        .map((name) => join(directory, name))
+        .filter((path) => Date.parse(readJson<{ expiresAt: string }>(path).expiresAt) <= now.getTime());
+      if (!expired.length) return 0;
+      // This standalone path runs after admission as well as from lifecycle.
+      // Scan only when deletion is due, not on every fresh completed source.
+      assertSourceDebtPurgeSafe(this.workspace, now, { workspaceId: this.workspaceId });
+      for (const path of expired) unlinkSync(path);
+      return expired.length;
     });
   }
 

@@ -372,7 +372,8 @@ export class OpenClawObservationRuntimeAdapter {
       "completion_observed",
       "ledger_admitted",
       "terminal_gap",
-    ]).filter((entry) => entry.channel === transportChannel && entry.inboundMessageId === messageId) ?? [];
+    ]).filter((entry) => entry.channel === transportChannel && entry.inboundMessageId === messageId)
+      .filter((entry) => ["ledger_admitted", "terminal_gap"].includes(entry.stage) || this.durableCheckpointPending(entry, now)) ?? [];
     if (durableProgressed.length > 1) {
       for (const entry of durableProgressed) this.publishGap(entry, this.failureStage(entry), "identity_ambiguous", now);
       throw new RuntimeAdapterError("AMBIGUOUS_TURN", "multiple durable candidates match one persisted turn");
@@ -407,7 +408,8 @@ export class OpenClawObservationRuntimeAdapter {
       throw new RuntimeAdapterError("AMBIGUOUS_TURN", "multiple persisted turns compete for one runtime session");
     }
     const durablePending = this.admissionStore?.findOpenBySession(runtimeSessionKey, ["received"])
-      .filter((entry) => entry.channel === transportChannel && entry.inboundMessageId === messageId) ?? [];
+      .filter((entry) => entry.channel === transportChannel && entry.inboundMessageId === messageId)
+      .filter((entry) => this.durableCheckpointPending(entry, now)) ?? [];
     if (!this.pending.has(candidateId) && durablePending.length > 1) {
       for (const entry of durablePending) this.publishGap(entry, "received", "identity_ambiguous", now);
       throw new RuntimeAdapterError("AMBIGUOUS_TURN", "multiple durable inbound turns match one persisted turn");
@@ -457,7 +459,8 @@ export class OpenClawObservationRuntimeAdapter {
     if (progressedRuns[0]) {
       return { status: "duplicate", ...(progressedRuns[0].sourceTurnId ? { sourceTurnId: progressedRuns[0].sourceTurnId } : {}) };
     }
-    const durableAdopted = this.admissionStore?.findOpenBySession(runtimeSessionKey, ["persisted"]) ?? [];
+    const durableAdopted = this.admissionStore?.findOpenBySession(runtimeSessionKey, ["persisted"])
+      .filter((entry) => this.durableCheckpointPending(entry, now)) ?? [];
     const candidates = new Map([...this.adopted.values()]
       .filter(turn => turn.runtimeSessionKey === runtimeSessionKey).map(turn => [turn.candidateId, turn]));
     for (const checkpoint of durableAdopted) candidates.set(checkpoint.candidateId, this.adoptedFromCheckpoint(checkpoint));
@@ -841,6 +844,10 @@ export class OpenClawObservationRuntimeAdapter {
           continue;
         }
         if (spool?.status === "completed") { result.retained++; continue; }
+        // Validate terminal receipts, durable expiry and current scope before
+        // treating a checkpoint as recoverable. Neither startup nor cache
+        // eviction proves that a host-owned run failed.
+        if (!this.durableCheckpointPending(checkpoint, now)) { result.gaps++; continue; }
         if (Date.parse(checkpoint.expiresAt) > now.getTime()) {
           // The service map is a cache, not ownership. A restart or temporarily
           // unavailable active binding must not hide an exact durable wait.
@@ -852,7 +859,7 @@ export class OpenClawObservationRuntimeAdapter {
               }) : false;
           if (durablePending || this.options.completionMirrorFeed?.hasPending(checkpoint.candidateId)) { result.retained++; continue; }
         }
-        if (mode === "periodic" && checkpoint.stage !== "completion_observed" && Date.parse(checkpoint.expiresAt) > now.getTime()) {
+        if (Date.parse(checkpoint.expiresAt) > now.getTime()) {
           result.retained++;
           continue;
         }
@@ -889,23 +896,48 @@ export class OpenClawObservationRuntimeAdapter {
   private sweep(nowMs: number): void {
     const cutoff = nowMs - this.stateTtlMs();
     const now = new Date(nowMs);
-    if (this.admissionStore) for (const turn of [...this.pending.values(), ...this.adopted.values()]) {
+    if (this.admissionStore) for (const turn of [...this.pending.values(), ...this.adopted.values(), ...this.runs.values()]) {
       const durable = this.admissionStore.readCheckpoint(turn.candidateId);
-      if (durable && ["terminal_gap", "ledger_admitted"].includes(durable.stage)) this.clearCandidate(turn.candidateId);
+      if (!durable) throw new RuntimeAdapterError("STATE_CORRUPT", "cached admission checkpoint is missing");
+      if (!this.durableCheckpointPending(durable, now)) this.clearCandidate(turn.candidateId);
     }
+    // Durable checkpoints own the recovery deadline. The short in-memory TTL
+    // bounds caches only; exact late hooks rehydrate through AdmissionStore.
     for (const [key, value] of this.pending) if (value.observedAt < cutoff) {
-      this.publishBoundGap(value, "received", "expired_before_completion", now);
+      if (!this.admissionStore) this.publishBoundGap(value, "received", "expired_before_completion", now);
       this.pending.delete(key);
     }
     for (const [key, value] of this.adopted) if (value.observedAt < cutoff) {
-      this.publishBoundGap(value, "persisted", "expired_before_completion", now);
+      if (!this.admissionStore) this.publishBoundGap(value, "persisted", "expired_before_completion", now);
       this.adopted.delete(key);
     }
     for (const [key, value] of this.runs) if (value.attachedAt < cutoff) {
-      this.publishBoundGap(value, "run_attached", "expired_before_completion", now);
+      if (!this.admissionStore) this.publishBoundGap(value, "run_attached", "expired_before_completion", now);
       this.runs.delete(key);
     }
     for (const [key, value] of this.completed) if (value.completedAt < cutoff) this.completed.delete(key);
+  }
+
+  /** Checks recovery eligibility, never invents a successful completion or
+   * reopens an immutable terminal gap. Transient binding outages retain debt. */
+  private durableCheckpointPending(checkpoint: AdmissionCheckpointV1, now: Date): boolean {
+    if (["ledger_admitted", "terminal_gap"].includes(checkpoint.stage)) return false;
+    const gap = this.admissionStore?.readGapReceiptForCandidate(checkpoint.candidateId);
+    if (gap) {
+      this.publishGap(checkpoint, gap.failureStage, gap.reasonCode, now);
+      return false;
+    }
+    if (Date.parse(checkpoint.expiresAt) <= now.getTime()) {
+      this.publishGap(checkpoint, this.failureStage(checkpoint), "expired_before_completion", now);
+      return false;
+    }
+    const binding = this.options.resolveBinding(checkpoint.scope.runtimeSessionKey);
+    if (!binding && this.missingBindingState(checkpoint.scope.runtimeSessionKey) === "unavailable") return true;
+    if (!binding || this.bindingFingerprint(binding) !== checkpoint.bindingFingerprint) {
+      this.publishGap(checkpoint, this.failureStage(checkpoint), "scope_revoked", now);
+      throw new RuntimeAdapterError("SCOPE_REVOKED", "durable admission scope changed before recovery");
+    }
+    return true;
   }
 
   private pendingFromCheckpoint(checkpoint: AdmissionCheckpointV1): PendingTurn {
@@ -937,7 +969,8 @@ export class OpenClawObservationRuntimeAdapter {
   private boundFromDurableRun(runId: string, runtimeSessionKey: string): BoundRun | null {
     if (!this.admissionStore) return null;
     const matches = this.admissionStore.findOpenByRun(runId, ["run_attached", "completion_observed"])
-      .filter((entry) => entry.scope.runtimeSessionKey === runtimeSessionKey);
+      .filter((entry) => entry.scope.runtimeSessionKey === runtimeSessionKey)
+      .filter((entry) => this.durableCheckpointPending(entry, this.now()));
     if (matches.length > 1) {
       const now = this.now();
       for (const checkpoint of matches) {

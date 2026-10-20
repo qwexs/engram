@@ -23,7 +23,12 @@ const identity = (p: MemoryObservationProjectionV1) => ({workspaceId:p.workspace
 export function readModelTransition(workspace: string, current: MemoryObservationProjectionV1): ModelTransition | null {
   const path=join(workspace,"memory-state/memory-observation/model-transition.json");
   if (!existsSync(path)) return null;
-  const saved=JSON.parse(readFileSync(path,"utf8")); const {digest,...body}=saved;
+  return validateModelTransition(JSON.parse(readFileSync(path,"utf8")),current);
+}
+/** Administrative recovery validates an immutable historical target explicitly;
+ * live reads never infer a baseline or accept a stale target. */
+export function validateModelTransition(saved: ModelTransition, current: MemoryObservationProjectionV1): ModelTransition {
+  const {digest,...body}=saved;
   if (saved.schema!=="engram.memory-model-transition.v1" || digest!==hash(body)
     || Object.keys(body).filter(key=>key!=="authorityExtension").sort().join(",")!=="approvedAt,approvedBy,previousProjection,previousQuality,schema,targetProjectionDigest"
     || saved.targetProjectionDigest!==hash(current) || !saved.approvedBy || !Number.isFinite(Date.parse(saved.approvedAt)))
@@ -34,7 +39,7 @@ export function readModelTransition(workspace: string, current: MemoryObservatio
   if (saved.authorityExtension !== undefined) {
     const baseline = saved.authorityExtension?.baselineProjection;
     if (!baseline || Object.keys(saved.authorityExtension).join(",") !== "baselineProjection") throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
-    assertAdditiveMainTopics(baseline, current);
+    assertAdditiveTopics(baseline, current);
     authority = baseline;
   }
   const comparable=JSON.parse(JSON.stringify(authority));
@@ -98,6 +103,41 @@ export function assertAdditiveMainTopics(before: MemoryObservationProjectionV1, 
   if (!resolver || !("resolver" in resolver) || resolver.resolver !== "exact-session-registry") throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
   comparable.consumers!.dailyNote.qmdBinding = before.consumers!.dailyNote.qmdBinding;
   if (hash(comparable) !== hash(before)) throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
+}
+
+/** Exact group-topic extension. Existing authority and epochs stay immutable;
+ * only new project topics and their exact-session QMD resolver may be added. */
+export function assertAdditiveTopics(before: MemoryObservationProjectionV1, after: MemoryObservationProjectionV1): void {
+  if (before.workspaceId === "main") return assertAdditiveMainTopics(before, after);
+  const valid = (b: any) => b.topicDomain && !b.groupDomain && b.scopeClass === "project" && b.requireOwner === false
+    && b.scopeId === `domain:${before.workspaceId}:${b.topicDomain.domain}`
+    && b.runtimeSessionKey === `agent:${before.workspaceId}:telegram:group:${b.topicDomain.chatId}:topic:${b.topicDomain.topicId}`
+    && /^-[0-9]+$/.test(b.topicDomain.chatId) && /^[0-9]+$/.test(b.topicDomain.topicId)
+    && hash(b.allowedChannels) === hash(["telegram"]);
+  if (before.workspaceId !== after.workspaceId || before.schema !== "engram.memory-observation-rollout.v4"
+    || after.schema !== before.schema || after.bindings.length <= before.bindings.length
+    || new Set(after.bindings.map(b => b.runtimeSessionKey)).size !== after.bindings.length
+    || before.bindings.some(b => !after.bindings.some(a => hash(a) === hash(b)))
+    || after.bindings.some(b => !valid(b))) throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
+  const comparable = structuredClone(after);
+  comparable.bindings = before.bindings;
+  comparable.pluginDigest = before.pluginDigest;
+  const resolver = comparable.consumers?.dailyNote.qmdBinding;
+  if (!resolver || !("resolver" in resolver) || resolver.resolver !== "exact-session-registry") throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
+  comparable.consumers!.dailyNote.qmdBinding = before.consumers!.dailyNote.qmdBinding;
+  if (hash(comparable) !== hash(before)) throw Error("MODEL_TRANSITION_SCOPE_CHANGED");
+}
+
+/** Explicit operator recovery requires the exact immutable historical target;
+ * stale runtime reads remain blocked until this validated publication occurs. */
+export function extendHistoricalModelTransition(transition: ModelTransition, before: MemoryObservationProjectionV1,
+  after: MemoryObservationProjectionV1): ModelTransition {
+  validateModelTransition(transition, before);
+  const baselineProjection = transition.authorityExtension?.baselineProjection ?? before;
+  assertAdditiveTopics(baselineProjection, after);
+  const {digest, ...body} = transition;
+  const next = {...body, targetProjectionDigest:hash(after), authorityExtension:{baselineProjection}};
+  return {...next, digest:hash(next)};
 }
 
 /** Preserve immutable model lineage while adding exact main-topic authority. */

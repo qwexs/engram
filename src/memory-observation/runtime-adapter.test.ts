@@ -65,7 +65,9 @@ test(`native final admission revalidates ${change}`,()=>{
 
 function workspace(): string {
   const path = join(tmpdir(), `engram-observation-runtime-${crypto.randomUUID()}`);
+  mkdirSync(path, { recursive: true });
   roots.push(path);
+  writeFileSync(join(path, "engram.json"), JSON.stringify({ workspace: { id: "fixture-main" } }));
   return path;
 }
 
@@ -328,30 +330,92 @@ describe("OpenClaw PR2 runtime adapter", () => {
     }));
   });
 
-  test("turns every checkpointed pre-completion restart into one durable gap", () => {
+  test("restart retains unexpired exact checkpoints and permits the remaining trusted hook chain", () => {
     for (const stage of ["received", "persisted", "run_attached"] as const) {
-      const root = workspace();
-      const spoolRoot = join(root, "memory-state", "memory-observation", "v1", "pre-admission");
-      const fixture = hookFixtures();
-      const first = adapter({ spoolRoot, workspaceRoot: root });
+      const root = workspace(), observed = ledger(root), admitted: TrustedCompletedTurn[] = [];
+      const binding: RuntimeObservationBinding = { workspaceId: "fixture-main", scopeClass: "self", scopeId: "telegram:100000001",
+        requireOwner: true, allowedChannels: ["telegram"], admit: (source, now) => { admitted.push(source); return observed.admit(source, now); } };
+      const options = { workspaceRoot: root, spoolRoot: join(root, "spool"), binding };
+      const fixture = hookFixtures(), first = adapter(options);
       first.captureMessageReceived(fixture.receivedEvent, fixture.receivedContext);
       if (stage !== "received") first.adoptPersistedUser(fixture.persistedEvent, { sessionKey });
       if (stage === "run_attached") first.attachRun({}, fixture.runContext);
+      const restarted = adapter(options);
+      expect(restarted.reconcileOrphanedCheckpoints()).toMatchObject({ gaps: 0, retained: 1, corrupt: 0 });
+      if (stage === "received") expect(restarted.adoptPersistedUser(fixture.persistedEvent, { sessionKey }).status).toBe("adopted");
+      if (stage !== "run_attached") expect(restarted.attachRun({}, fixture.runContext).status).toBe("attached");
+      expect(restarted.completeAgentEnd(fixture.endEvent, fixture.runContext).status).toBe("admitted");
+      expect(restarted.completeAgentEnd(fixture.endEvent, fixture.runContext).status).toBe("ignored");
+      expect(observed.listQueue()).toHaveLength(1);
+      expect(admitted).toHaveLength(1);
+      expect(new AdmissionStore(root, authority).scanGapReceipts().records).toHaveLength(0);
+    }
+  });
 
-      const restarted = adapter({ spoolRoot, workspaceRoot: root });
-      expect(restarted.reconcileOrphanedCheckpoints(new Date("2026-08-24T19:35:00.000Z"), "periodic"))
-        .toMatchObject({ gaps: 0, retained: 1 });
-      expect(restarted.reconcileOrphanedCheckpoints()).toMatchObject({ gaps: 1, corrupt: 0 });
-      const durable = new AdmissionStore(root, authority);
-      expect(durable.scanGapReceipts().records).toContainEqual(expect.objectContaining({
-        failureStage: stage,
-        reasonCode: "restart_before_completion",
-      }));
-      expect(durable.scanCheckpoints().records).toContainEqual(expect.objectContaining({
-        stage: "terminal_gap",
-        sourceText: null,
-      }));
-      expect(restarted.reconcileOrphanedCheckpoints()).toMatchObject({ gaps: 0 });
+  test("late exact adoption, attachment and final survive the short cache TTL", () => {
+    for (const delayed of ["adoption", "attachment", "final"] as const) {
+      const root = workspace(), observed = ledger(root);
+      let now = new Date("2026-08-24T19:35:00.000Z");
+      const binding: RuntimeObservationBinding = { workspaceId: "fixture-main", scopeClass: "self", scopeId: "telegram:100000001",
+        requireOwner: true, allowedChannels: ["telegram"], admit: (source, at) => observed.admit(source, at) };
+      const runtime = adapter({workspaceRoot: root, spoolRoot: join(root, "spool"), binding, now: () => now});
+      const f = hookFixtures();
+      runtime.captureMessageReceived(f.receivedEvent, f.receivedContext);
+      if (delayed === "adoption") now = new Date(now.getTime() + 31 * 60_000);
+      expect(runtime.adoptPersistedUser(f.persistedEvent, {sessionKey}).status).toBe("adopted");
+      if (delayed === "attachment") now = new Date(now.getTime() + 31 * 60_000);
+      expect(runtime.attachRun({}, f.runContext).status).toBe("attached");
+      if (delayed === "final") now = new Date(now.getTime() + 31 * 60_000);
+      expect(runtime.completeAgentEnd(f.endEvent, f.runContext).status).toBe("admitted");
+      expect(observed.listQueue()).toHaveLength(1);
+      expect(new AdmissionStore(root, authority).scanGapReceipts().records).toHaveLength(0);
+    }
+  });
+
+  test("actual durable expiry creates one gap and never reopens it from late exact hooks", () => {
+    for (const stage of ["received", "persisted", "run_attached"] as const) {
+      const root = workspace(), first = adapter({workspaceRoot: root}), f = hookFixtures(), admitted: TrustedCompletedTurn[] = [];
+      first.captureMessageReceived(f.receivedEvent, f.receivedContext);
+      if (stage !== "received") first.adoptPersistedUser(f.persistedEvent, {sessionKey});
+      if (stage === "run_attached") first.attachRun({}, f.runContext);
+      const expired = adapter({workspaceRoot: root, admitted, now: () => new Date("2026-08-27T19:35:00.001Z")});
+      expect(expired.reconcileOrphanedCheckpoints()).toMatchObject({gaps: 1, retained: 0});
+      expect(expired.reconcileOrphanedCheckpoints()).toMatchObject({gaps: 0});
+      expect(expired.adoptPersistedUser(f.persistedEvent, {sessionKey}).status).toBe("duplicate");
+      expect(expired.completeAgentEnd(f.endEvent, f.runContext).status).toBe("ignored");
+      expect(admitted).toHaveLength(0);
+      expect(new AdmissionStore(root, authority).scanGapReceipts().records).toMatchObject([{reasonCode: "expired_before_completion"}]);
+    }
+  });
+
+  test("expired durable checkpoints cannot bypass expiry through a late hook without startup reconciliation", () => {
+    for (const stage of ["received", "persisted", "run_attached"] as const) {
+      const root = workspace(), first = adapter({workspaceRoot: root}), f = hookFixtures(), admitted: TrustedCompletedTurn[] = [];
+      first.captureMessageReceived(f.receivedEvent, f.receivedContext);
+      if (stage !== "received") first.adoptPersistedUser(f.persistedEvent, {sessionKey});
+      if (stage === "run_attached") first.attachRun({}, f.runContext);
+      const expired = adapter({workspaceRoot: root, admitted, now: () => new Date("2026-08-27T19:35:00.001Z")});
+      if (stage === "received") expect(() => expired.adoptPersistedUser(f.persistedEvent, {sessionKey})).toThrow();
+      if (stage === "persisted") expect(() => expired.attachRun({}, f.runContext)).toThrow();
+      if (stage === "run_attached") expect(expired.completeAgentEnd(f.endEvent, f.runContext).status).toBe("ignored");
+      expect(admitted).toHaveLength(0);
+      expect(new AdmissionStore(root, authority).scanGapReceipts().records).toMatchObject([{reasonCode: "expired_before_completion"}]);
+    }
+  });
+
+  test("restart preservation never converts a failed or revoked late run into admission", () => {
+    for (const failure of ["failed", "revoked", "source-conflict"] as const) {
+      const root = workspace(), f = hookFixtures(), admitted: TrustedCompletedTurn[] = [];
+      attach(adapter({workspaceRoot: root}));
+      const restored = adapter({workspaceRoot: root, admitted, now: () => new Date("2026-08-24T20:06:00.000Z"),
+        ...(failure === "revoked" ? {binding: null} : {})});
+      if (failure === "failed") expect(restored.completeAgentEnd({...f.endEvent, success: false}, f.runContext).status).toBe("ignored");
+      if (failure === "revoked") expect(() => restored.completeAgentEnd(f.endEvent, f.runContext)).toThrow();
+      if (failure === "source-conflict") expect(() => restored.completeAgentEnd({...f.endEvent,
+        messages: [{role: "user", idempotencyKey: sourceTurnId, content: "changed"}]}, f.runContext)).toThrow();
+      expect(admitted).toHaveLength(0);
+      expect(new AdmissionStore(root, authority).scanGapReceipts().records).toMatchObject([{
+        reasonCode: failure === "failed" ? "run_failed" : failure === "revoked" ? "scope_revoked" : "identity_conflict"}]);
     }
   });
 
@@ -528,11 +592,12 @@ describe("OpenClaw PR2 runtime adapter", () => {
     writeFileSync(join(receiptDir, `${receiptId.slice(7)}.json`), "{broken", "utf8");
 
     expect(adapter({ workspaceRoot: root }).reconcileOrphanedCheckpoints()).toMatchObject({
-      gaps: 1,
+      gaps: 0,
+      retained: 1,
       errors: 1,
       corrupt: 0,
     });
-    expect(store.scanGapReceipts()).toMatchObject({ records: [{ reasonCode: "restart_before_completion" }], corrupt: [{ path: expect.any(String) }] });
+    expect(store.scanGapReceipts()).toMatchObject({ records: [], corrupt: [{ path: expect.any(String) }] });
   });
 
   test("treats an immutable gap receipt as authoritative over a completed spool", () => {

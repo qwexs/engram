@@ -11,7 +11,7 @@ describe("memory worker execution result", () => {
     }).exitCode).toBe(0);
   });
 
-  test.each(["retry", "terminal_failure"] as const)("a current evaluator %s remains an execution error", status => {
+  test.each(["retry", "terminal_failure", "blocked"] as const)("a current evaluator %s remains an execution error", status => {
     expect(memoryWorkerRunResult({ evaluations: [{ status }] })).toEqual({
       status: "error", exitCode: 1, errors: [`evaluation:${status}`],
     });
@@ -27,4 +27,8 @@ describe("memory worker execution result", () => {
       status: "error", exitCode: 1, errors: ["daily_note:retry", "domains:qmd_pending", "evaluation:retry"],
     });
   });
+});
+
+test('a blocked active scope fails execution even when no evaluation ran',()=>{
+ expect(memoryWorkerRunResult({blockers:[{reason:'MODEL_TRANSITION_IDENTITY_CHANGED'}]})).toEqual({status:'error',exitCode:1,errors:['blocked:MODEL_TRANSITION_IDENTITY_CHANGED']});
 });

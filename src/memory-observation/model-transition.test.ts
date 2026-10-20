@@ -64,3 +64,20 @@ test('explicit main topic extension preserves original immutable lineage and rej
   expect(()=>readModelTransition(f.workspace,bad)).toThrow('MODEL_TRANSITION_SCOPE_CHANGED');
  }
 });
+
+test('historical exact group extension authenticates baseline and preserves old lineage', async()=>{
+ const {extendHistoricalModelTransition}=await import('./model-transition.ts');
+ const f=fixture();
+ const binding=(id:string)=>({runtimeSessionKey:`agent:alpha:telegram:group:-123:topic:${id}`,scopeClass:'project',scopeId:`domain:alpha:topic-${id}`,requireOwner:false,allowedChannels:['telegram'],topicDomain:{domain:`topic-${id}`,chatId:'-123',topicId:id}});
+ for(const p of [f.old,f.current]){p.schema='engram.memory-observation-rollout.v4';p.bindings=[binding('1')];p.consumers.dailyNote.qmdBinding={resolver:'exact-session-registry',manifestPath:'/old',workspaceRegistryDigest:sha256('old')};}
+ f.body.previousQuality=null as any;f.body.targetProjectionDigest=sha256(f.current);f.save();
+ const original=JSON.parse(readFileSync(join(f.workspace,'memory-state/memory-observation/model-transition.json'),'utf8'));
+ const next=structuredClone(f.current);next.pluginDigest=sha256('new-release');next.bindings.push(binding('2'));next.consumers.dailyNote.qmdBinding.manifestPath='/new';
+ expect(()=>readModelTransition(f.workspace,next)).toThrow('MODEL_TRANSITION_IDENTITY_CHANGED');
+ const extended=extendHistoricalModelTransition(original,f.current,next);f.put('model-transition.json',extended);
+ expect(readModelTransition(f.workspace,next)?.previousProjection).toEqual(f.old);
+ for(const mutate of [(p:any)=>p.inference.evaluateAfter='2026-10-02T00:00:00Z',(p:any)=>p.bindings[0].requireOwner=true,(p:any)=>p.bindings[1].runtimeSessionKey='agent:other:telegram:group:-123:topic:2',(p:any)=>p.inference.model='other']){
+  const bad=structuredClone(next);mutate(bad);expect(()=>extendHistoricalModelTransition(original,f.current,bad)).toThrow('MODEL_TRANSITION_SCOPE_CHANGED');
+ }
+ const fake=structuredClone(f.current);fake.pluginDigest=sha256('fake');expect(()=>extendHistoricalModelTransition(original,fake,next)).toThrow('MODEL_TRANSITION_IDENTITY_CHANGED');
+});

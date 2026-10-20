@@ -6,13 +6,18 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { BATCH_EVALUATOR_AUTHORITY, deriveBatchObservationId } from "../src/memory-observation/batch-observation.ts";
-import { MemoryObservationLedger, sha256, type JsonValue } from "../src/memory-observation/ledger.ts";
+import { MemoryObservationLedger, sha256, deriveTraceId, type JsonValue } from "../src/memory-observation/ledger.ts";
+import { classifyFleetWorkerOutput } from "../src/memory-observation/fleet-isolation.ts";
 import { configuredTopicBindings } from "../src/memory-observation/topic-bindings.ts";
 
 const roots: string[] = [];
 const repository = resolve(import.meta.dir, "..");
 
-test("a stale transition reports its precise blocker without inference or queue mutation", async () => {
+test.each([
+  ["stale transition", "MODEL_TRANSITION_IDENTITY_CHANGED", "idle"],
+  ["incomplete producer migration", "PRODUCER_MIGRATION_INCOMPLETE", "blocked"],
+  ["invalid producer migration", "PRODUCER_MIGRATION_INVALID", "blocked"],
+] as const)("%s reports its precise blocker without inference or queue mutation", async (kind,reason,status) => {
   const workspace = mkdtempSync(join(tmpdir(), "memory-batch-transition-blocker-")); roots.push(workspace);
   const put = (relative: string, value: unknown) => {
     const path = join(workspace, relative); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value));
@@ -42,16 +47,20 @@ test("a stale transition reports its precise blocker without inference or queue 
     trustedInputs: ["completed-source-turn", "runtime-session-key", "workspace-binding", "source-completion-time"] }, now);
   const queuePath = join(workspace, "memory-state/memory-observation/v1/queues/evaluator", admitted.envelope.traceId.slice(7) + ".json");
   const queueBefore = readFileSync(queuePath, "utf8");
-  put("memory-state/memory-observation/model-transition.json", { schema: "engram.memory-model-transition.v1", digest: sha256("stale") });
+  if(kind==="stale transition")put("memory-state/memory-observation/model-transition.json", { schema: "engram.memory-model-transition.v1", digest: sha256("stale") });
+  else mkdirSync(join(workspace,"memory-state/memory-observation/batch-live-store/memory-batch-live/v1/producer-migrations",sha256(scope).slice(7),kind==="incomplete producer migration"?sha256("migration").slice(7):"invalid-record-name"),{recursive:true});
   const bin = join(workspace, "bin"); mkdirSync(bin);
   writeFileSync(join(bin, "openclaw"), "#!/bin/sh\nexit 91\n", { mode: 0o755 });
   const result = Bun.spawnSync([process.execPath, join(repository, "scripts/memory-observation-batch-worker.ts"), "--workspace", workspace],
     { cwd: repository, env: { ...process.env, PATH: bin + ":" + process.env.PATH } });
-  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  expect(result.exitCode, result.stderr.toString()).toBe(1);
   const report = JSON.parse(result.stdout.toString());
-  expect(report.qualityBlockers).toEqual([{ runtimeSessionKey: scope.runtimeSessionKey, reason: "MODEL_TRANSITION_IDENTITY_CHANGED" }]);
-  expect(report.health.reasons).toContain("MODEL_TRANSITION_IDENTITY_CHANGED");
-  expect(report.evaluation.status).toBe("idle");
+  expect(report.execution.errors).toContain("blocked:"+reason);
+  expect(report.qualityBlockers).toEqual([{ runtimeSessionKey: scope.runtimeSessionKey, reason }]);
+  expect(report.health.reasons).toContain(reason);
+  expect(report.evaluation.status).toBe(status);
+  const fleet=classifyFleetWorkerOutput("main",{exitCode:result.exitCode,output:result.stdout.toString()});
+  expect(fleet.semanticStatus).toBe("blocked");expect(fleet.blockedReasons).toEqual([reason]);
   expect(readFileSync(queuePath, "utf8")).toBe(queueBefore);
 });
 
@@ -147,7 +156,8 @@ describe("memory observation batch worker CLI", () => {
     // The same unresolved historical gap must remain visible without making
     // every empty pass fail and eventually auto-disabling the entire fleet.
     const gapPath = "memory-state/memory-observation/v1/pre-admission/checkpoints/" + "b".repeat(64) + ".json";
-    put(gapPath, { stage: "terminal_gap", createdAt: "2026-08-01T00:00:00.000Z" });
+    const gapBody={schema:"engram.memory-admission-checkpoint.v1",candidateId:sha256("historical-gap"),scope:{workspaceId:"project",runtimeSessionKey:bindings[0]!.runtimeSessionKey,scopeClass:bindings[0]!.scopeClass,scopeId:bindings[0]!.scopeId},stage:"terminal_gap",createdAt:"2026-08-01T00:00:00.000Z",updatedAt:"2026-08-01T00:00:00.000Z"};
+    put(gapPath,{...gapBody,checkpointDigest:sha256(gapBody)});
     const gapBefore = readFileSync(join(workspace, gapPath), "utf8");
     for (let pass = 0; pass < 2; pass++) {
       const historical = run(); expect(historical.exitCode).toBe(0);
@@ -158,7 +168,7 @@ describe("memory observation batch worker CLI", () => {
     }
     expect(readFileSync(join(workspace, gapPath), "utf8")).toBe(gapBefore);
     put("memory-state/memory-observation/v1/queues/evaluator/" + "a".repeat(64) + ".json",
-      { schema: "engram.memory-observation-ledger-queue.v1", status: "queued" });
+      { schema: "engram.memory-observation-ledger-queue.v1", traceId:sha256("pending"),status: "queued" });
     const pending = run(); expect(pending.exitCode).not.toBe(0);
     expect(pending.stderr.toString()).toContain("topic host route read-back failed");
   });
@@ -196,7 +206,8 @@ describe("memory observation batch worker CLI", () => {
     // The same unresolved historical gap must remain visible without making
     // every empty pass fail and eventually auto-disabling the entire fleet.
     const gapPath = "memory-state/memory-observation/v1/pre-admission/checkpoints/" + "b".repeat(64) + ".json";
-    put(gapPath, { stage: "terminal_gap", createdAt: "2026-08-01T00:00:00.000Z" });
+    const gapBody={schema:"engram.memory-admission-checkpoint.v1",candidateId:sha256("historical-gap"),scope:{workspaceId:"project",runtimeSessionKey:bindings[0]!.runtimeSessionKey,scopeClass:bindings[0]!.scopeClass,scopeId:bindings[0]!.scopeId},stage:"terminal_gap",createdAt:"2026-08-01T00:00:00.000Z",updatedAt:"2026-08-01T00:00:00.000Z"};
+    put(gapPath,{...gapBody,checkpointDigest:sha256(gapBody)});
     const gapBefore = readFileSync(join(workspace, gapPath), "utf8");
     for (let pass = 0; pass < 2; pass++) {
       const historical = run(); expect(historical.exitCode).toBe(0);
@@ -207,7 +218,7 @@ describe("memory observation batch worker CLI", () => {
     }
     expect(readFileSync(join(workspace, gapPath), "utf8")).toBe(gapBefore);
     put("memory-state/memory-observation/v1/queues/evaluator/" + "a".repeat(64) + ".json",
-      { schema: "engram.memory-observation-ledger-queue.v1", status: "queued" });
+      { schema: "engram.memory-observation-ledger-queue.v1", traceId:sha256("pending"),status: "queued" });
     const pending = run(); expect(pending.exitCode).not.toBe(0);
     expect(pending.stderr.toString()).toContain("topic host route read-back failed");
   });
@@ -276,8 +287,8 @@ describe("memory observation batch worker CLI", () => {
       captureOwnership: { owner: "observer", effectiveAfter: "2026-09-03T19:26:12.000Z", foregroundDailyNoteCapture: "disabled" },
       approvedBy: "operator", approvedAt: "2026-09-03T19:26:12.000Z",
     }));
-    const traceId = sha256("superseded-scope-trace");
     const sourceTurnId = `channel-user:v1:${"d".repeat(64)}`;
+    const traceId=deriveTraceId("main","agent:main:telegram:direct:100000001",sourceTurnId);
     const identity = {
       bundleId: sha256("superseded-scope-bundle"),
       groupId: "group-1",
@@ -304,6 +315,8 @@ describe("memory observation batch worker CLI", () => {
       evaluationPolicyDigest: identity.evaluationPolicyDigest,
       completedAt: "2026-09-02T11:22:35.729Z",
     };
+    const envelopePath=join(workspace,"memory-state/memory-observation/v1/envelopes",traceId.slice(7)+".json");mkdirSync(dirname(envelopePath),{recursive:true});
+    writeFileSync(envelopePath,JSON.stringify({schema:"engram.memory-observation-job.v1",traceId,sourceTurnId,scope:observationBase.scope,sourceDigest:sha256("source"),evidenceDigest:sha256("evidence"),policyDigest:sha256("source-policy"),sourceCompletedAt:observationBase.sourceCompletedAt,admittedAt:observationBase.completedAt}));
     const observation = { ...observationBase, observationDigest: sha256(observationBase as unknown as JsonValue) };
     const observationPath = join(workspace, "memory-state", "memory-observation", "v1", "observations", "batch", `${observation.observationId.slice(7)}.json`);
     mkdirSync(dirname(observationPath), { recursive: true });

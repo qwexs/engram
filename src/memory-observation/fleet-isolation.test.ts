@@ -96,3 +96,15 @@ test("real child drains stdout and stderr concurrently with bounded tails", asyn
   expect(result.exitCode).toBe(0); expect(result.output.length).toBeLessThanOrEqual(12000);
   expect(result.error.length).toBeLessThanOrEqual(2000);
 });
+
+test('zero-exit blocked worker is durable and notifies; malformed or foreign output cannot be green',async()=>{
+ const {classifyFleetWorkerOutput}=await import('./fleet-isolation.ts');
+ const {args,messages}=fixture();
+ const output=JSON.stringify({schema:'engram.memory-batch-live-run.v1',workspaceId:'a',execution:{status:'ok',errors:[]},qualityBlockers:[{reason:'MODEL_TRANSITION_IDENTITY_CHANGED'}]});
+ const result=classifyFleetWorkerOutput('a',{exitCode:0,output});
+ expect(result.semanticStatus).toBe('blocked');
+ const report=await reportFleetResults({...args,results:[{...result,workspaceId:'a'},{workspaceId:'b',exitCode:0}]});
+ expect(report.status).toBe('partial_failure');expect(messages[0]).toContain('MODEL_TRANSITION_IDENTITY_CHANGED');
+ expect(classifyFleetWorkerOutput('foreign',{exitCode:0,output}).semanticStatus).toBe('unverified');
+ expect(classifyFleetWorkerOutput('a',{exitCode:0,output:output.slice(-20)}).semanticStatus).toBe('unverified');
+});

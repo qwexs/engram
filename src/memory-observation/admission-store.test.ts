@@ -23,6 +23,7 @@ function workspace(): string {
   const path = join(tmpdir(), `engram-admission-store-${crypto.randomUUID()}`);
   mkdirSync(path, { recursive: true });
   roots.push(path);
+  writeFileSync(join(path, "engram.json"), JSON.stringify({ workspace: { id: "fixture-main" } }));
   return path;
 }
 

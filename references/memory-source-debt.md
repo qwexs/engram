@@ -77,6 +77,31 @@ No path here writes KG v3, edits legacy KG v2, grants cross-workspace retrieval,
 or promotes administrative metadata to domain facts. Proof of indexed capture
 also does not prove that a later agent answer retrieved or used the memory.
 
+## Operator cessation of recovery (not closure)
+
+An explicit trusted operator request may stop recovery of a finite, reviewed,
+inactive historical set. Use `scripts/memory-source-debt-writeoff.ts --workspace
+<absolute-owner-workspace> --request <private-exact-request.json>` to plan;
+append `--apply` to persist the immutable decision. The request pins workspace,
+debt identity, sorted exact failure record IDs, historical cutoff, a bounded
+reason code, the review evidence digest, authorizing actor/source and timestamp.
+Keep the review artifact in the owner's private operational contour.
+
+Receipts live separately in `memory-state/memory-observation/source-debt-writeoffs/v1/`.
+They do not edit failures, semantic closures, queues, raw evidence, notes or KG.
+Only inactive history is accepted: pending jobs, nonterminal evaluation/daily
+effects, deferred/unresolved context and recovered admissions needing proof are
+rejected. This does not introduce an alternative automatic retry path.
+
+The Bun Worker snapshot adds `writtenOffIds`, disjoint from `closedIds` and
+`openIds`. Host capture/purge remains unchanged and retains the full raw debt;
+the overlay is intentionally not bundled into the host plugin. Fleet incidents
+exclude written-off identities from recurring recovery counts, but never call
+them restored. Additional failure records or reactivation of the same source
+invalidate the old waiver and reopen its identity. Different/new sources are
+unaffected. Missing or corrupt waiver metadata fails closed. Historical raw
+health counters can remain degraded; a write-off does not certify system health.
+
 ## Verification
 
 Run from the repository root:

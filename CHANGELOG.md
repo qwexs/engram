@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **feat(memory): account for explicit historical recovery write-offs.** An
+  operator-reviewed exact inactive source set may receive an immutable cessation
+  receipt without changing raw failures, queues or semantic closure. Worker and
+  fleet snapshots distinguish written-off from restored sources; reactivation,
+  additional failures or invalid metadata reopen debt or fail closed. Host
+  admission and evidence-purge accounting remain unchanged.
+
 - **fix(memory): finish authenticated historical admission recovery.** Terminal
   retry recognizes a verified native-history admission without rewriting its
   original terminal-gap checkpoint or treating its exact provenance receipts as

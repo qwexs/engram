@@ -13,3 +13,24 @@ test('requeue/open debt and stale/corrupt proof never emit green',async()=>{cons
 test('partial source closure is explicit and cannot clear remaining debt',async()=>{const f=fixture(),id2=sha256('second-source');await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot(true,100000,{debtIds:[id,id2],openIds:[id,id2]})}]});await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot(true,100000,{debtIds:[id,id2],openIds:[id2],closedIds:[id]})}]});expect(f.messages.at(-1)).toContain('частичное восстановление');expect(f.messages.at(-1)).toContain('alpha: 1');});
 test('failed notification does not acknowledge closure and next pass retries',async()=>{const f=fixture();await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot()}]});await expect(reportFleetCompleteness({...f,notify:async()=>{throw Error('send_failed');},results:[{workspaceId:'alpha',snapshot:snapshot(false)}]})).rejects.toThrow('send_failed');await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot(false)}]});expect(f.messages.at(-1)).toContain('источников восстановлена');});
 test('malformed persisted incident fails closed before delivery',async()=>{const f=fixture();writeFileSync(join(f.config.stateDir,'memory-incidents.json'),'broken');await expect(reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot(false)}]})).rejects.toThrow();expect(f.messages).toHaveLength(0);});
+test('write-off stops reminders for exact set without recovery claim; new error still alerts',async()=>{
+ const f=fixture();await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot()}]});
+ const waived=snapshot(true,100000,{openIds:[],closedIds:[],writtenOffIds:[id]});
+ const r=await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:waived}]});
+ expect(r.status).toBe('written_off');expect(f.messages.at(-1)).toContain('Списано оператором: 1');expect(f.messages.at(-1)).not.toContain('источников восстановлена');
+ const count=f.messages.length;
+ await reportFleetCompleteness({...f,now:10000000,results:[{workspaceId:'alpha',snapshot:snapshot(true,10000000,{openIds:[],closedIds:[],writtenOffIds:[id]})}]});
+ expect(f.messages).toHaveLength(count);
+ const id2=sha256('new-error');await reportFleetCompleteness({...f,now:10000001,results:[{workspaceId:'alpha',snapshot:snapshot(true,10000001,{debtIds:[id,id2],openIds:[id2],closedIds:[],writtenOffIds:[id]})}]});
+ expect(f.messages).toHaveLength(count+1);expect(f.messages.at(-1)).toContain('alpha: 1');
+});
+test('overlap and forged write-off snapshot never clear incident',async()=>{
+ const f=fixture();await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot()}]});
+ const r=await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot(true,100000,{writtenOffIds:[id]})}]});
+ expect(r.remaining).toBe(1);expect(r.unverified).toEqual(['alpha']);
+});
+test('same identity reopens after invalidated write-off; proof closure remains separate',async()=>{
+ const f=fixture();await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot(true,100000,{openIds:[],writtenOffIds:[id]})}]});
+ const r=await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot()}]});
+ expect(r.remaining).toBe(1);expect(r.writtenOff).toBe(0);expect(f.messages.at(-1)).toContain('alpha: 1');
+});

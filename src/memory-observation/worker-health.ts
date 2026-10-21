@@ -210,7 +210,7 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
     && Number.isFinite(Date.parse(row.value.claimedAt)) && now.getTime() - Date.parse(row.value.claimedAt) > claimTtlSeconds * 1000).length;
   const stalled = Object.values(stages).some(stage => stage.stale || stage.overdue);
   const totalPending = pending.length + dailyPending.length + admissionPending.length + batchPending.length + completionPending;
-  return { completeness, sourceDebtOpen: completeness.openIds.length, sourceDebtClosed: completeness.closedIds.length,
+  return { completeness, sourceDebtOpen: completeness.openIds.length, sourceDebtClosed: completeness.closedIds.length, sourceDebtWrittenOff: completeness.writtenOffIds?.length ?? 0,
     status: completeness.corrupt || completeness.openIds.length || failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims || completionUnresolved || completionBlocked ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending || completionPending ? "pending" : "ok",
     completionPending, completionBlocked, completionUnresolved, historicalCompletionUnresolved, accountedCompletionUnresolved,
     pending: pending.length, totalPending, waitingContext: waiting.length, expiredWaitingContext, terminalFailures: failures.length, admissionGaps: gaps.length,

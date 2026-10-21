@@ -1,5 +1,7 @@
 import type { Digest } from "../memory-observation/ledger.ts";
 import { canonicalizeJcs, sha256Digest } from "./handoff-v2.ts";
+import { BATCH_EVALUATOR_AUTHORITY } from "../memory-observation/batch-observation.ts";
+import { CONTEXTUAL_EVALUATOR_AUTHORITY } from "../memory-observation/contextual-batch-observation.ts";
 
 export const OLL_OBSERVER_RECEIPT_REGISTRY_V1_SCHEMA = "oll.memory-observer-receipt-producer-registry.v1" as const;
 
@@ -18,7 +20,7 @@ export type ObserverReceiptProducerRefV1 = {
 
 export type ObserverReceiptProducerAdmissionV1 = {
   producer: ObserverReceiptProducerRefV1;
-  observationSchemas: Array<"engram.memory-batch-observation.v1">;
+  observationSchemas: Array<"engram.memory-batch-observation.v1" | "engram.memory-batch-observation.v2">;
   allowedObservationClasses: Array<"episodic.decision" | "episodic.learning">;
   allowedScopeClasses: ObserverReceiptScopeV1["scopeClass"][];
   exactScopeAllowlist: ObserverReceiptScopeV1[];
@@ -90,8 +92,17 @@ export function validateObserverReceiptProducerRegistryV1(value: unknown): Obser
     const identity = `${ref.id}\0${ref.version}\0${ref.digest}`;
     invariant(!identities.has(identity), `observer receipt producer registry entry ${index} is duplicated`);
     identities.add(identity);
-    invariant(Array.isArray(entry.observationSchemas) && entry.observationSchemas.length === 1
-      && entry.observationSchemas[0] === "engram.memory-batch-observation.v1", `observer receipt producer registry entry ${index} observationSchemas are invalid`);
+    invariant(Array.isArray(entry.observationSchemas) && entry.observationSchemas.length > 0
+      && entry.observationSchemas.every(schema => schema === "engram.memory-batch-observation.v1" || schema === "engram.memory-batch-observation.v2")
+      && new Set(entry.observationSchemas).size === entry.observationSchemas.length,
+    `observer receipt producer registry entry ${index} observationSchemas are invalid`);
+    for (const [producer, schema] of [
+      [BATCH_EVALUATOR_AUTHORITY, "engram.memory-batch-observation.v1"],
+      [CONTEXTUAL_EVALUATOR_AUTHORITY, "engram.memory-batch-observation.v2"],
+    ] as const) {
+      if (ref.id === producer.id && ref.version === producer.version && ref.digest === producer.digest)
+        invariant(entry.observationSchemas.includes(schema), `observer receipt producer registry entry ${index} producer/schema mismatch`);
+    }
     invariant(Array.isArray(entry.allowedObservationClasses) && entry.allowedObservationClasses.length > 0
       && entry.allowedObservationClasses.every((item) => item === "episodic.decision" || item === "episodic.learning")
       && new Set(entry.allowedObservationClasses).size === entry.allowedObservationClasses.length,

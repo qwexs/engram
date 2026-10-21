@@ -24,6 +24,7 @@ import { auditHeartbeatScheduler, auditMemoryWorkerRuntime, auditMissingWorkerPr
 import { auditQmdScheduler, auditWorkshopReviews } from "./qmd-scheduler-watchdog.js";
 import { auditKgV3 } from "../../src/kg-v3/watchdog.ts";
 import { auditMemoryObservation } from "../../src/memory-observation/watchdog.ts";
+import { auditOllObserverBridge } from "../../src/oll/observer-receipt-watchdog.ts";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_DIR = resolve(MODULE_DIR, "..");
@@ -1924,6 +1925,7 @@ export function auditWorkspace(workspaceInput, options = {}) {
     .map(f => ({ ...f, level: f.level === "warning" ? "warn" : f.level, fixable: false })));
   findings.push(...auditMemoryObservation(workspace, { now: options.now, expectedPluginDigest: options.runtime?.plugin?.installedDigest ?? undefined }));
   checkOllState(workspace, findings, engram);
+  findings.push(...auditOllObserverBridge(workspace, { config: engram, now: options.now }));
   checkSkillGeneratedArtifacts(findings, options);
   if (options.qmd !== false) {
     checkQmd(workspace, registry, engram, findings, options);

@@ -252,6 +252,27 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
     expect(runtime.events).toEqual([]);
   });
 
+  test("materialize fails closed on a missing Worker bridge instead of reporting an empty successful preflight", async () => {
+    const env = environment([{ id: "alpha", actionable: false }]);
+    const workspace = env.workspaces.alpha;
+    configureCandidateCompiler(workspace, "alpha", "materialize", { evidence: false });
+    write(join(workspace, "memory-state/memory-observation/projection.json"), {
+      schema: "engram.memory-observation-rollout.v2", workspaceId: "alpha", enabled: true, mode: "canary",
+      bindings: [{ runtimeSessionKey: "agent:alpha:main", scopeClass: "self", scopeId: "workspace:alpha", requireOwner: false, allowedChannels: ["openclaw"] }],
+      pluginDigest: sha256Digest("plugin"), inference: { provider: "openai", model: "openai/test", evaluateAfter: "2026-08-10T00:00:00Z" },
+      evaluation: { mode: "batch-cron", policyDigest: sha256Digest("evaluation"), batch: { sourcePolicyDigest: sha256Digest("source"), inactivityGapSeconds: 60, maxTurns: 20, maxEvidenceBytes: 32768, maxAgeSeconds: 3600, maxInferenceCallsPerRun: 1, schedulerId: "worker" } },
+      limits: { evidenceTtlHours: 72, maxJobs: 1000, maxBytes: 10000, maxQueueAgeHours: 168, maxAttempts: 2, claimTtlSeconds: 300, maxInferenceCalls: 1 },
+      consumers: { dailyNote: { mode: "canary", applyAfter: "2026-08-10T00:00:00Z", timezone: "UTC", allowedObservationClasses: ["episodic.event", "episodic.decision"], maxAppliesPerWake: 1 } },
+      captureOwnership: { owner: "observer", effectiveAfter: "2026-08-10T00:00:00Z", foregroundDailyNoteCapture: "disabled" }, approvedBy: "operator", approvedAt: "2026-08-10T00:00:00Z",
+    });
+    const runtime = successRuntime(), report = await runNightlyCoordinator(coordinatorOptions(env, runtime));
+    expect(report.failed).toEqual(["alpha"]); expect(report.completed).toEqual([]);
+    expect(report.skipped).toEqual([]); expect(report.spawned).toBe(0); expect(runtime.events).toEqual([]);
+    const events = readdirSync(join(nightlyBatchDirectory(env.stateRoot + "/oll-nightly", report.batchId), "events"))
+      .map(name => JSON.parse(readFileSync(join(nightlyBatchDirectory(env.stateRoot + "/oll-nightly", report.batchId), "events", name), "utf8")));
+    expect(events.some(event => event.errorClass === "observer_bridge_invalid")).toBe(true);
+  });
+
   test("missing and explicit disabled candidate config preserve the legacy context and v2 handoff path", async () => {
     const missing = environment([{ id: "alpha" }]);
     let missingRequest: NightlySpawnRequestV1 | null = null;

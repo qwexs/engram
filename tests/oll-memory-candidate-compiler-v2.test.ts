@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { sha256Digest } from "../src/oll/handoff-v2";
-import { compileMemoryCandidateReportV2, digestFileTree } from "../src/oll/memory-candidate-compiler-v2";
+import { compileMemoryCandidateReportV2, digestFileTree, verifyObserverReceiptAdmission } from "../src/oll/memory-candidate-compiler-v2";
+import { CONTEXTUAL_EVALUATOR_AUTHORITY } from "../src/memory-observation/contextual-batch-observation.ts";
 import {
   MEMORY_CANDIDATE_POLICY_V2_SCHEMA,
   MEMORY_CANDIDATE_RANKING_POLICY_V1_SCHEMA,
@@ -435,6 +436,27 @@ describe("OLL memory candidate Phase 1 compiler", () => {
     const mismatchedReadBack = compile(root, p, registry, "2026-08-15T00:00:00.000Z", producerRegistry);
     expect(mismatchedReadBack.occurrences).toEqual([]);
     expect(mismatchedReadBack.rejectionCounts.invalid_schema).toBe(1);
+  });
+
+  test("v2 Worker epoch needs its own explicit schema/producer grant and canonical receipt proof", () => {
+    const { root, policy: p, registry } = workspace({ minimal: true });
+    const entryId = sha256Digest("contextual-entry"), relativePath = "memory/agent-main/main/2026-08-14.md";
+    const exactScope: ObserverReceiptScopeV1 = { workspaceId: "main", runtimeSessionKey: "agent:main:telegram:direct:100000001", scopeClass: "self", scopeId: "telegram:100000001" };
+    const evaluationPolicyDigest = sha256Digest("contextual-policy"), statement = "Keep the source-approved local writing constraint.";
+    const original = batchApplyReceipt({ entryId, relativePath, statement, scope: exactScope, evaluationPolicyDigest });
+    const receipt = { ...original, sourceProvenance: { ...original.sourceProvenance, producer: CONTEXTUAL_EVALUATOR_AUTHORITY } };
+    const path = join(root, "memory-state/memory-observation/v1/receipts/by-entry", entryId.slice(7) + ".json");
+    write(join(root, relativePath), `## Decisions\n<!-- engram-entry:${entryId} -->\n- ${statement}\n`); writeJson(path, receipt);
+    const producerRegistry = bridgeRegistry(exactScope, evaluationPolicyDigest);
+    expect(compile(root, p, registry, "2026-08-15T00:00:00.000Z", producerRegistry).rejectionCounts.unsupported_source).toBe(1);
+    producerRegistry.entries[0]!.producer = CONTEXTUAL_EVALUATOR_AUTHORITY;
+    producerRegistry.entries[0]!.observationSchemas = ["engram.memory-batch-observation.v2"];
+    producerRegistry.digest = observerReceiptProducerRegistryDigestV1(producerRegistry);
+    expect(compile(root, p, registry, "2026-08-15T00:00:00.000Z", producerRegistry).occurrences).toHaveLength(1);
+    const options = { workspace: root, workspaceId: "main", observerReceiptProducerRegistry: producerRegistry };
+    expect(verifyObserverReceiptAdmission(options, relativePath, "decisions", entryId)).toEqual({ status: "admitted" });
+    write(join(root, relativePath), `## Decisions\n<!-- engram-entry:${entryId} -->\n- tampered\n`);
+    expect(verifyObserverReceiptAdmission(options, relativePath, "decisions", entryId)).toEqual({ status: "rejected", reason: "invalid_schema" });
   });
 
   test("keeps report-only batch admission out of materialize and denies scope or evaluator-policy drift", () => {

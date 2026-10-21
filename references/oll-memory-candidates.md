@@ -85,6 +85,47 @@ reconciler so interrupted older runs remain recoverable.
 
 ## Guarded rollout and rollback
 
+### Receipt-backed Worker sources
+
+Worker capture and OLL admission are separate contracts. Enabling a Worker,
+adding a source topic or changing its producer/model/prompt does not itself
+grant OLL receipt authority. A healthy/idle nightly batch cannot prove this
+bridge is intact. Watchdog checks it with `WD-OLL-016` through `WD-OLL-022`.
+In `materialize` mode the nightly coordinator also fails the affected workspace
+with `observer_bridge_invalid` before selection/dispatch; it cannot call a
+broken active bridge a successful empty-source preflight. Shadow compilation
+retains its diagnostic-only contract and cannot block ordinary behavioral OLL.
+
+Use the explicit local provisioning tool for an already enabled nightly
+compiler and its existing positive daily source policy:
+
+```bash
+bun scripts/oll-observer-bridge.ts check --workspace /absolute/workspace
+bun scripts/oll-observer-bridge.ts plan --workspace /absolute/workspace \
+  --plan-file /private/reviewed-bridge-plan.json
+bun scripts/oll-observer-bridge.ts apply \
+  --plan-file /private/reviewed-bridge-plan.json --ack-apply
+```
+
+The plan admits only the pinned batch v1/contextual v2 producer identities,
+the existing exact source scopes and the Worker's verified readable policies
+(including contextual prompt/reasoning and model-transition lineage). A bare
+base evaluation digest is not sufficient for contextual v2 receipts. Historical
+policy grants require the compiler's canonical receipt/provenance/read-back
+verification; arbitrary discovered receipt metadata is never trusted.
+Both schemas are explicit in the registry; existing v1-only registries remain
+valid but do not implicitly authorize v2 producers.
+
+Planning is report-only. Apply changes only the receipt registry, under
+config/projection/quality/model-transition CAS, with digest and read-back checks.
+It does not enable disabled OLL, expand source policy, capture new decisions,
+materialize candidates, inject rules, dispatch models or send notifications.
+Keep the pre-apply registry/config for rollback. After a Worker deployment,
+repeat `check` and report-only compilation before declaring OLL healthy.
+
+Old single-turn receipts remain outside this batch bridge. Admission success
+does not override sensitive-text, time, scope, quota or model-action checks.
+
 Phase 5 adds `scripts/oll-memory-candidate-rollout.ts` with read-only `plan`,
 `status`, and `barrier` commands plus acknowledgement-gated `apply` and
 `rollback`. Evidence is byte-digest bound. An enabled config without a matching

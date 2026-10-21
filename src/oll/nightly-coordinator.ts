@@ -17,6 +17,7 @@ import { inspectCandidateCompilerProjectionV1 } from "./memory-candidate-rollout
 import { assessCandidateSelectionV1, materializeCandidateReportV2, readCandidateProjectionV1 } from "./memory-candidate-store-v2";
 import { applyCandidateHandoffV3 } from "./memory-candidate-runtime-v2";
 import type { ObserverReceiptProducerRegistryV1 } from "./observer-receipt-bridge-v1.ts";
+import { auditOllObserverBridge } from "./observer-receipt-watchdog.ts";
 
 type BatchTransition =
   | "pending" | "reconciling" | "compiling" | "preflight" | "skipped" | "dispatching"
@@ -462,6 +463,14 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
           window,
         });
         if (candidatePolicy?.mode === "materialize") {
+          const bridgeErrors = auditOllObserverBridge(workspace.workspacePath, { config: workspace.config, now: new Date(snapshotAt) })
+            .filter(finding => finding.level === "error");
+          if (bridgeErrors.length) {
+            transition("failed", { failed: [...batch.failed, workspaceId], ...clearedActive() }, "observer_bridge_invalid", {
+              codes: [...new Set(bridgeErrors.map(finding => finding.code))],
+            });
+            continue;
+          }
           try {
             const rolloutProjection = inspectCandidateCompilerProjectionV1({ workspace: workspace.workspacePath, workspaceId });
             if (!rolloutProjection.consistent || rolloutProjection.mode !== "materialize") {

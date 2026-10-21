@@ -371,8 +371,10 @@ function observerCanonicalEntry(source: StableSource, destinationEntryId: Digest
   return { rendered: rendered.join("\n"), statement: statement.join("\n") };
 }
 
+type ObserverReceiptAdmissionOptions = Pick<CompileMemoryCandidateReportV2Options, "workspace" | "workspaceId" | "observerReceiptProducerRegistry" | "executionMode">;
+
 function observerEntryAdmission(
-  options: CompileMemoryCandidateReportV2Options,
+  options: ObserverReceiptAdmissionOptions,
   source: StableSource,
   section: "decisions" | "learnings",
   destinationEntryId: Digest,
@@ -446,6 +448,23 @@ function observerEntryAdmission(
   } catch {
     return { status: "rejected", reason: "invalid_schema" };
   }
+}
+
+/** Content-free canonical receipt verification for explicit bridge provisioning.
+ * Shares the compiler's exact receipt/provenance/read-back validator. It does
+ * not bypass source ranking, sensitive-text filters or candidate scope policy. */
+export function verifyObserverReceiptAdmission(
+  options: ObserverReceiptAdmissionOptions,
+  sourceRelativePath: string,
+  section: "decisions" | "learnings",
+  destinationEntryId: Digest,
+): { status: "admitted" } | { status: "rejected"; reason: CandidateReasonCode } {
+  try {
+    if (!DIGEST_RE.test(destinationEntryId)) return { status: "rejected", reason: "invalid_schema" };
+    const source = stableRead(options.workspace, join(options.workspace, sourceRelativePath));
+    const result = observerEntryAdmission(options, source, section, destinationEntryId);
+    return result.status === "admitted" ? { status: "admitted" } : result;
+  } catch { return { status: "rejected", reason: "invalid_schema" }; }
 }
 
 function parseDailyFile(options: CompileMemoryCandidateReportV2Options, session: CandidateSourcePolicyV2["daily"][number], source: StableSource, occurrences: EvidenceOccurrenceV1[], rejections: Partial<Record<CandidateReasonCode, number>>): void {

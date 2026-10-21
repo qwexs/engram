@@ -230,6 +230,30 @@ These checks are read-only. Repair is performed only by the explicit
 `oll-legacy-cutover.ts` and `oll-rollout.ts` workflows, which produce backup,
 quarantine, release, and rollback evidence. Watchdog never performs rollout.
 
+### Worker → OLL receipt admission
+
+The main audit always checks the authority bridge independently of heartbeat
+state, cron success and candidate thresholds. Only positive-allowlisted daily
+Decisions/Learnings are considered. Canonical entries may be read to distinguish
+integrity debt from authority drift; no chat or note text appears in the report.
+
+- `WD-OLL-016` — active observer-owned daily sources lack the OLL receipt registry,
+  including before the first receipt is produced.
+- `WD-OLL-017` — registry schema, digest or workspace identity is invalid.
+- `WD-OLL-018` — current applicator, exact source scope/class, evaluator policy or
+  compiler execution mode is not admitted.
+- `WD-OLL-019` — persisted allowlisted applied decisions/learnings fail the
+  bridge gates (producer epoch, policy, scope, class, applicator or rollout).
+- `WD-OLL-020` — bridge configuration, projection or receipt metadata cannot be
+  fully inspected. Failure stays visible without printing raw JSON/content.
+- `WD-OLL-021` — informational: nightly/compiler is disabled; no automatic enable.
+- `WD-OLL-022` — content-free counts. Passing admission is not evidence of full
+  canonical-source validation, candidate selection, evaluation or rule injection.
+- `WD-OLL-023` — historical receipts fail canonical-source verification and are
+  excluded without widening trust; investigate Worker integrity debt separately.
+
+The auditor never grants trust, edits registries, reruns OLL or activates rules.
+
 ### KG schema and likely pollution
 
 - `WD-KG-001` — invalid `items.json` or missing required v2 fields.

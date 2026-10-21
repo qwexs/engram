@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **fix(oll): verify and provision exact Worker receipt authority.** Explicit
+  bridge planning admits pinned batch v1/contextual v2 producers and verified
+  current or historical evaluation policies under exact source scopes. Apply
+  updates only the registry with configuration, projection and quality/model
+  lineage CAS and read-back. Content-free watchdog checks expose missing or
+  drifting authority; materializing nightly runs fail visibly instead of
+  reporting an invalid bridge as an empty successful batch. Shadow diagnostics,
+  canonical-source validation and rule-activation authorization stay separate.
+
 - **feat(memory): account for explicit historical recovery write-offs.** An
   operator-reviewed exact inactive source set may receive an immutable cessation
   receipt without changing raw failures, queues or semantic closure. Worker and

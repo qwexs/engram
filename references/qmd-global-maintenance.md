@@ -10,6 +10,15 @@ status other than `completed` throws and fails the cron. Secrets stay in the
 managed exec environment; they are never copied into command env, script or files.
 The simple `command` runner does not provide the same environment contract.
 
+The coordinator caps embedding document batches at one document using QMD's
+documented `--max-docs-per-batch` option. Override explicitly with
+`--embed-max-docs-per-batch <1..64>`. Only the embed command changes; index,
+collection scope, provider/model, free-tier rate limits, timeout and inherited
+managed credentials stay unchanged. The adjusted invocation is freshly
+authorized, never shell-patched or force-embedded. Partial/failed embeddings
+remain failures with dirty state retained. Structured reports flush before the
+process exits, including when redirected to the scheduler report file.
+
 ```bash
 # Review; dry-run does not read/change cron or create files.
 bun skills/engram/scripts/install-qmd-maintenance-cron.js \

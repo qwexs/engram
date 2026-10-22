@@ -7,6 +7,7 @@ import { reconcileIndexHandoffs } from "../src/qmd/index-provenance.ts";
 import { markGlobalQmdBackfill, markGlobalQmdInitialSync, runGlobalQmdMaintenance } from "../src/qmd/maintenance-adapter.ts";
 import { resolveQmdMaintenanceStateRoot } from "../src/qmd/maintenance-integration.ts";
 import { readQmdMaintenanceState } from "../src/qmd/maintenance.ts";
+import { boundedMaintenanceEmbed } from "../src/qmd/maintenance-embed-batch.ts";
 
 type Options = Record<string, string | boolean>;
 
@@ -60,7 +61,7 @@ if (options.help || options.h) {
   console.log(`qmd-maintenance-coordinator
 
 Usage:
-  bun scripts/qmd-maintenance-coordinator.ts --manifest <path> --workspace <path> [--collections <a,b,...>] [--initial-backfill|--initial-sync] [--allow-partial-dirty-scope] [--state-root <path>] [--timeout-ms <ms>]
+  bun scripts/qmd-maintenance-coordinator.ts --manifest <path> --workspace <path> [--collections <a,b,...>] [--initial-backfill|--initial-sync] [--allow-partial-dirty-scope] [--state-root <path>] [--timeout-ms <ms>] [--embed-max-docs-per-batch <1..64>]
 
 The manifest may be a global registry or a migration/provisioning manifest
 containing a registry. This command is the only coordinated execution entry
@@ -102,6 +103,7 @@ try {
       workspace, collections, expectedIndex: registry.index.name, trustedCollections, stateRoot,
     })
     : undefined;
+  const embedBatch = options["embed-max-docs-per-batch"] === undefined ? 1 : Number(options["embed-max-docs-per-batch"]);
   const result = await runGlobalQmdMaintenance({
     workspace,
     collections,
@@ -110,6 +112,7 @@ try {
     timeoutMs,
     allowPartialDirtyScope: options["allow-partial-dirty-scope"] === true,
     trustedCollections,
+    execute: boundedMaintenanceEmbed(embedBatch),
   });
   const context = resolveQmdContext({ value: workspace, source: "explicit" });
   const maintenanceState = readQmdMaintenanceState(
@@ -139,11 +142,12 @@ try {
   });
   console.log(JSON.stringify({ ...result, provenance, ...(backfill ? { backfill } : {}), ...(initialSync ? { initialSync } : {}) }));
   const provenanceFailed = provenance.some((entry) => entry.failed > 0);
-  process.exit(result.status === "error" || result.status === "partial" || provenanceFailed ? 1 : 0);
+  // Allow large structured reports redirected to a file to flush before exit.
+  process.exitCode = result.status === "error" || result.status === "partial" || provenanceFailed ? 1 : 0;
 } catch (error) {
   console.error(JSON.stringify({
     schema: "engram.qmd.maintenance-cli-error.v1",
     error: error instanceof Error ? error.message : String(error),
   }));
-  process.exit(1);
+  process.exitCode = 1;
 }

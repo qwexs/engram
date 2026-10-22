@@ -38,7 +38,8 @@ try {
   const completeness = isolation && completenessOwners.length ? await reportFleetCompleteness({config:isolation,
     results:completenessOwners.map(workspaceId=>{
       const entry=manifest.workspaces.find((w:any)=>w.id===workspaceId);
-      try{return {workspaceId,snapshot:sourceDebtSnapshot(entry.path)};}catch{return {workspaceId};}
+      const execution=results.find(r=>r.workspaceId===workspaceId);
+      try{return {workspaceId,snapshot:sourceDebtSnapshot(entry.path),execution};}catch{return {workspaceId,execution};}
     }),notify:notifyFleetOperator}) : undefined;
   process.exitCode = report?.exitCode ?? (results.some(r => r.exitCode !== 0 || r.timedOut || r.semanticStatus !== 'ok') ? 1 : 0);
   const summaries=results.map(({output,error,...result})=>{

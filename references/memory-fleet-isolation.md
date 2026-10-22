@@ -76,6 +76,15 @@ Fresh, digest-verified `sourceDebtSnapshot` results alone can prove closure;
 missing, corrupt, stale or foreign snapshots stay unverified. Notifications can
 report partial recovery without declaring every source restored. A history with
 no incident is `not_observed`, not proof of a complete historical inventory.
+Operator notifications use a separate `WS <workspaceId>` line for each affected
+workspace, including its open historical source count and current pass status.
+The fleet passes that workspace's execution result directly to completeness
+reporting; missing or foreign execution metadata cannot imply success. Current
+timeouts, blocked-scope codes and sanitized execution-stage codes remain distinct
+from historical debt. A successful current pass is explicitly not recovery.
+Changed current failure reasons bypass the matching-alert cooldown; unchanged
+reports remain suppressed. Write-offs and proof-backed closures retain separate
+per-workspace accounting. No transcript/provider diagnostics are relayed.
 All live incident files contain private administrative identities and must stay
 outside public source/fixtures. See [source debt](memory-source-debt.md).
 

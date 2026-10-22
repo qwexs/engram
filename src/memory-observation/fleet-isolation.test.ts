@@ -108,3 +108,16 @@ test('zero-exit blocked worker is durable and notifies; malformed or foreign out
  expect(classifyFleetWorkerOutput('foreign',{exitCode:0,output}).semanticStatus).toBe('unverified');
  expect(classifyFleetWorkerOutput('a',{exitCode:0,output:output.slice(-20)}).semanticStatus).toBe('unverified');
 });
+test('execution alerts identify each workspace, stage and timeout without raw diagnostics',async()=>{
+ const {classifyFleetWorkerOutput}=await import('./fleet-isolation.ts');
+ const {args,messages,config}=fixture();
+ const output=JSON.stringify({schema:'engram.memory-batch-live-run.v1',workspaceId:'a',execution:{status:'error',errors:['daily_note:qmd_pending','private source text\nsecret=1']}});
+ const result=classifyFleetWorkerOutput('a',{exitCode:1,output,error:'PRIVATE PROVIDER DIAGNOSTIC'});
+ await reportFleetResults({...args,results:[{...result,workspaceId:'a'},{workspaceId:'b',exitCode:1,timedOut:true},{workspaceId:'c',exitCode:0,semanticStatus:'ok'}]});
+ expect(messages[0]).toContain('WS a: ошибка (daily_note:qmd_pending)');
+ expect(messages[0]).toContain('\nWS b: тайм-аут');
+ expect(messages[0]).not.toContain('private source');expect(messages[0]).not.toContain('PRIVATE PROVIDER');
+ expect(readFileSync(join(config.stateDir,'latest.json'),'utf8')).not.toContain('secret=1');
+ await reportFleetResults({...args,results:[{...result,executionErrors:['evaluation:terminal_failure'],workspaceId:'a'},{workspaceId:'b',exitCode:1,timedOut:true},{workspaceId:'c',exitCode:0,semanticStatus:'ok'}]});
+ expect(messages).toHaveLength(2);expect(messages[1]).toContain('evaluation:terminal_failure');
+});

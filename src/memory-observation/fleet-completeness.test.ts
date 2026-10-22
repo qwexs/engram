@@ -34,3 +34,45 @@ test('same identity reopens after invalidated write-off; proof closure remains s
  const r=await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot()}]});
  expect(r.remaining).toBe(1);expect(r.writtenOff).toBe(0);expect(f.messages.at(-1)).toContain('alpha: 1');
 });
+test('workspace lines distinguish historical debt from the current pass and its blocker',async()=>{
+ const f=fixture();
+ await reportFleetCompleteness({...f,results:[
+  {workspaceId:'alpha',snapshot:snapshot(),execution:{workspaceId:'alpha',exitCode:0,semanticStatus:'ok'}},
+  {workspaceId:'beta',snapshot:snapshot(true,100000,{workspaceId:'beta'}),execution:{workspaceId:'beta',exitCode:1,semanticStatus:'blocked',blockedReasons:['MODEL_TRANSITION_IDENTITY_CHANGED']}},
+ ]});
+ const m=f.messages[0]!;
+ expect(m).toContain('WS alpha: 1 незакрытых; текущий запуск: успешен');
+ expect(m).toContain('\nWS beta: 1 незакрытых; текущий запуск: блокировка (MODEL_TRANSITION_IDENTITY_CHANGED)');
+ expect(m).not.toContain('источников восстановлена');
+});
+test('changed execution reason alerts within cooldown without closing historical debt',async()=>{
+ const f=fixture(),base={workspaceId:'alpha',snapshot:snapshot()};
+ await reportFleetCompleteness({...f,results:[{...base,execution:{workspaceId:'alpha',exitCode:0,semanticStatus:'ok'}}]});
+ const failed={...base,execution:{workspaceId:'alpha',exitCode:1,semanticStatus:'error' as const,executionErrors:['daily_note:qmd_pending'],error:'PRIVATE SOURCE'}};
+ const r=await reportFleetCompleteness({...f,results:[failed]});
+ expect(r.remaining).toBe(1);expect(f.messages).toHaveLength(2);
+ expect(f.messages[1]).toContain('WS alpha: 1 незакрытых; текущий запуск: ошибка (daily_note:qmd_pending)');
+ expect(f.messages[1]).not.toContain('PRIVATE SOURCE');
+ await reportFleetCompleteness({...f,results:[failed]});expect(f.messages).toHaveLength(2);
+});
+test('missing or foreign execution is never labelled successful',async()=>{
+ const f=fixture();
+ await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot()}]});
+ expect(f.messages[0]).toContain('текущий запуск: не проверен');
+ await expect(reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot(),execution:{workspaceId:'foreign',exitCode:0,semanticStatus:'ok'}}]})).rejects.toThrow('FLEET_COMPLETENESS_EXECUTION_OWNER_INVALID');
+});
+test('unverified workspace remains named with timeout and does not clear its incident',async()=>{
+ const f=fixture();await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot()}]});
+ const r=await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',execution:{workspaceId:'alpha',timedOut:true}}]});
+ expect(r.remaining).toBe(1);
+ expect(f.messages.at(-1)).toContain('WS alpha: 1 незакрытых; текущий запуск: тайм-аут; состояние памяти не подтверждено');
+ expect(f.messages.at(-1)).toContain('WS alpha: снимок состояния недоступен или не прошёл проверку');
+});
+test('format upgrade never resurrects an already acknowledged, fully closed incident',async()=>{
+ const f=fixture();
+ writeFileSync(join(f.config.stateDir,'memory-incidents.json'),JSON.stringify({schema:'engram.fleet-completeness-incidents.v1',
+  incidents:[{workspaceId:'alpha',sourceIds:[id],closedIds:[id],notifiedClosedIds:[id],openedAt:new Date(f.now).toISOString()}],
+  notifiedFingerprint:'legacy-format-fingerprint',notifiedAt:f.now}));
+ const r=await reportFleetCompleteness({...f,results:[{workspaceId:'alpha',snapshot:snapshot(false)}]});
+ expect(r.status).toBe('closed');expect(f.messages).toHaveLength(0);
+});

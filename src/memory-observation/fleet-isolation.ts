@@ -3,7 +3,24 @@ import { isAbsolute, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 export type FleetResult = { workspaceId: string; exitCode?: number; output?: string; error?: string; timedOut?: boolean;
-  semanticStatus?: "ok"|"blocked"|"error"|"unverified"; blockedReasons?: string[] };
+  semanticStatus?: "ok"|"blocked"|"error"|"unverified"; blockedReasons?: string[]; executionErrors?: string[] };
+// Notification metadata only: never relay provider messages, paths or source text.
+function safeCodes(values: unknown): string[] {
+  return Array.isArray(values) ? [...new Set(values.filter((x): x is string =>
+    typeof x === 'string' && /^[A-Za-z][A-Za-z0-9_:-]{0,99}$/.test(x)))].sort().slice(0, 4) : [];
+}
+export function describeFleetResult(result?: FleetResult): string {
+  if (!result) return 'не проверен';
+  if (result.timedOut) return 'тайм-аут';
+  if (result.semanticStatus === 'blocked') return 'блокировка' + suffix(safeCodes(result.blockedReasons));
+  if (result.semanticStatus === 'unverified') return 'результат не подтверждён';
+  if (result.semanticStatus === 'error' || result.exitCode !== 0) {
+    const codes = safeCodes(result.executionErrors);
+    return 'ошибка' + (codes.length ? suffix(codes) : Number.isInteger(result.exitCode) ? ` (exit ${result.exitCode})` : ' запуска');
+  }
+  return result.semanticStatus === 'ok' ? 'успешен' : 'результат не подтверждён';
+}
+function suffix(codes: string[]): string { return codes.length ? ' (' + codes.join(', ') + ')' : ''; }
 /** A zero child exit is not proof that active scopes were processable. */
 export function classifyFleetWorkerOutput(workspaceId:string,result:Omit<FleetResult,"workspaceId">):Omit<FleetResult,"workspaceId"> {
   try {
@@ -13,7 +30,8 @@ export function classifyFleetWorkerOutput(workspaceId:string,result:Omit<FleetRe
     const blockers=r.qualityBlockers??[];
     if(!Array.isArray(blockers)||blockers.some((b:any)=>!/^[-A-Z0-9_:]+$/.test(b.reason??'')))throw Error('unverified');
     const blockedReasons:string[]=[...new Set<string>(blockers.map((b:any)=>b.reason))].sort();
-    return {...result,semanticStatus:blockedReasons.length?'blocked':r.execution.status,blockedReasons};
+    return {...result,semanticStatus:blockedReasons.length?'blocked':r.execution.status,blockedReasons,
+      executionErrors:safeCodes(r.execution.errors)};
   }catch{return {...result,semanticStatus:'unverified',blockedReasons:[]};}
 }
 export type FleetIsolation = { stateDir: string; operator: { channel: "telegram"; target: string; accountId: string }; cooldownMs: number };
@@ -56,7 +74,7 @@ export async function reportFleetResults(args: {
   // Never copy source messages/provider diagnostics into notifications or the summary journal.
   const summary = { schema: "engram.fleet-pass.v1", schedulerId: args.schedulerId, at: new Date(now).toISOString(), status,
     results: args.results.map(r => ({ workspaceId: r.workspaceId, exitCode: r.exitCode ?? null, timedOut: r.timedOut === true,
-      ...(r.semanticStatus?{semanticStatus:r.semanticStatus,blockedReasons:r.blockedReasons??[]}: {}) })) };
+      ...(r.semanticStatus?{semanticStatus:r.semanticStatus,blockedReasons:safeCodes(r.blockedReasons),executionErrors:safeCodes(r.executionErrors)}: {}) })) };
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   appendFileSync(join(config.stateDir, "passes.jsonl"), JSON.stringify(summary) + "\n", { mode: 0o600 });
   atomicJson(join(config.stateDir, "latest.json"), summary);
@@ -72,11 +90,11 @@ export async function reportFleetResults(args: {
     return { ...summary, notification: "not_needed", exitCode: 0 };
   }
   const fingerprint = createHash("sha256").update(JSON.stringify({ schedulerId: args.schedulerId, route: config.operator,
-    failures: failures.map(r => [r.workspaceId, r.timedOut ? "timeout" : r.exitCode ?? "exception",r.semanticStatus??null,r.blockedReasons??[]]).sort() })).digest("hex");
+    failures: failures.map(r => [r.workspaceId, r.timedOut ? "timeout" : r.exitCode ?? "exception",r.semanticStatus??null,safeCodes(r.blockedReasons),safeCodes(r.executionErrors)]).sort() })).digest("hex");
   if (previous?.fingerprint === fingerprint && now >= previous.notifiedAt && now - previous.notifiedAt < config.cooldownMs)
     return { ...summary, notification: "cooldown", exitCode: status === "failed" ? 1 : 0 };
   const message = `Memory Worker: ${status === "failed" ? "сбой всех проектов" : "частичный сбой"}.\n`
-    + `Ошибки: ${failures.map(r => r.workspaceId + (r.timedOut ? " (таймаут)" : r.semanticStatus==='blocked'?' (блокировка: '+r.blockedReasons?.join(', ')+')':r.semanticStatus==='unverified'?' (результат не подтверждён)':"")).join(", ")}.\n`
+    + `Ошибки текущего запуска по workspace:\n${failures.map(r => 'WS ' + r.workspaceId + ': ' + describeFleetResult(r)).join('\n')}.\n`
     + `Успешно: ${args.results.length - failures.length}/${args.results.length}. `
     + (status === "failed" ? "Общий запуск завершён с ошибкой." : "Остальные проекты обработаны; общее расписание продолжает работу.")
     + "\nИстория сбоев сохранена. ISS-19.";

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **fix(memory): distinguish current execution from historical source debt.**
+  Fleet notifications identify each workspace and its current execution stage
+  with bounded, content-free diagnostic codes. Historical completeness remains
+  separate from current run success; raw source and provider diagnostics are
+  never relayed, and presentation changes do not reopen closed incidents.
+
+- **fix(memory): prevent deferred context from starving fresh sources.**
+  Scheduled selection falls back to an independent fresh-only batch when retained
+  context consumes the evidence budget or ends a temporal segment before fresh
+  sources fit. Immutable waiting sources, unfinished-job reservations, backoff,
+  evidence TTL and inference budgets remain unchanged.
+
+- **fix(qmd): bound coordinator embedding batches and flush reports.**
+  The shared coordinator uses QMD's documented document-batch limit, defaulting
+  to one document with an explicit bounded override. Index scope, model, rate
+  limits and incremental maintenance remain unchanged. Large structured reports
+  flush before exit while partial processing and errors retain failure status.
+
 - **fix(oll): verify and provision exact Worker receipt authority.** Explicit
   bridge planning admits pinned batch v1/contextual v2 producers and verified
   current or historical evaluation policies under exact source scopes. Apply

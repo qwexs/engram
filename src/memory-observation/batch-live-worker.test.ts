@@ -141,7 +141,7 @@ function setup() {
   return { workspace, ledger, policy };
 }
 
-function admit(ledger: MemoryObservationLedger, index: number, completedAt: string, sourceScope: ObservationScope = SCOPE): void {
+function admit(ledger: MemoryObservationLedger, index: number, completedAt: string, sourceScope: ObservationScope = SCOPE, admittedAt = completedAt): void {
   const sourceTurnId = `channel-user:v1:${index.toString(16).padStart(64, "0")}`;
   const source: TrustedCompletedTurn = {
     sourceTurnId,
@@ -155,7 +155,7 @@ function admit(ledger: MemoryObservationLedger, index: number, completedAt: stri
     },
     trustedInputs: ["completed-source-turn", "runtime-session-key", "workspace-binding", "source-completion-time"],
   };
-  ledger.admit(source, new Date(completedAt));
+  ledger.admit(source, new Date(admittedAt));
 }
 
 describe("durable live micro-batch worker", () => {
@@ -1094,7 +1094,7 @@ for(const mode of ['default','recovery','mixed-reservation'] as const)test('fini
  expect(readFileSync(originalJobPath,'utf8')).toBe(originalJob);
 });
 
-for(const enabled of [false,true])test('finite recovery fresh source is not starved by deferred context byte budget: '+enabled,async()=>{
+for(const enabled of [false,true])test('scheduled and recovery fresh sources are not starved by deferred context byte budget: '+enabled,async()=>{
  const {workspace,ledger,policy}=setup();let current=new Date('2026-08-31T20:20:00.000Z'),calls=0;const captured:string[][]=[];
  admit(ledger,801,'2026-08-31T20:01:00.000Z');
  const worker=new BatchLiveWorker({workspace,ledger,policy:{...policy,maxTurns:2,maxEvidenceBytes:125},storeRoot:join(workspace,'state'),now:()=>current,allowIndependentFreshDuringBackoff:enabled,
@@ -1104,7 +1104,26 @@ for(const enabled of [false,true])test('finite recovery fresh source is not star
  const oldId=captured[0]![0]!,qpath=join(workspace,'memory-state/memory-observation/v1/queues/evaluator',oldId.slice(7)+'.json'),oldBytes=readFileSync(qpath,'utf8');
  admit(ledger,802,'2026-08-31T20:02:00.000Z');current=new Date('2026-08-31T20:26:00.000Z');
  const result=await worker.processOne();
- if(enabled){expect(result).toMatchObject({status:'completed',sourceCount:1});expect(captured[1]).not.toContain(oldId);expect(calls).toBe(2);}
- else {expect(result).toEqual({status:'idle',reason:'waiting_context_budget'});expect(calls).toBe(1);}
+ expect(result).toMatchObject({status:'completed',sourceCount:1});expect(captured[1]).not.toContain(oldId);expect(calls).toBe(2);
  expect(readFileSync(qpath,'utf8')).toBe(oldBytes);
+});
+
+test('scheduled fresh-only fallback survives an old restored source beyond the context time segment',async()=>{
+ const {workspace,ledger,policy}=setup();let current=new Date('2026-09-04T20:20:00.000Z'),calls=0;
+ const captured:string[][]=[];
+ admit(ledger,811,'2026-08-31T20:01:00.000Z',SCOPE,'2026-09-04T20:00:00.000Z');
+ const old=ledger.listQueue()[0]!.traceId,qp=join(workspace,'memory-state/memory-observation/v1/queues/evaluator',old.slice(7)+'.json');
+ // Synthetic retained historical defer with refreshed evidence, as after an
+ // exact restoration. Its old source age must never force a new old-only job.
+ const q=JSON.parse(readFileSync(qp,'utf8'));writeFileSync(qp,JSON.stringify({...q,reasonCode:'semantic_batch_defer'}));
+ const before=readFileSync(qp,'utf8');
+ const worker=new BatchLiveWorker({workspace,ledger,policy,storeRoot:join(workspace,'state'),now:()=>current,
+  complete:async request=>{calls++;const ids=JSON.parse(request.prompt).task.sources.map((s:any)=>s.sourceRef.traceId);captured.push(ids);
+   return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-batch-shadow-output.v1',groups:[{groupId:'time-segment',decision:'skip',sourceRefs:ids,reason:'not_durable'}]})};}});
+ current=new Date('2026-09-04T20:26:00.000Z');
+ expect(await worker.processOne()).toEqual({status:'idle',reason:'waiting_context'});expect(calls).toBe(0);
+ admit(ledger,812,'2026-09-04T20:02:00.000Z');
+ expect(await worker.processOne()).toMatchObject({status:'completed',sourceCount:1});
+ expect(captured[0]).not.toContain(old);expect(calls).toBe(1);expect(readFileSync(qp,'utf8')).toBe(before);
+ expect(await worker.processOne()).toEqual({status:'idle',reason:'waiting_context'});expect(calls).toBe(1);
 });

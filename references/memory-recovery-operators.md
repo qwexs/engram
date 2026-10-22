@@ -73,9 +73,13 @@ is unchanged. The adapter can process due jobs or new unreserved sources while
 another exact-scope job waits for its real retry time. Every source in every
 unfinished scoped job stays reserved, including a mixed job's already-due rows;
 sealed jobs, attempt counters, backoff times, policies, TTL and inference budget
-are unchanged. Deferred context that cannot fit with fresh evidence stays waiting
-while a fitting fresh-only frame proceeds. No source is silently requeued or
-declared skipped/closed by this scheduling option.
+are unchanged. Separately, ordinary scheduled selection now falls back to a
+fresh-only frame when reconsidered deferred context would select no fresh input
+(byte/turn bounds or a distant historical time segment). The old context stays
+waiting and every normal fresh-only bound still applies. This narrow selection
+fallback does not enable independent execution past an unfinished retry job;
+that remains the explicit finite-recovery option above. No source is silently
+requeued or declared skipped/closed by either scheduling path.
 
 ## Exact quote-producer migration
 

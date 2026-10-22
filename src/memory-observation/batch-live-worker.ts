@@ -475,10 +475,12 @@ export class BatchLiveWorker {
         const reconsider = this.options.policy.maxTurns > 1 ? due.filter(entry => waiting.has(entry.envelope.traceId)).slice(-(this.options.policy.maxTurns - 1)) : [];
         let selectionPolicy = reconsider.length ? { ...this.options.policy, inactivityGapMs: this.options.policy.evidenceTtlMs } : this.options.policy;
         let candidate = selectCandidate(reconsider.length ? [...reconsider, ...fresh] : fresh, selectionPolicy, now);
-        if (this.options.allowIndependentFreshDuringBackoff && reconsider.length
+        if (reconsider.length
           && (!candidate.length || candidate.every(entry => waiting.has(entry.envelope.traceId)))) {
-          // If retained context consumes the byte/turn budget, leave it waiting
-          // rather than starving fresh evidence that fits the unchanged bounds.
+          // Old context can exhaust byte/turn bounds or end a temporal segment
+          // before any fresh source fits. Scheduled runs must not starve fresh
+          // work either. Selection only: job reservations and retry backoff
+          // remain unchanged; the fresh-only frame uses all normal bounds.
           selectionPolicy = this.options.policy;
           candidate = selectCandidate(fresh, selectionPolicy, now);
         }

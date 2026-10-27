@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **fix(memory): read canonical completion metadata during recovery expiry.**
+  Validate prefixed unresolved receipts and checksummed feed state, and preserve
+  nested pending source/candidate obligations. Regression uses the real feed
+  producer; completion-only filename rules do not broaden other metadata stores.
+
 - **fix(memory): terminate expired recovery in the existing Worker.** Explicit
   workspace opt-in reuses the evidence TTL and debt lease, bounds each batch to
   20 content-free policy-stop receipts, preserves manual history and reopens new

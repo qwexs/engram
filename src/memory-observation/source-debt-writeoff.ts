@@ -30,17 +30,23 @@ const read = (p: string): any => {
   if (realpathSync(p) !== resolve(p) || !lstatSync(p).isFile()) throw Error('WRITE_OFF_UNSAFE_PATH');
   return JSON.parse(readFileSync(p, 'utf8'));
 };
-function rows(path: string, receiptNames = false): any[] {
+function rows(path: string, receiptNames: boolean | 'completion' = false): any[] {
   if (!existsSync(path)) return [];
   if (!lstatSync(path).isDirectory() || realpathSync(path) !== resolve(path)) throw Error('WRITE_OFF_UNSAFE_PATH');
   const names = readdirSync(path).sort();
   if (names.length > 10_000) throw Error('WRITE_OFF_CAPACITY_EXCEEDED');
   return names.map(name => {
     const p = join(path, name), info = lstatSync(p);
-    if (!/^[a-f0-9]{64}\.json$/.test(name) || !info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw Error('WRITE_OFF_INVALID_METADATA');
+    const validName = receiptNames === 'completion' ? /^(?:unresolved-)?[a-f0-9]{64}\.json$/.test(name) : /^[a-f0-9]{64}\.json$/.test(name);
+    if (!validName || !info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw Error('WRITE_OFF_INVALID_METADATA');
     const value = read(p);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('WRITE_OFF_INVALID_METADATA');
-    if (receiptNames && name !== value.receiptId?.slice(7) + '.json') throw Error('WRITE_OFF_FILENAME_INVALID');
+    if (receiptNames === true && name !== value.receiptId?.slice(7) + '.json') throw Error('WRITE_OFF_FILENAME_INVALID');
+    if (receiptNames === 'completion') {
+      const expected = value.schema === 'engram.completion-unresolved.v1' ? 'unresolved-' + sha256(value.request).slice(7)
+        : value.schema === 'engram.completion-mirror-feed.v1' ? sha256(value.target).slice(7) : null;
+      if (!expected || name !== expected + '.json') throw Error('WRITE_OFF_INVALID_COMPLETION');
+    }
     return value;
   });
 }
@@ -136,9 +142,24 @@ function automaticActivity(w: string) {
     for (const ref of value.sourceRefs ?? []) { if (ref.traceId) blocked.add(ref.traceId); if (ref.sourceTurnId) blocked.add(ref.sourceTurnId); }
   }
   for (const value of rows(join(w, 'memory-state/domain-effects/v1/receipts'))) if (value.traceId) blocked.add(value.traceId);
-  for (const feed of rows(join(op, 'completion-mirrors'))) {
-    if (feed.schema !== 'engram.completion-mirror-feed.v1' && feed.schema !== 'engram.completion-unresolved.v1') throw Error('WRITE_OFF_INVALID_COMPLETION');
-    for (const request of feed.pending ?? []) pendingCandidates.add(request.candidateId);
+  for (const feed of rows(join(op, 'completion-mirrors'), 'completion')) {
+    if (feed.schema === 'engram.completion-unresolved.v1') {
+      if (!feed.request || !HASH.test(feed.request.candidateId ?? '')
+        || !/^channel-user:v1:[a-f0-9]{64}$/.test(feed.request.sourceTurnId ?? '')
+        || !Number.isFinite(Date.parse(feed.closedAt))) throw Error('WRITE_OFF_INVALID_COMPLETION');
+      continue;
+    }
+    const { digest, ...body } = feed;
+    if (digest !== sha256(body) || !Array.isArray(feed.pending) || !feed.target) throw Error('WRITE_OFF_INVALID_COMPLETION');
+    for (const pending of feed.pending) {
+      const request = pending?.request;
+      if (!request || !HASH.test(request.candidateId ?? '')
+        || !/^channel-user:v1:[a-f0-9]{64}$/.test(request.sourceTurnId ?? '')
+        || !request.runId || !Number.isFinite(Date.parse(pending.registeredAt))
+        || sha256({agentId:request.agentId,sessionKey:request.sessionKey,sessionId:request.sessionId}) !== sha256(feed.target)) throw Error('WRITE_OFF_INVALID_COMPLETION');
+      pendingCandidates.add(request.candidateId);
+      blocked.add(request.sourceTurnId);
+    }
   }
   const queues = rows(join(op, 'queues/evaluator'));
   for (const q of queues) if (q.schema !== 'engram.memory-observation-ledger-queue.v1'

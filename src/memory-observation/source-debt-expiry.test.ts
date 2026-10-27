@@ -7,6 +7,7 @@ import {sourceDebtId} from './source-debt-capture.ts';
 import {sourceDebtSnapshot} from './source-debt.ts';
 import {stopExpiredSourceDebt} from './source-debt-writeoff.ts';
 import {memoryWorkerHealth} from './worker-health.ts';
+import {CompletionMirrorFeed} from './completion-mirror-feed.ts';
 const roots:string[]=[];afterEach(()=>roots.splice(0).forEach(w=>rmSync(w,{recursive:true,force:true})));
 function fixture(){
  const w=mkdtempSync(join(tmpdir(),'debt-expiry-'));roots.push(w);
@@ -147,4 +148,29 @@ test('a missing or changed immutable batch parent remains a repair blocker',()=>
  expect(stopExpiredSourceDebt(f.w,f.now,{apply:true}).receipts).toHaveLength(0);
  f.put(join(f.root,'batch-live-store/memory-batch-live/v1/jobs',sha256('job').slice(7)+'.json'),{jobId:sha256('job'),changed:true});
  expect(stopExpiredSourceDebt(f.w,f.now,{apply:true}).receipts).toHaveLength(0);
+});
+test('real completion feed protects a pending source and accepts expired unresolved receipts',async()=>{
+ const f=fixture(),root=join(f.op,'completion-mirrors');
+ const target={agentId:'alpha',sessionKey:f.scope.runtimeSessionKey,sessionId:'synthetic-session'};
+ const request={...target,candidateId:sha256('pending'),runId:'synthetic-run',sourceTurnId:f.r.sourceTurnId};
+ const feed=new CompletionMirrorFeed({root,target,now:()=>new Date(f.at),maxWaitMs:1,
+  read:async()=>({kind:'page',cursor:'synthetic-cursor',hasMore:false,entries:[]}),deliver:async()=> 'retry',expire:async()=> 'done'});
+ feed.register(request);
+ expect(stopExpiredSourceDebt(f.w,f.now,{apply:true}).receipts).toHaveLength(0);
+ const expired=new CompletionMirrorFeed({root,target,now:()=>f.now,maxWaitMs:1,
+  read:async()=>({kind:'page',cursor:'synthetic-cursor',hasMore:false,entries:[]}),deliver:async()=> 'retry',expire:async()=> 'done'});
+ await expired.tick();
+ expect(readdirSync(root).some(n=>n.startsWith('unresolved-'))).toBe(true);
+ expect(stopExpiredSourceDebt(f.w,f.now,{apply:true}).receipts).toHaveLength(1);
+ expect(sourceDebtSnapshot(f.w,f.now)).toMatchObject({openIds:[],closedIds:[],corrupt:false});
+});
+test('completion feeds with invalid digests or receipt filenames fail closed',()=>{
+ for(const kind of ['digest','filename']){
+  const f=fixture(),target={agentId:'alpha',sessionKey:f.scope.runtimeSessionKey,sessionId:'synthetic-session'};
+  const root=join(f.op,'completion-mirrors');
+  if(kind==='digest')f.put(join(root,sha256(target).slice(7)+'.json'),{schema:'engram.completion-mirror-feed.v1',target,pending:[],blocked:null,digest:sha256('invalid')});
+  else f.put(join(root,'unresolved-'+sha256('wrong').slice(7)+'.json'),{schema:'engram.completion-unresolved.v1',request:{candidateId:sha256('pending')},closedAt:f.at});
+  expect(()=>stopExpiredSourceDebt(f.w,f.now,{apply:true})).toThrow('WRITE_OFF_INVALID_COMPLETION');
+  expect(existsSync(f.receiptDir)).toBe(false);
+ }
 });

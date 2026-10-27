@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **fix(memory): terminate expired recovery in the existing Worker.** Explicit
+  workspace opt-in reuses the evidence TTL and debt lease, bounds each batch to
+  20 content-free policy-stop receipts, preserves manual history and reopens new
+  errors/reactivation. Active work and unverified persisted effects are protected;
+  unresolved expiry never becomes a semantic skip or recovered fact. Health and
+  fleet reporting distinguish accounted omissions from verified restoration.
+- **fix(memory): expose safe hook identity diagnostics.** Known missing transport,
+  owner/source metadata and session conflicts retain distinct bounded diagnostics;
+  unknown exceptions and arbitrary error text remain private. Runtime activation
+  still requires the standard plugin digest rebind and read-back.
+
+
 - **fix(memory): distinguish current execution from historical source debt.**
   Fleet notifications identify each workspace and its current execution stage
   with bounded, content-free diagnostic codes. Historical completeness remains

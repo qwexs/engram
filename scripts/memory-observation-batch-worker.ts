@@ -66,7 +66,7 @@ const compactSummary = process.argv.length === 5 && process.argv[4] === "--summa
 function emitRun(report:any) {
   if(compactSummary){
     const c=report.health?.completeness;
-    if(c)report.health={...report.health,completeness:{observed:c.observed,open:c.openIds.length,closed:c.closedIds.length,corrupt:c.corrupt,errors:c.errors,verifiedAt:c.verifiedAt}};
+    if(c)report.health={...report.health,completeness:{observed:c.observed,open:c.openIds.length,closed:c.closedIds.length,writtenOff:c.writtenOffIds?.length??0,automaticallyStopped:c.automaticallyStoppedIds?.length??0,corrupt:c.corrupt,errors:c.errors,verifiedAt:c.verifiedAt}};
     // Status/counts plus diagnostic pointers remain complete; large assertion
     // and receipt bodies stay in their canonical stores, not scheduler stdout.
     const summarize=(r:any)=>Object.fromEntries(Object.entries(r).filter(([k])=>['status','jobId','sourceCount','reason','attempt','maxAttempts','diagnostic','diagnosticRef','operationId','indexedPending'].includes(k)));
@@ -116,7 +116,7 @@ if (memoryBatchIsIdle(workspace, topicWorkspace)) {
   const idle = { status: "idle" };
   // Indexing completes outside this Worker. An empty evaluator queue must not
   // prevent later proof/certificate reconciliation of already-written sources.
-  scanSourceDebt(workspace);
+  scanSourceDebt(workspace, new Date(), { stopExpiredRecovery: true });
   const health = memoryWorkerHealth(workspace);
   const execution = memoryWorkerRunResult();
   emitRun({
@@ -435,7 +435,7 @@ if (!applyTarget || ["idle", "busy", "disabled"].includes(apply.status)) break;
 const apply = applications[0]?.result ?? { status: "idle" }, applyScope = applications[0]?.scope ?? null;
 const domains = isGroupProjectionSchema(projection.schema)
   ? await consumeTopicDomainReceipts({ workspace, workspaceId, expectedPluginDigest }) : null;
-scanSourceDebt(workspace);
+scanSourceDebt(workspace, new Date(), { stopExpiredRecovery: true });
 const health = memoryWorkerHealth(workspace);
 if(qualityBlockedScopes.size){health.status="degraded";health.reasons.push("quality_pending_bundle_requires_reconciliation",...new Set(qualityBlockers.values()));}
 const execution = memoryWorkerRunResult({ evaluations: evaluations.map(entry => entry.result),

@@ -31,6 +31,26 @@ export class ObservationHookIdentityError extends Error {
   }
 }
 
+/** Only fixed schema diagnostics are exposed. Never forward an arbitrary
+ * exception message, even when somebody constructs this exported error type. */
+export function observationHookIdentityDiagnostic(error: ObservationHookIdentityError): { code: string; message: string } {
+  const message = error.message;
+  const fixed: Record<string, string> = {
+    'persisted turn is not a user message': 'HOOK_NOT_USER_TURN',
+    'persisted transport is unsupported': 'HOOK_TRANSPORT_UNSUPPORTED',
+    'source turn identity is invalid': 'HOOK_SOURCE_IDENTITY_INVALID',
+    'sender ownership is missing': 'HOOK_OWNER_MISSING',
+    'sessionKey differs between runtime surfaces': 'HOOK_SESSION_CONFLICT',
+    'message_sent is not a terminal source reply': 'HOOK_NOT_TERMINAL_REPLY',
+    'messageId differs from message metadata': 'HOOK_MESSAGE_CONFLICT',
+    'senderId differs from message metadata': 'HOOK_SENDER_CONFLICT',
+  };
+  if (fixed[message]) return { code: fixed[message]!, message };
+  const field = /^(transport\.channel|transport\.messageId|sourceTurnId|sessionKey|messageId|senderId|runId|toolCallId|metadata\.messageId|metadata\.senderId) (is missing or invalid|is invalid|is missing from runtime surfaces|differs between runtime surfaces)$/.exec(message);
+  if (field) return { code: `HOOK_${field[1]!.replace(/([a-z])([A-Z])/g, '$1_$2').replaceAll('.', '_').toUpperCase()}_INVALID`, message };
+  return { code: 'HOOK_IDENTITY_INVALID', message: 'hook identity validation failed' };
+}
+
 function row(value: unknown): Row | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Row : null;
 }

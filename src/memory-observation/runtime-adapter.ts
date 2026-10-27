@@ -1,4 +1,5 @@
 import { groupDomainOf } from "./group-bindings.ts";
+import { ObservationHookIdentityError, observationHookIdentityDiagnostic } from './hook-identity.ts';
 import type { TopicDomainBinding } from "./topic-bindings.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -1394,6 +1395,7 @@ export class OpenClawObservationRuntimeAdapter {
 }
 
 export function observationRuntimeAdapterError(error: unknown): { code: string; message: string } {
+  if (error instanceof ObservationHookIdentityError) return observationHookIdentityDiagnostic(error);
   if (error instanceof RuntimeAdapterError || error instanceof ObservationLedgerError) {
     return { code: error.code, message: error.message.replace(/[\r\n]+/g, " ").slice(0, 500) };
   }

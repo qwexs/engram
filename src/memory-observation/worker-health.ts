@@ -121,6 +121,17 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const snapshot = memoryWorkerSnapshot(workspace);
   const completeness = sourceDebtSnapshot(workspace, now);
   const { evaluator, daily, admission, envelopes, jobs, done, errors } = snapshot;
+  const stopped = new Set(completeness.corrupt ? [] : completeness.writtenOffIds ?? []);
+  const stoppedTraces = new Set<string>(), stoppedCandidates = new Set<string>();
+  if (stopped.size) {
+    for (const { value: r } of readWorkerRows(join(snapshot.root, 'source-debt/v1/failures'), errors)) if (stopped.has(r.debtId)) {
+      if (r.traceId) stoppedTraces.add(r.traceId);
+      if (r.candidateId) stoppedCandidates.add(r.candidateId);
+    }
+    for (const { value: l } of readWorkerRows(join(snapshot.root, 'source-debt/v1/links'), errors)) if (stopped.has(l.debtId) && l.traceId) stoppedTraces.add(l.traceId);
+    for (const cp of admission) if (stoppedCandidates.has(cp.value.candidateId) && cp.value.sourceTurnId)
+      for (const e of envelopes) if (e.value.sourceTurnId === cp.value.sourceTurnId) stoppedTraces.add(e.value.traceId);
+  }
   for(const row of snapshot.completionFeeds) if(!["engram.completion-mirror-feed.v1","engram.completion-unresolved.v1"].includes(row.value.schema))
     errors.push({path:row.path,error:"invalid_completion_record_schema"});
   const unresolvedCompletionRows = snapshot.completionFeeds.filter(row => row.value.schema === "engram.completion-unresolved.v1");
@@ -151,7 +162,9 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   });
   const historicalCompletionUnresolved = unresolvedCompletionRows.length;
   const accountedCompletionUnresolved = accountedCompletionRows.length;
-  const completionUnresolved = historicalCompletionUnresolved - accountedCompletionUnresolved;
+  const stoppedCompletionUnresolved = unresolvedCompletionRows.filter(row => !accountedCompletionRows.includes(row)
+    && stoppedCandidates.has(row.value.request?.candidateId)).length;
+  const completionUnresolved = historicalCompletionUnresolved - accountedCompletionUnresolved - stoppedCompletionUnresolved;
   for (const [rows, statuses] of [[evaluator, ["queued", "claimed", "terminal"]], [daily, ["queued", "claimed", "qmd_pending", "terminal"]]] as const) {
     for (const row of rows) if (!statuses.includes(row.value.status)) errors.push({ path: row.path, error: "invalid_queue_status" });
   }
@@ -167,7 +180,8 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const unfinishedJobs = jobs.filter(row => !row.value.jobId || !doneIds.has(row.value.jobId));
   const recoveredJobs = unfinishedJobs.filter(recoveredBatchJob);
   const batchPending = unfinishedJobs.filter(row => !recoveredJobs.includes(row));
-  const failures = evaluator.filter(row => row.value.status === "terminal" && !terminalOk.has(row.value.reasonCode));
+  const historicalFailures = evaluator.filter(row => row.value.status === "terminal" && !terminalOk.has(row.value.reasonCode));
+  const failures = historicalFailures.filter(row => !stoppedTraces.has(row.value.traceId));
   const dailyFailures = daily.filter(row => row.value.status === "terminal" && !dailyOk.has(row.value.reasonCode));
   const waiting = pending.filter(row => row.value.reasonCode === "semantic_batch_defer");
   const waitingExpiry = new Map<WorkerStateRow, number>();
@@ -188,7 +202,7 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const nativeCommandGaps = historicalGaps.filter(row => /^agent:[^:]+:telegram:slash:[^:]+$/.test(row.value.scope?.runtimeSessionKey ?? ""));
   const conversationalGaps = historicalGaps.filter(row => !nativeCommandGaps.includes(row));
   const recovered = conversationalGaps.filter(row => isAdmissionGapRecovered(workspace, row.value as any));
-  const gaps = conversationalGaps.filter(row => !recovered.includes(row));
+  const gaps = conversationalGaps.filter(row => !recovered.includes(row) && !stoppedCandidates.has(row.value.candidateId));
   const age = (row: WorkerStateRow) => {
     const created = Date.parse(row.value.createdAt);
     if (!Number.isFinite(created)) { errors.push({ path: row.path, error: "invalid_pending_timestamp" }); return 0; }
@@ -211,9 +225,10 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const stalled = Object.values(stages).some(stage => stage.stale || stage.overdue);
   const totalPending = pending.length + dailyPending.length + admissionPending.length + batchPending.length + completionPending;
   return { completeness, sourceDebtOpen: completeness.openIds.length, sourceDebtClosed: completeness.closedIds.length, sourceDebtWrittenOff: completeness.writtenOffIds?.length ?? 0,
-    status: completeness.corrupt || completeness.openIds.length || failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims || completionUnresolved || completionBlocked ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending || completionPending ? "pending" : "ok",
-    completionPending, completionBlocked, completionUnresolved, historicalCompletionUnresolved, accountedCompletionUnresolved,
-    pending: pending.length, totalPending, waitingContext: waiting.length, expiredWaitingContext, terminalFailures: failures.length, admissionGaps: gaps.length,
+    sourceDebtAutomaticallyStopped: completeness.automaticallyStoppedIds?.length ?? 0,
+    status: completeness.corrupt || completeness.openIds.length || failures.length || gaps.length || dailyFailures.length || errors.length || stalled || expiredClaims || completionUnresolved || completionBlocked ? "degraded" : !snapshot.captureObserved ? "not_observed" : waiting.length ? "waiting_context" : totalPending || completionPending ? "pending" : stopped.size ? "accounted_incomplete" : "ok",
+    completionPending, completionBlocked, completionUnresolved, historicalCompletionUnresolved, accountedCompletionUnresolved, stoppedCompletionUnresolved,
+    pending: pending.length, totalPending, waitingContext: waiting.length, expiredWaitingContext, terminalFailures: failures.length, historicalTerminalFailures: historicalFailures.length, admissionGaps: gaps.length,
     recoveredAdmissionGaps: recovered.length, historicalAdmissionGaps: historicalGaps.length, nativeCommandGaps: nativeCommandGaps.length,
     dailyPending: dailyPending.length, qmdPending: dailyPending.filter(row => row.value.status === "qmd_pending" || row.value.phase === "qmd").length,
     admissionPending: admissionPending.length, batchPending: batchPending.length, recoveredBatchJobs: recoveredJobs.length, expiredClaims,

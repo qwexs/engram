@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **fix(memory): keep host-attested steering out of standalone run selection.**
+  Persist the protected `steerTargetRunId` separately from `runId`, retain it
+  across restart and replay, reject malformed/retargeted identities, and exclude
+  steering from later ordinary-run candidates. Steering remains unverified until
+  supported completion evidence exists; no fake skip, restoration or relaxed
+  source-policy admission is introduced. Native prompt run annotations can be
+  written later than the hook and are not assumed available at initial admission.
+- **fix(memory): distinguish completion evidence in historical debt alerts.**
+  Classify exact open identities into confirmed completed sources, failed runs,
+  completion-unverified gaps, identity-unverified sources and unknown metadata.
+  Count coverage is validated; legacy snapshots are explicitly unclassified.
+  Reporting never changes source-debt, closure or cessation policy.
+
 - **fix(memory): read canonical completion metadata during recovery expiry.**
   Validate prefixed unresolved receipts and checksummed feed state, and preserve
   nested pending source/candidate obligations. Regression uses the real feed
@@ -18,6 +31,13 @@
   unknown exceptions and arbitrary error text remain private. Runtime activation
   still requires the standard plugin digest rebind and read-back.
 
+- **fix(memory): retain alert cooldown across idle and alternating fleet passes.**
+  Independent per-workspace/signature delivery receipts migrate from v1 without
+  forgetting confirmed sends. Workspace counters now separate error-free
+  execution, actual work and explicit empty passes from historical memory debt.
+  Completeness reminders no longer flap with current execution; unavailable
+  initial snapshots alert without claiming recovery. Real CLI regression uses
+  isolated state, synthetic delivery receipts and no host/model calls.
 
 - **fix(memory): distinguish current execution from historical source debt.**
   Fleet notifications identify each workspace and its current execution stage

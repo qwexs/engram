@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { parseFleetIsolation, reportFleetResults, runFleetCommand, runFleetEntries, type FleetIsolation } from "./fleet-isolation";
 
 const dirs: string[] = [];
@@ -35,13 +36,75 @@ test("repeated failures survive restart without notification flood; cooldown exp
   await reportFleetResults({ ...args, now: 160_000 }); expect(messages).toHaveLength(2);
 });
 
-test("new failed project notifies immediately; healthy pass resets suppression", async () => {
+test("new failed project notifies immediately; healthy and alternating passes retain suppression", async () => {
   const { args, messages } = fixture();
   await reportFleetResults(args);
   await reportFleetResults({ ...args, results: [{ workspaceId: "a", exitCode: 0 }, { workspaceId: "b", exitCode: 1 }] });
   expect(messages).toHaveLength(2);
   await reportFleetResults({ ...args, results: args.results.map(r => ({ ...r, exitCode: 0 })) });
-  await reportFleetResults(args); expect(messages).toHaveLength(3);
+  await reportFleetResults(args); expect(messages).toHaveLength(2);
+  await reportFleetResults({ ...args, results: [{ workspaceId: "a", exitCode: 0 }, { workspaceId: "b", exitCode: 1 }] });
+  expect(messages).toHaveLength(2);
+});
+
+test('v1 acknowledgement migrates across an idle pass without a duplicate alert',async()=>{
+ const {args,config,messages}=fixture();
+ const fingerprint=createHash('sha256').update(JSON.stringify({schedulerId:args.schedulerId,route:config.operator,
+  failures:[['a',1,null,[],[]]]})).digest('hex');
+ writeFileSync(join(config.stateDir,'alert.json'),JSON.stringify({schema:'engram.fleet-alert.v1',fingerprint,notifiedAt:args.now}));
+ await reportFleetResults({...args,now:args.now+1000,results:[{workspaceId:'a',exitCode:0,workState:'idle'},{workspaceId:'b',exitCode:0,workState:'idle'}]});
+ const r=await reportFleetResults({...args,now:args.now+2000});
+ expect(r.notification).toBe('cooldown');expect(messages).toHaveLength(0);
+ expect(JSON.parse(readFileSync(join(config.stateDir,'alert.json'),'utf8')).schema).toBe('engram.fleet-alert.v2');
+ await reportFleetResults({...args,now:args.now+60000});expect(messages).toHaveLength(1);
+});
+
+test('mixed failure sets suppress old workspace receipts and deliver a new failure code',async()=>{
+ const {args,messages}=fixture();
+ const a={workspaceId:'a',exitCode:1,semanticStatus:'error' as const,executionErrors:['evaluation:retry']};
+ const b={workspaceId:'b',exitCode:1,semanticStatus:'error' as const,executionErrors:['evaluation:retry']};
+ await reportFleetResults({...args,results:[a,{workspaceId:'b',exitCode:0}]});
+ await reportFleetResults({...args,results:[{workspaceId:'a',exitCode:0},b]});
+ await reportFleetResults({...args,results:[a,b]});expect(messages).toHaveLength(2);
+ await reportFleetResults({...args,results:[{...a,executionErrors:['evaluation:terminal_failure']},b]});
+ expect(messages).toHaveLength(3);expect(messages.at(-1)).toContain('evaluation:terminal_failure');
+});
+
+test('legacy migration never moves a newer per-workspace delivery receipt backwards',async()=>{
+ const {args,config,messages}=fixture();
+ const fingerprint=createHash('sha256').update(JSON.stringify({schedulerId:args.schedulerId,route:config.operator,failures:[['a',1,null,[],[]]]})).digest('hex');
+ writeFileSync(join(config.stateDir,'alert.json'),JSON.stringify({schema:'engram.fleet-alert.v1',fingerprint,notifiedAt:100000}));
+ await reportFleetResults({...args,now:101000});
+ await reportFleetResults({...args,now:110000,results:[{workspaceId:'a',exitCode:1},{workspaceId:'b',exitCode:1}]});
+ await reportFleetResults({...args,now:120000});
+ await reportFleetResults({...args,now:160000});expect(messages).toHaveLength(1);
+ await reportFleetResults({...args,now:170000});expect(messages).toHaveLength(2);
+});
+
+test('activity counts distinguish an empty pass, processed work and unverified activity without source text',async()=>{
+ const {classifyFleetWorkerOutput}=await import('./fleet-isolation.ts');
+ const {args,messages,config}=fixture();
+ const child=(workspaceId:string,extra:any)=>({workspaceId,...classifyFleetWorkerOutput(workspaceId,{exitCode:0,output:JSON.stringify({
+  schema:'engram.memory-batch-live-run.v1',workspaceId,execution:{status:'ok',errors:[]},...extra})})});
+ const idle=child('idle',{fastPath:'no_pending_work',health:{pending:0,sourceDebtOpen:2}});
+ const active=child('active',{evaluations:[{result:{status:'completed',sourceCount:3}}],health:{pending:1,sourceDebtOpen:4}});
+ const resumed=child('resumed',{applicationStatusCounts:{completed:1,idle:1}});
+ const unknown=child('unknown',{});
+ const r=await reportFleetResults({...args,results:[{workspaceId:'failed',exitCode:1},idle,active,resumed,unknown]});
+ expect(r.passCounts).toEqual({workspaces:5,withoutErrors:4,failed:1,idle:1,active:2,activityUnverified:1});
+ expect(active.evaluatedSources).toBe(3);expect(idle.openDebt).toBe(2);
+ expect(messages[0]).toContain('Workspace без ошибок в этом проходе: 4/5');
+ expect(messages[0]).toContain('не подтверждение полноты памяти');expect(messages[0]).not.toContain('Остальные проекты обработаны');
+ const stored=JSON.parse(readFileSync(join(config.stateDir,'latest.json'),'utf8'));
+ expect(stored.results.find((r:any)=>r.workspaceId==='active').evaluatedSources).toBe(3);
+ expect(stored.results.find((r:any)=>r.workspaceId==='idle').workState).toBe('idle');
+});
+
+test('failed notification after previous receipt does not acknowledge a new signature',async()=>{
+ const {args,messages}=fixture();await reportFleetResults(args);
+ const changed={...args,results:[{workspaceId:'a',exitCode:0},{workspaceId:'b',exitCode:1}]};
+ await expect(reportFleetResults({...changed,notify:async()=>{throw Error('send_failed');}})).rejects.toThrow('send_failed');
+ await reportFleetResults(changed);expect(messages).toHaveLength(2);
 });
 
 test("global failure remains nonzero even under notification cooldown", async () => {

@@ -23,7 +23,8 @@ type AutomaticReceipt = {
   reasonCode: 'recovery_window_ended' | 'unresolved_window_ended'; stoppedAt: string; recoveryDeadline: string;
   evidenceDigest: Digest; receiptId: Digest;
 };
-export type SourceDebtSnapshot = RawSnapshot & { writtenOffIds?: Digest[]; automaticallyStoppedIds?: Digest[] };
+export type SourceDebtClasses = { confirmedCompleted:number; failedRuns:number; completionUnverified:number; identityUnverified:number; unclassified:number };
+export type SourceDebtSnapshot = RawSnapshot & { writtenOffIds?: Digest[]; automaticallyStoppedIds?: Digest[]; openClassifications?:SourceDebtClasses };
 const root = (w: string) => join(w, 'memory-state/memory-observation');
 const directory = (w: string) => join(root(w), 'source-debt-writeoffs/v1');
 const read = (p: string): any => {

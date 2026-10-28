@@ -117,6 +117,72 @@ function hookFixtures() {
   };
 }
 
+test('steering checkpoint survives restart without competing with the next ordinary source or closing itself',()=>{
+ const root=workspace(),admitted:TrustedCompletedTurn[]=[],runtime=adapter({workspaceRoot:root,admitted});
+ const steer=hookFixtures();
+ (steer.persistedEvent.message.__openclaw as any).steerTargetRunId='previous-active-run';
+ runtime.captureMessageReceived(steer.receivedEvent,steer.receivedContext);
+ runtime.adoptPersistedUser(steer.persistedEvent,{sessionKey});
+ expect(runtime.captureMessageReceived(steer.receivedEvent,steer.receivedContext).status).toBe('duplicate');
+ expect(runtime.adoptPersistedUser(steer.persistedEvent,{sessionKey}).status).toBe('duplicate');
+ const next=hookFixtures();next.receivedEvent.messageId='43';next.receivedContext.messageId='43';
+ next.persistedEvent.message.__openclaw.transport.messageId='43';next.persistedEvent.message.idempotencyKey='channel-user:v1:'+'b'.repeat(64);
+ (next.endEvent.messages[0] as any).idempotencyKey=next.persistedEvent.message.idempotencyKey;
+ const restarted=adapter({workspaceRoot:root,admitted});
+ restarted.captureMessageReceived(next.receivedEvent,next.receivedContext);restarted.adoptPersistedUser(next.persistedEvent,{sessionKey});
+ expect(restarted.attachRun({},next.runContext).status).toBe('attached');
+ expect(restarted.completeAgentEnd(next.endEvent,next.runContext).status).toBe('admitted');
+ const store=new AdmissionStore(root,authority);
+ expect(store.scanGapReceipts().records).toHaveLength(0);
+ expect(store.scanCheckpoints().records.filter(c=>c.steerTargetRunId)).toMatchObject([{stage:'persisted',runId:null,steerTargetRunId:'previous-active-run'}]);
+ expect(admitted).toHaveLength(1);expect((admitted[0]!.redactedEvidence as any).source.messageId).toBe('43');
+});
+
+test('steering alone cannot become a standalone completed source, even on its target run',()=>{
+ const root=workspace(),runtime=adapter({workspaceRoot:root});const f=hookFixtures();
+ (f.persistedEvent.message.__openclaw as any).steerTargetRunId=f.runContext.runId;
+ runtime.captureMessageReceived(f.receivedEvent,f.receivedContext);runtime.adoptPersistedUser(f.persistedEvent,{sessionKey});
+ expect(()=>runtime.attachRun({},f.runContext)).toThrow('run has no adopted trusted user turn');
+ expect(new AdmissionStore(root,authority).scanGapReceipts().records).toHaveLength(0);
+ expect(runtime.completeAgentEnd(f.endEvent,f.runContext)).toEqual({status:'ignored',reason:'unbound_run'});
+});
+
+test('malformed or conflicting host steering metadata fails closed',()=>{
+ for(const bad of ['',42,{},' '.repeat(3)]){
+  const runtime=adapter(),f=hookFixtures();runtime.captureMessageReceived(f.receivedEvent,f.receivedContext);
+  (f.persistedEvent.message.__openclaw as any).steerTargetRunId=bad;
+  expect(()=>runtime.adoptPersistedUser(f.persistedEvent,{sessionKey})).toThrow();
+ }
+ const runtime=adapter(),f=hookFixtures();runtime.captureMessageReceived(f.receivedEvent,f.receivedContext);
+ Object.assign(f.persistedEvent.message.__openclaw,{steerTargetRunId:'prior',runId:'own'});
+ expect(()=>runtime.adoptPersistedUser(f.persistedEvent,{sessionKey})).toThrow('steering source cannot own');
+});
+
+test('steering expiry remains an unverified gap, never a semantic skip or restoration',()=>{
+ const root=workspace(),runtime=adapter({workspaceRoot:root}),f=hookFixtures();
+ (f.persistedEvent.message.__openclaw as any).steerTargetRunId='previous';
+ runtime.captureMessageReceived(f.receivedEvent,f.receivedContext);runtime.adoptPersistedUser(f.persistedEvent,{sessionKey});
+ const restarted=adapter({workspaceRoot:root,now:()=>new Date('2026-08-28T19:35:00Z')});
+ expect(restarted.reconcileOrphanedCheckpoints()).toMatchObject({gaps:1});
+ expect(new AdmissionStore(root,authority).scanGapReceipts().records).toMatchObject([{reasonCode:'expired_before_completion',failureStage:'persisted'}]);
+});
+
+test('steering retarget is rejected and truly ambiguous ordinary candidates still fail closed',()=>{
+ const root=workspace(),runtime=adapter({workspaceRoot:root}),f=hookFixtures();
+ (f.persistedEvent.message.__openclaw as any).steerTargetRunId='prior';
+ runtime.captureMessageReceived(f.receivedEvent,f.receivedContext);runtime.adoptPersistedUser(f.persistedEvent,{sessionKey});
+ (f.persistedEvent.message.__openclaw as any).steerTargetRunId='different';
+ expect(()=>runtime.adoptPersistedUser(f.persistedEvent,{sessionKey})).toThrow();
+ const otherRoot=workspace(),ordinary=adapter({workspaceRoot:otherRoot});
+ for(const [id,char] of [['42','a'],['43','b']]){
+  const fixture=hookFixtures();fixture.receivedEvent.messageId=id!;fixture.receivedContext.messageId=id!;
+  fixture.persistedEvent.message.__openclaw.transport.messageId=id!;fixture.persistedEvent.message.idempotencyKey='channel-user:v1:'+char!.repeat(64);
+  ordinary.captureMessageReceived(fixture.receivedEvent,fixture.receivedContext);ordinary.adoptPersistedUser(fixture.persistedEvent,{sessionKey});
+ }
+ expect(()=>ordinary.attachRun({},f.runContext)).toThrow('multiple persisted turns compete');
+ expect(new AdmissionStore(otherRoot,authority).scanGapReceipts().records).toHaveLength(2);
+});
+
 function adapter(options: {
   binding?: RuntimeObservationBinding | null;
   now?: () => Date;

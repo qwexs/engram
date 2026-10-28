@@ -70,6 +70,8 @@ export type AdmissionCheckpointV1 = {
   replyToId: string | null;
   sourceTurnId: string | null;
   runId: string | null;
+  /** Host steering attestation; never a standalone run identity. Absent in legacy checkpoints. */
+  steerTargetRunId?: string;
   sessionId: string | null;
   sourceText: string | null;
   stage: AdmissionCheckpointStage;
@@ -421,6 +423,7 @@ export class AdmissionStore {
       replyToId: input.replyToId,
       sourceTurnId: input.sourceTurnId,
       runId: input.runId,
+      ...(input.steerTargetRunId !== undefined ? { steerTargetRunId: input.steerTargetRunId } : {}),
       sessionId: input.sessionId,
       sourceText: input.sourceText,
       stage: input.stage,
@@ -449,6 +452,11 @@ export class AdmissionStore {
       || (currentRank === nextRank && current.replyToId !== next.replyToId)
       || (nextRank > currentRank && current.replyToId !== null && next.replyToId === null)) {
       throw new ObservationLedgerError("CONTENT_CONFLICT", "admission reply identity changed");
+    }
+    const steeringReplay = currentRank > nextRank && this.isHistoricalReplay(next) && next.steerTargetRunId === undefined;
+    if (!steeringReplay && (current.steerTargetRunId !== undefined && current.steerTargetRunId !== next.steerTargetRunId
+      || current.stage !== "received" && current.steerTargetRunId !== next.steerTargetRunId)) {
+      throw new ObservationLedgerError("CONTENT_CONFLICT", "admission steering identity changed");
     }
     if ((current.sourceText !== null && next.sourceText !== null && current.sourceText !== next.sourceText)
       || (currentRank === nextRank && current.sourceText !== next.sourceText)
@@ -488,6 +496,7 @@ export class AdmissionStore {
       || !validOptionalToken(record.replyToId)
       || !validSourceTurnId(record.sourceTurnId)
       || !validOptionalToken(record.runId)
+      || record.steerTargetRunId !== undefined && (!validToken(record.steerTargetRunId) || record.runId !== null)
       || !validOptionalToken(record.sessionId)
       || !(record.sourceText === null || (typeof record.sourceText === "string" && record.sourceText.length <= 50_000))
       || !validInstant(record.createdAt)

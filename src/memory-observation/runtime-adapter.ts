@@ -117,6 +117,7 @@ type PendingTurn = {
 };
 
 type AdoptedTurn = PendingTurn & {
+  steerTargetRunId?: string;
   sourceTurnId: string;
   userText: string;
   senderIsOwner: boolean;
@@ -367,6 +368,13 @@ export class OpenClawObservationRuntimeAdapter {
     const userText = extractText(message, 50_000);
     if (!userText) throw new RuntimeAdapterError("INVALID_TURN", "persisted user turn has no text evidence");
     const sanitizedUserText = String(sanitizeEvidence(userText as unknown as JsonValue));
+    // Protected host metadata is present before the write hook. Native runId
+    // annotations can arrive later; steering is NOT a standalone runId.
+    const steerTargetRunId = optionalToken("steerTargetRunId", metadata?.steerTargetRunId);
+    const persistedRunId = optionalToken("runId", metadata?.runId);
+    if (steerTargetRunId && (persistedRunId || this.pending.get(deriveAdmissionCandidateId({
+      workspaceId: binding.workspaceId, runtimeSessionKey, channel: transportChannel, inboundMessageId: messageId,
+    }))?.runId)) throw new RuntimeAdapterError("IDENTITY_CONFLICT", "steering source cannot own a standalone run");
     const durableProgressed = this.admissionStore?.findOpenBySession(runtimeSessionKey, [
       "persisted",
       "run_attached",
@@ -388,6 +396,7 @@ export class OpenClawObservationRuntimeAdapter {
       }
       if (durableProgressed[0].sourceTurnId === sourceTurnId
         && durableProgressed[0].sourceText === sanitizedUserText
+        && durableProgressed[0].steerTargetRunId === steerTargetRunId
         && durableProgressed[0].replyToId === (transportReplyToId ?? null)) {
         return { status: "duplicate", ...(durableProgressed[0].sourceTurnId ? { sourceTurnId: durableProgressed[0].sourceTurnId } : {}) };
       }
@@ -402,6 +411,7 @@ export class OpenClawObservationRuntimeAdapter {
         && current.messageId === messageId
         && current.channel === transportChannel
         && current.userText === sanitizedUserText
+        && current.steerTargetRunId === steerTargetRunId
         && current.replyToId === transportReplyToId) {
         return { status: "duplicate", sourceTurnId };
       }
@@ -427,6 +437,7 @@ export class OpenClawObservationRuntimeAdapter {
     }
     const adopted: AdoptedTurn = {
       ...pending,
+      ...(steerTargetRunId ? { steerTargetRunId } : {}),
       ...(transportReplyToId ? { replyToId: transportReplyToId } : {}),
       sourceTurnId,
       userText: sanitizedUserText,
@@ -461,9 +472,10 @@ export class OpenClawObservationRuntimeAdapter {
       return { status: "duplicate", ...(progressedRuns[0].sourceTurnId ? { sourceTurnId: progressedRuns[0].sourceTurnId } : {}) };
     }
     const durableAdopted = this.admissionStore?.findOpenBySession(runtimeSessionKey, ["persisted"])
+      .filter((entry) => !entry.steerTargetRunId)
       .filter((entry) => this.durableCheckpointPending(entry, now)) ?? [];
     const candidates = new Map([...this.adopted.values()]
-      .filter(turn => turn.runtimeSessionKey === runtimeSessionKey).map(turn => [turn.candidateId, turn]));
+      .filter(turn => turn.runtimeSessionKey === runtimeSessionKey && !turn.steerTargetRunId).map(turn => [turn.candidateId, turn]));
     for (const checkpoint of durableAdopted) candidates.set(checkpoint.candidateId, this.adoptedFromCheckpoint(checkpoint));
     const exactRunCandidates = [...candidates.values()].filter(turn => turn.runId === runId);
     if (exactRunCandidates.length === 1) {
@@ -961,6 +973,7 @@ export class OpenClawObservationRuntimeAdapter {
     }
     return {
       ...this.pendingFromCheckpoint(checkpoint),
+      ...(checkpoint.steerTargetRunId ? { steerTargetRunId: checkpoint.steerTargetRunId } : {}),
       sourceTurnId: checkpoint.sourceTurnId,
       userText: checkpoint.sourceText,
       senderIsOwner: true,
@@ -1008,6 +1021,8 @@ export class OpenClawObservationRuntimeAdapter {
       replyToId: turn.replyToId ?? null,
       sourceTurnId: turn.sourceTurnId ?? current.sourceTurnId,
       runId: turn.runId ?? current.runId,
+      ...((turn as Partial<AdoptedTurn>).steerTargetRunId || current.steerTargetRunId
+        ? { steerTargetRunId: (turn as Partial<AdoptedTurn>).steerTargetRunId ?? current.steerTargetRunId } : {}),
       sessionId: turn.sessionId ?? current.sessionId,
       sourceText: stripSource ? null : turn.userText ?? current.sourceText,
       stage,

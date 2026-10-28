@@ -22,6 +22,12 @@ function validateSnapshot(s:Snapshot,workspaceId:string,now:number){
  if(!Array.isArray(automatic)||new Set(automatic).size!==automatic.length||automatic.some(id=>!writtenOff.includes(id)))throw Error('FLEET_COMPLETENESS_AUTOMATIC_STOP');
  const partition=[...s.openIds,...s.closedIds,...writtenOff],all=new Set(s.debtIds);
  if(partition.some(x=>!all.has(x))||new Set(partition).size!==partition.length||partition.length!==all.size)throw Error('FLEET_COMPLETENESS_COVERAGE');
+ if(s.openClassifications!==undefined){
+  const keys=['confirmedCompleted','failedRuns','completionUnverified','identityUnverified','unclassified'];
+  if(Object.keys(s.openClassifications).sort().join()!==keys.sort().join()
+   ||Object.values(s.openClassifications).some(n=>!Number.isSafeInteger(n)||n<0)
+   ||Object.values(s.openClassifications).reduce((a,b)=>a+b,0)!==s.openIds.length)throw Error('FLEET_COMPLETENESS_CLASSIFICATION_INVALID');
+ }
 }
 /** Caller holds the existing fleet lease. Never infer recovery from exit code.
  * Missing/unverified snapshots preserve incident state and cannot emit green. */
@@ -62,17 +68,29 @@ export async function reportFleetCompleteness(args:{config:FleetIsolation;result
  const resolvedStatus=writtenOff?'written_off':'closed';
  const executionFor=(workspaceId:string)=>describeFleetResult(args.results.find(r=>r.workspaceId===workspaceId)?.execution);
  const openLines=remaining.map(x=>'WS '+x.workspaceId+': '+x.open+' незакрытых; текущий запуск: '+executionFor(x.workspaceId)+(unverified.includes(x.workspaceId)?'; состояние памяти не подтверждено':'')).join('\n');
+ const classes={confirmedCompleted:0,failedRuns:0,completionUnverified:0,identityUnverified:0,unclassified:0};
+ for(const item of remaining){
+  const s=args.results.find(r=>r.workspaceId===item.workspaceId)?.snapshot;
+  if(!unverified.includes(item.workspaceId)&&s?.openClassifications&&s.openIds.length===item.open)
+   for(const key of Object.keys(classes) as Array<keyof typeof classes>)classes[key]+=s.openClassifications[key];
+  else classes.unclassified+=item.open;
+ }
+ const classificationSummary='Классификация незакрытых источников по учёту:\n'
+  +'Завершённый источник подтверждён: '+classes.confirmedCompleted+'; запуск завершился ошибкой: '+classes.failedRuns
+  +'; завершение не подтверждено: '+classes.completionUnverified+'; идентичность не подтверждена: '+classes.identityUnverified
+  +'; классификация недоступна: '+classes.unclassified+'.\nЭто не число потерянных фактов. Дополнительная реплика во время ответа может не иметь отдельного цикла завершения; без доказательства она не объявляется сохранённой.';
  const closedLines=newlyClosed.map(x=>'WS '+x.workspaceId+': '+x.count+' закрыто').join('\n');
  const writtenOffLines=state.incidents.filter(i=>i.writtenOffIds?.length).map(i=>'WS '+i.workspaceId+': '+i.writtenOffIds!.length+' списано'+(i.automaticallyStoppedIds?.length?' (автоматически: '+i.automaticallyStoppedIds.length+')':'')).join('\n');
- const fingerprint=sha256({formatVersion:2,incidents:state.incidents.map(({notifiedClosedIds:_ack,...incident})=>incident),unverified:[...unverified].sort(),
-  execution:remaining.map(x=>[x.workspaceId,executionFor(x.workspaceId)])});
+ // Execution changes have their own receipt/cooldown in fleet-isolation.
+ // Healthy or idle passes must not create a new historical-memory alert.
+ const fingerprint=sha256({formatVersion:4,incidents:state.incidents.map(({notifiedClosedIds:_ack,...incident})=>incident),unverified:[...unverified].sort(),classes});
  const changed=fingerprint!==state.notifiedFingerprint;
  const notificationDue=changed||now-state.notifiedAt>=args.config.cooldownMs;
  const hasHistory=state.incidents.length>0;
- if(!hasHistory)return {status:unverified.length?'unverified':'not_observed',notification:'not_needed',remaining:0,unverified};
+ if(!hasHistory&&!unverified.length)return {status:'not_observed',notification:'not_needed',remaining:0,unverified};
  // A presentation upgrade alone must not resurrect a fully closed incident.
  if(!remaining.length&&!unverified.length&&!newlyClosed.length&&!writtenOff)return {status:'closed',notification:'not_needed',remaining:0,writtenOff,automaticallyStopped,unverified};
- if(!notificationDue||(!remaining.length&&!newlyClosed.length&&fingerprint===state.notifiedFingerprint))return {status:remaining.length?'incomplete':unverified.length?'unverified':resolvedStatus,notification:'cooldown',remaining:remaining.reduce((n,x)=>n+x.open,0),writtenOff,automaticallyStopped,unverified};
+ if(!notificationDue||(!remaining.length&&!newlyClosed.length&&!unverified.length&&fingerprint===state.notifiedFingerprint))return {status:remaining.length?'incomplete':unverified.length?'unverified':resolvedStatus,notification:'cooldown',remaining:remaining.reduce((n,x)=>n+x.open,0),writtenOff,automaticallyStopped,unverified};
  let message:string;
  if(!remaining.length&&!unverified.length&&writtenOff){
   message='Memory Worker: активный долг этого набора снят. '+stoppedSummary+'\n'+writtenOffLines+'\nЭто прекращение восстановления, не подтверждение сохранения памяти.';
@@ -81,8 +99,9 @@ export async function reportFleetCompleteness(args:{config:FleetIsolation;result
  }else if(newlyClosed.length){
   message='Memory Worker: частичное восстановление обработки.\nПроверено закрытие:\n'+closedLines+'.\nОстались незакрытые источники:\n'+(openLines||'нет подтверждённых по доступному срезу')+'.';
  }else{
-  message='Memory Worker: память требует восстановления.\nНакопленные пропуски по workspace:\n'+(openLines||'проверка закрытия недоступна')+'.\nУспешный или пустой запуск не закрывает эти пропуски.';
+  message='Memory Worker: есть незакрытые источники.\nПо workspace:\n'+(openLines||'проверка закрытия недоступна')+'.\nУспешный или пустой запуск не подтверждает восстановление этих источников.';
  }
+ if(remaining.length)message+='\n'+classificationSummary;
  if(writtenOff&&remaining.length)message+='\n'+stoppedSummary+' Исключено из повторных напоминаний: '+writtenOff+'.\n'+writtenOffLines+'\nЭти источники не объявлены восстановленными.';
  if(unverified.length)message+='\nЗакрытие не подтверждено:\n'+unverified.map(id=>'WS '+id+': снимок состояния недоступен или не прошёл проверку; текущий запуск: '+executionFor(id)).join('\n')+'.';
  await args.notify(message,args.config.operator);

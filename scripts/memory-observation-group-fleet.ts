@@ -49,8 +49,8 @@ try {
       pendingSources:worker.health?.pending,openDebt:worker.health?.sourceDebtOpen,
       executionErrors:worker.execution?.errors??[]}: {})};
   });
-  console.log(JSON.stringify({ schema: "engram.memory-topic-fleet-result.v1", schedulerId: manifest.schedulerId, reportMode:"compact-status-counts",results:summaries,
-    ...(report ? { status: report.status, notification: report.notification } : {}),...(completeness?{completeness}: {}) }));
+  console.log(JSON.stringify({ schema: "engram.memory-topic-fleet-result.v1", reportingVersion:2, schedulerId: manifest.schedulerId, reportMode:"compact-status-counts",results:summaries,
+    ...(report ? { status: report.status, passCounts: report.passCounts, notification: report.notification } : {}),...(completeness?{completeness}: {}) }));
 } catch {
   console.error(JSON.stringify({ status: "error", reason: "fleet execution, reporting or operator notification failed" }));
   process.exitCode = 1;

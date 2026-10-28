@@ -59,6 +59,14 @@ test("immutable exact source failure survives empty queues, 72h evidence and 31d
   expect(memoryWorkerHealth(f.workspace)).toMatchObject({ status: "degraded", pending: 0, sourceDebtOpen: 1 });
   expect(readFileSync(join(failures, readdirSync(failures)[0]!), "utf8")).not.toContain("synthetic-secret-not-to-copy");
 });
+
+test('presentation classification counts exact open identities and excludes verified closures',()=>{
+ const f=fixture();const initial=scanSourceDebt(f.workspace,new Date(f.at));
+ expect(initial.openClassifications).toEqual({confirmedCompleted:1,failedRuns:0,completionUnverified:0,identityUnverified:0,unclassified:0});
+ expect(sourceDebtSnapshot(f.workspace,new Date(f.at)).openClassifications).toEqual(initial.openClassifications);
+ f.skip();const closed=scanSourceDebt(f.workspace,new Date(f.at));
+ expect(closed.openIds).toHaveLength(0);expect(closed.openClassifications).toEqual({confirmedCompleted:0,failedRuns:0,completionUnverified:0,identityUnverified:0,unclassified:0});
+});
 test("requeued, successful process and broad semantic terminal reason cannot close exact source debt", () => {
   const f = fixture(); scanSourceDebt(f.workspace);
   for (const reasonCode of [null, "semantic_batch_write", "semantic_contextual_supports", "semantic_contextual_duplicate", "semantic_batch_grouped_no_assertion"]) {

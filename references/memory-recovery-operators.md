@@ -147,6 +147,16 @@ require separate review rather than automatic overwrite.
 
 ## Code-only plugin release rebind
 
+When the canonical source checkout is shared with live Workers, pause the four
+existing Worker jobs and verify no active Worker before editing plugin-bundled
+modules. Workers build the canonical bundle for their digest preflight, so an
+unpublished source edit can otherwise cause a fail-closed mismatch before the
+installed runtime changes. Keep the same job IDs, payloads and schedules; restore
+their original enablement after installed/source/projection/runtime read-back.
+This maintenance barrier is not a new scheduler. If code was already edited,
+record any preflight failures honestly rather than treating them as lost facts
+or clearing their run history.
+
 `scripts/memory-observation-code-only-plugin-rebind.ts` has `plan` and `apply`
 commands. It builds the canonical source bundle relative to the repository
 root regardless of caller cwd. It does not install or restart the plugin.

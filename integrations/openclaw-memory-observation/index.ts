@@ -41,6 +41,8 @@ import {
   type MemoryObservationProjectionV1,
 } from "../../src/memory-observation/projection.ts";
 
+import { reconcileLateSteering } from "../../src/memory-observation/late-steering.ts";
+
 const ENTRY_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_DIGEST = `sha256:${createHash("sha256").update(readFileSync(ENTRY_PATH)).digest("hex")}` as const;
 
@@ -722,17 +724,25 @@ export default definePluginEntry({
       });
     });
 
-    const attach = (event: any, context: any) => {
-      safe(api, "run_attach", () => {
+    const attach = async (event: any, context: any) => {
+      // These host hooks await returned promises. Resolve late host attestation
+      // before attachRun can turn an unresolved pair into terminal ambiguity.
+      try {
         const identity = resolveObservationAgentRunIdentity(event || {}, context || {});
         const adapter = adapterFor(api, identity.runtimeSessionKey);
         if (!adapter) return { status: "ignored", reason: "scope_disabled" };
-        return adapter.attachRun(event, {
-          ...context,
-          runId: identity.runId,
-          sessionKey: identity.runtimeSessionKey,
-        });
-      });
+        const signal = generation.signal;
+        const agentId = agentIdFromSessionKey(identity.runtimeSessionKey);
+        if (!agentId) return;
+        const runContext = {...context, runId: identity.runId, sessionKey: identity.runtimeSessionKey};
+        await reconcileLateSteering(adapter, {...runContext, agentId},
+          async request => await readSessionTranscriptVisibleMessageDelta(request) as CompletionPage, signal);
+        if (signal.aborted) return;
+        safe(api, "run_attach", () => adapter.attachRun(event, runContext));
+      } catch (error) {
+        const diagnostic = observationRuntimeAdapterError(error);
+        api.logger.warn?.(`engram-memory-observation: run_attach fail-closed ${diagnostic.code}: ${diagnostic.message}`);
+      }
     };
     api.on("agent_turn_prepare", attach);
     api.on("before_prompt_build", attach);

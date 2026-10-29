@@ -298,6 +298,31 @@ export class AdmissionStore {
     });
   }
 
+  /** Narrow CAS enrichment from an exact host transcript read. Ordinary writes
+   * still cannot change steering identity or reopen terminal dispositions. */
+  confirmSteeringTarget(candidateId: Digest, expectedDigest: Digest, targetRunId: string, now: Date): AdmissionCheckpointV1 {
+    if (!validDigest(expectedDigest) || !validToken(targetRunId)) {
+      throw new ObservationLedgerError("CONTENT_CONFLICT", "invalid steering confirmation");
+    }
+    return this.withCandidateDisposition(candidateId, () => this.withLock(() => {
+      const current = this.readCheckpoint(candidateId);
+      if (!current || current.checkpointDigest !== expectedDigest) {
+        throw new ObservationLedgerError("CONTENT_CONFLICT", "steering checkpoint changed during host read");
+      }
+      if (current.stage !== "persisted" || current.runId !== null || current.sessionId !== null
+        || this.readGapReceiptForCandidate(candidateId) || Date.parse(current.expiresAt) <= now.getTime()) {
+        throw new ObservationLedgerError("TERMINAL_DISPOSITION", "steering confirmation requires an unbound live source");
+      }
+      if (current.steerTargetRunId !== undefined) {
+        if (current.steerTargetRunId !== targetRunId) throw new ObservationLedgerError("CONTENT_CONFLICT", "steering target changed");
+        return current;
+      }
+      const updated = this.buildCheckpoint({ ...current, steerTargetRunId: targetRunId, updatedAt: now.toISOString() });
+      writeAtomic(this.checkpointPath(candidateId), updated);
+      return updated;
+    }));
+  }
+
   readCheckpoint(candidateId: Digest): AdmissionCheckpointV1 | null {
     const path = this.checkpointPath(candidateId);
     return existsSync(path) ? this.readCheckpointPath(path) : null;

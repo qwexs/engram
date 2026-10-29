@@ -220,3 +220,36 @@ See [source debt](memory-source-debt.md),
 [runtime/lineage](memory-runtime-lineage.md) and
 [fleet reporting](memory-fleet-isolation.md). Do not delete operational debt or
 invent a semantic skip to make an audit green.
+
+
+## Late host steering attestation
+
+The runtime may persist a user-shaped source before the host confirms its
+`steerTargetRunId`. The existing `agent_turn_prepare` and `before_prompt_build`
+hooks await reconciliation **before** `attachRun` selects competing sources.
+The implementation uses the public host visible-message delta SDK with exact
+agent/session-key/session-ID targeting, opaque cursors and a caught-up scan.
+There is no direct database reader, recency heuristic or second scheduler.
+
+Only ambiguous unbound source sets require a read; existing exact-run selection
+and already attached runs keep their fast path. Reads are bounded to 32 pages,
+256 messages / 1 MiB per page, 16 MiB total and four seconds. A reset, oversized
+entry, incomplete/missing source, timeout, SDK failure or stopped generation
+retains the unbound candidates and reports `STEERING_SOURCE_UNVERIFIED`; it does
+not prove ordinary ambiguity and does not create a synthetic skip/completion.
+The next existing hook can retry. If a verified complete source set contains
+no steering distinction, the existing true-ambiguity guard still applies.
+
+Late enrichment checks exact protected source/transport/actor/reply identity,
+source text and the current binding, then compares the checkpoint digest under
+the existing disposition/storage locks. It adds only the steering target to a
+live `persisted` checkpoint with no ordinary run/session binding, retaining its
+original creation and expiry. It never reopens a terminal gap, retargets a
+confirmed source, or makes a steering input a completed standalone source.
+Normal hook replay does not gain permission to mutate steering identity.
+
+This changes the plugin bundle digest. Publication to Git is not activation:
+use the existing maintenance barrier, install/code-only rebind and loaded-runtime
+read-back for a separate live rollout. Do not update a shared live source checkout
+before that barrier. A natural steer -> ordinary completion -> Worker -> canonical
+effect -> indexed retrieval remains a separate E2E proof.

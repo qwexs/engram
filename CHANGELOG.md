@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **fix(memory): reconcile late host steering before run attachment.** When
+  ordinary-shaped sources compete, await a bounded exact-session host transcript
+  read before selection. Validate source, actor, transport, reply, content and
+  current binding; CAS-enrich only live unbound checkpoints without changing
+  their expiry or weakening ordinary write/retarget guards. Incomplete reads,
+  resets, timeouts and service stop retain candidates rather than publishing a
+  false ambiguity gap. Hook-level regression reproduces late metadata after the
+  initial write and survives adapter restart. No host code or terminal debt is
+  rewritten, and synthetic coverage does not claim a natural-source live E2E.
+
 - **fix(memory): keep host-attested steering out of standalone run selection.**
   Persist the protected `steerTargetRunId` separately from `runId`, retain it
   across restart and replay, reject malformed/retargeted identities, and exclude

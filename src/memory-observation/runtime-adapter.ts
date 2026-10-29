@@ -139,6 +139,12 @@ type CompletedRun = {
   completedAt: number;
 };
 
+export type SteeringSourceSnapshot = {
+  runtimeSessionKey: string;
+  fingerprint: Digest;
+  sourceTurnIds: string[];
+};
+
 export class RuntimeAdapterError extends Error {
   constructor(readonly code: string, message: string) {
     super(message);
@@ -450,6 +456,79 @@ export class OpenClawObservationRuntimeAdapter {
     return { status: "adopted", sourceTurnId };
   }
 
+  /** Snapshot only unresolved ordinary-shaped sources. No transcript inference
+   * by timestamp/last message, and no historical terminal recovery. */
+  steeringSourceSnapshot(contextValue: unknown): SteeringSourceSnapshot | null {
+    const context = row(contextValue) ?? {};
+    if (context.trigger !== "user") return null;
+    const runtimeSessionKey = token("sessionKey", context.sessionKey);
+    const runId = token("runId", context.runId);
+    if (this.runs.has(runId) || this.admissionStore?.findOpenByRun(runId,
+      ["run_attached", "completion_observed", "ledger_admitted", "terminal_gap"]).length) return null;
+    this.sweep(this.now().getTime());
+    const candidates = [...this.unboundCandidates(runtimeSessionKey).values()];
+    const exact = candidates.filter(turn => turn.runId === runId);
+    if (exact.length === 1 || candidates.filter(turn => !turn.runId || turn.runId === runId).length < 2) return null;
+    return { runtimeSessionKey, fingerprint: sha256(candidates as unknown as JsonValue),
+      sourceTurnIds: candidates.map(c => c.sourceTurnId) };
+  }
+
+  /** Only the host SDK read path calls this method. Validate the complete set
+   * before any enrichment; ordinary hook replay retains its immutable guard. */
+  confirmLateSteering(snapshot: SteeringSourceSnapshot, messages: unknown[]): void {
+    const now = this.now();
+    const binding = this.options.resolveBinding(snapshot.runtimeSessionKey);
+    if (!binding) throw new RuntimeAdapterError("SCOPE_REVOKED", "steering binding unavailable");
+    const candidates = [...this.unboundCandidates(snapshot.runtimeSessionKey).values()];
+    if (sha256(candidates as unknown as JsonValue) !== snapshot.fingerprint) {
+      throw new RuntimeAdapterError("IDENTITY_CONFLICT", "steering candidates changed during host read");
+    }
+    const updates: Array<{turn: AdoptedTurn; target: string; checkpoint: AdmissionCheckpointV1 | null}> = [];
+    for (const turn of candidates) {
+      if (this.bindingFingerprint(binding) !== turn.bindingFingerprint) {
+        throw new RuntimeAdapterError("SCOPE_REVOKED", "steering binding changed during host read");
+      }
+      const matching = messages.map(row).filter(m => m?.role === "user" && m.idempotencyKey === turn.sourceTurnId);
+      if (matching.length !== 1) throw new RuntimeAdapterError("STEERING_SOURCE_UNVERIFIED", "exact host source missing or duplicated");
+      const message = matching[0]!, metadata = row(message.__openclaw), transport = row(metadata?.transport);
+      const target = optionalToken("steerTargetRunId", metadata?.steerTargetRunId);
+      const transportReply = optionalToken("replyToId", transport?.replyToId);
+      const metadataReply = optionalToken("replyToId", metadata?.replyToId);
+      // No enrichment is needed for ordinary sources, but validate them too so
+      // a missing/mutated competing source can never authorize partial selection.
+      if (transport?.channel !== turn.channel || transport.messageId !== turn.messageId
+        || metadata?.senderId !== turn.actorId || typeof metadata.senderIsOwner !== "boolean"
+        || (binding.requireOwner && !metadata.senderIsOwner)
+        || String(sanitizeEvidence(extractText(message, 50_000) as unknown as JsonValue)) !== turn.userText
+        || (transportReply !== undefined && metadataReply !== undefined && transportReply !== metadataReply)
+        || (transportReply ?? metadataReply ?? null) !== (turn.replyToId ?? null)
+        || (target && (metadata.runId !== undefined && metadata.runId !== null || turn.runId))) {
+        throw new RuntimeAdapterError("IDENTITY_CONFLICT", "host steering source evidence differs from captured source");
+      }
+      const checkpoint = this.admissionStore?.readCheckpoint(turn.candidateId) ?? null;
+      if (checkpoint && (checkpoint.stage !== "persisted" || checkpoint.runId !== null
+        || Date.parse(checkpoint.expiresAt) <= now.getTime())) {
+        throw new RuntimeAdapterError("STEERING_SOURCE_UNVERIFIED", "steering source no longer unbound");
+      }
+      if (target) updates.push({turn, target, checkpoint});
+    }
+    for (const {turn, target, checkpoint} of updates) {
+      if (checkpoint) this.admissionStore!.confirmSteeringTarget(turn.candidateId, checkpoint.checkpointDigest, target, now);
+      this.adopted.set(turn.candidateId, {...turn, steerTargetRunId: target});
+    }
+  }
+
+  private unboundCandidates(runtimeSessionKey: string): Map<Digest, AdoptedTurn> {
+    const candidates = new Map([...this.adopted.values()]
+      .filter(turn => turn.runtimeSessionKey === runtimeSessionKey && !turn.steerTargetRunId).map(turn => [turn.candidateId, turn]));
+    for (const checkpoint of this.admissionStore?.findOpenBySession(runtimeSessionKey, ["persisted"]) ?? []) {
+      if (!checkpoint.steerTargetRunId && this.durableCheckpointPending(checkpoint, this.now())) {
+        candidates.set(checkpoint.candidateId, this.adoptedFromCheckpoint(checkpoint));
+      }
+    }
+    return candidates;
+  }
+
   attachRun(_eventValue: unknown, contextValue: unknown): RuntimeAdapterResult {
     const now = this.now();
     this.sweep(now.getTime());
@@ -471,12 +550,7 @@ export class OpenClawObservationRuntimeAdapter {
     if (progressedRuns[0]) {
       return { status: "duplicate", ...(progressedRuns[0].sourceTurnId ? { sourceTurnId: progressedRuns[0].sourceTurnId } : {}) };
     }
-    const durableAdopted = this.admissionStore?.findOpenBySession(runtimeSessionKey, ["persisted"])
-      .filter((entry) => !entry.steerTargetRunId)
-      .filter((entry) => this.durableCheckpointPending(entry, now)) ?? [];
-    const candidates = new Map([...this.adopted.values()]
-      .filter(turn => turn.runtimeSessionKey === runtimeSessionKey && !turn.steerTargetRunId).map(turn => [turn.candidateId, turn]));
-    for (const checkpoint of durableAdopted) candidates.set(checkpoint.candidateId, this.adoptedFromCheckpoint(checkpoint));
+    const candidates = this.unboundCandidates(runtimeSessionKey);
     const exactRunCandidates = [...candidates.values()].filter(turn => turn.runId === runId);
     if (exactRunCandidates.length === 1) {
       candidates.clear(); candidates.set(exactRunCandidates[0]!.candidateId, exactRunCandidates[0]!);

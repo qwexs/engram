@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix(oll): record pre-spawn dispatch rejection without fabricated identities.**
+  The nightly runtime CLI accepts absent dispatch/model references only for an
+  explicit `accepted=false` acknowledgement. Accepted dispatches still require
+  both references, and malformed boolean values fail closed. Regression tests
+  exercise the real CLI against the file dispatch transport.
+
 - **fix(memory): reconcile late host steering before run attachment.** When
   ordinary-shaped sources compete, await a bounded exact-session host transcript
   read before selection. Validate source, actor, transport, reply, content and

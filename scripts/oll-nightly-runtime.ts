@@ -39,11 +39,17 @@ try {
   const stateRoot = resolve(required("state-root"));
   const transport = new FileDispatchTransport(stateRoot);
   if (command === "ack") {
+    const accepted = required("accepted");
+    if (accepted !== "true" && accepted !== "false") throw new Error("--accepted must be true or false");
+    // Rejection before a spawn has no dispatch identity. Preserve that absence
+    // instead of requiring a fabricated reference merely to record failure.
+    const dispatchValue = values["dispatch-ref-uri"];
+    const modelValue = values["resolved-model-uri"];
     const result = transport.acknowledge({
       runtimeLabel: required("runtime-label"),
-      accepted: required("accepted") === "true",
-      dispatchRef: decode("dispatch-ref-uri"),
-      resolvedModel: decode("resolved-model-uri"),
+      accepted: accepted === "true",
+      dispatchRef: accepted === "true" ? decode("dispatch-ref-uri") : typeof dispatchValue === "string" ? decodeURIComponent(dispatchValue) : "",
+      resolvedModel: accepted === "true" ? decode("resolved-model-uri") : typeof modelValue === "string" ? decodeURIComponent(modelValue) : "",
       error: typeof values["error-uri"] === "string" ? decodeURIComponent(values["error-uri"]) : null,
     });
     console.log(JSON.stringify({ status: "acknowledged", acknowledgement: result }));

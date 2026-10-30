@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { sha256 } from "./ledger.ts";
 import { ADMISSION_CHECKPOINT_SCHEMA, ADMISSION_CHECKPOINT_STAGES } from "./admission-store.ts";
+import { completionAccountingSnapshot } from "./completion-accounting.ts";
 
 export type WorkerStateRow = { path: string; value: Record<string, any> };
 export type WorkerReadError = { path: string; error: string };
@@ -146,9 +147,12 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const claimTtlSeconds = options.claimTtlSeconds ?? 300;
   const terminalOk = new Set(["semantic_contextual_asserted", "semantic_contextual_supports", "semantic_contextual_duplicate", "semantic_contextual_skip", "semantic_batch_write", "semantic_batch_skip", "semantic_batch_grouped_no_assertion", "semantic_write", "semantic_skip", "semantic_skip_noise", "semantic_skip_already_captured", "semantic_skip_incomplete", "pre_activation_not_evaluated"]);
   const dailyOk = new Set(["canonical_applied", "duplicate_receipt", "policy_superseded_before_apply"]);
+  const completionAccounting = completionAccountingSnapshot(workspace, now);
+  errors.push(...completionAccounting.errors);
   // Keep deadline receipts as immutable history, but do not report active debt
   // after the same exact source was admitted, evaluated and canonically applied.
   const accountedCompletionRows = unresolvedCompletionRows.filter(row => {
+    if (completionAccounting.effects.has(sha256(row.value))) return true;
     const request = row.value.request;
     if (!request || !/^sha256:[a-f0-9]{64}$/.test(request.candidateId ?? "")
       || !/^channel-user:v1:[a-f0-9]{64}$/.test(request.sourceTurnId ?? "")) return false;
@@ -163,7 +167,7 @@ export function memoryWorkerHealth(workspace: string, now = new Date(), options:
   const historicalCompletionUnresolved = unresolvedCompletionRows.length;
   const accountedCompletionUnresolved = accountedCompletionRows.length;
   const stoppedCompletionUnresolved = unresolvedCompletionRows.filter(row => !accountedCompletionRows.includes(row)
-    && stoppedCandidates.has(row.value.request?.candidateId)).length;
+    && (stoppedCandidates.has(row.value.request?.candidateId) || completionAccounting.stopped.has(sha256(row.value)))).length;
   const completionUnresolved = historicalCompletionUnresolved - accountedCompletionUnresolved - stoppedCompletionUnresolved;
   for (const [rows, statuses] of [[evaluator, ["queued", "claimed", "terminal"]], [daily, ["queued", "claimed", "qmd_pending", "terminal"]]] as const) {
     for (const row of rows) if (!statuses.includes(row.value.status)) errors.push({ path: row.path, error: "invalid_queue_status" });

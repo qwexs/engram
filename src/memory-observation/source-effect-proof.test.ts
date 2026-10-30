@@ -16,6 +16,10 @@ import {verifySourceEffectClosure} from './source-effect-proof.ts';
 import {deriveSourceDigest,deriveTraceId,sha256,type ObservationScope,type JsonValue} from './ledger.ts';
 import {BATCH_EVALUATOR_AUTHORITY,deriveBatchObservationId} from './batch-observation.ts';
 import {DAILY_NOTE_APPLICATOR,buildDailyNoteCanaryPolicy,renderDailyNoteEntry} from './daily-note-applicator.ts';
+import {reconcileCompletionAccounting,completionAccountingSnapshot} from './completion-accounting.ts';
+import {memoryWorkerHealth} from './worker-health.ts';
+import {publishHistoricalConsumerProof,type HistoricalConsumerProof} from './historical-consumer-proof.ts';
+import {readableEvaluationPolicies} from './model-transition.ts';
 const roots:string[]=[];afterEach(()=>roots.splice(0).forEach(p=>rmSync(p,{recursive:true,force:true})));
 const h=(v:any)=>sha256(v as JsonValue);
 const put=(path:string,value:any)=>{mkdirSync(dirname(path),{recursive:true});writeFileSync(path,typeof value==='string'?value:JSON.stringify(value));};
@@ -58,6 +62,66 @@ function fixture(decision:'skip'|'write'='skip',topic=false){
  const identityInput={traceId,sourceTurnId,scope},now=new Date('2026-10-01T12:05:00.000Z');
  return {workspace,root,base,identityInput,now,envelope,envelopePath,job,jobPath,terminal,donePath,terminalPath,result,resultPath,observation,observationPath,notePath,rendered,receipt,receiptPath,aliasPath,projection,projectionPath};
 }
+function completionWarning(f:ReturnType<typeof fixture>){
+ const request={agentId:'main',sessionKey:f.identityInput.scope.runtimeSessionKey,sessionId:'synthetic-session',candidateId:h('candidate'),runId:'synthetic-run',sourceTurnId:f.identityInput.sourceTurnId};
+ const warning={schema:'engram.completion-unresolved.v1',request,reason:'expired_before_completion',closedAt:f.now.toISOString()};
+ const path=join(f.root,'completion-mirrors','unresolved-'+h(request).slice(7)+'.json');put(path,warning);
+ const cp={schema:'engram.memory-admission-checkpoint.v1',candidateId:request.candidateId,sourceTurnId:request.sourceTurnId,scope:f.identityInput.scope,stage:'ledger_admitted',createdAt:f.envelope.admittedAt};
+ put(join(f.root,'pre-admission/checkpoints',request.candidateId.slice(7)+'.json'),cp);
+ put(join(f.root,'queues/evaluator',f.identityInput.traceId.slice(7)+'.json'),{schema:'engram.memory-observation-ledger-queue.v1',traceId:f.identityInput.traceId,status:'terminal',reasonCode:f.terminal.dispositions[0]!.reasonCode});
+ return {path,warning,options:{workspace:f.workspace,receiptFile:path,receiptDigest:h(warning),authorizedBy:'operator:synthetic',authorizedAt:f.now.toISOString(),authorizationSource:'test:completion-review',now:f.now}};
+}
+test('completion accounting seals a real semantic skip without inventing a daily write and survives envelope TTL',()=>{
+ const f=fixture(),c=completionWarning(f),bytes=readFileSync(c.path,'utf8');
+ expect(reconcileCompletionAccounting(c.options).status).toBe('planned');
+ expect(memoryWorkerHealth(f.workspace,f.now).completionUnresolved).toBe(1);
+ const result=reconcileCompletionAccounting({...c.options,apply:true});expect(result).toMatchObject({status:'applied',disposition:'evaluated_skip'});
+ expect(memoryWorkerHealth(f.workspace,f.now)).toMatchObject({completionUnresolved:0,accountedCompletionUnresolved:1,historicalCompletionUnresolved:1,dailyPending:0});
+ expect(reconcileCompletionAccounting({...c.options,apply:true}).status).toBe('already_accounted');
+ unlinkSync(f.envelopePath);
+ expect(completionAccountingSnapshot(f.workspace,new Date('2026-10-10T12:00:00Z')).effects.size).toBe(1);
+ expect(readFileSync(c.path,'utf8')).toBe(bytes);
+});
+test('completion effects require full proof: tampering, active work, wrong session and grouped-no-assertion stay unresolved',()=>{
+ for(const mode of ['active','wrong-session','grouped','tampered'] as const){
+  const f=fixture(),c=completionWarning(f);
+  if(mode==='active')put(join(f.root,'queues/evaluator',f.identityInput.traceId.slice(7)+'.json'),{traceId:f.identityInput.traceId,status:'queued'});
+  if(mode==='wrong-session'){
+   const request={...c.warning.request,sessionKey:'agent:main:telegram:direct:999999999'},warning={...c.warning,request};
+   const path=join(f.root,'completion-mirrors','unresolved-'+h(request).slice(7)+'.json');put(path,warning);c.options={...c.options,receiptFile:path,receiptDigest:h(warning)};
+  }
+  if(mode==='grouped'){
+   const{terminalId,...body}=f.terminal;const changed={...body,dispositions:[{...body.dispositions[0]!,reasonCode:'semantic_batch_grouped_no_assertion'}]};const t={...changed,terminalId:h(changed)};put(f.donePath,t);put(f.terminalPath,t);
+  }
+  if(mode==='tampered')put(f.resultPath,{...f.result,requestDigest:h('wrong')});
+  expect(reconcileCompletionAccounting({...c.options,apply:true}).status).toBe('blocked');
+  expect(completionAccountingSnapshot(f.workspace,f.now).effects.size).toBe(0);
+ }
+});
+test('changed warnings and corrupt or wrong-source certificates fail closed without rewriting history',()=>{
+ const f=fixture(),c=completionWarning(f),result=reconcileCompletionAccounting({...c.options,apply:true});
+ const certificate=JSON.parse(readFileSync(result.path!,'utf8'));put(result.path!,{...certificate,sourceTurnId:'channel-user:v1:'+'f'.repeat(64)});
+ expect(memoryWorkerHealth(f.workspace,f.now)).toMatchObject({completionUnresolved:1,corruptRecords:1});
+ put(result.path!,certificate);put(c.path,{...c.warning,reason:'changed'});
+ expect(completionAccountingSnapshot(f.workspace,f.now).effects.size).toBe(0);
+ expect(()=>reconcileCompletionAccounting({...c.options,apply:true})).toThrow('COMPLETION_WARNING_CHANGED');
+});
+test('receipt-specific historical policy proof restores verification without widening the live producer policy',()=>{
+ const f=fixture('write'),original=structuredClone(f.projection);
+ const live={...f.projection,evaluation:{...f.projection.evaluation,policyDigest:h('new-evaluator')}};put(f.projectionPath,live);
+ expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now)).toMatchObject({closed:false,reason:'consumer_applicability_unverified'});
+ const body={schema:'engram.historical-consumer-proof.v1' as const,workspaceId:'main',receiptId:f.receipt.receiptId,receiptDigest:h(f.receipt),projection:original,quality:null,transition:null,archiveRef:'synthetic:sealed-archive',archiveDigest:h(original),authorizedBy:'operator:synthetic',authorizedAt:f.now.toISOString(),authorizationSource:'test:review'};
+ const c={...body,certificateId:h(body)} as HistoricalConsumerProof;
+ expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now,{historicalConsumerProofs:[c]})).toMatchObject({closed:true,proof:{disposition:'materialized_verified'}});
+ const before=readFileSync(f.projectionPath,'utf8'),policiesBefore=readableEvaluationPolicies(f.workspace,live,f.identityInput.scope);publishHistoricalConsumerProof(f.workspace,c,f.receipt,f.now);
+ expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now)).toMatchObject({closed:true});
+ expect(readFileSync(f.projectionPath,'utf8')).toBe(before);
+ expect(readableEvaluationPolicies(f.workspace,live,f.identityInput.scope)).toEqual(policiesBefore);
+ const wrong={...body,receiptDigest:h('different receipt')},bad={...wrong,certificateId:h(wrong)} as HistoricalConsumerProof;
+ expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now,{historicalConsumerProofs:[bad]})).toMatchObject({closed:false,reason:'historical_consumer_proof_invalid'});
+ const foreign=structuredClone(body);foreign.projection.bindings[0].scopeId='foreign-scope';
+ expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now,{historicalConsumerProofs:[{...foreign,certificateId:h(foreign)} as HistoricalConsumerProof]}).closed).toBe(false);
+});
 test('exact validated skip closes processing and produces metadata only',()=>{const f=fixture();const r=verifySourceEffectClosure(f.workspace,f.identityInput,f.now);expect(r).toMatchObject({closed:true,proof:{disposition:'evaluated_skip',envelopeDigest:h(f.envelope),observationIds:[],applicableEffects:[]}});expect(JSON.stringify(r)).not.toContain('deadline');});
 test('complete exact assertion and both receipt aliases verify canonical note',()=>{const f=fixture('write');expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now)).toMatchObject({closed:true,proof:{disposition:'materialized_verified',observationIds:[f.observation.observationId],applicableEffects:[{kind:'daily-note',receiptDigest:h(f.receipt)}]}});});
 test('signed pre-quality receipt stays verifiable after exact quality opt-in',()=>{
@@ -136,7 +200,7 @@ for(const kind of ['skip','asserted','supports','duplicate'] as const)
 test('v2 exact disposition and covering canonical assertions: '+kind,()=>{const f=contextualFixture(kind);expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now)).toMatchObject({closed:true,proof:{disposition:kind==='skip'?'evaluated_skip':'materialized_verified'}});});
 test('v2 duplicate without an actual covering observation never closes as skip',()=>{const f=contextualFixture('duplicate');const d=f.terminal.dispositions[0]!;d.observationRefs=[];const{terminalId,...body}=f.terminal;const t={...body,terminalId:h(body)};put(join(f.base,'done',f.job.jobId.slice(7)+'.json'),t);put(join(f.base,'terminals',f.job.jobId.slice(7)+'.json'),t);expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now).closed).toBe(false);});
 
-function indexedFixture(topic=false){
+function indexedFixture(topic=false,staticBinding=false){
  const f=fixture('write',topic),index='proof-'+crypto.randomUUID(),indexPath=resolveNamedQmdIndexPath(index);
  roots.push(indexPath);mkdirSync(dirname(indexPath),{recursive:true});
  const db=new Database(indexPath);db.exec('CREATE TABLE store_collections(name TEXT,path TEXT,pattern TEXT); CREATE TABLE documents(collection TEXT,path TEXT,hash TEXT,active INTEGER,modified_at TEXT); CREATE TABLE content(hash TEXT,doc TEXT);');
@@ -147,10 +211,10 @@ function indexedFixture(topic=false){
  const context=resolveQmdContext({value:f.workspace,source:'explicit'}),manifestPath=join(f.workspace,'manifest.json');
  put(manifestPath,{schema:'engram.qmd.global-registry.v1',index:{name:index},collections,workspaces:[{id:'main',path:f.workspace,kind:'technical',parents:[],readableCollections:collections.map(c=>c.name)}]});
  const resolver=defineCanaryQmdRuntimeResolver({workspace:f.workspace,workspaceId:'main',manifestPath,context});
- f.projection.consumers.dailyNote.qmdBinding=resolver;put(f.projectionPath,f.projection);
+ f.projection.consumers.dailyNote.qmdBinding=staticBinding?{collection:'fixture-notes'}:resolver;put(f.projectionPath,f.projection);
  const resolved=resolveCanaryQmdRuntimeBinding({workspace:f.workspace,runtimeSessionKey:f.identityInput.scope.runtimeSessionKey,timezone:'UTC',destinationAt:f.observation.sourceCompletedAt,resolver,context});
- const policy=buildDailyNoteCanaryPolicy({workspaceId:'main',exactScope:f.identityInput.scope,applyAfter:f.projection.consumers.dailyNote.applyAfter,timezone:'UTC',allowedObservationClasses:['episodic.event','episodic.decision'],maxAppliesPerWake:1,allowedBatchEvaluationPolicyDigest:f.projection.evaluation.policyDigest,qmdBinding:resolved});
- f.receipt.qmdBinding=resolved;f.receipt.policyDigest=policy.policyDigest;put(f.receiptPath,f.receipt);put(f.aliasPath,f.receipt);
+ const policy=buildDailyNoteCanaryPolicy({workspaceId:'main',exactScope:f.identityInput.scope,applyAfter:f.projection.consumers.dailyNote.applyAfter,timezone:'UTC',allowedObservationClasses:['episodic.event','episodic.decision'],maxAppliesPerWake:1,allowedBatchEvaluationPolicyDigest:f.projection.evaluation.policyDigest,qmdBinding:staticBinding?{collection:'fixture-notes'}:resolved});
+ if(!staticBinding)f.receipt.qmdBinding=resolved;f.receipt.policyDigest=policy.policyDigest;put(f.receiptPath,f.receipt);put(f.aliasPath,f.receipt);
  for(const c of collections)db.query('INSERT INTO store_collections VALUES(?,?,?)').run(c.name,c.path,c.mask);
  const doc=readFileSync(f.notePath,'utf8'),documentHash=h(doc);db.query('INSERT INTO documents VALUES(?,?,?,?,?)').run('fixture-notes','2026-10-01.md',documentHash,1,f.receipt.completedAt);db.query('INSERT INTO content VALUES(?,?)').run(documentHash,doc);db.close();
  const stateRoot=join(f.workspace,'maintenance'),markedAt='2026-10-01T12:02:30.000Z',reason='memory-observation:index-handoff:'+f.receipt.receiptId;
@@ -162,6 +226,16 @@ function indexedFixture(topic=false){
  return {...f,context,indexPath,domainRoot};
 }
 test('pinned QMD consumer requires its actual verified index generation',()=>{const f=indexedFixture();expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now)).toMatchObject({closed:true,proof:{applicableEffects:[{indexGenerationId:expect.any(String)}]}});const handoff=readIndexHandoff(f.workspace,f.receipt.receiptId)!;const generation=sha256('qmd.index-generation.v1\0'+handoff.handoffId);unlinkSync(join(f.root,'qmd/index-generations',generation.slice(7)+'.json'));expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now).closed).toBe(false);});
+test('original static QMD handoff verifies without fabricating a resolved binding in its apply receipt',()=>{
+ const f=indexedFixture(false,true),before=readFileSync(f.receiptPath,'utf8');
+ expect(f.receipt.qmdBinding).toBeUndefined();
+ expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now)).toMatchObject({closed:true,proof:{disposition:'materialized_verified'}});
+ const handoff=readIndexHandoff(f.workspace,f.receipt.receiptId)!;
+ const{handoffDigest,...body}=handoff,changed={...body,index:{...body.index,bindingDigest:h('wrong-static-binding')}};
+ put(join(f.root,'qmd/index-handoffs',handoff.handoffId.slice(7)+'.json'),{...changed,handoffDigest:h(changed)});
+ expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now)).toMatchObject({closed:false,reason:'index_binding_unverified'});
+ expect(readFileSync(f.receiptPath,'utf8')).toBe(before);
+});
 test('topic daily success stays open until exact domain and indexed-generation effects verify',()=>{
  const f=indexedFixture(true),operation=f.receipt.operationId;
  expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now).closed).toBe(false);

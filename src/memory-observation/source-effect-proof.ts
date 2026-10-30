@@ -20,6 +20,7 @@ import { groupAssertionAttribution } from './group-attribution.ts';
 import { deriveBatchObservationId } from './batch-observation.ts';
 import { resolveCanaryQmdRuntimeBinding } from './qmd-binding-preflight.ts';
 import { splitCanonicalSessionKey } from '../session-key.ts';
+import {readHistoricalConsumerProof,type HistoricalConsumerProof} from './historical-consumer-proof.ts';
 
 type Row = Record<string, any>;
 export type SourceEffectProof = {
@@ -57,7 +58,7 @@ function jsonFiles(workspace: string,dir: string): Array<{path:string,value:Row}
 }
 function exactScope(partition: Row): ObservationScope { return {workspaceId:partition.workspaceId,runtimeSessionKey:partition.runtimeSessionKey,scopeClass:partition.scopeClass,scopeId:partition.scopeId}; }
 
-function verifiedDaily(workspace: string,root: string,o: ReadableBatchObservation,now: Date): {receipt:MemoryApplyReceiptV1,effect:Record<string,string|number|boolean|string[]>} {
+function verifiedDaily(workspace: string,root: string,o: ReadableBatchObservation,now: Date,historicalOverride?:HistoricalConsumerProof[]): {receipt:MemoryApplyReceiptV1,effect:Record<string,string|number|boolean|string[]>} {
   const entry=sha256(`engram.daily-note-entry.v1\0${o.observationId}`);
   const operation=sha256(`engram.memory-apply.v1\0daily-note\0${o.observationId}\0${entry}`);
   const r=json(workspace,join(root,'receipts/by-operation',key(operation)+'.json')) as MemoryApplyReceiptV1;
@@ -76,12 +77,15 @@ function verifiedDaily(workspace: string,root: string,o: ReadableBatchObservatio
     &&r.destinationRef===relative(workspace,notePath).replaceAll('\\','/')+`#engram-entry:${entry}`&&r.readBackDigest===sha256(rendered),'invalid_apply_receipt_join');
   const doc=safe(workspace,notePath);
   requireProof(single(doc,marker)&&renderedEntry(doc,marker)===rendered,'note_readback_failed');
-  const projection=resolveMemoryObservationProjection({workspace,workspaceId:o.scope.workspaceId});
+  const live=resolveMemoryObservationProjection({workspace,workspaceId:o.scope.workspaceId});
+  const historical=readHistoricalConsumerProof(workspace,r,live,o.scope,now,historicalOverride);
+  const projection=historical?.projection??live;
+  const readable=historical?.readable??readableEvaluationPolicies(workspace,projection,o.scope);
   const binding=memoryObservationBinding(projection,o.scope.runtimeSessionKey),daily=projection.consumers?.dailyNote;
   requireProof(projection.enabled&&projection.mode==='canary'&&binding&&binding.scopeId===o.scope.scopeId&&binding.scopeClass===o.scope.scopeClass&&daily
     &&Date.parse(r.completedAt)>=Date.parse(daily.applyAfter)&&daily.allowedObservationClasses.includes(o.observationClass as 'episodic.event')
     &&r.destinationDate===new Intl.DateTimeFormat('sv-SE',{timeZone:daily.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(o.sourceCompletedAt))
-    &&readableEvaluationPolicies(workspace,projection,o.scope).includes(o.evaluationPolicyDigest),'consumer_applicability_unverified');
+    &&readable.includes(o.evaluationPolicyDigest),'consumer_applicability_unverified');
   let effectiveQmd=daily.qmdBinding;
   if(effectiveQmd && 'resolver' in effectiveQmd){
     const resolved=resolveCanaryQmdRuntimeBinding({workspace,runtimeSessionKey:o.scope.runtimeSessionKey,timezone:daily.timezone,
@@ -91,12 +95,12 @@ function verifiedDaily(workspace: string,root: string,o: ReadableBatchObservatio
   const common={workspaceId:o.scope.workspaceId,exactScope:o.scope,applyAfter:daily.applyAfter,timezone:daily.timezone,
     allowedObservationClasses:daily.allowedObservationClasses,maxAppliesPerWake:daily.maxAppliesPerWake,
     allowedBatchEvaluationPolicyDigest:projection.evaluation!.policyDigest,...(daily.qmdBinding?{qmdBinding:r.qmdBinding??daily.qmdBinding}:{})};
-  const transition=readModelTransition(workspace,projection);
+  const transition=historical?historical.transition:readModelTransition(workspace,projection);
   const previousBase=transition?.previousProjection.evaluation!.policyDigest;
   const preQualityPrevious=previousBase?[previousBase,...(qualityScopeEnabled(transition!.previousQuality,o.scope)?readableContextualDigests(previousBase):[])]:[];
   const policyDigests=[buildDailyNoteCanaryPolicy(common).policyDigest,buildDailyNoteCanaryPolicy({...common,
-    allowContextualObservations:qualityScopeEnabled(evaluationQuality(workspace,projection),o.scope),
-    allowedPreviousBatchEvaluationPolicyDigests:readableEvaluationPolicies(workspace,projection,o.scope).filter(v=>v!==projection.evaluation!.policyDigest)}).policyDigest,
+    allowContextualObservations:qualityScopeEnabled(historical?historical.quality:evaluationQuality(workspace,projection),o.scope),
+    allowedPreviousBatchEvaluationPolicyDigests:readable.filter(v=>v!==projection.evaluation!.policyDigest)}).policyDigest,
     // A later exact quality sidecar must not invalidate receipts sealed under
     // the same signed model lineage before contextual producer opt-in.
     ...(transition?[buildDailyNoteCanaryPolicy({...common,allowContextualObservations:false,
@@ -104,11 +108,25 @@ function verifiedDaily(workspace: string,root: string,o: ReadableBatchObservatio
   requireProof(policyDigests.includes(r.policyDigest),'sealed_consumer_policy_unverified');
   const effect: Record<string,string|number|boolean|string[]>={kind:'daily-note',observationId:o.observationId,observationDigest:o.observationDigest,
     operationId:r.operationId,receiptId:r.receiptId,receiptDigest:hash(r),entryId:entry,renderedDigest:r.readBackDigest,consumerApplicabilityDigest:hash({binding,daily,evaluation:projection.evaluation})};
+  if(historical)effect.historicalConsumerProofId=historical.certificateId;
   if(daily.qmdBinding||r.qmdBinding){
-    const b=r.qmdBinding;
-    requireProof(b&&b.bindingDigest===sha256(['engram.memory-observation-qmd-binding.v1',b.workspaceRegistryDigest,b.indexName,b.indexKey,b.collection,b.canonicalRoot,o.scope.runtimeSessionKey].join('\0'))
-      &&resolve(b.canonicalRoot)===dirname(notePath),'index_binding_unverified');
     const h=readIndexHandoff(workspace,r.receiptId),g=readIndexGeneration(workspace,r.receiptId);
+    let b:Row|undefined=r.qmdBinding;
+    if(b){
+      requireProof(b.bindingDigest===sha256(['engram.memory-observation-qmd-binding.v1',b.workspaceRegistryDigest,b.indexName,b.indexKey,b.collection,b.canonicalRoot,o.scope.runtimeSessionKey].join('\0'))
+        &&resolve(b.canonicalRoot)===dirname(notePath),'index_binding_unverified');
+    }else{
+      // The canonical index writer supports a collection-only static policy.
+      // Such a receipt deliberately has no resolved qmdBinding. Verify its
+      // ORIGINAL static handoff digest instead of requiring a newer field.
+      const staticPolicy=daily.qmdBinding,context=resolveQmdContext({value:workspace,source:'explicit'});
+      requireProof(staticPolicy&&!('resolver' in staticPolicy)&&typeof staticPolicy.collection==='string'
+        &&h&&h.index.collection===staticPolicy.collection&&h.index.canonicalRoot===dirname(notePath)
+        &&h.index.indexKey===context.physicalIndex.key&&context.physicalIndex.exists
+        &&context.policy.ownedCollections.includes(staticPolicy.collection)&&context.policy.readableCollections.includes(staticPolicy.collection)
+        &&h.index.bindingDigest===sha256(['engram.memory-observation-qmd-static-binding.v1',h.index.indexKey,staticPolicy.collection,dirname(notePath),o.scope.runtimeSessionKey].join('\0')),'index_binding_unverified');
+      b={bindingDigest:h.index.bindingDigest,indexKey:h.index.indexKey,collection:h.index.collection,canonicalRoot:h.index.canonicalRoot};
+    }
     requireProof(h&&g&&h.applyReceiptId===r.receiptId&&g.applyReceiptId===r.receiptId&&g.handoffId===h.handoffId
       &&h.traceId===r.traceId&&g.traceId===r.traceId&&equal(h.scope,r.scope)&&equal(g.scope,r.scope)
       &&h.canonicalRef===r.destinationRef&&g.canonicalRef===r.destinationRef&&h.canonicalDigest===r.readBackDigest&&g.canonicalDigest===r.readBackDigest
@@ -177,7 +195,7 @@ function verifiedDomain(workspace:string,root:string,o:ReadableBatchObservation,
   }finally{db?.close();}
 }
 
-export function verifySourceEffectClosure(workspaceValue:string,identity:SourceEffectIdentity,now=new Date()):SourceEffectClosure {
+export function verifySourceEffectClosure(workspaceValue:string,identity:SourceEffectIdentity,now=new Date(),operatorOptions?:{historicalConsumerProofs?:HistoricalConsumerProof[]}):SourceEffectClosure {
   try{
     const workspace=realpathSync(resolve(workspaceValue)),root=join(workspace,'memory-state/memory-observation/v1');key(identity.traceId);
     requireProof(Number.isFinite(now.getTime()),'invalid_verification_time');
@@ -262,7 +280,7 @@ export function verifySourceEffectClosure(workspaceValue:string,identity:SourceE
         const sd=t.sourceDispositions.find((s:Row)=>s.traceId===identity.traceId);
         requireProof(sd.assertionIds.includes(o.groupId)&&equal(o,expectedContextual!.find(a=>a.observationId===id)),'covering_assertion_identity_unverified');
       }
-      effects.push(verifiedDaily(workspace,root,o,now).effect);
+      effects.push(verifiedDaily(workspace,root,o,now,operatorOptions?.historicalConsumerProofs).effect);
     }
     const skip=['semantic_batch_skip','semantic_contextual_skip'].includes(d.reasonCode)&&d.observationRefs.length===0;
     requireProof(skip||effects.length>0,'covering_assertions_unverified');

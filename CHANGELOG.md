@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **fix(memory): verify historical completion accounting without rewriting sources.**
+  Add an explicit finite plan/apply operator and immutable warning-bound
+  certificates. Health distinguishes fully verified effects from existing
+  recovery cessation; active work, reactivation, changed sources and corrupt
+  metadata remain fail-closed. Verify original static QMD handoff contracts and
+  receipt-specific archived consumer policy without widening live authority or
+  fabricating index evidence. Regression coverage preserves original warnings,
+  rejects unsupported grouped outcomes and retains sealed effects after normal
+  envelope expiry. No model replay, memory rewrite or host change is introduced.
+
 - **fix(oll): record pre-spawn dispatch rejection without fabricated identities.**
   The nightly runtime CLI accepts absent dispatch/model references only for an
   explicit `accepted=false` acknowledgement. Accepted dispatches still require

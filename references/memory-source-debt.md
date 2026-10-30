@@ -117,3 +117,42 @@ source with only SDK test stubs; it does not apply external patch files.
 
 See [recovery operators](memory-recovery-operators.md) and
 [fleet reporting](memory-fleet-isolation.md).
+
+## Additive completion-warning accounting
+
+`scripts/memory-completion-accounting.ts --request <private-request.json>` plans
+an exact finite set; `--apply` publishes supplemental immutable certificates in
+the owner's `memory-state/memory-observation/completion-accounting/v1/`.
+The request schema is `engram.completion-accounting-request.v1`, with explicit
+`authorizedBy`, non-future `authorizedAt`, `authorizationSource` and `entries`
+(`workspace`, `receiptFile`, canonical `receiptDigest`). Workspace paths must be
+absolute. Original unresolved warning bytes, queues, notes and KG never change.
+
+An effect certificate requires the full existing source-effect verifier and an
+exact admitted or authenticated recovered checkpoint. A validated semantic skip
+requires no fictitious daily write. A cessation certificate requires an exact
+candidate/source/derived-trace join to a **currently valid existing** recovery
+cessation; it does not create a new cessation or a successful closure. Health
+counts the two dispositions separately. Reactivated work, changed live source
+bytes, changed warning identity or an invalidated waiver cannot be silenced by
+an old certificate. Corrupt supplemental metadata fails closed. Valid sealed
+effect certificates retain historical accounting after ordinary envelope TTL.
+The CLI is operator-only; it is not a new scheduler or automatic memory writer.
+
+## Historical consumer-policy verification
+
+The QMD writer's collection-only static consumer contract intentionally omits a
+resolved `qmdBinding` field from the apply receipt. Source-effect verification
+supports its original `engram.memory-observation-qmd-static-binding.v1` digest,
+exact owned collection/root/index and the existing index generation receipt.
+It does not fabricate a newer binding or waive actual index proof.
+
+An explicitly reviewed old deployment can additionally supply an immutable
+`engram.historical-consumer-proof.v1` capsule for **one exact apply-receipt
+digest** in `historical-consumer-proofs/v1/`. The capsule pins the archived
+projection, quality and model-transition context, archive digest and operator
+authorization. Full source/result/assertion/note/domain/index verification still
+runs. Both historical and current exact scope must agree, and source authority
+must be unchanged. Capsules are read only by historical effect verification;
+they never extend live evaluator readability, inference or consumer authority.
+Missing or conflicting historical evidence remains a blocker.

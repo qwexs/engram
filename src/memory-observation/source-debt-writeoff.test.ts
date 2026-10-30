@@ -6,6 +6,8 @@ import { deriveTraceId, sha256 } from './ledger.ts';
 import { sourceDebtId, sourceDebtSnapshot as rawSnapshot } from './source-debt-capture.ts';
 import { sourceDebtSnapshot } from './source-debt.ts';
 import { writeOffSourceDebt } from './source-debt-writeoff.ts';
+import {reconcileCompletionAccounting,completionAccountingSnapshot} from './completion-accounting.ts';
+import {memoryWorkerHealth} from './worker-health.ts';
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(p => rmSync(p, { recursive: true, force: true })));
 function fixture() {
@@ -25,6 +27,19 @@ function fixture() {
     evidenceDigest: sha256('exact-reviewed-failure'), authorizedBy: 'operator:synthetic/message:1', authorizedAt: now.toISOString(), historicalCutoff: at };
   return { w, base, failures, q, r, request, now, put };
 }
+test('completion links existing trace-scoped cessation, never calls it recovered, and reopens on a new failure',()=>{
+ const f=fixture();writeOffSourceDebt(f.w,f.request,{apply:true,now:f.now});
+ const request={agentId:'alpha',sessionKey:f.r.scope.runtimeSessionKey,sessionId:'synthetic',candidateId:sha256('candidate'),runId:'synthetic',sourceTurnId:f.r.sourceTurnId};
+ const warning={schema:'engram.completion-unresolved.v1',request,reason:'expired_before_completion',closedAt:f.now.toISOString()};
+ const file=join(f.base,'v1/completion-mirrors','unresolved-'+sha256(request).slice(7)+'.json');f.put(file,warning);
+ const options={workspace:f.w,receiptFile:file,receiptDigest:sha256(warning),authorizedBy:'operator:synthetic',authorizedAt:f.now.toISOString(),authorizationSource:'test:review',now:f.now,apply:true};
+ expect(memoryWorkerHealth(f.w,f.now).completionUnresolved).toBe(1);
+ expect(reconcileCompletionAccounting(options)).toMatchObject({status:'applied',disposition:'recovery_stopped'});
+ expect(memoryWorkerHealth(f.w,f.now)).toMatchObject({completionUnresolved:0,stoppedCompletionUnresolved:1,accountedCompletionUnresolved:0,sourceDebtClosed:0});
+ const {recordId,...body}=f.r,changed={...body,proofDigest:sha256('new-failure')},next={...changed,recordId:sha256(changed)};f.put(join(f.failures,next.recordId.slice(7)+'.json'),next);
+ expect(completionAccountingSnapshot(f.w,f.now).stopped.size).toBe(0);
+ expect(memoryWorkerHealth(f.w,f.now)).toMatchObject({completionUnresolved:1,sourceDebtOpen:1});
+});
 test('plan changes no state; apply is idempotent accounting, not raw closure or queue mutation', () => {
   const f = fixture(), before = readFileSync(join(f.failures, readdirSync(f.failures)[0]!), 'utf8');
   expect(writeOffSourceDebt(f.w, f.request, { now: f.now }).status).toBe('planned');

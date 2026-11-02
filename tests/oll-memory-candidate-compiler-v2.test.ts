@@ -306,6 +306,40 @@ function batchApplyReceipt(input: {
 }
 
 describe("OLL memory candidate Phase 1 compiler", () => {
+  test("lifecycle exclusions cannot starve fresh candidates under a one-item quota", () => {
+    const { root, policy: p, registry } = workspace();
+    p.limits.maxCandidatesPerRun = 1;
+    const original = compile(root, p, registry);
+    expect(original.candidates).toHaveLength(1);
+    const completed = original.candidates[0].candidateId;
+    const before = digestFileTree(root);
+    const next = compileMemoryCandidateReportV2({
+      workspace: root, workspaceId: "main", policy: p, scopeRegistry: registry,
+      snapshotAt: NOW, batchId: "lifecycle-recovery",
+      candidateSelectable: (id) => id !== completed,
+    });
+    expect(next.candidates).toHaveLength(1);
+    expect(next.candidates[0].candidateId).not.toBe(completed);
+    expect(next.selectedBytes).toBeLessThanOrEqual(p.limits.maxContextBytes);
+    expect(digestFileTree(root)).toBe(before);
+    const empty = compileMemoryCandidateReportV2({
+      workspace: root, workspaceId: "main", policy: p, scopeRegistry: registry,
+      snapshotAt: NOW, batchId: "all-terminal", candidateSelectable: () => false,
+    });
+    expect(empty.candidates).toHaveLength(0);
+    expect(empty.projectedModelSpawns).toBe(0);
+    expect(compile(root, p, registry)).toEqual(original);
+  });
+
+  test("lifecycle lookup failure fails closed rather than treating state as fresh", () => {
+    const { root, policy: p, registry } = workspace();
+    expect(() => compileMemoryCandidateReportV2({
+      workspace: root, workspaceId: "main", policy: p, scopeRegistry: registry,
+      snapshotAt: NOW, batchId: "broken-lifecycle",
+      candidateSelectable: () => { throw new Error("journal verification failed"); },
+    })).toThrow("journal verification failed");
+  });
+
   test("parses every canonical source class and emits a verified deterministic report", () => {
     const { root, policy: p, registry } = workspace();
     const first = compile(root, p, registry);

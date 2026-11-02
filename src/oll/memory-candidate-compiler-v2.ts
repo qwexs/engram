@@ -113,6 +113,10 @@ export interface CompileMemoryCandidateReportV2Options {
   batchId: string;
   executionMode?: "report-only" | "shadow" | "materialize";
   observerReceiptProducerRegistry?: ObserverReceiptProducerRegistryV1;
+  /** Deployment lifecycle gate; exclusion only, before quotas/byte selection.
+   * Omitted for pure report-only/shadow compilation. Never reopens terminal state.
+   */
+  candidateSelectable?: (candidateId: Digest) => boolean;
 }
 
 function inside(root: string, target: string): boolean {
@@ -820,6 +824,10 @@ function candidateClusters(options: CompileMemoryCandidateReportV2Options, occur
   const selected: CandidateClusterV1[] = [];
   const quotaUse = new Map<CandidateSourceClass, number>();
   for (const candidate of sorted) {
+    if (options.candidateSelectable && !options.candidateSelectable(candidate.candidateId)) {
+      increment(rejections, "not_selected");
+      continue;
+    }
     if (selected.length >= options.policy.limits.maxCandidatesPerRun) {
       increment(rejections, "not_selected");
       continue;

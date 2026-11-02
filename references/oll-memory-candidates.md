@@ -46,6 +46,14 @@ mode the legacy proposal + review path remains available for compatibility.
 Every candidate receives `consumed`, `ignored`, or `deferred`. A rejected
 proposal is forced back to `deferred` rather than silently consuming evidence.
 
+The materialize coordinator checks canonical candidate lifecycle **before**
+quota and byte-budget selection. Already terminal, review-pending or reserved
+candidates cannot occupy the bounded evaluation slots and starve fresh work.
+The compiler's optional exclusion-only lifecycle gate does not reopen or mutate
+candidate state; ordinary report-only/shadow compilation remains unchanged.
+The coordinator still revalidates lifecycle after materialization. Historical
+reports retain their original selections and are never rewritten for recovery.
+
 ## Report-only bounds
 
 The explicit CLI freezes one snapshot timestamp and returns a validated,

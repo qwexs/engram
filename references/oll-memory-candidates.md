@@ -46,13 +46,14 @@ mode the legacy proposal + review path remains available for compatibility.
 Every candidate receives `consumed`, `ignored`, or `deferred`. A rejected
 proposal is forced back to `deferred` rather than silently consuming evidence.
 
-The materialize coordinator checks canonical candidate lifecycle **before**
-quota and byte-budget selection. Already terminal, review-pending or reserved
-candidates cannot occupy the bounded evaluation slots and starve fresh work.
-The compiler's optional exclusion-only lifecycle gate does not reopen or mutate
-candidate state; ordinary report-only/shadow compilation remains unchanged.
-The coordinator still revalidates lifecycle after materialization. Historical
-reports retain their original selections and are never rewritten for recovery.
+The compiler supports an optional exclusion-only lifecycle gate **before**
+quota and byte-budget selection, for bounded recovery diagnostics. It does not
+reopen or mutate candidate state; ordinary report-only/shadow compilation is
+unchanged. The nightly coordinator deliberately does NOT enable this gate:
+unblocking historical selection under active adaptation could automatically
+activate stale rules. Recovery needs a curated current allowlist before runtime
+wiring. The coordinator retains its post-materialization lifecycle revalidation.
+Historical reports remain immutable.
 
 ## Report-only bounds
 

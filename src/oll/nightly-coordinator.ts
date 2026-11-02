@@ -486,13 +486,6 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
               scopeRegistry,
               observerReceiptProducerRegistry,
               executionMode: "materialize",
-              candidateSelectable: (candidateId) => {
-                const projection = readCandidateProjectionV1({ workspace: workspace.workspacePath, workspaceId, candidateId });
-                return !projection || (
-                  ["pending", "deferred"].includes(projection.cluster.lifecycle.status)
-                  && projection.reservation === null
-                );
-              },
             });
             writeImmutable(join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "candidate-reports", `${workspaceId}.json`), report);
             const materialized = materializeCandidateReportV2({

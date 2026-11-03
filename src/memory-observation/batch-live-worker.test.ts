@@ -17,6 +17,95 @@ import {
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
+for(const point of ["after_job","after_result","after_terminal","after_source","after_done"] as const)
+test("profile switch preserves immutable job and cached model across crash: "+point,async()=>{
+  const {workspace,ledger,policy}=setup(),storeRoot=join(workspace,"state"),now=()=>new Date("2026-08-31T20:20:00.000Z");
+  admit(ledger,901,"2026-08-31T20:01:00.000Z");
+  const refs=(name:string)=>({profileId:sha256(name),authorityDigest:sha256("authority"),contractDigest:sha256("contract"),executionDigest:sha256(name+"execution")});
+  const old={...policy,profileRefs:refs("old"),runner:{...policy.runner,requestedModel:"openai/old",thinking:"medium" as const}};
+  const fresh={...policy,profileRefs:refs("new"),runner:{...policy.runner,requestedModel:"openai/new",thinking:"high" as const}};
+  const calls:string[]=[];
+  const complete=async(request:any)=>{calls.push(request.model);const ids=JSON.parse(request.prompt).task.sources.map((s:any)=>s.sourceRef.traceId);
+    return {resolvedModel:request.model,output:JSON.stringify({schema:"engram.memory-batch-shadow-output.v1",groups:[{groupId:"skip",decision:"skip",sourceRefs:ids,reason:"not_durable"}]})};};
+  const interrupted=new BatchLiveWorker({workspace,ledger,policy:old,storeRoot,now,complete,fault:p=>{if(p===point)throw Error("interrupt");}});
+  await expect(interrupted.processOne()).rejects.toThrow("interrupt");
+  const jobs=join(storeRoot,"memory-batch-live/v1/jobs"),original=readdirSync(jobs)[0]!,bytes=readFileSync(join(jobs,original),"utf8");
+  const worker=new BatchLiveWorker({workspace,ledger,policy:fresh,storeRoot,now,complete,allowIndependentFreshDuringBackoff:true,
+    resolveJobPolicy:j=>j.profileRefs?.profileId===old.profileRefs.profileId?old:fresh});
+  await worker.processOne();
+  expect(calls).toEqual(["openai/old"]);expect(readFileSync(join(jobs,original),"utf8")).toBe(bytes);
+  admit(ledger,902,"2026-08-31T20:02:00.000Z");
+  expect(await worker.processOne()).toMatchObject({status:"completed",sourceCount:1});
+  expect(calls).toEqual(["openai/old","openai/new"]);expect(ledger.listQueue().every(q=>q.status==="terminal")).toBe(true);
+});
+
+test("old profile in backoff reserves its sources while new sources run with the new default",async()=>{
+  const {workspace,ledger,policy}=setup(),storeRoot=join(workspace,"state");let clock=new Date("2026-08-31T20:20:00.000Z");
+  admit(ledger,911,"2026-08-31T20:01:00.000Z");
+  const calls:{model:string;ids:string[]}[]=[];
+  const old={...policy,runner:{...policy.runner,requestedModel:"openai/old"}};
+  const fresh={...policy,evaluationPolicyDigest:sha256("other-policy"),runner:{...policy.runner,requestedModel:"openai/new"}};
+  const complete=async(request:any)=>{const ids=JSON.parse(request.prompt).task.sources.map((s:any)=>s.sourceRef.traceId);calls.push({model:request.model,ids});
+    return {resolvedModel:request.model,output:calls.length===1?"invalid":JSON.stringify({schema:"engram.memory-batch-shadow-output.v1",groups:[{groupId:"skip",decision:"skip",sourceRefs:ids,reason:"not_durable"}]})};};
+  expect(await new BatchLiveWorker({workspace,ledger,policy:old,storeRoot,complete,now:()=>clock}).processOne()).toMatchObject({status:"retry"});
+  const originalQueue=JSON.stringify(ledger.listQueue());
+  admit(ledger,912,"2026-08-31T20:02:00.000Z");clock=new Date("2026-08-31T20:21:00.000Z");
+  const worker=new BatchLiveWorker({workspace,ledger,policy:fresh,storeRoot,complete,now:()=>clock,allowIndependentFreshDuringBackoff:true,
+    resolveJobPolicy:j=>j.evaluationPolicyDigest===old.evaluationPolicyDigest?old:fresh});
+  expect(await worker.processOne()).toMatchObject({status:"completed",sourceCount:1});expect(calls[1]!.model).toBe("openai/new");
+  expect(calls[1]!.ids).not.toContain(calls[0]!.ids[0]!);expect(JSON.stringify(ledger.listQueue().filter(q=>q.traceId===calls[0]!.ids[0]))).toBe(originalQueue);
+  clock=new Date("2026-08-31T20:26:00.000Z");expect(await worker.processOne()).toMatchObject({status:"completed",sourceCount:1});expect(calls[2]!.model).toBe("openai/old");
+});
+
+test("a stopped execution reserves its sources without blocking independent new work",async()=>{
+ const {workspace,ledger,policy}=setup(),storeRoot=join(workspace,'state'),now=()=>new Date('2026-08-31T20:20:00.000Z');
+ admit(ledger,921,'2026-08-31T20:01:00.000Z');
+ await expect(new BatchLiveWorker({workspace,ledger,policy,storeRoot,now,complete:async()=>{throw Error('must not infer');},fault:p=>{if(p==='after_job')throw Error('crash');}}).processOne()).rejects.toThrow('crash');
+ const oldQueue=JSON.stringify(ledger.listQueue());
+ admit(ledger,922,'2026-08-31T20:02:00.000Z');let calls=0;
+ const fresh={...policy,evaluationPolicyDigest:sha256('fresh-contract')};
+ const worker=new BatchLiveWorker({workspace,ledger,policy:fresh,storeRoot,now,allowIndependentFreshDuringBackoff:true,
+  resolveJobPolicy:j=>j.evaluationPolicyDigest===policy.evaluationPolicyDigest?null:fresh,
+  complete:async req=>{calls++;const ids=JSON.parse(req.prompt).task.sources.map((s:any)=>s.sourceRef.traceId);return {resolvedModel:req.model,output:JSON.stringify({schema:'engram.memory-batch-shadow-output.v1',groups:[{groupId:'skip',decision:'skip',sourceRefs:ids,reason:'not_durable'}]})};}});
+ expect(await worker.processOne()).toMatchObject({status:'completed',sourceCount:1});expect(calls).toBe(1);
+ expect(JSON.stringify(ledger.listQueue().filter(q=>q.status!=='terminal'))).toBe(oldQueue);
+ expect(await worker.processOne()).toEqual({status:'idle',reason:'pending_profile_execution_stopped'});expect(calls).toBe(1);
+});
+
+for(const contextual of [false,true])test('revoked profile before inference does not consume retries: '+contextual,async()=>{
+ const {workspace,ledger,policy}=setup();admit(ledger,931,'2026-08-31T20:01:00.000Z');let calls=0;
+ const before=JSON.stringify(ledger.listQueue());
+ const worker=new BatchLiveWorker({workspace,ledger,policy:{...policy,...(contextual?{contextual:true}:{})},storeRoot:join(workspace,'state'),now:()=>new Date('2026-08-31T20:20:00.000Z'),
+  authorizePolicy:(_p,operation)=>{if(operation==='execute')throw Error('PROFILE_PROVIDER_BOUNDARY_CHANGED');},complete:async()=>{calls++;throw Error('must not infer');}});
+ await expect(worker.processOne()).rejects.toThrow('PROFILE_PROVIDER_BOUNDARY_CHANGED');expect(calls).toBe(0);expect(JSON.stringify(ledger.listQueue())).toBe(before);
+});
+
+test('stopped source TTL becomes a typed terminal disposition and does not starve the new default',async()=>{
+ const {workspace,ledger,policy}=setup(),storeRoot=join(workspace,'state');let clock=new Date('2026-08-31T20:20:00.000Z');
+ admit(ledger,941,'2026-08-31T20:01:00.000Z');
+ await expect(new BatchLiveWorker({workspace,ledger,policy,storeRoot,now:()=>clock,complete:async()=>{throw Error('must not infer');},fault:p=>{if(p==='after_job')throw Error('crash');}}).processOne()).rejects.toThrow('crash');
+ const fresh={...policy,evaluationPolicyDigest:sha256('new-contract'),runner:{...policy.runner,requestedModel:'openai/new'}};let calls=0;
+ const worker=new BatchLiveWorker({workspace,ledger,policy:fresh,storeRoot,now:()=>clock,allowIndependentFreshDuringBackoff:true,
+  resolveJobPolicy:job=>job.evaluationPolicyDigest===policy.evaluationPolicyDigest?(ledger.listQueue().some(q=>job.bundle.sourceRefs.some(s=>s.traceId===q.traceId)&&q.status==='terminal')?policy:null):fresh,
+  complete:async req=>{calls++;expect(req.model).toBe('openai/new');const ids=JSON.parse(req.prompt).task.sources.map((s:any)=>s.sourceRef.traceId);
+   return {resolvedModel:req.model,output:JSON.stringify({schema:'engram.memory-batch-shadow-output.v1',groups:[{groupId:'skip',decision:'skip',sourceRefs:ids,reason:'not_durable'}]})};}});
+ clock=new Date('2026-09-04T20:20:00.000Z');await worker.processOne();
+ expect(ledger.listQueue()[0]).toMatchObject({status:'terminal',attempt:0,reasonCode:'batch_evidence_evidence_expired'});
+ expect(await worker.processOne()).toMatchObject({status:'reconciled',sourceCount:1});expect(calls).toBe(0);
+ admit(ledger,942,'2026-09-04T20:21:00.000Z');clock=new Date('2026-09-04T20:30:00.000Z');
+ expect(await worker.processOne()).toMatchObject({status:'completed',sourceCount:1});expect(calls).toBe(1);
+});
+
+test('a cached base result survives evidence TTL without another model call or source budget reset',async()=>{
+ const {workspace,ledger,policy}=setup(),storeRoot=join(workspace,'state');let clock=new Date('2026-08-31T20:20:00.000Z'),calls=0;
+ admit(ledger,951,'2026-08-31T20:01:00.000Z');
+ const complete=async(req:any)=>{calls++;const ids=JSON.parse(req.prompt).task.sources.map((s:any)=>s.sourceRef.traceId);return {resolvedModel:req.model,output:JSON.stringify({schema:'engram.memory-batch-shadow-output.v1',groups:[{groupId:'skip',decision:'skip',sourceRefs:ids,reason:'not_durable'}]})};};
+ await expect(new BatchLiveWorker({workspace,ledger,policy,storeRoot,now:()=>clock,complete,fault:p=>{if(p==='after_result')throw Error('crash');}}).processOne()).rejects.toThrow('crash');
+ clock=new Date('2026-09-04T20:30:00.000Z');
+ expect(await new BatchLiveWorker({workspace,ledger,policy,storeRoot,now:()=>clock,complete}).processOne()).toMatchObject({status:'duplicate'});
+ expect(calls).toBe(1);expect(ledger.listQueue()[0]).toMatchObject({status:'terminal',attempt:1,maxAttempts:2,reasonCode:'semantic_batch_skip'});
+});
+
 const RUNTIME: ProducerRef = {
   id: "openclaw-runtime",
   version: "v1",

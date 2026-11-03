@@ -4,7 +4,9 @@ import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from '
 import { dirname, join, relative, resolve } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { deriveSourceDigest, deriveTraceId, sha256, type Digest, type JsonValue, type ObservationScope } from './ledger.ts';
-import { parseBatchShadowOutput, validateCompiledBatchBundle } from './batch-shadow-runner.ts';
+import { parseBatchShadowOutput, validateCompiledBatchBundle, batchShadowPrompt } from './batch-shadow-runner.ts';
+import {readExecutionProfiles,jobProfilePolicy} from './execution-profiles.ts';
+import {contextualPrompt,CONTEXTUAL_SCHEMA,CONTEXTUAL_THINKING,CONTEXTUAL_PROMPT_VERSION} from './contextual-observation.ts';
 import { validateReadableBatchObservation, contextualBatchObservations, renderContextualBatch, CONTEXTUAL_BATCH_SCHEMA, type ReadableBatchObservation } from './contextual-batch-observation.ts';
 import { DAILY_NOTE_APPLICATOR, buildDailyNoteCanaryPolicy, renderDailyNoteEntry, type MemoryApplyReceiptV1 } from './daily-note-applicator.ts';
 import { resolveMemoryObservationProjection, memoryObservationBinding } from './projection.ts';
@@ -101,6 +103,11 @@ function verifiedDaily(workspace: string,root: string,o: ReadableBatchObservatio
   const policyDigests=[buildDailyNoteCanaryPolicy(common).policyDigest,buildDailyNoteCanaryPolicy({...common,
     allowContextualObservations:qualityScopeEnabled(historical?historical.quality:evaluationQuality(workspace,projection),o.scope),
     allowedPreviousBatchEvaluationPolicyDigests:readable.filter(v=>v!==projection.evaluation!.policyDigest)}).policyDigest,
+    // First model-profile activation adds contract identities, not authority.
+    // Existing sealed receipts retain their pre-profile consumer identity.
+    buildDailyNoteCanaryPolicy({...common,
+      allowContextualObservations:qualityScopeEnabled(historical?historical.quality:evaluationQuality(workspace,projection),o.scope),
+      allowedPreviousBatchEvaluationPolicyDigests:readableEvaluationPolicies(workspace,projection,o.scope,false).filter(v=>v!==projection.evaluation!.policyDigest)}).policyDigest,
     // A later exact quality sidecar must not invalidate receipts sealed under
     // the same signed model lineage before contextual producer opt-in.
     ...(transition?[buildDailyNoteCanaryPolicy({...common,allowContextualObservations:false,
@@ -217,6 +224,10 @@ export function verifySourceEffectClosure(workspaceValue:string,identity:SourceE
       &&t.jobId===j.jobId&&t.bundleId===j.bundle.bundleId&&equal(j.partition,j.bundle.partition)&&equal(e.scope,exactScope(j.partition))
       &&e.policyDigest===j.partition.policyDigest&&time(j.createdAt,now),'completed_job_join_unverified');
     validateCompiledBatchBundle(j.bundle,new Date(j.createdAt));
+    const current= j.profileRefs?resolveMemoryObservationProjection({workspace,workspaceId:e.scope.workspaceId}):null;
+    const profiles=current?readExecutionProfiles(workspace,current):null;
+    requireProof(!j.profileRefs||!!profiles,'execution_profile_proof_unavailable');
+    const jobPolicy=j.profileRefs?jobProfilePolicy(profiles!,current!,j as any,true):null;
     const sources=j.bundle.sourceRefs as Row[];
     requireProof(sources.length===t.dispositions.length&&new Set(t.dispositions.map((d:Row)=>d.traceId)).size===sources.length
       &&sources.every(s=>t.dispositions.some((d:Row)=>d.traceId===s.traceId)),'source_coverage_unverified');
@@ -230,6 +241,11 @@ export function verifySourceEffectClosure(workspaceValue:string,identity:SourceE
     // Validate evaluator result and semantic disposition, not just a queue reason.
     if(t.schema==='engram.memory-batch-live-terminal.v1'){
       const result=json(workspace,join(workspace,'memory-state/memory-observation/batch-live-store/memory-batch-shadow/v1/results',key(t.resultKey)+'.json'));
+      if(jobPolicy){
+        const request=batchShadowPrompt(j.bundle,jobPolicy.runner,new Date(j.createdAt));
+        requireProof(result.requestDigest===request.requestDigest&&result.requestedModel===jobPolicy.runner.requestedModel
+          &&result.resolvedModel===jobPolicy.runner.requestedModel,'execution_profile_request_mismatch');
+      }
       requireProof(result.schema==='engram.memory-batch-shadow-result.v1'&&hash(result)===t.resultDigest&&result.resultKey===t.resultKey
         &&result.resultKey===sha256(`engram.memory-batch-shadow-result-key.v1\0${result.requestDigest}`)
         &&result.outputDigest===hash({schema:'engram.memory-batch-shadow-output.v1',groups:result.groups})
@@ -249,6 +265,11 @@ export function verifySourceEffectClosure(workspaceValue:string,identity:SourceE
       requireProof(result.schema==='engram.memory-contextual-result.v2'&&digest===hash(body)&&result.jobId===j.jobId&&result.policyDigest===j.evaluationPolicyDigest
         &&hash(result.evaluated)===t.resultDigest&&equal(t.sourceDispositions,result.evaluated?.observation?.dispositions),'contextual_result_unverified');
       const observed=result.evaluated.observation;
+      if(jobPolicy){
+        const thinking=jobPolicy.contextualThinking??CONTEXTUAL_THINKING,promptVersion=jobPolicy.contextualPromptVersion??CONTEXTUAL_PROMPT_VERSION;
+        const request={model:jobPolicy.runner.requestedModel,system:'',prompt:contextualPrompt(j.bundle,new Date(observed.recordedAt),promptVersion),maxTokens:jobPolicy.runner.maxTokens,temperature:0,tools:[],thinking};
+        requireProof(result.evaluated.requestDigest===hash(request)&&observed.evaluationPolicyDigest===hash({schema:CONTEXTUAL_SCHEMA,promptVersion,model:request.model,maxTokens:request.maxTokens,thinking}),'execution_profile_request_mismatch');
+      }
       const output={schema:'engram.memory-contextual-output.v2',assertions:observed.assertions,dispositions:observed.dispositions};
       requireProof(equal(buildContextualObservation(output,j.bundle,observed.evaluationPolicyDigest,new Date(observed.recordedAt)),observed),'contextual_evidence_rebuild_failed');
       expectedContextual=contextualBatchObservations(output,j.bundle,j.evaluationPolicyDigest,new Date(observed.recordedAt));

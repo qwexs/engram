@@ -100,6 +100,13 @@ engram --version
 
 ## Architecture Overview
 
+Batch Memory Worker model changes use the canonical
+[`memory-observation-model.ts`](scripts/memory-observation-model.ts) operator:
+explicit thinking, immutable job-level execution profiles, one-command
+qualification/plan/apply/read-back, and per-revision lifecycle. A profile default
+does not rewrite source projection/plugin/QMD or migrate old jobs. See
+[`references/memory-execution-profiles.md`](references/memory-execution-profiles.md).
+
 ```
 workspace/
 ├── life/                         # Knowledge Graph (entities, facts, summaries)

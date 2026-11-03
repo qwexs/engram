@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { sha256, type JsonValue, type ObservationScope } from "./ledger.ts";
 import { validMainFamilyBinding, type MemoryObservationProjectionV1 } from "./projection.ts";
 import { readQualityRollout, rebindQualityRollout, qualityScopeEnabled, qualityTransitionInventory, readableContextualDigests, type QualityRollout } from "./quality-rollout.ts";
+import { profileReadablePolicies, readExecutionProfiles } from "./execution-profiles.ts";
 
 // Operator-approved lineage only. Old immutable jobs/results retain their exact
 // model and reasoning; new bundles use the live projection. This is not fallback.
@@ -57,12 +58,13 @@ export function evaluationQuality(workspace: string, selected: MemoryObservation
   }
   return readQualityRollout(workspace,identity(live));
 }
-export function readableEvaluationPolicies(workspace: string, current: MemoryObservationProjectionV1, scope: ObservationScope) {
+export function readableEvaluationPolicies(workspace: string, current: MemoryObservationProjectionV1, scope: ObservationScope, includeProfiles = true) {
   const policies=(p:MemoryObservationProjectionV1,q:QualityRollout|null)=>[p.evaluation!.policyDigest,
     ...(qualityScopeEnabled(q,scope)?readableContextualDigests(p.evaluation!.policyDigest):[])];
   const transition=readModelTransition(workspace,current);
   return [...new Set([...policies(current,evaluationQuality(workspace,current)),
-    ...(transition?policies(transition.previousProjection,transition.previousQuality):[])])];
+    ...(transition?policies(transition.previousProjection,transition.previousQuality):[]),
+    ...(includeProfiles ? profileReadablePolicies(readExecutionProfiles(workspace,current),current,scope) : [])])];
 }
 export function evaluationProjectionForScope(workspace: string, current: MemoryObservationProjectionV1, scope: ObservationScope): MemoryObservationProjectionV1 {
   const transition=readModelTransition(workspace,current);

@@ -23,6 +23,25 @@ import {readableEvaluationPolicies} from './model-transition.ts';
 const roots:string[]=[];afterEach(()=>roots.splice(0).forEach(p=>rmSync(p,{recursive:true,force:true})));
 const h=(v:any)=>sha256(v as JsonValue);
 const put=(path:string,value:any)=>{mkdirSync(dirname(path),{recursive:true});writeFileSync(path,typeof value==='string'?value:JSON.stringify(value));};
+test('model-profile activation preserves receipts sealed with the pre-profile quality policy',async()=>{
+ const {planProfileSwitch,applyProfileSwitch}=await import('./execution-profile-control.ts');
+ const f=fixture('write'),scope=f.identityInput.scope,p=f.projection,at=f.now.toISOString();
+ const q={schema:'engram.memory-quality-rollout.v1',mode:'active',workspaceId:'main',pluginDigest:p.pluginDigest,
+  baseEvaluationPolicyDigest:p.evaluation.policyDigest,sourcePolicyDigest:p.evaluation.batch.sourcePolicyDigest,
+  applyAfter:p.consumers.dailyNote.applyAfter,exactScopes:[scope],preparedAt:p.approvedAt,inventoryDigest:h('inventory')};
+ put(join(f.workspace,'memory-state/memory-observation/quality-rollout.json'),{...q,digest:h(q)});
+ const daily=p.consumers.dailyNote,readable=readableEvaluationPolicies(f.workspace,p,scope);
+ f.receipt.policyDigest=buildDailyNoteCanaryPolicy({workspaceId:'main',exactScope:scope,applyAfter:daily.applyAfter,timezone:daily.timezone,
+  allowedObservationClasses:daily.allowedObservationClasses,maxAppliesPerWake:1,allowContextualObservations:true,
+  allowedBatchEvaluationPolicyDigest:p.evaluation.policyDigest,allowedPreviousBatchEvaluationPolicyDigests:readable.filter(v=>v!==p.evaluation.policyDigest)}).policyDigest;
+ put(f.receiptPath,f.receipt);put(f.aliasPath,f.receipt);
+ expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now).closed).toBe(true);
+ const model='openai/gpt-6.1-terra',thinking='high' as const,boundary={provider:'openai',baseUrl:'https://example.invalid',api:'responses',runtime:'host-default'};
+ const plan=planProfileSwitch({workspace:f.workspace,workspaceId:'main',model,thinking,boundary,legacyBoundaries:{'openai/fixture':boundary},approvedBy:'operator',approvedAt:at,
+  qualification:{schema:'engram.memory-model-qualification.v1',model,thinking,boundaryDigest:h(boundary),promptVersion:'memory-contextual-shadow-v16',basePromptVersion:'memory-batch-shadow-prompt-v11',checks:['negation','request-not-completion','actor-attribution','failure-not-success','untrusted-injection','base-contract'].map(id=>({id,passed:true})),passed:true,latencyMs:1,requestedTokenBudget:8192,tokenBudgetEnforcement:'unavailable',thinkingReadback:'requested-only',completedAt:at}});
+ applyProfileSwitch(plan,boundary,join(f.workspace,'journal'),{leasePath:join(f.workspace,'test-lease'),now:()=>f.now});
+ expect(verifySourceEffectClosure(f.workspace,f.identityInput,f.now).closed).toBe(true);
+});
 function fixture(decision:'skip'|'write'='skip',topic=false){
  const workspace=mkdtempSync(join(tmpdir(),'source-effect-proof-'));roots.push(workspace);
  const root=join(workspace,'memory-state/memory-observation/v1'),store=join(workspace,'memory-state/memory-observation/batch-live-store'),base=join(store,'memory-batch-live/v1');

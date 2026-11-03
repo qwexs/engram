@@ -1,4 +1,5 @@
 import { producerMigrationBarrier } from "./producer-migration-barrier.ts";
+import type { ProfileRefs } from "./execution-profiles.ts";
 import { publishReconciledCompletion } from "./reconciled-completion.ts";
 import { ContextualEvaluationError, type ContextualFailureDiagnostic } from "./contextual-observation.ts";
 import { contextualBatchObservations, validateReadableBatchObservation, CONTEXTUAL_BATCH_SCHEMA, CONTEXTUAL_EVALUATOR_AUTHORITY } from "./contextual-batch-observation.ts";
@@ -31,6 +32,7 @@ import {
   BATCH_SHADOW_OUTPUT_SCHEMA,
   BatchShadowRunnerError,
   runBatchShadow,
+  batchShadowPrompt,
   type BatchScopedCitationV1,
   type BatchShadowCompletionRequest,
   type BatchShadowProviderResult,
@@ -103,6 +105,7 @@ export function authorizeBatchArtifact(contracts: BatchAuthorityContracts, artif
 }
 
 export type BatchLivePolicyV1 = {
+  profileRefs?: ProfileRefs;
   contextual?: boolean;
   contextualPromptVersion?: ContextualPromptVersion;
   contextualThinking?: "medium" | "high";
@@ -122,6 +125,7 @@ export type BatchLivePolicyV1 = {
 };
 
 export type BatchLiveJobV1 = {
+  profileRefs?: ProfileRefs;
   schema: typeof BATCH_LIVE_JOB_SCHEMA;
   jobId: Digest;
   partition: BatchPartitionV1;
@@ -335,6 +339,7 @@ function makeJob(candidate: EvaluationEvidenceV1[], policy: BatchLivePolicyV1, n
     evaluationPolicyDigest: policy.evaluationPolicyDigest,
     bundle,
     createdAt: now.toISOString(),
+    ...(policy.profileRefs ? { profileRefs: policy.profileRefs } : {}),
   };
 }
 
@@ -348,6 +353,7 @@ function persistOrReuseJob(path: string, candidate: BatchLiveJobV1): BatchLiveJo
     || current.jobId !== candidate.jobId
     || current.bundle.bundleId !== candidate.bundle.bundleId
     || current.evaluationPolicyDigest !== candidate.evaluationPolicyDigest
+    || !same(current.profileRefs ?? null, candidate.profileRefs ?? null)
     || !same(current.partition, candidate.partition)
     || !same(current.bundle.sourceRefs, candidate.bundle.sourceRefs)) {
     fail("CONTENT_CONFLICT", `immutable batch job identity conflict: ${path}`);
@@ -417,6 +423,9 @@ function observationFromAssertion(options: {
 
 export class BatchLiveWorker {
   readonly root: string;
+  private policy: BatchLivePolicyV1;
+  private policyAuthorizationError: unknown = null;
+  private pendingProfileStopped=false;
 
   constructor(private readonly options: {
     workspace: string;
@@ -431,7 +440,11 @@ export class BatchLiveWorker {
     /** Explicit finite recovery only: future-retry jobs retain all their
      * sources; unrelated fresh evidence may use the unchanged inference budget. */
     allowIndependentFreshDuringBackoff?: boolean;
+    /** Resolve the immutable revision of this job, never the scope's default. */
+    resolveJobPolicy?: (job: BatchLiveJobV1) => BatchLivePolicyV1 | null;
+    authorizePolicy?: (policy: BatchLivePolicyV1, operation: "execute" | "consume") => void;
   }) {
+    this.policy = options.policy;
     this.root = join(resolve(options.storeRoot), "memory-batch-live", "v1");
     if (options.policy.maxInferenceCallsPerRun !== 1 || options.policy.runner.messageMode !== "single-user") {
       fail("INVALID_POLICY", "live batch policy must allow exactly one tool-free inference call per run");
@@ -439,16 +452,19 @@ export class BatchLiveWorker {
   }
 
   async processOne(): Promise<BatchLiveRunResult> {
+    this.policy = this.options.policy;
+    this.policyAuthorizationError = null;
+    this.pendingProfileStopped=false;
     const now = this.options.now?.() ?? new Date();
     const ownerToken = `batch-live:${randomUUID()}`;
     if (!this.options.ledger.acquireWorkerLease("evaluator", ownerToken, this.options.leaseTtlMs ?? 300_000, now)) {
       return { status: "busy" };
     }
     try {
-      const migration = producerMigrationBarrier(this.options.storeRoot, this.options.policy.exactScope);
+      const migration = producerMigrationBarrier(this.options.storeRoot, this.policy.exactScope);
       if (migration) return { status: "blocked", reason: migration.reason };
       const reserved = new Set<Digest>();
-      const pending = this.pendingJob(this.options.policy, now, reserved);
+      const pending = this.pendingJob(this.policy, now, reserved);
       let job = pending;
       if (job) {
         this.authorizeCurrentBatchEffects();
@@ -463,17 +479,17 @@ export class BatchLiveWorker {
       }
       if (!job) {
         this.authorizeCurrentBatchEffects();
-        this.options.ledger.disposeUnavailableBatchEvidence(ownerToken, this.options.policy.exactScope, now, this.options.policy.sourcePolicyDigest);
+        this.options.ledger.disposeUnavailableBatchEvidence(ownerToken, this.policy.exactScope, now, this.policy.sourcePolicyDigest);
         const waiting = new Set(this.options.ledger.listQueue().filter(record => record.reasonCode === "semantic_batch_defer").map(record => record.traceId));
-        const due = this.options.ledger.peekDueEvaluationEvidence(now, this.options.policy.exactScope, this.options.policy.sourcePolicyDigest)
+        const due = this.options.ledger.peekDueEvaluationEvidence(now, this.policy.exactScope, this.policy.sourcePolicyDigest)
           .filter(entry => !reserved.has(entry.envelope.traceId));
-        if (!due.length && reserved.size) return { status: "idle", reason: "pending_retry_not_due" };
+        if (!due.length && reserved.size) return { status: "idle", reason: this.pendingProfileStopped?"pending_profile_execution_stopped":"pending_retry_not_due" };
         const fresh = due.filter(entry => !waiting.has(entry.envelope.traceId));
         if (!fresh.length && due.some(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context" };
         // Reconsider waiting evidence with new text, reserving a slot for a fresh
         // source so cached results cannot endlessly reprocess a deferred batch.
-        const reconsider = this.options.policy.maxTurns > 1 ? due.filter(entry => waiting.has(entry.envelope.traceId)).slice(-(this.options.policy.maxTurns - 1)) : [];
-        let selectionPolicy = reconsider.length ? { ...this.options.policy, inactivityGapMs: this.options.policy.evidenceTtlMs } : this.options.policy;
+        const reconsider = this.policy.maxTurns > 1 ? due.filter(entry => waiting.has(entry.envelope.traceId)).slice(-(this.policy.maxTurns - 1)) : [];
+        let selectionPolicy = reconsider.length ? { ...this.policy, inactivityGapMs: this.policy.evidenceTtlMs } : this.policy;
         let candidate = selectCandidate(reconsider.length ? [...reconsider, ...fresh] : fresh, selectionPolicy, now);
         if (reconsider.length
           && (!candidate.length || candidate.every(entry => waiting.has(entry.envelope.traceId)))) {
@@ -481,7 +497,7 @@ export class BatchLiveWorker {
           // before any fresh source fits. Scheduled runs must not starve fresh
           // work either. Selection only: job reservations and retry backoff
           // remain unchanged; the fresh-only frame uses all normal bounds.
-          selectionPolicy = this.options.policy;
+          selectionPolicy = this.policy;
           candidate = selectCandidate(fresh, selectionPolicy, now);
         }
         if (candidate.length && candidate.every(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context_budget" };
@@ -490,29 +506,37 @@ export class BatchLiveWorker {
         job = persistOrReuseJob(this.jobPath(job.jobId), job);
         this.options.fault?.("after_job");
       }
-      if (job.evaluationPolicyDigest !== this.options.policy.evaluationPolicyDigest
-        || !sameScope(scopeFromPartition(job.partition), this.options.policy.exactScope)) {
+      if (job.evaluationPolicyDigest !== this.policy.evaluationPolicyDigest
+        || !sameScope(scopeFromPartition(job.partition), this.policy.exactScope)) {
         fail("POLICY_CONFLICT", "pending batch job is outside the active exact policy");
       }
       this.authorizeCurrentBatchEffects();
-      if (this.options.policy.contextual) return await this.processContextualJob(job, ownerToken);
+      if (this.policy.contextual) return await this.processContextualJob(job, ownerToken);
+      const savedBasePath=join(resolve(this.options.storeRoot),"memory-batch-shadow/v1/results",
+        batchShadowPrompt(job.bundle,this.policy.runner,new Date(job.createdAt)).resultKey.slice(7)+".json");
+      const savedBase=existsSync(savedBasePath);
       let run: Awaited<ReturnType<typeof runBatchShadow>>;
       let diagnostics: BatchLiveFailureV1["diagnostics"];
       try {
         run = await runBatchShadow({
           bundle: job.bundle,
-          config: this.options.policy.runner,
+          config: this.policy.runner,
           storeRoot: resolve(this.options.storeRoot),
           complete: async request => {
-            const response = await this.options.complete(request);
+            if(savedBase)fail("RESULT_CONFLICT","saved result disappeared during recovery");
+            const response = await this.complete(request);
             const output = typeof response.output === "string" ? response.output : "";
             diagnostics = { outputLength: output.length, outputDigest: sha256(output),
               framing: output.trim().startsWith("```") ? "fenced" : output.trim().startsWith("{") ? "object" : output.trim() ? "other" : "empty" };
             return response;
           },
-          now: this.options.now,
+          // A verified saved result survives evidence TTL. Reconstruct its
+          // original request at admission time; this path cannot make a call.
+          now: savedBase?()=>new Date(job.createdAt):this.options.now,
         });
       } catch (error) {
+        if(this.policyAuthorizationError) throw this.policyAuthorizationError;
+        if(savedBase)throw error;
         const failedAt = this.options.now?.() ?? new Date();
         const errorCode = error instanceof BatchShadowRunnerError
           ? `batch_${error.code.toLowerCase()}`
@@ -524,7 +548,7 @@ export class BatchLiveWorker {
         );
         const retried = claimed.map((record) => this.options.ledger.retry(
           record,
-          this.options.policy.deferDelayMs,
+          this.policy.deferDelayMs,
           errorCode,
           failedAt,
         ));
@@ -584,7 +608,7 @@ export class BatchLiveWorker {
       }
       for (const observation of observations) {
         validateBatchObservation(observation);
-        this.authorizeCurrentArtifact(this.options.policy.contextual ? CONTEXTUAL_BATCH_SCHEMA : BATCH_OBSERVATION_SCHEMA, "advisory-batch-evaluation", BATCH_TRUSTED_INPUTS, ["episodic.event", "episodic.decision"]);
+        this.authorizeCurrentArtifact(this.policy.contextual ? CONTEXTUAL_BATCH_SCHEMA : BATCH_OBSERVATION_SCHEMA, "advisory-batch-evaluation", BATCH_TRUSTED_INPUTS, ["episodic.event", "episodic.decision"]);
         writeImmutable(this.observationPath(observation.observationId), observation as unknown as JsonValue);
         this.options.fault?.("after_observation");
       }
@@ -645,7 +669,7 @@ export class BatchLiveWorker {
           this.options.ledger.deferBatchClaim(
             ownerToken,
             record,
-            this.options.policy.deferDelayMs,
+            this.policy.deferDelayMs,
             disposition.reasonCode,
             this.options.now?.() ?? new Date(),
           );
@@ -689,8 +713,8 @@ export class BatchLiveWorker {
           || saved.policyDigest!==job.evaluationPolicyDigest || digest!==sha256(base)) fail("CONTEXTUAL_RESULT_INVALID","cached contextual identity changed");
         evaluated=saved.evaluated;
       } else {
-        evaluated=await runContextualShadow({bundle:job.bundle,model:this.options.policy.runner.requestedModel,
-          thinking:this.options.policy.contextualThinking,maxTokens:this.options.policy.runner.maxTokens,promptVersion:this.options.policy.contextualPromptVersion,complete:this.options.complete,now:this.options.now});
+        evaluated=await runContextualShadow({bundle:job.bundle,model:this.policy.runner.requestedModel,
+          thinking:this.policy.contextualThinking,maxTokens:this.policy.runner.maxTokens,promptVersion:this.policy.contextualPromptVersion,complete:request=>this.complete(request),now:this.options.now});
         // Hash precisely the JSON bytes we can reload (provider usage is optional).
         evaluated=JSON.parse(JSON.stringify(evaluated));
         stage = "observations";
@@ -700,6 +724,7 @@ export class BatchLiveWorker {
         writeImmutable(path,{...base,digest:sha256(base as unknown as JsonValue)} as unknown as JsonValue);
       }
     } catch (error) {
+      if(this.policyAuthorizationError) throw this.policyAuthorizationError;
       if (duplicate) throw error; // persisted effects require explicit repair, never consume source attempts
       const now=this.options.now?.()??new Date();
       const diagnostic: ContextualFailureDiagnostic = error instanceof ContextualEvaluationError ? error.diagnostic
@@ -713,7 +738,7 @@ export class BatchLiveWorker {
         traceIds: job.bundle.sourceRefs.map(s=>s.traceId), failedAt: now.toISOString(), diagnostic};
       writeImmutable(diagnosticRef, {...detail, diagnosticId: sha256(detail as unknown as JsonValue)} as unknown as JsonValue);
       const claimed=this.options.ledger.claimBatchExact(ownerToken,job.bundle.sourceRefs.map(s=>s.traceId),now);
-      const queues=claimed.map(q=>this.options.ledger.retry(q,this.options.policy.deferDelayMs,"batch_contextual_evaluation_failed",now));
+      const queues=claimed.map(q=>this.options.ledger.retry(q,this.policy.deferDelayMs,"batch_contextual_evaluation_failed",now));
       const exhausted=queues.filter(q=>q.status==="terminal");
       if(exhausted.length) this.reconcileExhaustedJob(job,now);
       return {status:exhausted.length?"terminal_failure":"retry",jobId:job.jobId,sourceCount:queues.length,
@@ -757,10 +782,10 @@ export class BatchLiveWorker {
 
   private contextualObservations(job: BatchLiveJobV1, evaluated: Awaited<ReturnType<typeof runContextualShadow>>) {
     const result=evaluated.observation;
-    const promptVersion=this.options.policy.contextualPromptVersion ?? CONTEXTUAL_PROMPT_VERSION;
-    const expectedRequest={model:this.options.policy.runner.requestedModel,system:"",prompt:contextualPrompt(job.bundle,new Date(result.recordedAt),promptVersion),
-      maxTokens:this.options.policy.runner.maxTokens,temperature:0,tools:[],thinking:this.options.policy.contextualThinking ?? CONTEXTUAL_THINKING};
-    const expectedPolicy=sha256({schema:CONTEXTUAL_SCHEMA,promptVersion,model:expectedRequest.model,maxTokens:expectedRequest.maxTokens,thinking:this.options.policy.contextualThinking ?? CONTEXTUAL_THINKING} as JsonValue);
+    const promptVersion=this.policy.contextualPromptVersion ?? CONTEXTUAL_PROMPT_VERSION;
+    const expectedRequest={model:this.policy.runner.requestedModel,system:"",prompt:contextualPrompt(job.bundle,new Date(result.recordedAt),promptVersion),
+      maxTokens:this.policy.runner.maxTokens,temperature:0,tools:[],thinking:this.policy.contextualThinking ?? CONTEXTUAL_THINKING};
+    const expectedPolicy=sha256({schema:CONTEXTUAL_SCHEMA,promptVersion,model:expectedRequest.model,maxTokens:expectedRequest.maxTokens,thinking:this.policy.contextualThinking ?? CONTEXTUAL_THINKING} as JsonValue);
     if(evaluated.requestDigest!==sha256(expectedRequest as JsonValue) || result.evaluationPolicyDigest!==expectedPolicy)
       fail("CONTEXTUAL_RESULT_INVALID","cached result belongs to a different request or evaluator contract");
     if(!DIGEST_RE.test(evaluated.requestDigest) || !Number.isFinite(evaluated.latencyMs) || evaluated.latencyMs<0
@@ -793,8 +818,21 @@ export class BatchLiveWorker {
       const queues = new Map(this.options.ledger.listQueue().map(record => [record.traceId, record]));
       const records = job.bundle.sourceRefs.map(source => queues.get(source.traceId));
       const exhausted = records.filter(record => record?.status === "terminal"
-        && record.attempt >= record.maxAttempts && record.reasonCode?.startsWith("batch_"));
+        && ((record.attempt >= record.maxAttempts && record.reasonCode?.startsWith("batch_"))
+          || (()=>{
+            if(!record.reasonCode?.startsWith("batch_evidence_"))return false;
+            const path=join(this.options.ledger.root,"receipts/evidence-unavailable",record.traceId.slice(7)+".json");
+            if(!existsSync(path))return false;
+            const receipt=readJson<any>(path),{receiptId,...body}=receipt;
+            return receipt.schema==="engram.memory-evidence-unavailable.v1"&&receiptId===sha256(body)
+              &&receipt.traceId===record.traceId&&receipt.reasonCode===record.reasonCode&&receipt.recordedAt===record.terminalAt
+              &&receipt.policyDigest===job.partition.policyDigest&&same(receipt.scope,scopeFromPartition(job.partition));
+          })()));
       if (!exhausted.length) return null;
+      if(exhausted.some(record=>record?.reasonCode?.startsWith("batch_evidence_"))
+        && (existsSync(join(this.root,"contextual-results",job.jobId.slice(7)+".json"))
+        ||existsSync(join(resolve(this.options.storeRoot),"memory-batch-shadow/v1/results",batchShadowPrompt(job.bundle,this.policy.runner,new Date(job.createdAt)).resultKey.slice(7)+".json"))))
+        fail("RECONCILIATION_EFFECTS_EXIST","saved result must finish through its original consumer");
       if (records.some(record => !record || (record.status !== "queued" && !exhausted.includes(record)))) {
         fail("RECONCILIATION_CONFLICT", "batch contains unrelated terminal or claimed sources");
       }
@@ -832,39 +870,66 @@ export class BatchLiveWorker {
     const directory = join(this.root, "jobs");
     if (!existsSync(directory)) return null;
     const jobs = readdirSync(directory).filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).sort();
-    const candidates: BatchLiveJobV1[] = [];
+    const candidates: Array<{ job: BatchLiveJobV1; policy: BatchLivePolicyV1 }> = [];
+    const assignments=new Map<Digest,Digest>();
     for (const name of jobs) {
       const job = readJson<BatchLiveJobV1>(join(directory, name));
       if (existsSync(this.donePath(job.jobId)) || !sameScope(scopeFromPartition(job.partition), policy.exactScope)) continue;
-      if (this.options.allowIndependentFreshDuringBackoff) job.bundle.sourceRefs.forEach(source => reserved.add(source.traceId));
-      if (job.evaluationPolicyDigest !== policy.evaluationPolicyDigest) continue;
-      if (!this.options.allowIndependentFreshDuringBackoff) return job;
-      candidates.push(job);
+      // Reserve BEFORE resolving/filtering revisions, including foreign policies.
+      // A default switch must never make an old job's sources look fresh.
+      job.bundle.sourceRefs.forEach(source => reserved.add(source.traceId));
+      if(this.options.resolveJobPolicy)for(const source of job.bundle.sourceRefs){
+        if(assignments.has(source.traceId)&&assignments.get(source.traceId)!==job.jobId)fail("PROFILE_SOURCE_ASSIGNMENT_CONFLICT","multiple unfinished jobs reserve the same source");
+        assignments.set(source.traceId,job.jobId);
+      }
+      const selected = this.options.resolveJobPolicy ? this.options.resolveJobPolicy(job) : policy;
+      if (!selected) {this.pendingProfileStopped=true;continue;} // Reserved consume-only revision awaits a saved result/resume.
+      if (this.options.resolveJobPolicy && (job.jobId !== sha256({ schema: job.schema, partition: job.partition,
+        evaluationPolicyDigest: job.evaluationPolicyDigest, bundleId: job.bundle.bundleId } as unknown as JsonValue)
+        || !same(job.profileRefs ?? null, selected.profileRefs ?? null))) fail("PROFILE_JOB_INVALID", "immutable job revision mismatch");
+      if (job.evaluationPolicyDigest !== selected.evaluationPolicyDigest) continue;
+      if (!this.options.allowIndependentFreshDuringBackoff) { this.policy = selected; return job; }
+      candidates.push({ job, policy: selected });
     }
     if (candidates.length) {
       const queues = new Map(this.options.ledger.listQueue().map(q => [q.traceId, q]));
-      return candidates.find(job => !job.bundle.sourceRefs.some(source => {
+      const candidate = candidates.sort((a, b) => a.job.createdAt.localeCompare(b.job.createdAt)).find(({ job }) => !job.bundle.sourceRefs.some(source => {
         const queue = queues.get(source.traceId);
         return queue?.status === "queued" && Date.parse(queue.nextAttemptAt) > now.getTime();
-      })) ?? null;
+      }));
+      if (candidate) { this.policy = candidate.policy; return candidate.job; }
     }
     return null;
+  }
+
+  private async complete(request: BatchShadowCompletionRequest): Promise<BatchShadowProviderResult> {
+    this.authorizeProfile("execute");
+    const result = await this.options.complete(request);
+    this.authorizeProfile("consume");
+    return result;
+  }
+
+  private authorizeProfile(operation:"execute"|"consume"):void {
+    try {this.options.authorizePolicy?.(this.policy,operation);}
+    catch(error){this.policyAuthorizationError=error;throw error;}
   }
 
   private currentAuthorityContracts(): BatchAuthorityContracts {
     if (this.options.resolveAuthorityContracts) return this.options.resolveAuthorityContracts();
     return {
-      producerRegistry: readJson(join(this.options.policy.contextual ? resolve(CONTRACT_ROOT,"../v2") : CONTRACT_ROOT, "producer-registry.json")),
-      authorityPolicy: readJson(join(this.options.policy.contextual ? resolve(CONTRACT_ROOT,"../v2") : CONTRACT_ROOT, "authority-policy.json")),
+      producerRegistry: readJson(join(this.policy.contextual ? resolve(CONTRACT_ROOT,"../v2") : CONTRACT_ROOT, "producer-registry.json")),
+      authorityPolicy: readJson(join(this.policy.contextual ? resolve(CONTRACT_ROOT,"../v2") : CONTRACT_ROOT, "authority-policy.json")),
     };
   }
 
   private authorizeCurrentArtifact(artifactSchema: string, stage: string, trustedInputs: string[], observationClasses: string[] = []): void {
-    authorizeBatchArtifact(this.currentAuthorityContracts(), artifactSchema, stage, trustedInputs, observationClasses, this.options.policy.contextual ? CONTEXTUAL_EVALUATOR_AUTHORITY : BATCH_EVALUATOR_AUTHORITY);
+    this.authorizeProfile("consume");
+    authorizeBatchArtifact(this.currentAuthorityContracts(), artifactSchema, stage, trustedInputs, observationClasses, this.policy.contextual ? CONTEXTUAL_EVALUATOR_AUTHORITY : BATCH_EVALUATOR_AUTHORITY);
   }
 
   private authorizeCurrentBatchEffects(): void {
-    this.authorizeCurrentArtifact(this.options.policy.contextual ? CONTEXTUAL_BATCH_SCHEMA : BATCH_OBSERVATION_SCHEMA, "advisory-batch-evaluation", BATCH_TRUSTED_INPUTS, ["episodic.event", "episodic.decision"]);
+    this.authorizeProfile("consume");
+    this.authorizeCurrentArtifact(this.policy.contextual ? CONTEXTUAL_BATCH_SCHEMA : BATCH_OBSERVATION_SCHEMA, "advisory-batch-evaluation", BATCH_TRUSTED_INPUTS, ["episodic.event", "episodic.decision"]);
     this.authorizeCurrentArtifact(TRACE_SCHEMA, "trace-append", TRACE_TRUSTED_INPUTS);
   }
 

@@ -4,11 +4,12 @@ import { BATCH_EVALUATOR_AUTHORITY } from "../memory-observation/batch-observati
 import { CONTEXTUAL_EVALUATOR_AUTHORITY } from "../memory-observation/contextual-batch-observation.ts";
 import type { MemoryObservationProjectionV1 } from "../memory-observation/projection.ts";
 import type { ObserverReceiptScopeV1, ObserverReceiptProducerRefV1 } from "./observer-receipt-bridge-v1.ts";
+import { readExecutionProfiles, profileReadablePolicies, type ExecutionProfiles } from "../memory-observation/execution-profiles.ts";
 
 /** Exact readable policies from the Worker's own verified quality/transition
  * contracts. No inference, queue processing, arbitrary historical policy grant,
  * or assumption that the base policy is the active contextual policy. */
-export function observerBridgeLiveAuthorities(workspace: string, projection: MemoryObservationProjectionV1, scope: ObserverReceiptScopeV1) {
+export function observerBridgeLiveAuthorities(workspace: string, projection: MemoryObservationProjectionV1, scope: ObserverReceiptScopeV1, proposedProfiles?:ExecutionProfiles) {
   const output: Array<{ producer: ObserverReceiptProducerRefV1; policyDigest: `sha256:${string}` }> = [];
   const add = (p: MemoryObservationProjectionV1, quality: ReturnType<typeof evaluationQuality>) => {
     if (!p.evaluation?.policyDigest) return;
@@ -20,5 +21,10 @@ export function observerBridgeLiveAuthorities(workspace: string, projection: Mem
   add(projection, evaluationQuality(workspace, projection));
   const transition = readModelTransition(workspace, projection);
   if (transition) add(transition.previousProjection, transition.previousQuality);
+  const profiles = proposedProfiles ?? readExecutionProfiles(workspace,projection);
+  for (const policyDigest of profileReadablePolicies(profiles,projection,scope)) {
+    const contextual=profiles!.revisions.some(r=>r.profile.template.evaluationPolicyDigest===policyDigest && r.profile.template.contextual);
+    output.push({producer:contextual?CONTEXTUAL_EVALUATOR_AUTHORITY:BATCH_EVALUATOR_AUTHORITY,policyDigest});
+  }
   return output.filter((v, i, a) => a.findIndex(x => x.producer.digest === v.producer.digest && x.policyDigest === v.policyDigest) === i);
 }

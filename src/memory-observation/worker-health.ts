@@ -65,7 +65,7 @@ function recoveredBatchJob(job: WorkerStateRow): boolean {
 /** A filename in done/ is not completion evidence by itself. Verify the
  * schema-bound identity against the immutable job before excluding it from
  * batch backlog. */
-function verifiedDoneJobId(done: WorkerStateRow, jobs: WorkerStateRow[], errors: WorkerReadError[]): string | null {
+export function verifiedDoneJobId(done: WorkerStateRow, jobs: WorkerStateRow[], errors: WorkerReadError[]): string | null {
   const value = done.value;
   const job = jobs.find(row => row.value.jobId === value.jobId)?.value;
   if (!job || !/^sha256:[a-f0-9]{64}$/.test(value.jobId) || value.bundleId !== job.bundle?.bundleId) {

@@ -3,6 +3,7 @@ import {readQualityRollout,qualityScopeEnabled,qualityProducerForScope,contextua
 import { RUNTIME_POLICY } from "../src/memory-observation/runtime-authority.ts";
 import { evaluationQuality, evaluationProjectionForScope, readableEvaluationPolicies } from "../src/memory-observation/model-transition.ts";
 import { modelTransitionBlockReason } from "../src/memory-observation/model-transition-retirement.ts";
+import { readExecutionProfiles, defaultProfilePolicy, jobProfilePolicy, authorizeProfileOperation, configuredProviderBoundary, legacyPolicy, batchJobHasSavedResult } from "../src/memory-observation/execution-profiles.ts";
 import { isGroupProjectionSchema, assertGroupHostRoutes } from "../src/memory-observation/group-bindings.ts";
 import { assertSourceDebtPurgeSafe, scanSourceDebt } from "../src/memory-observation/source-debt.ts";
 import { memoryWorkerHealth } from "../src/memory-observation/worker-health.ts";
@@ -64,6 +65,15 @@ async function sourcePluginDigest(repository: string): Promise<`sha256:${string}
 
 const compactSummary = process.argv.length === 5 && process.argv[4] === "--summary";
 function emitRun(report:any) {
+  const profiles=readExecutionProfiles(workspace,readJson(projectionPath));
+  if(profiles){
+    const base=profiles.revisions.find(r=>r.profile.profileId===profiles.defaults.base)!.profile;
+    const contextual=profiles.revisions.find(r=>r.profile.profileId===profiles.defaults.contextual)?.profile;
+    report.executionProfile={registryDigest:profiles.digest,defaultModel:base.template.runner.requestedModel,
+      requestedThinking:base.template.runner.thinking,contextualDefaultModel:contextual?.template.runner.requestedModel??null,
+      contextualRequestedThinking:contextual?.template.contextualThinking??null,
+      thinkingReadback:"requested-only",tokenBudgetEnforcement:"unavailable"};
+  }
   if(compactSummary){
     const c=report.health?.completeness;
     if(c)report.health={...report.health,completeness:{observed:c.observed,open:c.openIds.length,closed:c.closedIds.length,writtenOff:c.writtenOffIds?.length??0,automaticallyStopped:c.automaticallyStoppedIds?.length??0,corrupt:c.corrupt,errors:c.errors,verifiedAt:c.verifiedAt}};
@@ -98,6 +108,8 @@ if (!existsSync(projectionPath) || readJson(projectionPath)?.enabled !== true) {
 const repository = resolve(import.meta.dir, "..");
 const expectedPluginDigest = await sourcePluginDigest(repository);
 const projection = resolveMemoryObservationProjection({ workspace, workspaceId, expectedPluginDigest });
+// Cheap version/anchor checks are retained even when no sources are pending.
+readExecutionProfiles(workspace, projection);
 if (![MEMORY_OBSERVATION_PROJECTION_SCHEMA_V2, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V3, MEMORY_OBSERVATION_PROJECTION_SCHEMA_V4, "engram.memory-observation-rollout.v5", "engram.memory-observation-rollout.v6"].includes(projection.schema as any)
   || projection.mode !== "canary"
   || memoryObservationEvaluationMode(projection) !== "batch-cron"
@@ -222,9 +234,9 @@ function collectScopes(): ScopeCandidate[] {
       }
     }
   }
-  if(qualityRollout()) for(const job of qualityTransitionInventory(workspace).batches) {
+  if(qualityRollout() || readExecutionProfiles(workspace,projection)) for(const job of qualityTransitionInventory(workspace).batches) {
     const scope=currentlyBoundScope({scope:job.partition});
-    if(scope && qualityScopeEnabled(qualityRollout(),scope)) add(scope,dailyNote.applyAfter);
+    if(scope && (readExecutionProfiles(workspace,projection) || qualityScopeEnabled(qualityRollout(),scope))) add(scope,dailyNote.applyAfter);
   }
   return [...candidates.values()].sort((left, right) => left.firstAt.localeCompare(right.firstAt)
     || left.scope.runtimeSessionKey.localeCompare(right.scope.runtimeSessionKey));
@@ -258,12 +270,15 @@ function readableBatchPolicy(digest:Digest,scope:ObservationScope,current=projec
   return readableEvaluationPolicies(workspace,current,scope).includes(digest);
 }
 function livePolicy(scope: ObservationScope, current = projection): BatchLivePolicyV1 {
+  const profiles = readExecutionProfiles(workspace,current);
+  if (profiles) return defaultProfilePolicy(profiles,current,scope);
   current = evaluationProjectionForScope(workspace,current,scope);
   const producer=qualityProducerForScope(workspace,scope,qualityRollout(current));
   if(producer==="blocked") throw Error("QUALITY_PENDING_BUNDLE_REQUIRES_RECONCILIATION");
   const currentBatch = current.evaluation!.batch!;
   const promptVersion = contextualPromptForScope(workspace,scope,current.evaluation!.policyDigest);
-  const thinking = contextualThinkingForScope(workspace,scope,current.evaluation!.policyDigest,current.inference.model==="openai/gpt-6-luna"?"high":"medium");
+  const compatibility = legacyPolicy({projection:current,quality:qualityRollout(current)},scope);
+  const thinking = contextualThinkingForScope(workspace,scope,current.evaluation!.policyDigest,compatibility.contextualThinking ?? "medium");
   return {
     workspaceId,
     exactScope: scope,
@@ -284,7 +299,7 @@ function livePolicy(scope: ObservationScope, current = projection): BatchLivePol
       maxTokens: 8_192,
       temperature: 0,
       messageMode: "single-user",
-      ...(current.inference.model==="openai/gpt-6-luna"?{thinking:"high" as const}:{}),
+      ...(compatibility.runner.thinking ? {thinking:compatibility.runner.thinking} : {}),
     },
   };
 }
@@ -371,14 +386,15 @@ for (const candidate of collectScopes()) {
   if (evaluations.length >= maxBatchesPerWake || Date.now() - drainStarted >= 90_000) break;
   if (qualityBlockedScopes.has(candidate.scope.runtimeSessionKey)) continue;
   const current = currentProjectionForScope(candidate.scope);
+  const profiles = readExecutionProfiles(workspace,current);
   let selected;
-  try { selected=evaluationProjectionForScope(workspace,current,candidate.scope); }
+  try { selected=profiles?current:evaluationProjectionForScope(workspace,current,candidate.scope); }
   catch (error) {
     qualityBlockedScopes.add(candidate.scope.runtimeSessionKey);
     qualityBlockers.set(candidate.scope.runtimeSessionKey, modelTransitionBlockReason(error));
     continue;
   }
-  if(qualityProducerForScope(workspace,candidate.scope,qualityRollout(selected))==="blocked") {
+  if(!profiles && qualityProducerForScope(workspace,candidate.scope,qualityRollout(selected))==="blocked") {
     qualityBlockedScopes.add(candidate.scope.runtimeSessionKey);
     qualityBlockers.set(candidate.scope.runtimeSessionKey,"QUALITY_PENDING_POLICY_REQUIRES_RECONCILIATION");
     continue;
@@ -391,14 +407,45 @@ for (const candidate of collectScopes()) {
     policy: workerPolicy,
     storeRoot,
     complete: async (request) => {
-      if (sha256(livePolicy(candidate.scope, currentProjectionForScope(candidate.scope)) as unknown as JsonValue) !== policyDigest) throw new Error("batch canary policy changed before inference");
+      if (!profiles && sha256(livePolicy(candidate.scope, currentProjectionForScope(candidate.scope)) as unknown as JsonValue) !== policyDigest) throw new Error("batch canary policy changed before inference");
       const result = await rawComplete(request);
-      if (sha256(livePolicy(candidate.scope, currentProjectionForScope(candidate.scope)) as unknown as JsonValue) !== policyDigest) throw new Error("batch canary policy changed during inference");
+      if (!profiles && sha256(livePolicy(candidate.scope, currentProjectionForScope(candidate.scope)) as unknown as JsonValue) !== policyDigest) throw new Error("batch canary policy changed during inference");
       return result;
     },
+    ...(profiles ? {
+      allowIndependentFreshDuringBackoff:true,
+      resolveJobPolicy: (job) => {
+        const live=currentProjectionForScope(candidate.scope), registry=readExecutionProfiles(workspace,live);
+        if(!registry) throw Error("PROFILE_REGISTRY_REVOKED");
+        const policy=jobProfilePolicy(registry,live,job);
+        const terminalSource=job.bundle.sourceRefs.some(source=>{
+          const path=join(workspace,"memory-state/memory-observation/v1/queues/evaluator",source.traceId.slice(7)+".json");
+          return existsSync(path)&&readJson(path).status==="terminal";
+        });
+        if(policy.profileRefs && registry.revisions.find(r=>r.profile.profileId===policy.profileRefs!.profileId)?.lifecycle === "drain"
+          && !terminalSource && !batchJobHasSavedResult(workspace,job,policy)) return null;
+        return policy;
+      },
+      authorizePolicy: (policy:BatchLivePolicyV1, operation:"execute"|"consume") => {
+        const live=currentProjectionForScope(candidate.scope), registry=readExecutionProfiles(workspace,live);
+        if(!registry) throw Error("PROFILE_REGISTRY_REVOKED");
+        if(!policy.profileRefs && !registry.legacy.some(snapshot=>{
+          try{return sha256(legacyPolicy(snapshot,policy.exactScope,policy.evaluationPolicyDigest) as unknown as JsonValue)===sha256(policy as unknown as JsonValue);}catch{return false;}
+        })) throw Error("PROFILE_LEGACY_POLICY_DENIED");
+        authorizeProfileOperation(registry,live,policy,operation,
+          operation==="execute"?configuredProviderBoundary(policy.runner.requestedModel):undefined);
+      },
+    } : {}),
     leaseTtlMs: current.limits.claimTtlSeconds * 1_000,
   });
-  const result = await worker.processOne();
+  let result;
+  try { result = await worker.processOne(); }
+  catch(error) {
+    const code=(error as {code?:string})?.code??(error instanceof Error?error.message:"");
+    const reason=/^PROFILE_[A-Z_]+$/.test(code)?code:null;
+    if(!reason) throw error;
+    qualityBlockedScopes.add(candidate.scope.runtimeSessionKey);qualityBlockers.set(candidate.scope.runtimeSessionKey,reason);continue;
+  }
   if (result.status === "blocked") {
     qualityBlockedScopes.add(candidate.scope.runtimeSessionKey);
     qualityBlockers.set(candidate.scope.runtimeSessionKey, result.reason.toUpperCase());

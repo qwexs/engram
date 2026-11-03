@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, renameSync, statSync, unlinkSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, renameSync, statSync, unlinkSync, openSync, fsyncSync, closeSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { BATCH_EVALUATOR_AUTHORITY } from "../memory-observation/batch-observation.ts";
 import { CONTEXTUAL_EVALUATOR_AUTHORITY } from "../memory-observation/contextual-batch-observation.ts";
@@ -9,6 +9,7 @@ import { compileMemoryCandidateReportV2, verifyObserverReceiptAdmission } from "
 import { canonicalizeJcs, sha256Digest } from "./handoff-v2.ts";
 import { observerBridgeRuntimeKey } from "./observer-receipt-watchdog.ts";
 import { observerBridgeLiveAuthorities } from "./observer-receipt-authorities.ts";
+import { validateExecutionProfiles, type ExecutionProfiles } from "../memory-observation/execution-profiles.ts";
 import {
   observerReceiptProducerRegistryDigestV1, validateObserverReceiptProducerRegistryV1,
   type ObserverReceiptProducerRegistryV1, type ObserverReceiptScopeV1, type ObserverReceiptProducerRefV1,
@@ -20,10 +21,11 @@ const supported = [
 ];
 const same = (a: unknown, b: unknown) => canonicalizeJcs(a) === canonicalizeJcs(b);
 const fingerprint = (path: string) => sha256Digest(readFileSync(path, "utf8"));
+const flush=(path:string)=>{const fd=openSync(path,"r");try{fsyncSync(fd);}finally{closeSync(fd);}};
 export type OllObserverBridgePlan = {
   schema: "oll.observer-bridge-plan.v1"; workspace: string; workspaceId: string; createdAt: string;
   configDigest: string; projectionDigest: string; previousRegistryDigest: string | null;
-  sidecarDigests: { quality: string | null; transition: string | null };
+  sidecarDigests: { quality: string | null; transition: string | null; profiles?: string | null };
   registry: ObserverReceiptProducerRegistryV1;
   evidence: { compilerBefore: Record<string, unknown>; compilerAfter: Record<string, unknown>; verifiedHistoricalReceiptPolicies: number; sourceScopes: number };
   planDigest: string;
@@ -39,17 +41,19 @@ function sidecarDigests(workspace: string) {
   const digest = (name: string) => {
     const p = join(workspace, "memory-state/memory-observation", name); return existsSync(p) ? fingerprint(p) : null;
   };
-  return { quality: digest("quality-rollout.json"), transition: digest("model-transition.json") };
+  const profiles=digest("execution-profiles.json");
+  return { quality: digest("quality-rollout.json"), transition: digest("model-transition.json"), ...(profiles?{profiles}:{}) };
 }
 
 /** Explicit operator plan, never auto-called by a Worker/cron. Existing source/scope policy is unchanged. */
-export function planOllObserverBridge(workspaceInput: string, now = new Date()): OllObserverBridgePlan | null {
+export function planOllObserverBridge(workspaceInput: string, now = new Date(), proposedProfiles?:ExecutionProfiles): OllObserverBridgePlan | null {
   const workspace = realpathSync(resolve(workspaceInput)), configPath = join(workspace, "engram.json");
   const projectionPath = join(workspace, "memory-state/memory-observation/projection.json");
   const configDigest = fingerprint(configPath), config = JSON.parse(readFileSync(configPath, "utf8")), oll = config.oll;
   if (oll?.enabled === false || oll?.nightly?.enabled !== true || !["shadow", "materialize"].includes(oll?.candidateCompiler?.mode)) return null;
   const workspaceId = config.workspace?.id, policy = oll.candidateCompiler, mode = policy.mode;
   const projectionDigest = fingerprint(projectionPath), projection = resolveMemoryObservationProjection({ workspace, workspaceId });
+  if(proposedProfiles)validateExecutionProfiles(proposedProfiles,workspace,projection);
   const sidecars = sidecarDigests(workspace);
   if (projection.mode !== "canary" || projection.evaluation?.mode !== "batch-cron") throw Error("bridge provisioning requires an active batch Worker projection");
   const scopes: ObserverReceiptScopeV1[] = [];
@@ -86,7 +90,7 @@ export function planOllObserverBridge(workspaceInput: string, now = new Date()):
   };
   // Use actual readable base/contextual/transition policies; do not infer v2
   // authority solely from the projection's v1-compatible base policy digest.
-  for (const scope of scopes) for (const authority of observerBridgeLiveAuthorities(workspace, projection, scope))
+  for (const scope of scopes) for (const authority of observerBridgeLiveAuthorities(workspace, projection, scope, proposedProfiles))
     grant(authority.producer, scope, authority.policyDigest);
   const baseRegistry = structuredClone(registry);
   const receiptRoot = join(workspace, "memory-state/memory-observation/v1/receipts/by-entry");
@@ -128,7 +132,7 @@ export function planOllObserverBridge(workspaceInput: string, now = new Date()):
   if (previous && !same({ ...registry, registryVersion: previous.registryVersion, digest: previous.digest }, previous)) registry.registryVersion = previous.registryVersion + 1;
   registry.digest = observerReceiptProducerRegistryDigestV1(registry); validateObserverReceiptProducerRegistryV1(registry);
   const compilerAfter = compile(registry);
-  if ((compilerAfter.rejectionCounts.unsupported_source ?? 0) > 0) throw Error("unsupported observer sources remain after provisional bridge repair");
+  if ((compilerAfter.rejectionCounts.unsupported_source ?? 0) > (proposedProfiles ? compilerBefore.rejectionCounts.unsupported_source ?? 0 : 0)) throw Error("unsupported observer sources remain after provisional bridge repair");
   if (fingerprint(configPath) !== configDigest || fingerprint(projectionPath) !== projectionDigest || !same(sidecarDigests(workspace), sidecars)) throw Error("bridge inputs changed while planning");
   const body: Omit<OllObserverBridgePlan, "planDigest"> = { schema: "oll.observer-bridge-plan.v1", workspace, workspaceId, createdAt: now.toISOString(), configDigest, projectionDigest,
     previousRegistryDigest: previous?.digest ?? null, sidecarDigests: sidecars, registry,
@@ -146,13 +150,15 @@ export function applyOllObserverBridgePlan(plan: OllObserverBridgePlan): { statu
   if (!inputsMatch()) throw Error("bridge plan CAS failed; re-plan required");
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   if (config.workspace?.id !== plan.workspaceId || config.oll?.nightly?.enabled !== true || !["shadow", "materialize"].includes(config.oll?.candidateCompiler?.mode)) throw Error("bridge activation changed since plan");
-  if (same(config.oll.observerReceiptProducerRegistry ?? null, registry)) return { status: "unchanged", workspaceId: plan.workspaceId, registryDigest: registry.digest };
+  if (same(config.oll.observerReceiptProducerRegistry ?? null, registry)) {flush(configPath);flush(dirname(configPath));return { status: "unchanged", workspaceId: plan.workspaceId, registryDigest: registry.digest };}
   config.oll.observerReceiptProducerRegistry = registry;
   const temp = configPath + `.bridge-${randomUUID()}.tmp`;
   try {
     writeFileSync(temp, JSON.stringify(config, null, 2) + "\n", { flag: "wx", mode: statSync(configPath).mode & 0o777 });
+    flush(temp);
     if (!inputsMatch()) throw Error("bridge apply CAS failed");
     renameSync(temp, configPath);
+    flush(dirname(configPath));
   } finally { if (existsSync(temp)) unlinkSync(temp); }
   const checked = JSON.parse(readFileSync(configPath, "utf8"));
   if (!same(checked, config)) throw Error("bridge configuration read-back failed");

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **feat(memory): separate model execution profiles from Worker authority.**
+  Add explicit thinking, immutable authority/contract/execution references per
+  job, source reservations across revisions and stable model-independent effect
+  identity. The canonical model operator qualifies both evaluator contracts,
+  plans/applies a CAS default switch with independent OLL admission before
+  publication, verifies read-back and supports per-revision drain/retirement.
+  Preserve old model/request artifacts, source budgets and pre-profile receipts;
+  pin provider boundaries for both new and legacy calls. No plugin rebuild,
+  host patch, source migration, QMD rollout or second scheduler is required.
+
 - **fix(memory): verify historical completion accounting without rewriting sources.**
   Add an explicit finite plan/apply operator and immutable warning-bound
   certificates. Health distinguishes fully verified effects from existing

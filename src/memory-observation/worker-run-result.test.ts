@@ -32,3 +32,26 @@ describe("memory worker execution result", () => {
 test('a blocked active scope fails execution even when no evaluation ran',()=>{
  expect(memoryWorkerRunResult({blockers:[{reason:'MODEL_TRANSITION_IDENTITY_CHANGED'}]})).toEqual({status:'error',exitCode:1,errors:['blocked:MODEL_TRANSITION_IDENTITY_CHANGED']});
 });
+
+test("historical source age remains visible without failing repeated or successful fresh passes", () => {
+  for (let pass = 0; pass < 12; pass++) {
+    const result = memoryWorkerRunResult({ blockers: [{ reason: "SOURCE_AGE_EXCEEDED" }],
+      evaluations: pass % 2 ? [{ status: "completed" }] : [],
+      applications: pass % 2 ? [{ status: "applied" }] : [] });
+    expect(result).toEqual({ status: "ok", exitCode: 0, errors: [], warnings: ["blocked:SOURCE_AGE_EXCEEDED"] });
+  }
+  expect(memoryWorkerRunResult({ evaluations: [{ status: "blocked", reason: "source_age_exceeded" }] }))
+    .toEqual({ status: "ok", exitCode: 0, errors: [], warnings: ["blocked:SOURCE_AGE_EXCEEDED"] });
+});
+
+test("historical warnings cannot hide current failures or arbitrary blockers", () => {
+  const result = memoryWorkerRunResult({ blockers: [
+    { reason: "SOURCE_AGE_EXCEEDED" }, { reason: "PRODUCER_MIGRATION_INCOMPLETE" },
+    { reason: "PROFILE_EXECUTION_REVOKED" }, { reason: "UNKNOWN_BLOCKER" },
+  ], evaluations: [{ status: "retry" }, { status: "terminal_failure" }, { status: "completed" }],
+  applications: [{ status: "qmd_pending" }, { status: "applied" }], domains: { indexedPending: 1 } });
+  expect(result.status).toBe("error"); expect(result.exitCode).toBe(1);
+  expect(result.errors).toEqual(["blocked:PRODUCER_MIGRATION_INCOMPLETE", "blocked:PROFILE_EXECUTION_REVOKED",
+    "blocked:UNKNOWN_BLOCKER", "daily_note:qmd_pending", "domains:qmd_pending", "evaluation:retry", "evaluation:terminal_failure"]);
+  expect(result.warnings).toEqual(["blocked:SOURCE_AGE_EXCEEDED"]);
+});

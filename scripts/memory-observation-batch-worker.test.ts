@@ -17,6 +17,7 @@ test.each([
   ["stale transition", "MODEL_TRANSITION_IDENTITY_CHANGED", "idle"],
   ["incomplete producer migration", "PRODUCER_MIGRATION_INCOMPLETE", "blocked"],
   ["invalid producer migration", "PRODUCER_MIGRATION_INVALID", "blocked"],
+  ["historical source age", "SOURCE_AGE_EXCEEDED", "blocked"],
 ] as const)("%s reports its precise blocker without inference or queue mutation", async (kind,reason,status) => {
   const workspace = mkdtempSync(join(tmpdir(), "memory-batch-transition-blocker-")); roots.push(workspace);
   const put = (relative: string, value: unknown) => {
@@ -40,7 +41,9 @@ test.each([
     authorityPolicy: RUNTIME_POLICY, limits: { evidenceTtlMs: 72 * 3600000, maxJobs: 1000, maxBytes: 67108864,
       maxQueueAgeMs: 168 * 3600000, maxAttempts: 2, claimTtlMs: 300000, maxInferenceCalls: 0 } });
   const now = new Date(), sourceTurnId = `channel-user:v1:${"d".repeat(64)}`;
-  const admitted = ledger.admit({ sourceTurnId, scope, sourceCompletedAt: now.toISOString(),
+  const historical = kind === "historical source age";
+  const admitted = ledger.admit({ sourceTurnId, scope,
+    sourceCompletedAt: new Date(now.getTime() - (historical ? 73 * 3600000 : 0)).toISOString(),
     authority: registry.producers.find((entry: any) => entry.id === "openclaw-runtime"),
     evidenceRefs: [{ kind: "source-turn", ref: sourceTurnId, digest: sha256("evidence") }],
     redactedEvidence: { source: { role: "user", text: "request" }, outcome: { role: "assistant", text: "completion" } },
@@ -48,19 +51,34 @@ test.each([
   const queuePath = join(workspace, "memory-state/memory-observation/v1/queues/evaluator", admitted.envelope.traceId.slice(7) + ".json");
   const queueBefore = readFileSync(queuePath, "utf8");
   if(kind==="stale transition")put("memory-state/memory-observation/model-transition.json", { schema: "engram.memory-model-transition.v1", digest: sha256("stale") });
-  else mkdirSync(join(workspace,"memory-state/memory-observation/batch-live-store/memory-batch-live/v1/producer-migrations",sha256(scope).slice(7),kind==="incomplete producer migration"?sha256("migration").slice(7):"invalid-record-name"),{recursive:true});
+  else if (!historical) mkdirSync(join(workspace,"memory-state/memory-observation/batch-live-store/memory-batch-live/v1/producer-migrations",sha256(scope).slice(7),kind==="incomplete producer migration"?sha256("migration").slice(7):"invalid-record-name"),{recursive:true});
   const bin = join(workspace, "bin"); mkdirSync(bin);
   writeFileSync(join(bin, "openclaw"), "#!/bin/sh\nexit 91\n", { mode: 0o755 });
-  const result = Bun.spawnSync([process.execPath, join(repository, "scripts/memory-observation-batch-worker.ts"), "--workspace", workspace],
+  const run = () => Bun.spawnSync([process.execPath, join(repository, "scripts/memory-observation-batch-worker.ts"), "--workspace", workspace],
     { cwd: repository, env: { ...process.env, PATH: bin + ":" + process.env.PATH } });
-  expect(result.exitCode, result.stderr.toString()).toBe(1);
+  const result = run();
+  expect(result.exitCode, result.stderr.toString()).toBe(historical ? 0 : 1);
   const report = JSON.parse(result.stdout.toString());
-  expect(report.execution.errors).toContain("blocked:"+reason);
-  expect(report.qualityBlockers).toEqual([{ runtimeSessionKey: scope.runtimeSessionKey, reason }]);
+  if (historical) {
+    expect(report.execution).toEqual({ status: "ok", exitCode: 0, errors: [], warnings: ["blocked:"+reason] });
+    expect(report.qualityBlockers).toEqual([]);
+    expect(report.historicalBlockers).toEqual([{ runtimeSessionKey: scope.runtimeSessionKey, reason }]);
+    expect(report.health.status).toBe("degraded");
+    expect(report.health.reasons).not.toContain("quality_pending_bundle_requires_reconciliation");
+    // Same retained queue on the next real CLI pass must not recreate the
+    // scheduler failure streak or be mistaken for completed memory.
+    const repeated = run(); expect(repeated.exitCode, repeated.stderr.toString()).toBe(0);
+    expect(JSON.parse(repeated.stdout.toString()).execution.warnings).toEqual(report.execution.warnings);
+  } else {
+    expect(report.execution.errors).toContain("blocked:"+reason);
+    expect(report.qualityBlockers).toEqual([{ runtimeSessionKey: scope.runtimeSessionKey, reason }]);
+    expect(report.historicalBlockers).toEqual([]);
+  }
   expect(report.health.reasons).toContain(reason);
   expect(report.evaluation.status).toBe(status);
   const fleet=classifyFleetWorkerOutput("main",{exitCode:result.exitCode,output:result.stdout.toString()});
-  expect(fleet.semanticStatus).toBe("blocked");expect(fleet.blockedReasons).toEqual([reason]);
+  expect(fleet.semanticStatus).toBe(historical ? "ok" : "blocked");
+  expect(fleet.blockedReasons).toEqual(historical ? [] : [reason]);
   expect(readFileSync(queuePath, "utf8")).toBe(queueBefore);
 });
 

@@ -300,3 +300,11 @@ retry counters unchanged; when no eligible fresh work remains, the Worker
 reports `blocked: source_age_exceeded`, never a semantic skip or healthy idle.
 They cannot starve in-bound fresh sources. Recovering beyond the current bound
 requires a separately reviewed policy/operator path, not another evidence refresh.
+
+The scheduled CLI keeps this specific exclusion in `historicalBlockers` and
+`execution.warnings`, separate from active `qualityBlockers`. It degrades memory
+health, but alone returns exit 0: unchanged historical debt must not accumulate
+cron execution failures and disable capture of new sources. Current evaluator,
+writer, QMD delivery and unknown/authorization/migration blockers still return
+nonzero. Queues, debt, source timestamps and retention remain unchanged; this
+classification is neither write-off nor proof of restoration.

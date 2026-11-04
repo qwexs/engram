@@ -350,6 +350,7 @@ let evaluation: Awaited<ReturnType<BatchLiveWorker["processOne"]>> = { status: "
 let evaluationScope: ObservationScope | null = null;
 const qualityBlockedScopes=new Set<string>();
 const qualityBlockers=new Map<string,string>();
+const historicalBlockers=new Map<string,string>();
 const evaluations: { result: Awaited<ReturnType<BatchLiveWorker["processOne"]>>; scope: ObservationScope }[] = [];
 // Bounded sequential drain; processOne still has one inference allowance.
 const maxBatchesPerWake = 3;
@@ -448,7 +449,8 @@ for (const candidate of collectScopes()) {
   }
   if (result.status === "blocked") {
     qualityBlockedScopes.add(candidate.scope.runtimeSessionKey);
-    qualityBlockers.set(candidate.scope.runtimeSessionKey, result.reason.toUpperCase());
+    (result.reason === "source_age_exceeded" ? historicalBlockers : qualityBlockers)
+      .set(candidate.scope.runtimeSessionKey, result.reason.toUpperCase());
     if (!evaluations.length) { evaluation = result; evaluationScope = candidate.scope; }
     // A blocked scope uses no inference budget and must not starve healthy
     // scopes. Preserve its reason separately through execution/fleet reporting.
@@ -484,10 +486,11 @@ const domains = isGroupProjectionSchema(projection.schema)
   ? await consumeTopicDomainReceipts({ workspace, workspaceId, expectedPluginDigest }) : null;
 scanSourceDebt(workspace, new Date(), { stopExpiredRecovery: true });
 const health = memoryWorkerHealth(workspace);
-if(qualityBlockedScopes.size){health.status="degraded";health.reasons.push("quality_pending_bundle_requires_reconciliation",...new Set(qualityBlockers.values()));}
+if(qualityBlockers.size){health.status="degraded";health.reasons.push("quality_pending_bundle_requires_reconciliation",...new Set(qualityBlockers.values()));}
+if(historicalBlockers.size){health.status="degraded";health.reasons.push(...new Set(historicalBlockers.values()));}
 const execution = memoryWorkerRunResult({ evaluations: evaluations.map(entry => entry.result),
   applications: applications.map(entry => entry.result), domains,
-  blockers:[...qualityBlockers.values()].map(reason=>({reason})) });
+  blockers:[...qualityBlockers.values(),...historicalBlockers.values()].map(reason=>({reason})) });
 process.exitCode = execution.exitCode;
 emitRun({
   schema: "engram.memory-batch-live-run.v1",
@@ -499,8 +502,9 @@ emitRun({
   health,
   execution,
   maxBatchesPerWake,
-  qualityBlockedScopes:[...qualityBlockedScopes],
+  qualityBlockedScopes:[...qualityBlockers.keys()],
   qualityBlockers:[...qualityBlockers].map(([runtimeSessionKey,reason])=>({runtimeSessionKey,reason})),
+  historicalBlockers:[...historicalBlockers].map(([runtimeSessionKey,reason])=>({runtimeSessionKey,reason})),
   domains,
   apply,
   applyScope,

@@ -5,10 +5,14 @@ import { tmpdir } from "node:os";
 import { sha256 } from "./ledger.ts";
 import { createExecutionProfile, defaultProfilePolicy, jobProfilePolicy, profileStatePath, readExecutionProfiles, authorizeProfileOperation, sealProfiles } from "./execution-profiles.ts";
 import {planCodeOnlyPluginRebind,applyCodeOnlyPluginRebind,type CodeOnlyRebindFault} from './code-only-plugin-rebind.ts';
-import { planProfileSwitch, applyProfileSwitch, setProfileLifecycle, type ModelQualification } from "./execution-profile-control.ts";
+import { planProfileSwitch, applyProfileSwitch as applyProfileSwitchWithClock, setProfileLifecycle, type ModelQualification } from "./execution-profile-control.ts";
 import type { MemoryObservationProjectionV1 } from "./projection.ts";
 const roots:string[]=[];afterEach(()=>roots.splice(0).forEach(p=>rmSync(p,{recursive:true,force:true})));
 const at="2026-11-03T17:00:00.000Z",scope={workspaceId:"alpha",runtimeSessionKey:"agent:alpha:telegram:direct:123",scopeClass:"self" as const,scopeId:"telegram:123"};
+// Qualifications are deliberately short-lived. Ordinary fixture operations
+// use their own clock; expiry tests can still override it explicitly.
+const applyProfileSwitch: typeof applyProfileSwitchWithClock = (plan, provider, root, hooks = {}) =>
+  applyProfileSwitchWithClock(plan, provider, root, { now: () => new Date(at), ...hooks });
 const boundary={provider:"openai",baseUrl:"https://example.invalid/v1",api:"responses",runtime:"host-default"};
 function fixture(){
   const workspace=mkdtempSync(join(tmpdir(),"mw-profiles-"));roots.push(workspace);

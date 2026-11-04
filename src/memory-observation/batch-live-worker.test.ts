@@ -1197,7 +1197,23 @@ for(const enabled of [false,true])test('scheduled and recovery fresh sources are
  expect(readFileSync(qpath,'utf8')).toBe(oldBytes);
 });
 
-test('scheduled fresh-only fallback survives an old restored source beyond the context time segment',async()=>{
+test('restored sources outside compiler source age cannot starve fresh work or become silent skips',async()=>{
+ const {workspace,ledger,policy}=setup();const current=new Date('2026-09-04T20:26:00.000Z');let calls=0;
+ admit(ledger,821,'2026-08-31T20:01:00.000Z',SCOPE,'2026-09-04T20:00:00.000Z');
+ const old=ledger.listQueue()[0]!.traceId,qp=join(workspace,'memory-state/memory-observation/v1/queues/evaluator',old.slice(7)+'.json');
+ const before=readFileSync(qp,'utf8');
+ const worker=new BatchLiveWorker({workspace,ledger,policy,storeRoot:join(workspace,'state'),now:()=>current,
+  complete:async request=>{calls++;const ids=JSON.parse(request.prompt).task.sources.map((s:any)=>s.sourceRef.traceId);expect(ids).not.toContain(old);
+   return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-batch-shadow-output.v1',groups:[{groupId:'fresh',decision:'skip',sourceRefs:ids,reason:'not_durable'}]})};}});
+ expect(await worker.processOne()).toEqual({status:'blocked',reason:'source_age_exceeded'});expect(calls).toBe(0);
+ admit(ledger,822,'2026-09-04T20:02:00.000Z');
+ expect(await worker.processOne()).toMatchObject({status:'completed',sourceCount:1});expect(calls).toBe(1);
+ expect(readFileSync(qp,'utf8')).toBe(before);
+ expect(await worker.processOne()).toEqual({status:'blocked',reason:'source_age_exceeded'});expect(calls).toBe(1);
+ expect(readFileSync(qp,'utf8')).toBe(before);
+});
+
+test('source-age isolation also retains old restored deferred context unchanged',async()=>{
  const {workspace,ledger,policy}=setup();let current=new Date('2026-09-04T20:20:00.000Z'),calls=0;
  const captured:string[][]=[];
  admit(ledger,811,'2026-08-31T20:01:00.000Z',SCOPE,'2026-09-04T20:00:00.000Z');
@@ -1210,9 +1226,9 @@ test('scheduled fresh-only fallback survives an old restored source beyond the c
   complete:async request=>{calls++;const ids=JSON.parse(request.prompt).task.sources.map((s:any)=>s.sourceRef.traceId);captured.push(ids);
    return {resolvedModel:request.model,output:JSON.stringify({schema:'engram.memory-batch-shadow-output.v1',groups:[{groupId:'time-segment',decision:'skip',sourceRefs:ids,reason:'not_durable'}]})};}});
  current=new Date('2026-09-04T20:26:00.000Z');
- expect(await worker.processOne()).toEqual({status:'idle',reason:'waiting_context'});expect(calls).toBe(0);
+ expect(await worker.processOne()).toEqual({status:'blocked',reason:'source_age_exceeded'});expect(calls).toBe(0);
  admit(ledger,812,'2026-09-04T20:02:00.000Z');
  expect(await worker.processOne()).toMatchObject({status:'completed',sourceCount:1});
  expect(captured[0]).not.toContain(old);expect(calls).toBe(1);expect(readFileSync(qp,'utf8')).toBe(before);
- expect(await worker.processOne()).toEqual({status:'idle',reason:'waiting_context'});expect(calls).toBe(1);
+ expect(await worker.processOne()).toEqual({status:'blocked',reason:'source_age_exceeded'});expect(calls).toBe(1);
 });

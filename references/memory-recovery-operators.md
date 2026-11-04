@@ -293,3 +293,10 @@ preserved. Crash resume is journaled and idempotent after raw source clearing.
 The operator neither evaluates the source nor writes canonical notes, proves
 semantic closure, resets deadlines or writes off historical debt. Normal Worker
 receipts and read-back remain a separate proof after schedules resume.
+
+Refreshing native evidence does not extend the live compiler's original
+source-age bound. Sources outside that bound stay queued with their debt and
+retry counters unchanged; when no eligible fresh work remains, the Worker
+reports `blocked: source_age_exceeded`, never a semantic skip or healthy idle.
+They cannot starve in-bound fresh sources. Recovering beyond the current bound
+requires a separately reviewed policy/operator path, not another evidence refresh.

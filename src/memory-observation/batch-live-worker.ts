@@ -172,7 +172,7 @@ export type BatchLiveReconciliationV1 = {
 export type BatchLiveRunResult =
   | { status: "reconciled"; jobId: Digest; sourceCount: number; exhaustedCount: number }
   | { status: "idle" | "busy"; reason?: string }
-  | { status: "blocked"; reason: "producer_migration_incomplete" | "producer_migration_invalid" }
+  | { status: "blocked"; reason: "producer_migration_incomplete" | "producer_migration_invalid" | "source_age_exceeded" }
   | {
       status: "retry" | "terminal_failure";
       jobId: Digest;
@@ -484,11 +484,17 @@ export class BatchLiveWorker {
         const due = this.options.ledger.peekDueEvaluationEvidence(now, this.policy.exactScope, this.policy.sourcePolicyDigest)
           .filter(entry => !reserved.has(entry.envelope.traceId));
         if (!due.length && reserved.size) return { status: "idle", reason: this.pendingProfileStopped?"pending_profile_execution_stopped":"pending_retry_not_due" };
-        const fresh = due.filter(entry => !waiting.has(entry.envelope.traceId));
-        if (!fresh.length && due.some(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context" };
+        // A native restoration refreshes raw evidence retention, not the
+        // compiler's source-age bound. Preserve these queues/debts unchanged,
+        // report the blocker, and keep them out of otherwise eligible work.
+        const eligible = due.filter(entry => now.getTime() - Date.parse(entry.envelope.sourceCompletedAt) <= this.policy.evidenceTtlMs);
+        const sourceAgeBlocked = eligible.length !== due.length;
+        const fresh = eligible.filter(entry => !waiting.has(entry.envelope.traceId));
+        if (!fresh.length && sourceAgeBlocked) return { status: "blocked", reason: "source_age_exceeded" };
+        if (!fresh.length && eligible.some(entry => waiting.has(entry.envelope.traceId))) return { status: "idle", reason: "waiting_context" };
         // Reconsider waiting evidence with new text, reserving a slot for a fresh
         // source so cached results cannot endlessly reprocess a deferred batch.
-        const reconsider = this.policy.maxTurns > 1 ? due.filter(entry => waiting.has(entry.envelope.traceId)).slice(-(this.policy.maxTurns - 1)) : [];
+        const reconsider = this.policy.maxTurns > 1 ? eligible.filter(entry => waiting.has(entry.envelope.traceId)).slice(-(this.policy.maxTurns - 1)) : [];
         let selectionPolicy = reconsider.length ? { ...this.policy, inactivityGapMs: this.policy.evidenceTtlMs } : this.policy;
         let candidate = selectCandidate(reconsider.length ? [...reconsider, ...fresh] : fresh, selectionPolicy, now);
         if (reconsider.length

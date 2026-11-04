@@ -55,6 +55,27 @@ their source, without claiming a separate `sessions_history` read. Native SDK
 sequence references must be labelled as such. All same-run terminal, actor,
 transport, identity, bounds and exact-binding validators remain identical.
 
+### Reviewed native model-turn continuation
+
+`--review-run-continuation` is a separate opt-in for an original
+`evidence_missing` gap at `run_attached`. The retained checkpoint must already
+pin the exact source, runtime run and transcript session. Protected native
+source and successful terminal records must share that run and an ordered
+transcript branch; another candidate cannot own the run. Only the model-turn
+mirror prefix may differ. The authorization pins the complete import and
+records `exact_bound_run_native_continuation.v1`; the original gap remains
+immutable. Unbound gaps, steering, wrong actors/sessions/runs, ambiguous finals,
+expired evidence and revoked scope still fail closed. This mode is incompatible
+with `--open-checkpoint` and never evaluates or declares the source restored.
+
+For new live completions, a successful `agent_end` may omit the original user
+row after compaction or native model continuation. The adapter accepts its
+outcome only with the existing exact durable `run_attached` source, matching
+session/run/source text and exactly one host-owned OpenAI native terminal
+(`codex-app-server`, `runTerminal=true`, `stopReason=stop`, final/unphased).
+Conflicting same-run channel sources, ordinary adjacent replies and missing
+terminal provenance cannot use this path. Transport delivery is not inferred.
+
 ## Completion after an identical-job contextual retry
 
 A reconciled contextual retry can produce the same job ID as its original

@@ -654,6 +654,36 @@ export class OpenClawObservationRuntimeAdapter {
       const messages = Array.isArray(event.messages) ? event.messages : [];
       const sourceIndexes = messages.map((message, index) => ({ message: row(message), index }))
         .filter((entry) => entry.message?.role === "user" && entry.message.idempotencyKey === bound.sourceTurnId);
+      // Compaction/model continuation can omit the original source from the
+      // terminal model transcript. The exact durable run attachment remains
+      // authoritative; only a protected native terminal for that same run may
+      // supply its outcome. An adjacent/unphased reply is never sufficient.
+      if (sourceIndexes.length === 0 && this.admissionStore && bound.sessionId === context.sessionId) {
+        const checkpoint = this.admissionStore.readCheckpoint(bound.candidateId);
+        const finals = messages.map(row).filter(message => message?.role === "assistant"
+          && message.provider === "openai" && message.stopReason === "stop"
+          && (message.phase ?? message.channel ?? "final") === "final"
+          && row(message.__openclaw)?.mirrorOrigin === "codex-app-server"
+          && row(message.__openclaw)?.runTerminal === true && row(message.__openclaw)?.runId === runId
+          && typeof row(message.__openclaw)?.mirrorIdentity === "string"
+          && (row(message.__openclaw)!.mirrorIdentity as string).endsWith(":assistant"));
+        const conflict = messages.map(row).some(message => message?.role === "user"
+          && typeof message.idempotencyKey === "string" && message.idempotencyKey.startsWith("channel-user:v1:")
+          && row(message.__openclaw)?.runId === runId);
+        if (checkpoint?.stage === "run_attached" && checkpoint.sourceTurnId === bound.sourceTurnId
+          && checkpoint.runId === runId && checkpoint.sessionId === bound.sessionId
+          && checkpoint.sourceText === bound.userText && !checkpoint.steerTargetRunId && !conflict && finals.length === 1) {
+          const final = finals[0]!, text = extractText(final, 50_001);
+          if (text.length > 50_000) throw new RuntimeAdapterError("INVALID_TURN", "native final text exceeds evidence limit");
+          const completed = this.recordCheckpoint(bound, "completion_observed", now);
+          const result = this.admitCompletedTurn({bound, binding, runtimeSessionKey, assistantText: text,
+            now: completed ? new Date(completed.updatedAt) : now});
+          this.completed.set(runId, {runtimeSessionKey, sourceTurnId: bound.sourceTurnId,
+            channel: bound.channel, ...(bound.replyToId ? {replyToId: bound.replyToId} : {}),
+            bindingFingerprint: bound.bindingFingerprint, completedAt: now.getTime()});
+          return result;
+        }
+      }
       if (sourceIndexes.length !== 1) {
         this.publishBoundGap(bound, "run_attached", "evidence_missing", now);
         throw new RuntimeAdapterError("TURN_NOT_FOUND", "terminal transcript does not contain exactly one bound source turn");

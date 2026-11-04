@@ -55,3 +55,24 @@ test('duplicate attachment cannot substitute another source, even in the same se
 test('IDs embedded in prompt text do not constitute current source attestation',()=>{
  const f=fixture();expect(()=>f.a.attachRun({prompt:JSON.stringify(f.event)},f.context)).toThrow('multiple persisted turns');
 });
+function nativeFinal(){return{role:'assistant',provider:'openai',stopReason:'stop',content:'Synthetic continued result',
+ __openclaw:{mirrorOrigin:'codex-app-server',runTerminal:true,runId:'new-run',mirrorIdentity:'continued-model-turn:assistant'}};}
+test('durable exact source survives model continuation omitting it from terminal transcript, including restart',()=>{
+ const f=fixture();f.a.attachRun(f.event,f.context);const a=f.make();
+ expect(a.completeAgentEnd({success:true,runId:'new-run',messages:[{role:'user',content:'Internal continuation'},nativeFinal()]},f.context).status).toBe('admitted');
+ expect(f.store.scanCheckpoints().records.find(c=>c.inboundMessageId==='39')).toMatchObject({stage:'ledger_admitted',sourceText:null});
+ expect(f.store.scanGapReceipts().records).toHaveLength(0);
+ expect(f.store.scanCheckpoints().records.filter(c=>c.stage==='persisted')).toHaveLength(39);
+});
+for(const scenario of ['run','origin','terminal','failed','phase','session','unproven','duplicate','conflicting-source'] as const)
+test('missing-source completion refuses '+scenario+' instead of adopting an adjacent reply',()=>{
+ const f=fixture();f.a.attachRun(f.event,f.context);const final:any=nativeFinal(),context:any={...f.context};let messages:any[]=[final];
+ if(scenario==='run')final.__openclaw.runId='other';if(scenario==='origin')final.__openclaw.mirrorOrigin='other';
+ if(scenario==='terminal')final.__openclaw.runTerminal=false;if(scenario==='failed')final.stopReason='error';
+ if(scenario==='phase')final.phase='commentary';if(scenario==='session')context.sessionId='other';
+ if(scenario==='unproven')delete final.__openclaw;
+ if(scenario==='duplicate')messages.push({...final});
+ if(scenario==='conflicting-source')messages.unshift({...f.sources[0],__openclaw:{...f.sources[0]!.__openclaw,runId:'new-run'}});
+ expect(()=>f.make().completeAgentEnd({success:true,runId:'new-run',messages},context)).toThrow();
+ expect(f.store.scanCheckpoints().records.find(c=>c.inboundMessageId==='39')!.stage).toBe('terminal_gap');
+});

@@ -13,7 +13,7 @@ const roots:string[]=[];
 afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
 const write=(path:string,v:any)=>{mkdirSync(dirname(path),{recursive:true});writeFileSync(path,JSON.stringify(v));};
 const snapshot=(path:string):any=>Object.fromEntries(readdirSync(path,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name)).map(d=>[d.name,d.isDirectory()?snapshot(join(path,d.name)):readFileSync(join(path,d.name),'utf8')]));
-function fixture(knownSource = false, gapReason: 'identity_ambiguous' | 'evidence_invalid' | 'scope_revoked' = 'identity_ambiguous',open=false){
+function fixture(knownSource = false, gapReason: 'identity_ambiguous' | 'evidence_invalid' | 'scope_revoked' | 'evidence_missing' = 'identity_ambiguous',open=false){
  const workspace=mkdtempSync(join(tmpdir(),'engram-gap-recovery-'));roots.push(workspace);
  const sessionKey='agent:main:telegram:direct:100000001';
  const binding={runtimeSessionKey:sessionKey,scopeClass:'self' as const,scopeId:'telegram:100000001',requireOwner:true,allowedChannels:['telegram']};
@@ -30,7 +30,7 @@ function fixture(knownSource = false, gapReason: 'identity_ambiguous' | 'evidenc
  const store=new AdmissionStore(workspace,RUNTIME_AUTHORITY);
  const {runtimeSessionKey,...fp}=binding;
  const checkpoint=store.recordCheckpoint({scope,bindingFingerprint:sha256({workspaceId:'main',...fp}),channel:'telegram',inboundMessageId:'42',actorId:'100000001',replyToId:'40',sourceTurnId:knownSource?'channel-user:v1:'+'a'.repeat(64):null,runId:knownSource?'run-a':null,sessionId:knownSource?'session-a':null,sourceText:null,stage:'received',now:new Date('2026-09-07T11:00:00.000Z')}).checkpoint;
- if(!open)store.publishGapReceipt({checkpoint,failureStage:gapReason==='evidence_invalid'?'completion_observed':'received',reasonCode:gapReason,terminalAt:new Date('2026-09-07T11:01:00.000Z')});
+ if(!open)store.publishGapReceipt({checkpoint,failureStage:gapReason==='evidence_invalid'?'completion_observed':gapReason==='evidence_missing'?'run_attached':'received',reasonCode:gapReason,terminalAt:new Date('2026-09-07T11:01:00.000Z')});
  const sourceId='channel-user:v1:'+'a'.repeat(64);
  const source={role:'user',content:'Во втором абзаце убери последнее предложение',timestamp:Date.parse('2026-09-07T11:00:00.000Z'),idempotencyKey:sourceId,__openclaw:{idempotencyKey:sourceId,senderId:'100000001',senderIsOwner:true,runId:'run-a',mirrorOrigin:'codex-app-server',mirrorIdentity:'turn-a:prompt',transcriptPosition:{source:'transcript-a',rawSeq:10},transport:{channel:'telegram',messageId:'42',replyToId:'40'}}};
  if(open){const {schema,candidateId,createdAt,updatedAt,expiresAt,checkpointDigest,...payload}=checkpoint;
@@ -136,6 +136,24 @@ test('revocation after partial commit prevents resume',()=>{const f=fixture();ex
 test('corrupt completion cannot hide gap or pass idempotence',()=>{const f=fixture();recoverAdmissionGap({...f.input,apply:true});const path=join(f.store.root,'receipts/admission-recovery',f.checkpoint.candidateId.slice(7),'completed.json');const c=JSON.parse(readFileSync(path,'utf8'));c.envelopeDigest=sha256('wrong');write(path,c);expect(isAdmissionGapRecovered(f.input.workspace,f.checkpoint)).toBe(false);expect(memoryWorkerHealth(f.input.workspace).admissionGaps).toBe(1);expect(()=>recoverAdmissionGap({...f.input,apply:true})).toThrow();});
 test('attachment-only terminal preserves source with unknown outcome',()=>{const f=fixture();f.final.content='';f.input.inventoryDigest=sha256(f.input.inventory as any);const result=recoverAdmissionGap({...f.input,apply:true}) as any;const e=JSON.parse(readFileSync(join(f.store.root,'evidence',result.traceId.slice(7)+'.json'),'utf8'));expect(e.payload.outcome).toMatchObject({status:'unknown',text:''});});
 test('expired recovery cannot enqueue expired evidence',()=>{const f=fixture();f.input.now=new Date('2026-09-11T21:00:00.000Z');const before=snapshot(f.input.workspace);expect(()=>recoverAdmissionGap({...f.input,apply:true})).toThrow('window expired');expect(snapshot(f.input.workspace)).toEqual(before);});
+test('reviewed native continuation preserves immutable bound-run gap and queues only the authenticated source',()=>{
+ const f=fixture(true,'evidence_missing');f.final.__openclaw.mirrorIdentity='continued-model-turn:assistant';f.input.inventoryDigest=sha256(f.input.inventory as any);
+ const before=snapshot(f.input.workspace);expect(()=>recoverAdmissionGap({...f.input,apply:true})).toThrow('reviewed continuation');expect(snapshot(f.input.workspace)).toEqual(before);
+ const input={...f.input,reviewRunContinuation:true,apply:true};const r=recoverAdmissionGap(input) as any;expect(r.status).toBe('admitted');
+ expect(recoverAdmissionGap(input)).toEqual(r);expect(f.store.readCheckpoint(f.checkpoint.candidateId)).toEqual(f.checkpoint);
+ const auth=JSON.parse(readFileSync(join(f.store.root,'receipts/admission-recovery',f.checkpoint.candidateId.slice(7),'authorization.json'),'utf8'));
+ expect(auth.reviewedRunContinuation).toBe('exact_bound_run_native_continuation.v1');
+});
+for(const scenario of ['unbound','different-gap','different-run','different-session','different-transcript','duplicate-final','actor','expired'] as const)
+test('reviewed continuation cannot bypass '+scenario,()=>{
+ const f=fixture(scenario!=='unbound',scenario==='different-gap'?'identity_ambiguous':'evidence_missing');
+ f.final.__openclaw.mirrorIdentity='continued-model-turn:assistant';
+ if(scenario==='different-run')f.final.__openclaw.runId='other';if(scenario==='different-session')f.input.inventory.sessionId='other';
+ if(scenario==='different-transcript')f.final.__openclaw.transcriptPosition.source='other';if(scenario==='duplicate-final')f.input.inventory.records[0]!.finalCandidates.push(f.final);
+ if(scenario==='actor')f.source.__openclaw.senderId='other';if(scenario==='expired')f.input.now=new Date('2026-09-11T21:00:00.000Z');
+ f.input.inventoryDigest=sha256(f.input.inventory as any);const before=snapshot(f.input.workspace);
+ expect(()=>recoverAdmissionGap({...f.input,reviewRunContinuation:true,apply:true})).toThrow();expect(snapshot(f.input.workspace)).toEqual(before);
+});
 test('standard evaluator reads recovered evidence under unchanged source policy',async()=>{
  const f=fixture();const r=recoverAdmissionGap({...f.input,apply:true}) as any;
  const {MemoryObservationLedger}=await import('./ledger.ts');const {RUNTIME_REGISTRY}=await import('./runtime-authority.ts');

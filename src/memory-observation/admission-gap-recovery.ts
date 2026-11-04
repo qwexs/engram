@@ -35,6 +35,9 @@ export type GapRecoveryOptions = {
    * Requires a completion-stage gap with fully known exact source/run/session
    * identity plus the same authenticated native-history checks as other imports. */
   reviewInvalidEvidence?: boolean;
+  /** Operator-reviewed native model-turn continuation within one exact runtime
+   * run. Mirror IDs identify model turns, not the enclosing OpenClaw run. */
+  reviewRunContinuation?: boolean;
 };
 
 function textContent(record: any): string {
@@ -147,7 +150,15 @@ export function recoverAdmissionGap(options: GapRecoveryOptions) {
     if (row.finalCandidates.length !== 1) fail('COMPLETION_AMBIGUOUS', 'one exact final record required');
     const final = row.finalCandidates[0]; checkHistory(final, 'assistant',visibleProof(inv,row)?.terminal);
     const m = sourceInfo.metadata, f = final.__openclaw;
-    if (final.stopReason !== 'stop' || f.runTerminal !== true || f.runId !== m.runId || f.mirrorIdentity.slice(0, -10) !== m.mirrorIdentity.slice(0, -7)
+    const continued = f.mirrorIdentity.slice(0, -10) !== m.mirrorIdentity.slice(0, -7);
+    if (continued && (!options.reviewRunContinuation || cp.sourceTurnId !== sourceInfo.sourceId
+      || cp.runId !== m.runId || cp.sessionId !== inv.sessionId
+      || gap.reasonCode !== 'evidence_missing' || gap.failureStage !== 'run_attached'))
+      fail('COMPLETION_CONFLICT', 'reviewed continuation requires the original exact bound-run gap');
+    if (inv.records.some(r => r.source?.__openclaw?.runId === m.runId && r.source?.idempotencyKey !== sourceInfo.sourceId)
+      || store.findOpenByRun(m.runId, ['received','persisted','run_attached','completion_observed','ledger_admitted','terminal_gap'])
+        .some(other => other.candidateId !== candidateId)) fail('SOURCE_CONFLICT', 'native run identity is already owned by another source');
+    if (final.stopReason !== 'stop' || f.runTerminal !== true || f.runId !== m.runId
       || !orderedPair(inv,row,row.source,final)
       || final.timestamp < row.source.timestamp || final.timestamp > Date.parse(options.authorizedAt)) fail('COMPLETION_CONFLICT', 'completion must belong to the same exact source run');
     const body = { schema: GAP_RECOVERY_SCHEMA, candidateId, gapReceiptDigest: gap.receiptDigest, checkpointDigest: cp.checkpointDigest,
@@ -155,6 +166,7 @@ export function recoverAdmissionGap(options: GapRecoveryOptions) {
       sourceTurnId: sourceInfo.sourceId, runId: m.runId, sessionId: inv.sessionId,
       authorizedBy: options.authorizedBy, authorizedAt: options.authorizedAt, reason: options.reason,
       ...(reviewedInvalidEvidence ? {reviewedAdmissionFailure: 'completion_evidence_invalid_native_history.v1'} : {}),
+      ...(continued ? {reviewedRunContinuation: 'exact_bound_run_native_continuation.v1'} : {}),
       ...(sourceInfo.projection ? {sourceProjection:sourceInfo.projection} : {}) };
     const recoveryId = digest(body);
     const traceId = deriveTraceId(workspaceId, inv.sessionKey, sourceInfo.sourceId);

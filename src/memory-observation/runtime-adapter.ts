@@ -529,28 +529,81 @@ export class OpenClawObservationRuntimeAdapter {
     return candidates;
   }
 
-  attachRun(_eventValue: unknown, contextValue: unknown): RuntimeAdapterResult {
+  attachRun(eventValue: unknown, contextValue: unknown): RuntimeAdapterResult {
     const now = this.now();
-    this.sweep(now.getTime());
+    const event = row(eventValue) ?? {};
+    if (event.currentUserMessageId === undefined) this.sweep(now.getTime());
     const context = row(contextValue) ?? {};
     if (context.trigger !== "user") return { status: "ignored", reason: "non_user_trigger" };
     const runId = token("runId", context.runId);
     const runtimeSessionKey = token("sessionKey", context.sessionKey);
+    // This field is supplied by the host before_prompt_build hook, not parsed
+    // from prompt text or selected by recency. It names the exact inbound row
+    // admitted to this run even when other unresolved sources share the scope.
+    const sourceTurnId = event.currentUserMessageId === undefined ? undefined
+      : token("currentUserMessageId", event.currentUserMessageId);
+    if (sourceTurnId && !/^channel-user:v1:[a-f0-9]{64}$/.test(sourceTurnId))
+      throw new RuntimeAdapterError("INVALID_TURN", "current user source identity is invalid");
+    const assertRequested = (turn: AdoptedTurn | AdmissionCheckpointV1, sessionId?: string | null) => {
+      const turnSource = turn.sourceTurnId;
+      const turnSession = "scope" in turn ? turn.scope.runtimeSessionKey : turn.runtimeSessionKey;
+      const turnText = "sourceText" in turn ? turn.sourceText : turn.userText;
+      const turnRun = turn.runId;
+      if (turnSession !== runtimeSessionKey || (sourceTurnId && turnSource !== sourceTurnId)
+        || (turnRun && turnRun !== runId) || (sessionId && sessionId !== context.sessionId)
+        || turn.steerTargetRunId)
+        throw new RuntimeAdapterError("IDENTITY_CONFLICT", "current source differs from the bound run identity");
+      if (sourceTurnId && event.currentUserMessage !== undefined
+        && (typeof event.currentUserMessage !== "string"
+          || (turnText !== null && String(sanitizeEvidence(extractText({content:event.currentUserMessage}, 50_000) as JsonValue)) !== turnText)))
+        throw new RuntimeAdapterError("IDENTITY_CONFLICT", "current host source content differs from captured source");
+      if (sourceTurnId) {
+        const binding = this.options.resolveBinding(runtimeSessionKey);
+        if (!binding || this.bindingFingerprint(binding) !== turn.bindingFingerprint)
+          throw new RuntimeAdapterError("SCOPE_REVOKED", "current source binding changed before run attachment");
+        if (!binding.allowedChannels.includes(turn.channel)
+          || (binding.requireOwner && "senderIsOwner" in turn && !turn.senderIsOwner))
+          throw new RuntimeAdapterError("IDENTITY_CONFLICT", "current source transport or ownership is not authorized");
+      }
+    };
     const current = this.runs.get(runId);
     if (current) {
-      if (current.runtimeSessionKey === runtimeSessionKey) return { status: "duplicate", sourceTurnId: current.sourceTurnId };
-      throw new RuntimeAdapterError("IDENTITY_CONFLICT", "run identity crossed runtime sessions");
+      assertRequested(current, current.sessionId);
+      return { status: "duplicate", sourceTurnId: current.sourceTurnId };
     }
     const progressedRuns = this.admissionStore?.findOpenByRun(runId, ["run_attached", "completion_observed", "ledger_admitted", "terminal_gap"])
-      .filter((entry) => entry.scope.runtimeSessionKey === runtimeSessionKey) ?? [];
+      ?? [];
+    if (progressedRuns.some(entry => entry.scope.runtimeSessionKey !== runtimeSessionKey))
+      throw new RuntimeAdapterError("IDENTITY_CONFLICT", "run identity crossed runtime sessions");
     if (progressedRuns.length > 1) {
       for (const entry of progressedRuns) this.publishGap(entry, this.failureStage(entry), "identity_ambiguous", now);
       throw new RuntimeAdapterError("AMBIGUOUS_TURN", "multiple durable candidates share one run identity");
     }
     if (progressedRuns[0]) {
+      assertRequested(progressedRuns[0], progressedRuns[0].sessionId);
       return { status: "duplicate", ...(progressedRuns[0].sourceTurnId ? { sourceTurnId: progressedRuns[0].sourceTurnId } : {}) };
     }
-    const candidates = this.unboundCandidates(runtimeSessionKey);
+    const candidates = sourceTurnId
+      ? new Map([...this.adopted.values()].filter(turn => turn.runtimeSessionKey === runtimeSessionKey
+        && turn.sourceTurnId === sourceTurnId && !turn.steerTargetRunId).map(turn => [turn.candidateId, turn]))
+      : this.unboundCandidates(runtimeSessionKey);
+    if (sourceTurnId && this.admissionStore) {
+      for (const cp of this.admissionStore.findOpenBySession(runtimeSessionKey, ["persisted"])) {
+        if (cp.sourceTurnId === sourceTurnId && !cp.steerTargetRunId)
+          candidates.set(cp.candidateId, this.adoptedFromCheckpoint(cp));
+      }
+    }
+    if (sourceTurnId) {
+      const exact = [...candidates.values()].filter(turn => turn.sourceTurnId === sourceTurnId);
+      if (exact.length !== 1) throw new RuntimeAdapterError("TURN_NOT_FOUND", "current host source has no exact live persisted capture");
+      const checkpoint = this.admissionStore?.readCheckpoint(exact[0]!.candidateId);
+      if (checkpoint && (checkpoint.stage !== "persisted" || Date.parse(checkpoint.expiresAt) <= now.getTime()))
+        throw new RuntimeAdapterError("TURN_NOT_FOUND", "current host source is not an unbound live persisted capture");
+      if (!this.admissionStore && exact[0]!.observedAt < now.getTime()-this.stateTtlMs())
+        throw new RuntimeAdapterError("TURN_NOT_FOUND", "current host source has expired from the runtime cache");
+      assertRequested(exact[0]!, checkpoint?.sessionId);
+      candidates.clear(); candidates.set(exact[0]!.candidateId, exact[0]!);
+    }
     const exactRunCandidates = [...candidates.values()].filter(turn => turn.runId === runId);
     if (exactRunCandidates.length === 1) {
       candidates.clear(); candidates.set(exactRunCandidates[0]!.candidateId, exactRunCandidates[0]!);

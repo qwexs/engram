@@ -16,7 +16,13 @@ const read = (p: string) => JSON.parse(readFileSync(p, "utf8"));
 export const profileStatePath = (w: string) => join(w, "memory-state/memory-observation/execution-profiles.json");
 export type ProviderBoundary = { provider: string; baseUrl: string; api: string; runtime: string };
 export type ProfileRefs = { profileId: Digest; authorityDigest: Digest; contractDigest: Digest; executionDigest: Digest };
-type Snapshot = { projection: Projection; quality: QualityRollout | null };
+export type Snapshot = { projection: Projection; quality: QualityRollout | null };
+type PluginCodeCompatibility = {
+  schema: "engram.memory-profile-plugin-compatibility.v1";
+  origin: Snapshot;
+  releases: Array<{from:Digest;to:Digest;beforeRegistryDigest:Digest;releaseAttestationDigest:Digest;approvedBy:string;approvedAt:string;digest:Digest}>;
+  digest: Digest;
+};
 type Template = Omit<BatchLivePolicyV1, "exactScope" | "profileRefs">;
 export type ExecutionProfile = ProfileRefs & {
   boundary: ProviderBoundary;
@@ -36,8 +42,30 @@ export type ExecutionProfiles = {
   revisions: { profile: ExecutionProfile; lifecycle: "active" | "drain" | "retired" }[];
   approvedBy: string;
   approvedAt: string;
+  pluginCodeCompatibility?: PluginCodeCompatibility;
   digest: Digest;
 };
+/** A code release changes installed bytes, not the immutable authority basis
+ * of existing jobs. Every other projection/quality field must stay identical. */
+export function profileReconstructionOrigin(saved: ExecutionProfiles): Snapshot {
+  const c=saved.pluginCodeCompatibility,current=saved.legacy[0]!;
+  if(!c)return current;
+  const {digest,...body}=c;
+  if(c.schema!=="engram.memory-profile-plugin-compatibility.v1" || digest!==hash(body)
+    || !Array.isArray(c.releases) || !c.releases.length || c.releases.length>32 || !c.origin?.projection)
+    throw Error("PROFILE_CODE_COMPATIBILITY_INVALID");
+  let plugin=c.origin.projection.pluginDigest;
+  for(const r of c.releases){const {digest,...release}=r;
+    if(digest!==hash(release)||r.from!==plugin||r.from===r.to||![r.from,r.to,r.beforeRegistryDigest,r.releaseAttestationDigest].every(v=>/^sha256:[a-f0-9]{64}$/.test(v))
+      || !r.approvedBy?.trim() || !Number.isFinite(Date.parse(r.approvedAt)))throw Error("PROFILE_CODE_COMPATIBILITY_INVALID");
+    plugin=r.to;
+  }
+  if(plugin!==current.projection.pluginDigest
+    ||!equal({...c.origin.projection,pluginDigest:plugin},current.projection)
+    ||!equal(c.origin.quality?{...c.origin.quality,pluginDigest:plugin}:null,current.quality))
+    throw Error("PROFILE_CODE_COMPATIBILITY_AUTHORITY_CHANGED");
+  return c.origin;
+}
 export function profileAnchors(workspace: string, projection: Projection): ExecutionProfiles["anchors"] {
   const root = join(workspace, "memory-state/memory-observation");
   const optional = (n: string) => existsSync(join(root, n)) ? hash(read(join(root, n))) : null;
@@ -127,13 +155,18 @@ function assertScope(projection: Projection, scope: ObservationScope): void {
   if (scope.workspaceId !== projection.workspaceId || !b || b.scopeClass !== scope.scopeClass || b.scopeId !== scope.scopeId) throw Error("PROFILE_SCOPE_REVOKED");
 }
 export function validateExecutionProfiles(saved: ExecutionProfiles, workspace: string, projection: Projection): ExecutionProfiles {
+  return validateProfileState(saved,profileAnchors(workspace,projection),legacyProfileSnapshots(workspace,projection));
+}
+function validateProfileState(saved:ExecutionProfiles,anchors:ExecutionProfiles['anchors'],legacy:Snapshot[]):ExecutionProfiles {
+  const projection=legacy[0]!.projection;
   const { digest, ...body } = saved;
   if (saved.schema !== "engram.memory-execution-profiles.v1" || digest !== hash(body)
-    || saved.workspaceId !== projection.workspaceId || !equal(saved.anchors, profileAnchors(workspace, projection))
+    || saved.workspaceId !== projection.workspaceId || !equal(saved.anchors, anchors)
     || !saved.approvedBy || !Number.isFinite(Date.parse(saved.approvedAt)) || !Array.isArray(saved.revisions)
     || saved.revisions.length < 1 || saved.revisions.length > 128 || !Array.isArray(saved.legacy) || saved.legacy.length < 1 || saved.legacy.length > 2
     || new Set(saved.revisions.map(r => r.profile.profileId)).size !== saved.revisions.length
-    || !equal(saved.legacy, legacyProfileSnapshots(workspace, projection))) throw Error("PROFILE_REGISTRY_IDENTITY_CHANGED");
+    || !equal(saved.legacy, legacy)) throw Error("PROFILE_REGISTRY_IDENTITY_CHANGED");
+  const origin=profileReconstructionOrigin(saved);
   if(saved.approvedProviderBoundary.provider!==projection.inference.provider || saved.legacy.some(s=>{
     const b=saved.legacyBoundaries[s.projection.inference.model];
     return !b || !equal({provider:b.provider,baseUrl:b.baseUrl},saved.approvedProviderBoundary);
@@ -143,7 +176,7 @@ export function validateExecutionProfiles(saved: ExecutionProfiles, workspace: s
     if(!equal({provider:p.boundary.provider,baseUrl:p.boundary.baseUrl},saved.approvedProviderBoundary)) throw Error("PROFILE_PROVIDER_BOUNDARY_CHANGED");
     if(!saved.approvedBoundaries.some(b=>equal(b,p.boundary)))throw Error("PROFILE_PROVIDER_BOUNDARY_CHANGED");
     if (!["active", "drain", "retired"].includes(r.lifecycle)) throw Error("PROFILE_LIFECYCLE_INVALID");
-    const rebuilt = createExecutionProfile(saved.legacy[0]!, p.boundary, p.template.runner.requestedModel,
+    const rebuilt = createExecutionProfile(origin, p.boundary, p.template.runner.requestedModel,
       p.template.runner.thinking as "medium" | "high", !!p.template.contextual,p.template.contextualPromptVersion);
     if (!equal(rebuilt, p)) throw Error("PROFILE_REVISION_CHANGED");
   }
@@ -153,6 +186,25 @@ export function validateExecutionProfiles(saved: ExecutionProfiles, workspace: s
   if(saved.revisions.find(r=>r.profile.profileId===saved.defaults.base)?.profile.template.contextual
     || (saved.defaults.contextual && !saved.revisions.find(r=>r.profile.profileId===saved.defaults.contextual)?.profile.template.contextual))throw Error("PROFILE_DEFAULT_CONTRACT_CHANGED");
   return saved;
+}
+/** Only the canonical code-only release planner calls this pure staged-state
+ * operation. Its CAS journal publishes profiles together with all pinned files. */
+export function rebindExecutionProfilesForPlugin(o:{before:ExecutionProfiles;beforeAnchors:ExecutionProfiles['anchors'];beforeLegacy:Snapshot[];
+  afterAnchors:ExecutionProfiles['anchors'];afterLegacy:Snapshot[];releaseAttestationDigest:Digest;approvedBy:string;approvedAt:string}):ExecutionProfiles {
+  validateProfileState(o.before,o.beforeAnchors,o.beforeLegacy);
+  const from=o.beforeLegacy[0]!,to=o.afterLegacy[0]!;
+  if(from.projection.pluginDigest===to.projection.pluginDigest || !equal({...from.projection,pluginDigest:to.projection.pluginDigest},to.projection)
+    || !equal(from.quality?{...from.quality,pluginDigest:to.projection.pluginDigest}:null,to.quality)
+    || !equal(o.beforeLegacy.slice(1),o.afterLegacy.slice(1)) || !o.approvedBy?.trim() || !Number.isFinite(Date.parse(o.approvedAt))
+    || !/^sha256:[a-f0-9]{64}$/.test(o.releaseAttestationDigest))throw Error("PROFILE_CODE_COMPATIBILITY_AUTHORITY_CHANGED");
+  const releaseBody={from:from.projection.pluginDigest,to:to.projection.pluginDigest,beforeRegistryDigest:o.before.digest,
+    releaseAttestationDigest:o.releaseAttestationDigest,approvedBy:o.approvedBy,approvedAt:o.approvedAt};
+  const compatibilityBody={schema:"engram.memory-profile-plugin-compatibility.v1" as const,origin:profileReconstructionOrigin(o.before),
+    releases:[...(o.before.pluginCodeCompatibility?.releases??[]),{...releaseBody,digest:hash(releaseBody)}]};
+  const {digest,...before}=o.before;
+  const after=sealProfiles({...before,anchors:o.afterAnchors,legacy:o.afterLegacy,
+    pluginCodeCompatibility:{...compatibilityBody,digest:hash(compatibilityBody)}});
+  return validateProfileState(after,o.afterAnchors,o.afterLegacy);
 }
 export function readExecutionProfiles(workspace: string, projection: Projection): ExecutionProfiles | null {
   if (!existsSync(profileStatePath(workspace))) return null;

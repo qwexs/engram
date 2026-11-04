@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **fix(memory): bind the exact host-admitted current source without replaying history.**
+  Use the protected `before_prompt_build.currentUserMessageId` with exact
+  source/content/session/binding checks. Missing identity fails closed; the
+  production hook no longer scans an ever-growing transcript before attachment.
+  Preserve competing and steered sources, original deadlines and normal native
+  completion paths. Add a narrow journaled code-release bridge for immutable
+  execution profiles, without changing models, policies or authority. Explicit
+  operator recovery can admit still-open sources only from pinned native
+  source/run/terminal pairs, under a capture/Worker barrier and run/candidate
+  locks. Real SDK visible positions remain distinct from raw transcript sequence;
+  historical gaps and unconfirmed completions are not silently closed.
+
 - **feat(memory): separate model execution profiles from Worker authority.**
   Add explicit thinking, immutable authority/contract/execution references per
   job, source reservations across revisions and stable model-independent effect

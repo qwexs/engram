@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { sha256 } from "./ledger.ts";
-import { createExecutionProfile, defaultProfilePolicy, jobProfilePolicy, profileStatePath, readExecutionProfiles, authorizeProfileOperation } from "./execution-profiles.ts";
+import { createExecutionProfile, defaultProfilePolicy, jobProfilePolicy, profileStatePath, readExecutionProfiles, authorizeProfileOperation, sealProfiles } from "./execution-profiles.ts";
+import {planCodeOnlyPluginRebind,applyCodeOnlyPluginRebind,type CodeOnlyRebindFault} from './code-only-plugin-rebind.ts';
 import { planProfileSwitch, applyProfileSwitch, setProfileLifecycle, type ModelQualification } from "./execution-profile-control.ts";
 import type { MemoryObservationProjectionV1 } from "./projection.ts";
 const roots:string[]=[];afterEach(()=>roots.splice(0).forEach(p=>rmSync(p,{recursive:true,force:true})));
@@ -26,6 +27,64 @@ function fixture(){
     qualification:{schema:"engram.memory-model-qualification.v1",model,thinking,boundaryDigest:sha256(boundary),promptVersion:"memory-contextual-shadow-v16",basePromptVersion:"memory-batch-shadow-prompt-v11",checks:["negation","request-not-completion","actor-attribution","failure-not-success","untrusted-injection","base-contract"].map(id=>({id,passed:true})),passed:true,latencyMs:1,requestedTokenBudget:8192,tokenBudgetEnforcement:"unavailable",thinkingReadback:"requested-only",completedAt:at} as ModelQualification});
   return {workspace,put,projection,options};
 }
+function codeRelease(f:ReturnType<typeof fixture>,oldBytes='plugin',newBytes='plugin-v2'){
+ const installedPluginPath=join(f.workspace,'plugin.js');writeFileSync(installedPluginPath,oldBytes);
+ const ref={workspaceId:'alpha',workspace:f.workspace},toPluginDigest=sha256(newBytes);
+ const attestation={schema:'engram.code-only-plugin-release-attestation.v1' as const,fromPluginDigest:sha256(oldBytes),toPluginDigest,
+  approvedBy:'operator',approvedAt:at,reason:'Exact current source attachment code release',
+  allowedChangedSurfaces:['runtime-adapter','execution-profile-code-compatibility'] as ['runtime-adapter','execution-profile-code-compatibility'],
+  unchanged:{evaluator:true,model:true,sourcePolicy:true,authority:true,consumerSemantics:true} as const,exactWorkspaceIds:['alpha']};
+ const plan=planCodeOnlyPluginRebind({attestation,workspaces:[ref],configuredWorkspaces:[ref],installedPluginPath,sourcePluginDigest:toPluginDigest,now:new Date(at)});
+ const apply=(fault?:CodeOnlyRebindFault)=>{writeFileSync(installedPluginPath,newBytes);return applyCodeOnlyPluginRebind({plan,sourcePluginDigest:toPluginDigest,journalRoot:join(f.workspace,'code-release'),workersPaused:true,maintenanceBarrierId:'capture-and-worker-paused',now:new Date(at),fault});};
+ return{plan,apply};
+}
+test('code release preserves immutable base/contextual profiles, saved job refs and later model switches',()=>{
+ const f=fixture(),switchPlan=planProfileSwitch(f.options());applyProfileSwitch(switchPlan,boundary,join(f.workspace,'ops'));
+ const before=readExecutionProfiles(f.workspace,f.projection)!;
+ const jobs=before.revisions.map(({profile:p})=>({partition:{...scope,producerEpoch:'v1',policyDigest:p.template.sourcePolicyDigest},profileRefs:{profileId:p.profileId,authorityDigest:p.authorityDigest,contractDigest:p.contractDigest,executionDigest:p.executionDigest},evaluationPolicyDigest:p.template.evaluationPolicyDigest}));
+ const release=codeRelease(f);expect(release.plan.artifacts).toHaveLength(4);release.apply();
+ const projection={...f.projection,pluginDigest:sha256('plugin-v2')},after=readExecutionProfiles(f.workspace,projection)!;
+ expect(after.revisions).toEqual(before.revisions);expect(after.defaults).toEqual(before.defaults);
+ expect(after.pluginCodeCompatibility!.origin).toEqual(before.legacy[0]);
+ for(const job of jobs){const policy=jobProfilePolicy(after,projection,job as any);expect(policy.profileRefs).toEqual(job.profileRefs);expect(policy.runner.requestedModel).toBe('openai/gpt-6.1-terra');authorizeProfileOperation(after,projection,policy,'execute',boundary);}
+ expect(release.apply().reboundWorkspaceCount).toBe(1);
+ const next=planProfileSwitch(f.options('openai/another-model'));applyProfileSwitch(next,boundary,join(f.workspace,'ops'));
+ expect(readExecutionProfiles(f.workspace,projection)!.pluginCodeCompatibility).toEqual(after.pluginCodeCompatibility);
+ expect(defaultProfilePolicy(readExecutionProfiles(f.workspace,projection)!,projection,scope).runner.requestedModel).toBe('openai/another-model');
+ const second=codeRelease(f,'plugin-v2','plugin-v3');second.apply();
+ const third=readExecutionProfiles(f.workspace,{...projection,pluginDigest:sha256('plugin-v3')})!;
+ expect(third.pluginCodeCompatibility!.releases).toHaveLength(2);expect(third.revisions).toEqual(next.after.revisions);
+});
+for(const artifactIndex of [0,1,2,3])test(`profile-compatible code release resumes partial publication at artifact ${artifactIndex}`,()=>{
+ const f=fixture(),p=planProfileSwitch(f.options());applyProfileSwitch(p,boundary,join(f.workspace,'ops'));
+ const release=codeRelease(f);expect(()=>release.apply({point:'after_artifact',artifactIndex})).toThrow('CODE_REBIND_FAULT_INJECTED');
+ release.apply();expect(readExecutionProfiles(f.workspace,{...f.projection,pluginDigest:sha256('plugin-v2')})!.revisions).toEqual(p.after.revisions);
+});
+test('compatibility origin cannot grandfather changed source, scope, provider or quality authority',()=>{
+ const f=fixture(),p=planProfileSwitch(f.options());applyProfileSwitch(p,boundary,join(f.workspace,'ops'));codeRelease(f).apply();
+ const projection={...f.projection,pluginDigest:sha256('plugin-v2')},good=readExecutionProfiles(f.workspace,projection)!;
+ for(const mutate of [(r:any)=>r.pluginCodeCompatibility.origin.projection.bindings[0].scopeId='other',
+  (r:any)=>r.pluginCodeCompatibility.origin.projection.inference.provider='other',
+  (r:any)=>r.pluginCodeCompatibility.origin.projection.evaluation.batch.sourcePolicyDigest=sha256('other'),
+  (r:any)=>r.pluginCodeCompatibility.origin.quality.exactScopes[0].scopeId='other']){
+  const bad=structuredClone(good);mutate(bad);const {digest,...body}=bad.pluginCodeCompatibility!;bad.pluginCodeCompatibility={...body,digest:sha256(body)};
+  const {digest:registryDigest,...registry}=bad;f.put('memory-state/memory-observation/execution-profiles.json',sealProfiles(registry));
+  expect(()=>readExecutionProfiles(f.workspace,projection)).toThrow('PROFILE_CODE_COMPATIBILITY_AUTHORITY_CHANGED');
+ }
+});
+test('profile-compatible release retargets existing model lineage while preserving its historical snapshots',()=>{
+ const f=fixture(),old={...f.projection,inference:{...f.projection.inference,model:'openai/previous'},evaluation:{...f.projection.evaluation!,policyDigest:sha256('previous-policy')}};
+ const q=JSON.parse(readFileSync(join(f.workspace,'memory-state/memory-observation/quality-rollout.json'),'utf8'));
+ const {digest,...quality}=q;const previousQualityBody={...quality,baseEvaluationPolicyDigest:old.evaluation.policyDigest};
+ const transitionBody={schema:'engram.memory-model-transition.v1',targetProjectionDigest:sha256(f.projection as any),previousProjection:old,
+  previousQuality:{...previousQualityBody,digest:sha256(previousQualityBody)},approvedBy:'operator',approvedAt:at};
+ f.put('memory-state/memory-observation/model-transition.json',{...transitionBody,digest:sha256(transitionBody as any)});
+ const p=planProfileSwitch({...f.options(),legacyBoundaries:{'openai/gpt-6-luna':boundary,'openai/previous':boundary}});applyProfileSwitch(p,boundary,join(f.workspace,'ops'));
+ codeRelease(f).apply();const live={...f.projection,pluginDigest:sha256('plugin-v2')};
+ expect(readExecutionProfiles(f.workspace,live)!.revisions).toEqual(p.after.revisions);
+ const saved=JSON.parse(readFileSync(join(f.workspace,'memory-state/memory-observation/model-transition.json'),'utf8'));
+ expect(saved.previousProjection).toEqual(old);expect(saved.previousQuality).toEqual(transitionBody.previousQuality);expect(saved.targetProjectionDigest).toBe(sha256(live as any));
+});
 test("model and thinking change only execution identity; effect and contract identities stay stable",()=>{
   const f=fixture(),plan=planProfileSwitch(f.options());
   const first=plan.after.revisions[1]!.profile;

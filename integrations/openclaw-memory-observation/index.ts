@@ -29,6 +29,7 @@ import { AutonomousDailyNoteCanaryRunner } from "../../src/memory-observation/da
 import { MemoryObservationLedger, purgeMemoryObservationLifecycle } from "../../src/memory-observation/ledger.ts";
 import {
   OpenClawObservationRuntimeAdapter,
+  RuntimeAdapterError,
   observationRuntimeAdapterError,
   type RuntimeObservationBinding,
 } from "../../src/memory-observation/runtime-adapter.ts";
@@ -40,8 +41,6 @@ import {
   resolveMemoryObservationProjection,
   type MemoryObservationProjectionV1,
 } from "../../src/memory-observation/projection.ts";
-
-import { reconcileLateSteering } from "../../src/memory-observation/late-steering.ts";
 
 const ENTRY_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_DIGEST = `sha256:${createHash("sha256").update(readFileSync(ENTRY_PATH)).digest("hex")}` as const;
@@ -724,27 +723,26 @@ export default definePluginEntry({
       });
     });
 
-    const attach = async (event: any, context: any) => {
-      // These host hooks await returned promises. Resolve late host attestation
-      // before attachRun can turn an unresolved pair into terminal ambiguity.
+    const attach = (event: any, context: any) => {
       try {
         const identity = resolveObservationAgentRunIdentity(event || {}, context || {});
         const adapter = adapterFor(api, identity.runtimeSessionKey);
         if (!adapter) return { status: "ignored", reason: "scope_disabled" };
-        const signal = generation.signal;
-        const agentId = agentIdFromSessionKey(identity.runtimeSessionKey);
-        if (!agentId) return;
+        if (context?.trigger !== "user") return;
+        if (event?.currentUserMessageId === undefined)
+          throw new RuntimeAdapterError("CURRENT_USER_SOURCE_ID_UNAVAILABLE", "host current user source identity is unavailable");
         const runContext = {...context, runId: identity.runId, sessionKey: identity.runtimeSessionKey};
-        await reconcileLateSteering(adapter, {...runContext, agentId},
-          async request => await readSessionTranscriptVisibleMessageDelta(request) as CompletionPage, signal);
-        if (signal.aborted) return;
         safe(api, "run_attach", () => adapter.attachRun(event, runContext));
       } catch (error) {
         const diagnostic = observationRuntimeAdapterError(error);
         api.logger.warn?.(`engram-memory-observation: run_attach fail-closed ${diagnostic.code}: ${diagnostic.message}`);
       }
     };
-    api.on("agent_turn_prepare", attach);
+    // Some hosts prepare before the exact current user row is exposed. Defer
+    // that hook, rather than scan a history prefix or guess among old sources.
+    api.on("agent_turn_prepare", (event: any, context: any) => {
+      if (event?.currentUserMessageId !== undefined) return attach(event, context);
+    });
     api.on("before_prompt_build", attach);
 
     api.on("agent_end", (event: any, context: any) => {

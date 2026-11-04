@@ -8,6 +8,7 @@ import {acquireProcessLease} from './process-lease.ts';
 import {resolveMemoryObservationProjection,type MemoryObservationProjectionV1} from './projection.ts';
 import {readModelTransition} from './model-transition.ts';
 import {readQualityRollout,rebindQualityRollout} from './quality-rollout.ts';
+import {readExecutionProfiles,rebindExecutionProfilesForPlugin,profileStatePath,type Snapshot} from './execution-profiles.ts';
 
 const SCHEMA='engram.code-only-plugin-rebind.v1' as const;
 const RELEASE_SCHEMA='engram.code-only-plugin-release-attestation.v1' as const;
@@ -26,14 +27,14 @@ export type CodeOnlyReleaseAttestation={
  schema:typeof RELEASE_SCHEMA;
  fromPluginDigest:Digest;toPluginDigest:Digest;
  approvedBy:string;approvedAt:string;reason:string;
- allowedChangedSurfaces:['runtime-adapter','ledger-purge-guard'];
+ allowedChangedSurfaces:['runtime-adapter','ledger-purge-guard']|['runtime-adapter','execution-profile-code-compatibility'];
  unchanged:{evaluator:true;model:true;sourcePolicy:true;authority:true;consumerSemantics:true};
  exactWorkspaceIds:string[];
  /** Only the already-invalid named marker may stay invalid. Never re-authorize it. */
  preserveInvalidTransition?:{workspaceId:string;originalFileDigest:Digest;failureCode:'MODEL_TRANSITION_IDENTITY_CHANGED'};
 };
 type WorkspaceRef={workspaceId:string;workspace:string};
-type Artifact={workspaceId:string;kind:'projection'|'quality'|'transition';path:string;before:string|null;after:string|null;beforeDigest:Digest|null;afterDigest:Digest|null};
+type Artifact={workspaceId:string;kind:'projection'|'quality'|'transition'|'profiles';path:string;before:string|null;after:string|null;beforeDigest:Digest|null;afterDigest:Digest|null};
 type WorkspaceProof=WorkspaceRef&{projectionBeforeDigest:Digest;projectionAfterDigest:Digest;
  transitionStatus:'absent'|'valid-retargeted'|'invalid-preserved';transitionFailureCode:string|null};
 export type CodeOnlyRebindPlan={schema:typeof SCHEMA;planId:Digest;attestation:CodeOnlyReleaseAttestation;
@@ -43,7 +44,7 @@ const instant=(s:string)=>Number.isFinite(Date.parse(s))&&new Date(s).toISOStrin
 function validateAttestation(a:CodeOnlyReleaseAttestation,now:Date){
  if(!a||a.schema!==RELEASE_SCHEMA||!HASH.test(a.fromPluginDigest)||!HASH.test(a.toPluginDigest)||a.fromPluginDigest===a.toPluginDigest
   ||!Number.isFinite(now.getTime())||!a.approvedBy?.trim()||!a.reason?.trim()||!instant(a.approvedAt)||Date.parse(a.approvedAt)>now.getTime()
-  ||!eq(a.allowedChangedSurfaces,['runtime-adapter','ledger-purge-guard'])
+  ||(!eq(a.allowedChangedSurfaces,['runtime-adapter','ledger-purge-guard'])&&!eq(a.allowedChangedSurfaces,['runtime-adapter','execution-profile-code-compatibility']))
   ||!eq(a.unchanged,{evaluator:true,model:true,sourcePolicy:true,authority:true,consumerSemantics:true})
   ||!Array.isArray(a.exactWorkspaceIds)||!a.exactWorkspaceIds.length||a.exactWorkspaceIds.some(w=>!/^[-a-z0-9]+$/.test(w))
   ||new Set(a.exactWorkspaceIds).size!==a.exactWorkspaceIds.length)failure('CODE_REBIND_ATTESTATION_INVALID');
@@ -60,6 +61,19 @@ function checkInstalledAndSource(plan:Pick<CodeOnlyRebindPlan,'attestation'|'ins
  const installed=fileDigest(plan.installedPluginPath);
  if(requireInstalledTarget?installed!==plan.attestation.toPluginDigest:![plan.attestation.fromPluginDigest,plan.attestation.toPluginDigest].includes(installed))failure('CODE_REBIND_INSTALLED_DIGEST_CHANGED');
  return installed;
+}
+function profileInputs(records:Artifact[],side:'before'|'after'){
+ const parsed=(kind:Artifact['kind'])=>{const raw=records.find(a=>a.kind===kind)![side];return raw===null?null:JSON.parse(raw);};
+ const projection=parsed('projection'),quality=parsed('quality'),transition=parsed('transition');
+ const qualityBody=(q:any)=>{if(!q)return null;const {digest,...body}=q;return body;};
+ const legacy:Snapshot[]=[{projection,quality:qualityBody(quality)}];
+ if(transition)legacy.push({projection:transition.previousProjection,quality:qualityBody(transition.previousQuality)});
+ return{anchors:{projection:hash(projection),quality:quality?hash(quality):null,transition:transition?hash(transition):null},legacy};
+}
+function reboundProfiles(records:Artifact[],saved:unknown,a:CodeOnlyReleaseAttestation){
+ const before=profileInputs(records,'before'),after=profileInputs(records,'after');
+ return rebindExecutionProfilesForPlugin({before:saved as any,beforeAnchors:before.anchors,beforeLegacy:before.legacy,
+  afterAnchors:after.anchors,afterLegacy:after.legacy,releaseAttestationDigest:hash(a),approvedBy:a.approvedBy,approvedAt:a.approvedAt});
 }
 
 /** Source digest MUST come from the canonical in-memory Bun build. The named CLI
@@ -108,6 +122,12 @@ export function planCodeOnlyPluginRebind(options:{attestation:CodeOnlyReleaseAtt
     artifacts.push(artifact(w.workspaceId,'transition',transitionPath,serialize(next)));transitionStatus='valid-retargeted';
    }else artifacts.push(artifact(w.workspaceId,'transition',transitionPath,readFileSync(transitionPath,'utf8')));
   }else artifacts.push(artifact(w.workspaceId,'transition',transitionPath,null));
+  const profilePath=profileStatePath(w.workspace);
+  if(existsSync(profilePath)){
+   if(!a.allowedChangedSurfaces.includes('execution-profile-code-compatibility' as any))failure('CODE_REBIND_PROFILE_COMPATIBILITY_ACK_REQUIRED');
+   const registry=readExecutionProfiles(w.workspace,before)!;
+   artifacts.push(artifact(w.workspaceId,'profiles',profilePath,serialize(reboundProfiles(artifacts.filter(a=>a.workspaceId===w.workspaceId),registry,a))));
+  }
   workspaces.push({...w,projectionBeforeDigest:hash(before),projectionAfterDigest:hash(after),transitionStatus,transitionFailureCode});
  }
  const base={schema:SCHEMA,attestation:a,sourcePluginDigest:options.sourcePluginDigest,installedPluginPath:resolve(options.installedPluginPath),workspaces,artifacts};
@@ -118,12 +138,15 @@ export function planCodeOnlyPluginRebind(options:{attestation:CodeOnlyReleaseAtt
 function validatePlan(plan:CodeOnlyRebindPlan,now:Date){
  const {planId,...body}=plan;validateAttestation(plan.attestation,now);
  if(plan.schema!==SCHEMA||plan.sourcePluginDigest!==plan.attestation.toPluginDigest||planId!==hash(body)||!isAbsolute(plan.installedPluginPath)||!eq(plan.workspaces.map(w=>w.workspaceId).sort(),[...plan.attestation.exactWorkspaceIds].sort())
-  ||new Set(plan.workspaces.map(w=>w.workspaceId)).size!==plan.workspaces.length||plan.artifacts.length!==plan.workspaces.length*3)failure('CODE_REBIND_PLAN_INVALID');
+  ||new Set(plan.workspaces.map(w=>w.workspaceId)).size!==plan.workspaces.length
+  ||plan.artifacts.length!==plan.workspaces.length*3+plan.artifacts.filter(a=>a.kind==='profiles').length)failure('CODE_REBIND_PLAN_INVALID');
  const keys=new Set<string>();
  for(const w of plan.workspaces){
   if(!isAbsolute(w.workspace)||realpathSync(w.workspace)!==w.workspace)failure('CODE_REBIND_WORKSPACE_MISMATCH');
   const records=plan.artifacts.filter(a=>a.workspaceId===w.workspaceId);
-  if(records.length!==3||new Set(records.map(a=>a.kind)).size!==3)failure('CODE_REBIND_PLAN_INVALID');
+  const profiles=records.find(a=>a.kind==='profiles');
+  if(records.length!==(profiles?4:3)||new Set(records.map(a=>a.kind)).size!==records.length
+   ||(existsSync(profileStatePath(w.workspace))&&!profiles))failure('CODE_REBIND_PLAN_INVALID');
   const p=records.find(a=>a.kind==='projection')!,before=JSON.parse(p.before!),after=JSON.parse(p.after!);
   if(hash(before)!==w.projectionBeforeDigest||hash(after)!==w.projectionAfterDigest||before.workspaceId!==w.workspaceId
    ||before.pluginDigest!==plan.attestation.fromPluginDigest||after.pluginDigest!==plan.attestation.toPluginDigest
@@ -142,10 +165,15 @@ function validatePlan(plan:CodeOnlyRebindPlan,now:Date){
    const expected={...oldBody,targetProjectionDigest:hash(after)};
    if(digest!==hash(oldBody)||old.targetProjectionDigest!==hash(before)||!eq(next,{...expected,digest:hash(expected)}))failure('CODE_REBIND_LINEAGE_CHANGED');
   }else failure('CODE_REBIND_LINEAGE_CHANGED');
+  if(profiles){
+   if(!plan.attestation.allowedChangedSurfaces.includes('execution-profile-code-compatibility' as any)
+    ||profiles.before===null||profiles.after===null||!eq(JSON.parse(profiles.after),reboundProfiles(records,JSON.parse(profiles.before),plan.attestation)))
+    failure('CODE_REBIND_PROFILE_COMPATIBILITY_CHANGED');
+  }
  }
  for(const a of plan.artifacts){
-  const w=plan.workspaces.find(w=>w.workspaceId===a.workspaceId);const filename=a.kind==='projection'?'projection.json':a.kind==='quality'?'quality-rollout.json':'model-transition.json';
-  if(!w||!['projection','quality','transition'].includes(a.kind)||a.path!==join(w.workspace,'memory-state/memory-observation',filename)||keys.has(a.path)||a.beforeDigest!==rawDigest(a.before)||a.afterDigest!==rawDigest(a.after))failure('CODE_REBIND_PLAN_INVALID');
+  const w=plan.workspaces.find(w=>w.workspaceId===a.workspaceId);const filename=a.kind==='projection'?'projection.json':a.kind==='quality'?'quality-rollout.json':a.kind==='transition'?'model-transition.json':'execution-profiles.json';
+  if(!w||!['projection','quality','transition','profiles'].includes(a.kind)||a.path!==join(w.workspace,'memory-state/memory-observation',filename)||keys.has(a.path)||a.beforeDigest!==rawDigest(a.before)||a.afterDigest!==rawDigest(a.after))failure('CODE_REBIND_PLAN_INVALID');
   if(existsSync(a.path)&&realpathSync(a.path)!==a.path)failure('CODE_REBIND_WORKSPACE_MISMATCH');
   keys.add(a.path);
  }
@@ -160,6 +188,7 @@ function verifyFinal(plan:CodeOnlyRebindPlan){
   if(hash(p)!==w.projectionAfterDigest)failure('CODE_REBIND_READBACK_FAILED');
   if(plan.artifacts.find(a=>a.workspaceId===w.workspaceId&&a.kind==='quality')!.after!==null)readQualityRollout(w.workspace,identity(p));
   if(w.transitionStatus==='valid-retargeted')readModelTransition(w.workspace,p);
+  readExecutionProfiles(w.workspace,p);
   if(w.transitionStatus==='invalid-preserved'){
    let code='';try{readModelTransition(w.workspace,p);}catch(e){code=e instanceof Error?e.message:'';}
    if(code!==w.transitionFailureCode)failure('CODE_REBIND_INVALID_TRANSITION_HEALTH_CHANGED');

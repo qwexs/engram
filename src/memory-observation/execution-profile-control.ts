@@ -11,7 +11,7 @@ import { BATCH_SHADOW_PROMPT_VERSION } from "./batch-shadow-runner.ts";
 import { verifiedDoneJobId } from "./worker-health.ts";
 import { planOllObserverBridge, applyOllObserverBridgePlan } from "../oll/observer-receipt-provisioning.ts";
 import { createExecutionProfile, legacyProfileSnapshots, profileAnchors, profileStatePath, readExecutionProfiles, sealProfiles, validateExecutionProfiles,
-  jobProfilePolicy, type ExecutionProfiles, type ProviderBoundary } from "./execution-profiles.ts";
+  jobProfilePolicy, profileReconstructionOrigin, type ExecutionProfiles, type ProviderBoundary } from "./execution-profiles.ts";
 
 const hash = (v: unknown) => sha256(v as JsonValue);
 const read = (p: string) => JSON.parse(readFileSync(p, "utf8"));
@@ -54,8 +54,9 @@ export function planProfileSwitch(o: { workspace: string; workspaceId: string; m
     || hash(current.approvedProviderBoundary)!==hash(providerBoundary)))) throw Error("PROFILE_PROVIDER_CHANGE_REQUIRES_AUTHORITY_ROLLOUT");
   const q = o.qualification;
   assertQualification(q,o.model,o.thinking,o.boundary,o.approvedAt);
-  const base = createExecutionProfile(legacy[0]!, o.boundary, o.model, o.thinking, false);
-  const contextual = legacy[0]!.quality ? createExecutionProfile(legacy[0]!, o.boundary, o.model, o.thinking, true) : null;
+  const origin=current?profileReconstructionOrigin(current):legacy[0]!;
+  const base = createExecutionProfile(origin, o.boundary, o.model, o.thinking, false);
+  const contextual = origin.quality ? createExecutionProfile(origin, o.boundary, o.model, o.thinking, true) : null;
   const revisions = structuredClone(current?.revisions ?? []);
   for (const profile of [base, contextual].filter(p => p !== null)) {
     const old = revisions.find(r => r.profile.profileId === profile.profileId);
@@ -64,7 +65,8 @@ export function planProfileSwitch(o: { workspace: string; workspaceId: string; m
   const after = sealProfiles({ schema: "engram.memory-execution-profiles.v1", workspaceId: o.workspaceId,
     anchors: profileAnchors(o.workspace, projection), legacy, legacyBoundaries, approvedProviderBoundary:providerBoundary,
     approvedBoundaries:current?.approvedBoundaries??[...new Map([...Object.values(legacyBoundaries),o.boundary].map(b=>[hash(b),b])).values()],revisions,
-    defaults: { base: base.profileId, contextual: contextual?.profileId ?? null }, approvedBy: o.approvedBy, approvedAt: o.approvedAt });
+    defaults: { base: base.profileId, contextual: contextual?.profileId ?? null }, approvedBy: o.approvedBy, approvedAt: o.approvedAt,
+    ...(current?.pluginCodeCompatibility?{pluginCodeCompatibility:current.pluginCodeCompatibility}:{}) });
   validateExecutionProfiles(after, o.workspace, projection);
   const body = { schema: "engram.memory-profile-switch-plan.v1" as const, workspace: o.workspace, workspaceId: o.workspaceId,
     beforeDigest: fileDigest(profileStatePath(o.workspace)), beforeRaw:existsSync(profileStatePath(o.workspace))?readFileSync(profileStatePath(o.workspace),"utf8"):null,

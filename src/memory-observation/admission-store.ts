@@ -424,6 +424,13 @@ export class AdmissionStore {
     });
   }
 
+  /** Historical imports of different candidates may race for the same run.
+   * Serialize the exact run as well as the candidate; no checkpoint is created. */
+  withRunDisposition<T>(runId:string,operation:()=>T):T {
+    if(!validToken(runId))throw new ObservationLedgerError("INVALID_TURN","run identity is invalid");
+    return this.withCandidateDisposition(sha256(`engram.admission-run-disposition.v1\0${runId}`),operation);
+  }
+
   findOpenBySession(runtimeSessionKey: string, stages: AdmissionCheckpointStage[]): AdmissionCheckpointV1[] {
     return this.scanCheckpoints().records
       .filter((record) => record.scope.runtimeSessionKey === runtimeSessionKey && stages.includes(record.stage))

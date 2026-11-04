@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 import {AdmissionStore} from './admission-store.ts';
 import {RUNTIME_AUTHORITY} from './runtime-authority.ts';
 
-for(const hook of ['agent_turn_prepare','before_prompt_build'])test(`production ${hook} awaits late steering read before run attachment and admission`,async()=>{
+for(const hook of ['agent_turn_prepare','before_prompt_build'])test(`production ${hook} binds the exact host current source without a history read`,async()=>{
  const root=mkdtempSync(join(tmpdir(),'engram-plugin-late-steer-'));let service:any;
  try{
   const result=await Bun.build({entrypoints:[join(import.meta.dir,'../../integrations/openclaw-memory-observation/index.ts')],target:'bun',format:'esm',write:false,plugins:[{
@@ -31,20 +31,20 @@ for(const hook of ['agent_turn_prepare','before_prompt_build'])test(`production 
   const first=capture('1','a');first.__openclaw.steerTargetRunId='previous-run';
   const second=capture('2','b'),store=new AdmissionStore(root,RUNTIME_AUTHORITY);
   const context={sessionKey,sessionId:'exact-session',runId:'next-run',trigger:'user'};
-  // Missing host pages must NOT terminalize the pair; the next awaited hook retries.
+  // Missing exact identity must NOT terminalize competing sources.
   await hooks.get(hook)!({},context);expect(store.scanGapReceipts().records).toHaveLength(0);
   expect(store.scanCheckpoints().records.every(c=>c.stage==='persisted')).toBe(true);
   plugin.clearAdapters(); // Fresh process/cache sees both sources from durable checkpoints.
-  let release!:(p:any)=>void;const pending=new Promise(resolve=>release=resolve);
-  plugin.setFixtureRead(async(request:any)=>{expect(request).toMatchObject({sessionId:'exact-session',sessionKey,agentId:'fixture'});return pending;});
-  const work=hooks.get(hook)!({},context);expect(work).toBeInstanceOf(Promise);
-  await Promise.resolve();expect(store.scanCheckpoints().records.every(c=>c.stage==='persisted')).toBe(true);
-  release({kind:'page',cursor:'tail',hasMore:false,entries:[{entryId:'source-1',message:first},{entryId:'source-2',message:second}]});await work;
+  let reads=0;plugin.setFixtureRead(async()=>{reads++;throw Error('Long history must not be read during attachment');});
+  const firstCheckpoint=store.scanCheckpoints().records.find(c=>c.inboundMessageId==='1');
+  await hooks.get(hook)!({currentUserMessageId:second.idempotencyKey,currentUserMessage:second.content},context);
+  expect(reads).toBe(0);
   expect(warnings.filter(s=>s.includes('AMBIGUOUS_TURN'))).toHaveLength(0);
-  expect(store.scanCheckpoints().records.find(c=>c.inboundMessageId==='1')).toMatchObject({stage:'persisted',steerTargetRunId:'previous-run',runId:null});
+  expect(store.scanCheckpoints().records.find(c=>c.inboundMessageId==='1')).toEqual(firstCheckpoint);
   expect(store.scanCheckpoints().records.find(c=>c.inboundMessageId==='2')).toMatchObject({stage:'run_attached',runId:'next-run'});
   hooks.get('agent_end')!({success:true,runId:'next-run',messages:[second,{role:'assistant',content:'Synthetic final result'}]},context);
   expect(store.scanCheckpoints().records.find(c=>c.inboundMessageId==='2')?.stage).toBe('ledger_admitted');
   expect(store.scanGapReceipts().records).toHaveLength(0);
+  expect(reads).toBe(0);
  }finally{await service?.stop();rmSync(root,{recursive:true,force:true});}
 });

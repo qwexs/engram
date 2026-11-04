@@ -165,7 +165,9 @@ The reviewed `engram.code-only-plugin-release-attestation.v1` input includes:
 
 - exact from/to plugin digests and complete configured workspace IDs;
 - explicit approval actor/time/reason;
-- `allowedChangedSurfaces: ["runtime-adapter", "ledger-purge-guard"]`;
+- `allowedChangedSurfaces: ["runtime-adapter", "ledger-purge-guard"]`, or the
+  profile-aware code release `['runtime-adapter',
+  'execution-profile-code-compatibility']`;
 - `unchanged: { evaluator: true, model: true, sourcePolicy: true,
   authority: true, consumerSemantics: true }`.
 
@@ -200,7 +202,11 @@ installed target bytes, the matching source digest and an actual parent-owned
 maintenance barrier. The acknowledgement flag does not pause workers itself.
 
 Only projection plugin identity, matching quality identity and valid transition
-target/checksum change. Models, evaluation/source policies, all epochs,
+target/checksum change. If an execution-profile registry exists, the reviewed
+profile-aware variant also seals its original immutable snapshot and a narrow
+plugin-only compatibility chain. Revisions, references, defaults and lifecycle
+remain unchanged; later profile switches continue to reconstruct from that
+origin. Any non-plugin projection change fails closed. Models, evaluation/source policies, all epochs,
 bindings, old model lineage, queues and effects remain exact. The durable
 per-artifact journal resumes partial publication by the same plan/barrier and
 rejects external drift. Completion certifies file read-back, not loaded runtime
@@ -222,34 +228,47 @@ See [source debt](memory-source-debt.md),
 invent a semantic skip to make an audit green.
 
 
-## Late host steering attestation
+## Exact current-source binding
 
-The runtime may persist a user-shaped source before the host confirms its
-`steerTargetRunId`. The existing `agent_turn_prepare` and `before_prompt_build`
-hooks await reconciliation **before** `attachRun` selects competing sources.
-The implementation uses the public host visible-message delta SDK with exact
-agent/session-key/session-ID targeting, opaque cursors and a caught-up scan.
-There is no direct database reader, recency heuristic or second scheduler.
+The production `before_prompt_build` hook uses the host's protected top-level
+`currentUserMessageId`, not a value extracted from the prompt or transcript.
+The ID must name one captured `channel-user:v1` source in the same runtime
+session. The adapter verifies source/content, current binding, channel/owner,
+source TTL, session/run identity and absence of steering. Competing checkpoints
+are neither selected by recency nor modified. Missing identity fails closed;
+`agent_turn_prepare` without it defers to `before_prompt_build`.
 
-Only ambiguous unbound source sets require a read; existing exact-run selection
-and already attached runs keep their fast path. Reads are bounded to 32 pages,
-256 messages / 1 MiB per page, 16 MiB total and four seconds. A reset, oversized
-entry, incomplete/missing source, timeout, SDK failure or stopped generation
-retains the unbound candidates and reports `STEERING_SOURCE_UNVERIFIED`; it does
-not prove ordinary ambiguity and does not create a synthetic skip/completion.
-The next existing hook can retry. If a verified complete source set contains
-no steering distinction, the existing true-ambiguity guard still applies.
+This replaces the production late-steering scan: a long exact-session transcript
+could hit its bounded read budget before reaching the current source. Raising
+that budget is not the fix. Legacy reconciliation helpers remain available for
+explicit compatibility/testing, not on the production selection path. Native
+`agent_end`, supported final-source message completion and durable completion
+feed handling remain the completion contracts; a sent Telegram message alone
+is not a source-completion proof.
 
-Late enrichment checks exact protected source/transport/actor/reply identity,
-source text and the current binding, then compares the checkpoint digest under
-the existing disposition/storage locks. It adds only the steering target to a
-live `persisted` checkpoint with no ordinary run/session binding, retaining its
-original creation and expiry. It never reopens a terminal gap, retargets a
-confirmed source, or makes a steering input a completed standalone source.
-Normal hook replay does not gain permission to mutate steering identity.
+## Still-open admission recovery
 
-This changes the plugin bundle digest. Publication to Git is not activation:
-use the existing maintenance barrier, install/code-only rebind and loaded-runtime
-read-back for a separate live rollout. Do not update a shared live source checkout
-before that barrier. A natural steer -> ordinary completion -> Worker -> canonical
-effect -> indexed retrieval remains a separate E2E proof.
+`scripts/memory-observation-recover-gap.ts --open-checkpoint` plans by default;
+`--apply` admits an exact still-live `persisted` checkpoint with no run/session
+binding. Supply absolute workspace, pinned inventory path/digest, exact message
+ID, dated operator authorization and reason. It is incompatible with bounded
+source or invalid-evidence review modes. Pause capture and existing Workers for
+all affected scopes before apply: recovery run locks do not fence foreground
+attachment. Never manufacture historical hook calls.
+
+Imports require protected native user/run/mirror metadata, the same exact
+actor/transport/reply/source text, one ordered same-run successful terminal,
+current observer binding/source policy and fresh evidence. SDK-only inventories
+carry `engram.native-visible-history-pair.v1` with exact agent/session/opaque
+cursor and genuine source/terminal entry IDs plus visible sequence. They never
+invent `transcriptPosition.rawSeq`; raw-history imports keep their original
+provenance checks. Unrelated run owners, duplicate claims, steering, unsupported
+or missing completions and terminal gaps are rejected.
+
+Under run then candidate locks, a second preflight pins immutable authorization,
+advances the original checkpoint through canonical stages and invokes only
+`MemoryObservationLedger.admit`. Creation/expiry and actual completion time are
+preserved. Crash resume is journaled and idempotent after raw source clearing.
+The operator neither evaluates the source nor writes canonical notes, proves
+semantic closure, resets deadlines or writes off historical debt. Normal Worker
+receipts and read-back remain a separate proof after schedules resume.

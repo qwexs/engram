@@ -200,6 +200,7 @@ function environment(ids: Array<{ id: string; actionable?: boolean }> = [{ id: "
   const root = mkdtempSync(join(tmpdir(), "engram-nightly-coordinator-"));
   const stateRoot = mkdtempSync(join(tmpdir(), "engram-nightly-coordinator-state-"));
   roots.push(root, stateRoot);
+  write(join(stateRoot, "oll/actors.v1.json"), { schema: "oll.actor-registry.v1", revision: 1, principals: [] });
   const workspaces = Object.fromEntries(ids.map(({ id, actionable = true }) => [id, createWorkspace(root, id, actionable)]));
   const registry = new Registry(Object.entries(workspaces).reverse().map(([id, path]) => registryEntry(id, path)));
   return { root, stateRoot, workspaces, registry };
@@ -250,6 +251,20 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
     const report = await runNightlyCoordinator(coordinatorOptions(env, runtime));
     expect(report).toMatchObject({ status: "completed", completed: ["alpha"], skipped: ["alpha"], spawned: 0 });
     expect(runtime.events).toEqual([]);
+  });
+
+  test("runtime-path quarantine stays visible in the report while healthy idle workspaces continue", async () => {
+    const env = environment([{ id: "alpha", actionable: false }, { id: "beta", actionable: false }]);
+    const configPath = join(env.workspaces.alpha!, "engram.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.oll.adaptation.actorRegistry = join(env.workspaces.alpha!, "ops/actors.v1.json");
+    write(config.oll.adaptation.actorRegistry, { schema: "oll.actor-registry.v1", revision: 1, principals: [] });
+    write(configPath, config);
+    const runtime = new FakeNightlyRuntime();
+    const report = await runNightlyCoordinator(coordinatorOptions(env, runtime));
+    expect(report.completed).toEqual(["beta"]);
+    expect(report.quarantined).toEqual([expect.objectContaining({ workspaceId: "alpha", reason: expect.stringContaining("actorRegistry escapes") })]);
+    expect(report.spawned).toBe(0);
   });
 
   test("materialize fails closed on a missing Worker bridge instead of reporting an empty successful preflight", async () => {

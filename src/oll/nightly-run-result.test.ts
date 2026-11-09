@@ -21,6 +21,12 @@ test("cancellation and unfinished batches cannot become fleet success merely bec
   }
 });
 
+test("discovery quarantine cannot silently reduce the fleet and report success", () => {
+  const partial = { ...report, quarantined: [{ workspaceId: "beta", workspacePath: "/synthetic/beta", reason: "OLL runtime preflight failed" }] };
+  expect(nightlyRunResult(partial).exitCode).toBe(1);
+  expect(nightlyRunResult(partial).result.report.quarantined).toEqual(partial.quarantined);
+});
+
 test("completed skips and diagnostic-only shadow compiler failures retain their success semantics", () => {
   expect(nightlyRunResult(report).exitCode).toBe(0);
   expect(nightlyRunResult({ ...report, candidateShadow: { attempted: 1, succeeded: 0, failed: 1 } }).exitCode).toBe(0);

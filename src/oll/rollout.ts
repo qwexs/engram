@@ -10,6 +10,7 @@ import {
 import { dirname, join, resolve, sep } from "node:path";
 import { transitionAdaptationRule } from "./adaptation-store";
 import { atomicWriteJson } from "./legacy-migration";
+import { preflightOllWorkspace } from "./runtime-preflight";
 
 type JsonObject = Record<string, any>;
 type TargetMode = "observe-only" | "active";
@@ -265,6 +266,10 @@ export function planOllRollout(options: OllRolloutOptionsV1): OllRolloutPlanV1 {
   const createdAt = options.now || new Date().toISOString();
   validateTimestamp(createdAt);
   const workspaces = validateWorkspaces(options.workspaces);
+  for (const workspace of workspaces) {
+    try { preflightOllWorkspace(workspace.workspacePath, options.stateRoot); }
+    catch (error) { throw new OllRolloutError("runtime_preflight_failed", `${workspace.workspaceId}: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   const paths = rolloutPaths(options.stateRoot, options.releaseId);
   return {
     schema: "oll.rollout-plan.v1",

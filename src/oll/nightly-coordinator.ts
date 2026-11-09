@@ -61,6 +61,7 @@ export interface NightlyCoordinatorReportV1 {
   maxConcurrentRethinkRuns: number;
   registrySnapshotPath: string;
   candidateShadow?: { attempted: number; succeeded: number; failed: number };
+  quarantined?: FrozenRegistrySnapshotV1["quarantined"];
 }
 
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
@@ -254,11 +255,11 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
         snapshot = readObject(join(nightlyBatchDirectory(coordinatorRoot, batch.batchId), "registry-snapshot.json"));
         await options.runtime.resume(batch.batchId);
       } else {
-        snapshot = await discoverNightlyWorkspaces({ adapter: options.registryAdapter, allowedRoots: options.allowedWorkspaceRoots, capturedAt: now() });
+        snapshot = await discoverNightlyWorkspaces({ adapter: options.registryAdapter, allowedRoots: options.allowedWorkspaceRoots, stateRoot: options.stateRoot, capturedAt: now() });
         batch = null as unknown as NightlyBatchStateV1;
       }
     } else {
-      snapshot = await discoverNightlyWorkspaces({ adapter: options.registryAdapter, allowedRoots: options.allowedWorkspaceRoots, capturedAt: now() });
+      snapshot = await discoverNightlyWorkspaces({ adapter: options.registryAdapter, allowedRoots: options.allowedWorkspaceRoots, stateRoot: options.stateRoot, capturedAt: now() });
       batch = null as unknown as NightlyBatchStateV1;
     }
 
@@ -310,6 +311,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       transition("cancelled", clearedActive(), "batch_timeout", { batchTimeoutSeconds });
       return {
         schema: "oll.nightly-coordinator-report.v1",
+        quarantined: snapshot.quarantined,
         batchId: batch.batchId,
         resumed,
         status: batch.status,
@@ -805,6 +807,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
     }
     return {
       schema: "oll.nightly-coordinator-report.v1",
+      quarantined: snapshot.quarantined,
       batchId: batch.batchId,
       resumed,
       status: batch.status,

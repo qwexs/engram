@@ -25,6 +25,7 @@ import { auditQmdScheduler, auditWorkshopReviews } from "./qmd-scheduler-watchdo
 import { auditKgV3 } from "../../src/kg-v3/watchdog.ts";
 import { auditMemoryObservation } from "../../src/memory-observation/watchdog.ts";
 import { auditOllObserverBridge } from "../../src/oll/observer-receipt-watchdog.ts";
+import { preflightOllRuntime } from "../../src/oll/runtime-preflight.ts";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_DIR = resolve(MODULE_DIR, "..");
@@ -1925,6 +1926,14 @@ export function auditWorkspace(workspaceInput, options = {}) {
     .map(f => ({ ...f, level: f.level === "warning" ? "warn" : f.level, fixable: false })));
   findings.push(...auditMemoryObservation(workspace, { now: options.now, expectedPluginDigest: options.runtime?.plugin?.installedDigest ?? undefined }));
   checkOllState(workspace, findings, engram);
+  if (engram?.oll?.nightly?.enabled || engram?.oll?.adaptation?.enabled || engram?.oll?.adaptation?.mode === "active") {
+    try { preflightOllRuntime(engram, options.ollStateRoot || process.env.ENGRAM_STATE_ROOT || "/opt/openclaw/state/engram"); }
+    catch (error) {
+      findings.push(makeFinding({ code: "WD-OLL-024", level: "error", path: "engram.json",
+        message: `OLL runtime preflight failed: ${error.message}`,
+        details: { stateRoot: options.ollStateRoot || process.env.ENGRAM_STATE_ROOT || "/opt/openclaw/state/engram" } }));
+    }
+  }
   findings.push(...auditOllObserverBridge(workspace, { config: engram, now: options.now }));
   checkSkillGeneratedArtifacts(findings, options);
   if (options.qmd !== false) {

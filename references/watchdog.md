@@ -232,6 +232,14 @@ quarantine, release, and rollback evidence. Watchdog never performs rollout.
 
 ### Worker → OLL receipt admission
 
+`WD-OLL-024` is a blocking runtime configuration error: actorRegistry or
+companyRuleStore escapes the managed state root, the actor registry is
+unavailable/invalid, or its runtime identity/mode cannot be resolved. It uses
+the same read-only preflight as OLL rollout and nightly discovery, including
+when heartbeat state is absent. Pass `--state-root <exact-nightly-root>` for a
+nondefault deployment; otherwise watchdog uses `ENGRAM_STATE_ROOT` or the
+existing runtime default. It does not create registries or change grants.
+
 The main audit always checks the authority bridge independently of heartbeat
 state, cron success and candidate thresholds. Only positive-allowlisted daily
 Decisions/Learnings are considered. Canonical entries may be read to distinguish

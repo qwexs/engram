@@ -2,6 +2,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { RegistryWorkspaceEntryV1, WorkspaceRegistryAdapter } from "./contracts";
 import { canonicalizeJcs, Digest, sha256Digest } from "./handoff-v2";
+import { preflightOllRuntime } from "./runtime-preflight";
 
 export interface DiscoveredWorkspaceV1 extends RegistryWorkspaceEntryV1 {
   workspacePath: string;
@@ -95,6 +96,7 @@ function freezeDeep<T>(value: T): T {
 export async function discoverNightlyWorkspaces(options: {
   adapter: WorkspaceRegistryAdapter;
   allowedRoots: readonly string[];
+  stateRoot: string;
   capturedAt?: string;
 }): Promise<FrozenRegistrySnapshotV1> {
   if (!options.allowedRoots.length) throw new Error("at least one workspace allowlist root is required");
@@ -136,6 +138,8 @@ export async function discoverNightlyWorkspaces(options: {
     if (config.oll.nightly.enabled !== true) { disabled.push(workspaceId); continue; }
     const activationError = validateActivationProjection(workspacePath, config, workspaceId);
     if (activationError) { reject(activationError); continue; }
+    try { preflightOllRuntime(config, options.stateRoot); }
+    catch (error) { reject(`OLL runtime preflight: ${error instanceof Error ? error.message : String(error)}`); continue; }
     candidates.push({
       workspaceId,
       workspacePath,

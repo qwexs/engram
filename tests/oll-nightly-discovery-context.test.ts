@@ -36,6 +36,7 @@ function config(id: string, enabled = true) {
 
 function workspace(parent: string, id: string, enabled = true): string {
   const root = join(parent, id);
+  write(join(parent, "oll/actors.v1.json"), { schema: "oll.actor-registry.v1", revision: 1, principals: [] });
   write(join(root, "engram.json"), config(id, enabled));
   if (enabled) {
     write(join(root, "memory-state", "oll", "state.json"), {
@@ -100,7 +101,7 @@ describe("PR 5 immutable registry discovery", () => {
       entry("beta", beta), entry("alpha", alpha), entry("disabled", disabled), entry("drift", drift),
       entry("escaped", alias), entry("duplicate", duplicateA), entry("duplicate", duplicateB),
     ]);
-    const snapshot = await discoverNightlyWorkspaces({ adapter: registry, allowedRoots: [allowed] });
+    const snapshot = await discoverNightlyWorkspaces({ adapter: registry, allowedRoots: [allowed], stateRoot: allowed });
     expect(snapshot.entries.map((item) => item.workspaceId)).toEqual(["alpha", "beta"]);
     expect(snapshot.disabled).toEqual(["disabled"]);
     expect(snapshot.quarantined.map((item) => item.reason)).toEqual(expect.arrayContaining([
@@ -119,10 +120,10 @@ describe("PR 5 immutable registry discovery", () => {
     roots.push(allowed);
     const alpha = workspace(allowed, "alpha");
     const registry = new Registry([entry("alpha", alpha)]);
-    const first = await discoverNightlyWorkspaces({ adapter: registry, allowedRoots: [allowed] });
+    const first = await discoverNightlyWorkspaces({ adapter: registry, allowedRoots: [allowed], stateRoot: allowed });
     const future = workspace(allowed, "future");
     registry.entries = [...registry.entries, entry("future", future)];
-    const second = await discoverNightlyWorkspaces({ adapter: registry, allowedRoots: [allowed] });
+    const second = await discoverNightlyWorkspaces({ adapter: registry, allowedRoots: [allowed], stateRoot: allowed });
     expect(first.entries.map((item) => item.workspaceId)).toEqual(["alpha"]);
     expect(second.entries.map((item) => item.workspaceId)).toEqual(["alpha", "future"]);
   });
@@ -135,7 +136,7 @@ describe("PR 5 immutable registry discovery", () => {
       schema: "oll-nightly-state.v1", workspaceId: "alpha", scheduleOwner: "nightly", nightlyEnabled: false,
       legacyHeartbeat: { admission: "disabled", application: "disabled" },
     });
-    const snapshot = await discoverNightlyWorkspaces({ adapter: new Registry([entry("alpha", alpha)]), allowedRoots: [allowed] });
+    const snapshot = await discoverNightlyWorkspaces({ adapter: new Registry([entry("alpha", alpha)]), allowedRoots: [allowed], stateRoot: allowed });
     expect(snapshot.entries).toEqual([]);
     expect(snapshot.quarantined).toEqual([expect.objectContaining({ workspaceId: "alpha", reason: "nightly activation projection is inconsistent" })]);
   });

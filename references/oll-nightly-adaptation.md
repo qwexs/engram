@@ -79,6 +79,42 @@ low-risk authorization policy.
 
 ## Nightly coordinator
 
+### Read-only runtime admission before activation
+
+Before rollout or registry enrollment, use the exact state root passed to the
+nightly runtime, not a guessed workspace-relative root:
+
+```bash
+bun scripts/oll-runtime-preflight.ts --workspace /absolute/project \
+  --state-root /absolute/fleet-state --json
+```
+
+The shared preflight checks the workspace ID/mode, resolves
+`oll.adaptation.actorRegistry` and `companyRuleStore` (including the
+`${ENGRAM_STATE_ROOT}` placeholder), requires managed-root containment, and
+loads the actor registry using the consumer's parser. Symlink escapes fail
+closed. The company store may be absent; preflight never creates it. An actor
+registry must already be a readable, valid regular file. A project-specific
+registry can live in a separate subdirectory of the state root; its location
+does not grant cross-workspace permissions. Check actual grants/foreign-scope
+denials separately: a valid path is not authorization, and valid grants do not
+make an out-of-root path acceptable.
+
+`planOllRollout` (also called again by apply), nightly discovery, and watchdog
+use this same read-only preflight. Discovery receives `stateRoot` explicitly
+from the coordinator. Watchdog accepts `--state-root`; otherwise it follows
+the runtime's environment/default root. `WD-OLL-024` is a blocking config
+error. Quarantined discovery entries remain in the coordinator report, and
+`nightlyRunResult` returns nonzero for them even if all eligible entries
+completed. Disabled entries are still distinct from quarantine.
+
+This admission check is not a model run or a natural-source E2E proof. A
+shared canary does not validate new project-specific paths. On the first
+natural OLL run, check the terminal handoff and watermark even for an
+ignored/no-rule result; do not require a rule to be accepted.
+
+### Processing
+
 For every eligible entry in its immutable registry snapshot, the coordinator:
 
 1. performs deterministic memory reconciliation;

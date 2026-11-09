@@ -39,6 +39,7 @@ function setup(ids = ["project-alpha"]) {
   const fleetRoot = mkdtempSync(join(tmpdir(), "engram-pr7-fleet-"));
   const stateRoot = mkdtempSync(join(tmpdir(), "engram-pr7-state-"));
   roots.push(fleetRoot, stateRoot);
+  write(join(stateRoot, "oll/actors.v1.json"), { schema: "oll.actor-registry.v1", revision: 1, principals: [] });
   const workspaces = ids.map((workspaceId) => {
     const workspacePath = join(fleetRoot, workspaceId);
     write(join(workspacePath, "engram.json"), {

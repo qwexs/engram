@@ -56,6 +56,23 @@ function gatewaySuccess(overrides: Record<string, unknown> = {}): string {
 }
 
 describe("OpenClaw raw model-run provider", () => {
+  test("large UTF-8 prompts cross stdin intact instead of exceeding the Linux per-argument bound", async () => {
+    const prompt = "Точный источник — ".repeat(8_000);
+    expect(Buffer.byteLength(prompt)).toBeGreaterThan(131_072);
+    let called = false;
+    const provider = openClawRawModelRunProvider({ cwd: "/tmp", execute: (command, args, options) => {
+      called = true;
+      expect(command).toBe("node");
+      expect(args[0]).toEndWith("/scripts/memory-model-run-stdin.mjs");
+      expect(args.every(arg => Buffer.byteLength(arg) < 1_000)).toBe(true);
+      expect(args.join(" ")).not.toContain(prompt);
+      expect(JSON.parse(options.input!)).toEqual({ model: request.model, thinking: "high", prompt });
+      return { status: 0, signal: null, stdout: success(), stderr: "" };
+    } });
+    await expect(provider({ ...request, prompt, thinking: "high" })).resolves.toMatchObject({ resolvedModel: request.model });
+    expect(called).toBe(true);
+  });
+
   test("uses argv without a shell and returns exact model read-back without invented usage", async () => {
     let seen: { command: string; args: string[] } | null = null;
     const execute: OpenClawModelRunExecutor = (command, args) => {

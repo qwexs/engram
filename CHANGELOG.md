@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **fix(memory/oll): preserve large Worker prompts and report partial nightly failure.**
+  Transfer oversized tool-free model.run requests through stdin and the
+  installed public Gateway SDK instead of exceeding Linux's per-argument
+  bound. Preserve exact input, model/thinking, authorization and no-fallback
+  read-back; do not patch the host or stage raw prompt files. Nightly CLI
+  success now requires a completed batch with no failed workspace, retaining
+  the full failure report and nonzero scheduler exit for partial results.
+
 - **fix(memory): bind the exact host-admitted current source without replaying history.**
   Use the protected `before_prompt_build.currentUserMessageId` with exact
   source/content/session/binding checks. Missing identity fails closed; the

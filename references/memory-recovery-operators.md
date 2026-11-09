@@ -8,6 +8,20 @@ and outside indexed/public source trees. Test with synthetic fixtures first.
 
 ## Terminal batch retry
 
+Large tool-free Worker prompts use the installed public OpenClaw Gateway SDK
+over a private subprocess stdin once their UTF-8 size approaches Linux's
+per-argument limit. Small requests retain the existing CLI. This changes only
+transport: the exact prompt, model/thinking, system-agent selection, `modelRun`,
+`promptMode=none`, administrator scope and strict no-fallback read-back remain
+unchanged. The helper does not patch/copy host code or stage raw prompts in
+files. OpenClaw's `infer model run --file` accepts images, not prompt text.
+
+Nightly CLI completion is successful only when the batch is `completed` **and**
+its `failed` workspace list is empty. Partial or cancelled runs preserve their
+report and return nonzero through the existing deployment wrapper; diagnostic-
+only shadow compilation remains diagnostic. A prior failed batch is history,
+not something to rewrite after fixing its cause.
+
 `recoverTerminalBatch` in `batch-terminal-recovery.ts` handles the admitted
 failure classes `batch_provider_failure`, `batch_invalid_json` and
 `batch_invalid_assertion`. Use the existing

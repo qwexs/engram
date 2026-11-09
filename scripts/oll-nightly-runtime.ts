@@ -9,6 +9,7 @@ import {
   NightlyDispatchPendingError,
 } from "../src/oll/deployment-runtime";
 import { runNightlyCoordinator } from "../src/oll/nightly-coordinator";
+import { nightlyRunResult } from "../src/oll/nightly-run-result";
 
 const command = process.argv[2];
 const { values } = parseArgs({
@@ -66,7 +67,9 @@ try {
       resolveModel: (workspace, phase) => resolveSubagentModel(workspace, phase),
       reconciliationCompletedExternally: values["reconciliation-completed-externally"] === true,
     });
-    console.log(JSON.stringify({ status: "completed", report }));
+    const outcome = nightlyRunResult(report);
+    console.log(JSON.stringify(outcome.result));
+    process.exitCode = outcome.exitCode;
   } else throw new Error("use run or ack");
 } catch (error: any) {
   if (error instanceof NightlyDispatchPendingError) {

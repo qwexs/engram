@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type {
   BatchShadowCompletionRequest,
   BatchShadowProviderResult,
@@ -26,6 +27,7 @@ export type OpenClawModelRunExecutor = (command: string, args: string[], options
   cwd: string;
   timeout: number;
   maxBuffer: number;
+  input?: string;
 }) => OpenClawModelRunExecution;
 
 const TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,299}$/;
@@ -42,6 +44,7 @@ function defaultExecutor(command: string, args: string[], options: {
   cwd: string;
   timeout: number;
   maxBuffer: number;
+  input?: string;
 }): OpenClawModelRunExecution {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
@@ -49,7 +52,8 @@ function defaultExecutor(command: string, args: string[], options: {
     maxBuffer: options.maxBuffer,
     encoding: "utf8",
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    ...(options.input === undefined ? {} : { input: options.input }),
   });
   return {
     status: result.status,
@@ -83,7 +87,16 @@ export function openClawRawModelRunProvider(options: {
       || typeof request.prompt !== "string" || !request.prompt.trim()) {
       fail("UNSUPPORTED_REQUEST", "raw model-run requires the digested single-user tool-free request mode");
     }
-    const execution = execute(command, [
+    // Linux limits each argv element separately. Keep the exact request and
+    // existing CLI for small inputs; large inputs use the public Gateway SDK
+    // through stdin, with the same model.run semantics and authorization.
+    const large = Buffer.byteLength(request.prompt, "utf8") >= 120_000;
+    const execution = large ? execute("node", [
+      fileURLToPath(new URL("../../scripts/memory-model-run-stdin.mjs", import.meta.url)),
+      "--command", command, "--timeout", String(timeout),
+    ], { cwd: options.cwd, timeout, maxBuffer,
+      input: JSON.stringify({ model: request.model, thinking: request.thinking ?? "off", prompt: request.prompt }) })
+    : execute(command, [
       "infer", "model", "run",
       "--gateway",
       "--model", request.model,

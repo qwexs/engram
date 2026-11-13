@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **fix(domains): complete additive topic authority for model-only profiles.**
+  Preserve immutable revisions, pending jobs, historical model lineage and
+  selected model/thinking while publishing new exact-scope defaults. Validate
+  sealed authority history across subsequent model switches and code releases.
+  Use existing Worker/domain leases and a resumable CAS publication journal;
+  grant OLL policy admission only for existing positive sources before defaults.
+  Explicit operator provenance is required; corrupt or unrelated authority
+  changes still fail before provisioning. No plugin/host code or new scheduler.
+
 - **fix(domains): reject unbridged scope changes for model-only execution profiles.**
   Topic setup now fails before host/QMD/projection mutations when a new exact
   scope would invalidate the pinned execution-profile registry. The current

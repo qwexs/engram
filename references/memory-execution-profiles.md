@@ -86,6 +86,26 @@ uses `switch` to move the default back; it does not undo notes or move old jobs.
 Changes to plugin/authority/quality/bindings are deliberately not model-only:
 registry anchors fail closed until an explicit, verified authority rollout.
 
+### Adding an exact topic
+
+`add-domain.js --workspace /absolute/workspace --domain <slug> --type topic-thread
+--topic <chatId:topicId> --approved-by '<operator + trusted source reference>'`
+uses the separate canonical additive authority path. It does not rewrite old
+profiles, jobs, cached results or provider identities. Old revisions reconstruct
+against their sealed authority history; new defaults use the expanded scope set
+with the same selected model, explicit thinking and prompt/output contract.
+The existing model-transition lineage remains readable without forcing unrelated
+pending jobs to drain. Current quality mode and epochs stay unchanged.
+
+Projection, quality, transition and profiles are published under the existing
+inference/domain leases with a durable CAS journal. OLL policy admission remains
+limited to existing positive compiler sources and precedes new executable defaults.
+A repeat setup resumes a torn publication from `topic-authority-pending.json`;
+unknown changes remain blocking. No second coordinator, plugin rebuild or host
+patch is part of this path. Code-only plugin releases and later model switches
+preserve this authority history. Tests include immutable old job refs, exact-scope
+denial, idempotence, crash recovery and conflicting writes.
+
 ## What qualification does and does not prove
 
 One contextual call checks negation, request versus completion, actor, failed

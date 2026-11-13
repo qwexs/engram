@@ -25,6 +25,7 @@ const { values: args } = parseArgs({
     'telegram-chat-id': { type: 'string', default: '' },
     'telegram-icon-color': { type: 'string', default: '0x6FB9F0' },
     'pending': { type: 'boolean', default: false },
+    'approved-by': { type: 'string', default: '' },
     'help': { type: 'boolean', short: 'h', default: false },
   },
   strict: false,
@@ -77,6 +78,8 @@ Options:
                              для этого (chatId, topicId) уже есть домен — exit 0
                              no-op. Новые рабочие топики создаются явным вызовом
                              add-domain; hook не расширяет Worker bindings.
+  --approved-by <source>     Оператор и ссылка на поручение для additive authority
+                             rollout при подключённых execution profiles.
   -h, --help                 Показать справку
 
 Examples:
@@ -307,6 +310,7 @@ async function ensureTopicRuntimeIfAvailable() {
     domain,
     chatId: topicBinding.chatId,
     topicId: topicBinding.topicId,
+    approvedBy: args['approved-by'] || process.env.ENGRAM_OPERATOR,
     registerCollection: addQmdCollection,
   });
 }

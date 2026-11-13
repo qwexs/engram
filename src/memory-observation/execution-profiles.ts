@@ -9,6 +9,7 @@ import { BATCH_SHADOW_PROMPT_VERSION, batchShadowPrompt } from "./batch-shadow-r
 import { CONTEXTUAL_PROMPT_VERSION, CONTEXTUAL_PROMPT_VERSIONS, type ContextualPromptVersion } from "./contextual-observation.ts";
 import { contextualEvaluationDigest, qualityScopeEnabled, type QualityRollout } from "./quality-rollout.ts";
 import type { BatchLiveJobV1, BatchLivePolicyV1 } from "./batch-live-worker.ts";
+import { assertAdditiveTopics } from "./model-transition.ts";
 
 const hash = (v: unknown) => sha256(v as JsonValue);
 const equal = (a: unknown, b: unknown) => hash(a) === hash(b);
@@ -21,6 +22,15 @@ type PluginCodeCompatibility = {
   schema: "engram.memory-profile-plugin-compatibility.v1";
   origin: Snapshot;
   releases: Array<{from:Digest;to:Digest;beforeRegistryDigest:Digest;releaseAttestationDigest:Digest;approvedBy:string;approvedAt:string;digest:Digest}>;
+  digest: Digest;
+};
+type TopicAuthorityRevision = {
+  before: Snapshot;
+  after: Snapshot;
+  pluginCodeCompatibility?: PluginCodeCompatibility;
+  beforeRegistryDigest: Digest;
+  approvedBy: string;
+  approvedAt: string;
   digest: Digest;
 };
 type Template = Omit<BatchLivePolicyV1, "exactScope" | "profileRefs">;
@@ -43,12 +53,15 @@ export type ExecutionProfiles = {
   approvedBy: string;
   approvedAt: string;
   pluginCodeCompatibility?: PluginCodeCompatibility;
+  topicAuthorityHistory?: TopicAuthorityRevision[];
   digest: Digest;
 };
 /** A code release changes installed bytes, not the immutable authority basis
  * of existing jobs. Every other projection/quality field must stay identical. */
 export function profileReconstructionOrigin(saved: ExecutionProfiles): Snapshot {
-  const c=saved.pluginCodeCompatibility,current=saved.legacy[0]!;
+  return codeReconstructionOrigin(saved.legacy[0]!, saved.pluginCodeCompatibility);
+}
+function codeReconstructionOrigin(current: Snapshot, c?: PluginCodeCompatibility): Snapshot {
   if(!c)return current;
   const {digest,...body}=c;
   if(c.schema!=="engram.memory-profile-plugin-compatibility.v1" || digest!==hash(body)
@@ -65,6 +78,46 @@ export function profileReconstructionOrigin(saved: ExecutionProfiles): Snapshot 
     ||!equal(c.origin.quality?{...c.origin.quality,pluginDigest:plugin}:null,current.quality))
     throw Error("PROFILE_CODE_COMPATIBILITY_AUTHORITY_CHANGED");
   return c.origin;
+}
+/** Only append exact topics. No model, epoch, owner, endpoint or existing
+ * binding/quality permission changes can be hidden in an authority revision. */
+export function assertTopicProfileAuthority(before: Snapshot, after: Snapshot): void {
+  assertAdditiveTopics(before.projection, after.projection);
+  const comparable = structuredClone(after.projection);
+  comparable.schema = before.projection.schema;
+  comparable.bindings = before.projection.bindings;
+  comparable.consumers!.dailyNote.qmdBinding = before.projection.consumers!.dailyNote.qmdBinding;
+  if (!equal(comparable, before.projection)) throw Error("PROFILE_TOPIC_AUTHORITY_CHANGED");
+  const resolver = after.projection.consumers!.dailyNote.qmdBinding;
+  if (!resolver || !("resolver" in resolver) || resolver.resolver !== "exact-session-registry") throw Error("PROFILE_TOPIC_AUTHORITY_CHANGED");
+  if (!before.quality) {
+    if (after.quality) throw Error("PROFILE_TOPIC_AUTHORITY_CHANGED");
+    return;
+  }
+  const added = after.projection.bindings.filter(b => !before.projection.bindings.some(a => equal(a, b)))
+    .map(({runtimeSessionKey,scopeClass,scopeId}) => ({workspaceId:after.projection.workspaceId,runtimeSessionKey,scopeClass,scopeId}));
+  const expected = [...before.quality.exactScopes, ...added].sort((a,b) => a.runtimeSessionKey.localeCompare(b.runtimeSessionKey));
+  if (!after.quality || !equal({...after.quality,exactScopes:before.quality.exactScopes},before.quality)
+    || !equal(after.quality.exactScopes, expected)) throw Error("PROFILE_TOPIC_AUTHORITY_CHANGED");
+}
+function reconstructionOrigins(saved: ExecutionProfiles): Snapshot[] {
+  const origins: Snapshot[] = [];
+  let previous: Snapshot | undefined;
+  if (saved.topicAuthorityHistory && (!saved.topicAuthorityHistory.length || saved.topicAuthorityHistory.length > 20)) throw Error("PROFILE_TOPIC_HISTORY_INVALID");
+  for (const revision of saved.topicAuthorityHistory ?? []) {
+    const {digest,...body} = revision;
+    if (digest !== hash(body) || !/^sha256:[a-f0-9]{64}$/.test(revision.beforeRegistryDigest)
+      || !revision.approvedBy?.trim() || !Number.isFinite(Date.parse(revision.approvedAt))) throw Error("PROFILE_TOPIC_HISTORY_INVALID");
+    const origin = codeReconstructionOrigin(revision.before,revision.pluginCodeCompatibility);
+    if (previous && !equal(origin,previous)) throw Error("PROFILE_TOPIC_HISTORY_INVALID");
+    assertTopicProfileAuthority(revision.before,revision.after);
+    origins.push(origin,revision.before,revision.after);
+    previous = revision.after;
+  }
+  const currentOrigin = profileReconstructionOrigin(saved);
+  if (previous && !equal(previous,currentOrigin)) throw Error("PROFILE_TOPIC_HISTORY_INVALID");
+  origins.push(currentOrigin);
+  return origins;
 }
 export function profileAnchors(workspace: string, projection: Projection): ExecutionProfiles["anchors"] {
   const root = join(workspace, "memory-state/memory-observation");
@@ -157,7 +210,7 @@ function assertScope(projection: Projection, scope: ObservationScope): void {
 export function validateExecutionProfiles(saved: ExecutionProfiles, workspace: string, projection: Projection): ExecutionProfiles {
   return validateProfileState(saved,profileAnchors(workspace,projection),legacyProfileSnapshots(workspace,projection));
 }
-function validateProfileState(saved:ExecutionProfiles,anchors:ExecutionProfiles['anchors'],legacy:Snapshot[]):ExecutionProfiles {
+export function validateProfileState(saved:ExecutionProfiles,anchors:ExecutionProfiles['anchors'],legacy:Snapshot[]):ExecutionProfiles {
   const projection=legacy[0]!.projection;
   const { digest, ...body } = saved;
   if (saved.schema !== "engram.memory-execution-profiles.v1" || digest !== hash(body)
@@ -166,7 +219,7 @@ function validateProfileState(saved:ExecutionProfiles,anchors:ExecutionProfiles[
     || saved.revisions.length < 1 || saved.revisions.length > 128 || !Array.isArray(saved.legacy) || saved.legacy.length < 1 || saved.legacy.length > 2
     || new Set(saved.revisions.map(r => r.profile.profileId)).size !== saved.revisions.length
     || !equal(saved.legacy, legacy)) throw Error("PROFILE_REGISTRY_IDENTITY_CHANGED");
-  const origin=profileReconstructionOrigin(saved);
+  const origins=reconstructionOrigins(saved);
   if(saved.approvedProviderBoundary.provider!==projection.inference.provider || saved.legacy.some(s=>{
     const b=saved.legacyBoundaries[s.projection.inference.model];
     return !b || !equal({provider:b.provider,baseUrl:b.baseUrl},saved.approvedProviderBoundary);
@@ -176,9 +229,8 @@ function validateProfileState(saved:ExecutionProfiles,anchors:ExecutionProfiles[
     if(!equal({provider:p.boundary.provider,baseUrl:p.boundary.baseUrl},saved.approvedProviderBoundary)) throw Error("PROFILE_PROVIDER_BOUNDARY_CHANGED");
     if(!saved.approvedBoundaries.some(b=>equal(b,p.boundary)))throw Error("PROFILE_PROVIDER_BOUNDARY_CHANGED");
     if (!["active", "drain", "retired"].includes(r.lifecycle)) throw Error("PROFILE_LIFECYCLE_INVALID");
-    const rebuilt = createExecutionProfile(origin, p.boundary, p.template.runner.requestedModel,
-      p.template.runner.thinking as "medium" | "high", !!p.template.contextual,p.template.contextualPromptVersion);
-    if (!equal(rebuilt, p)) throw Error("PROFILE_REVISION_CHANGED");
+    if (!origins.some(origin => equal(createExecutionProfile(origin, p.boundary, p.template.runner.requestedModel,
+      p.template.runner.thinking as "medium" | "high", !!p.template.contextual,p.template.contextualPromptVersion),p))) throw Error("PROFILE_REVISION_CHANGED");
   }
   for (const id of [saved.defaults.base, saved.defaults.contextual].filter(Boolean)) {
     if (!saved.revisions.some(r => r.profile.profileId === id && r.lifecycle === "active")) throw Error("PROFILE_DEFAULT_NOT_EXECUTABLE");
@@ -186,6 +238,34 @@ function validateProfileState(saved:ExecutionProfiles,anchors:ExecutionProfiles[
   if(saved.revisions.find(r=>r.profile.profileId===saved.defaults.base)?.profile.template.contextual
     || (saved.defaults.contextual && !saved.revisions.find(r=>r.profile.profileId===saved.defaults.contextual)?.profile.template.contextual))throw Error("PROFILE_DEFAULT_CONTRACT_CHANGED");
   return saved;
+}
+/** Authority rollout, not a model switch: immutable old revisions stay readable;
+ * only future defaults receive the additive scope set. */
+export function rebindExecutionProfilesForTopics(o:{before:ExecutionProfiles;beforeAnchors:ExecutionProfiles['anchors'];beforeLegacy:Snapshot[];
+  afterAnchors:ExecutionProfiles['anchors'];afterLegacy:Snapshot[];approvedBy:string;approvedAt:string}):ExecutionProfiles {
+  validateProfileState(o.before,o.beforeAnchors,o.beforeLegacy);
+  assertTopicProfileAuthority(o.beforeLegacy[0]!,o.afterLegacy[0]!);
+  if (!equal(o.beforeLegacy.slice(1),o.afterLegacy.slice(1)) || !o.approvedBy?.trim() || !Number.isFinite(Date.parse(o.approvedAt))) throw Error("PROFILE_TOPIC_AUTHORITY_CHANGED");
+  const revisionBody = {before:o.beforeLegacy[0]!,after:o.afterLegacy[0]!,beforeRegistryDigest:o.before.digest,
+    approvedBy:o.approvedBy,approvedAt:o.approvedAt,
+    ...(o.before.pluginCodeCompatibility ? {pluginCodeCompatibility:o.before.pluginCodeCompatibility} : {})};
+  const {digest,pluginCodeCompatibility,...before} = o.before;
+  const revisions = structuredClone(before.revisions);
+  const defaults = {...before.defaults};
+  for (const kind of ["base","contextual"] as const) {
+    const id = defaults[kind];
+    if (!id) continue;
+    const old = revisions.find(r => r.profile.profileId === id)!.profile;
+    const thinking = old.template.runner.thinking;
+    if (thinking !== "medium" && thinking !== "high") throw Error("PROFILE_TOPIC_EXECUTION_CHANGED");
+    const profile = createExecutionProfile(o.afterLegacy[0]!,old.boundary,old.template.runner.requestedModel,
+      thinking,!!old.template.contextual,old.template.contextualPromptVersion);
+    if (profile.contractDigest !== old.contractDigest || profile.executionDigest !== old.executionDigest) throw Error("PROFILE_TOPIC_EXECUTION_CHANGED");
+    revisions.push({profile,lifecycle:"active"}); defaults[kind] = profile.profileId;
+  }
+  const after = sealProfiles({...before,anchors:o.afterAnchors,legacy:o.afterLegacy,revisions,defaults,
+    topicAuthorityHistory:[...(before.topicAuthorityHistory ?? []),{...revisionBody,digest:hash(revisionBody)}],approvedBy:o.approvedBy,approvedAt:o.approvedAt});
+  return validateProfileState(after,o.afterAnchors,o.afterLegacy);
 }
 /** Only the canonical code-only release planner calls this pure staged-state
  * operation. Its CAS journal publishes profiles together with all pinned files. */

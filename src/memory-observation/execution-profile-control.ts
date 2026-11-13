@@ -66,7 +66,8 @@ export function planProfileSwitch(o: { workspace: string; workspaceId: string; m
     anchors: profileAnchors(o.workspace, projection), legacy, legacyBoundaries, approvedProviderBoundary:providerBoundary,
     approvedBoundaries:current?.approvedBoundaries??[...new Map([...Object.values(legacyBoundaries),o.boundary].map(b=>[hash(b),b])).values()],revisions,
     defaults: { base: base.profileId, contextual: contextual?.profileId ?? null }, approvedBy: o.approvedBy, approvedAt: o.approvedAt,
-    ...(current?.pluginCodeCompatibility?{pluginCodeCompatibility:current.pluginCodeCompatibility}:{}) });
+    ...(current?.pluginCodeCompatibility?{pluginCodeCompatibility:current.pluginCodeCompatibility}:{}),
+    ...(current?.topicAuthorityHistory?{topicAuthorityHistory:current.topicAuthorityHistory}:{}) });
   validateExecutionProfiles(after, o.workspace, projection);
   const body = { schema: "engram.memory-profile-switch-plan.v1" as const, workspace: o.workspace, workspaceId: o.workspaceId,
     beforeDigest: fileDigest(profileStatePath(o.workspace)), beforeRaw:existsSync(profileStatePath(o.workspace))?readFileSync(profileStatePath(o.workspace),"utf8"):null,

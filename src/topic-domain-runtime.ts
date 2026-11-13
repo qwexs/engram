@@ -13,6 +13,9 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { extendModelTransitionForMainTopics } from "./memory-observation/model-transition.ts";
 import { assertModelTransitionRetirable, publishAfterModelTransitionDrain } from "./memory-observation/model-transition-retirement.ts";
+import { readExecutionProfiles } from "./memory-observation/execution-profiles.ts";
+import { readModelTransition } from "./memory-observation/model-transition.ts";
+import { publishTopicProfileExtension, resumeTopicProfileExtension } from "./memory-observation/topic-profile-extension.ts";
 import { auditQmdGlobalRegistry, type QmdGlobalRegistry } from "./qmd/global-registry.ts";
 import { resolveQmdContext } from "./qmd/context.ts";
 import { markWorkspaceQmdDirty } from "./qmd/maintenance-integration.ts";
@@ -45,6 +48,7 @@ export type TopicDomainRuntimeOptions = {
   restartGateway?: () => Promise<void>;
   globalManifestPath?: string;
   markDirty?: typeof markWorkspaceQmdDirty;
+  approvedBy?: string;
 };
 
 export type TopicDomainRuntimeResult = {
@@ -285,6 +289,7 @@ function assertMainTopicTransferIdle(workspace: string, runtimeSessionKey: strin
 
 export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOptions): Promise<TopicDomainRuntimeResult> {
   const workspace = resolve(options.workspace);
+  resumeTopicProfileExtension(workspace);
   const configPath = join(workspace, "engram.json");
   const config = readJson(configPath);
   const workspaceId = String(config.workspace?.id || config.agent || "").replace(/^agent-/, "");
@@ -297,15 +302,8 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
     throw new Error("topic domain registry entry is missing or changed");
   }
   const projection = resolveMemoryObservationProjection({ workspace, workspaceId });
-  // Model-only execution profiles pin the complete projection authority and
-  // exact scope set. Changing the topic projection without a reviewed profile
-  // bridge would invalidate existing Worker execution after host/QMD mutations.
-  // No additive-scope bridge exists in this profile contract yet: fail before
-  // changing any shared configuration instead of publishing a broken contour.
-  if (existsSync(join(workspace, "memory-state/memory-observation/execution-profiles.json"))
-    && !activeAlready(projection, options.domain, topic.chatId, topic.topicId)) {
-    throw Error("TOPIC_EXECUTION_PROFILE_SCOPE_EXTENSION_REQUIRED");
-  }
+  const profiles = readExecutionProfiles(workspace, projection);
+  if (profiles && !activeAlready(projection, options.domain, topic.chatId, topic.topicId) && !options.approvedBy?.trim()) throw Error("PROFILE_TOPIC_OPERATOR_REQUIRED");
   if (!(mainTopics ? ["engram.memory-observation-rollout.v3", "engram.memory-observation-rollout.v6"].includes(projection.schema) : projection.schema === "engram.memory-observation-rollout.v4")) {
     throw new Error(projection.schema === "engram.memory-observation-rollout.v5"
       ? "group-direct workspace does not support Telegram topics"
@@ -325,9 +323,10 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
   const registry = manifestRegistry(globalManifest);
   const owner = registry.workspaces.find((item) => item.id === workspaceId && resolve(item.path) === workspace);
   if (!owner) throw new Error("workspace is missing from the QMD global registry");
-  // Reject outstanding model work before host routes, collections or manifests
-  // change. Recheck under the worker leases at projection publication below.
-  if (!mainTopics) assertModelTransitionRetirable(workspace, projection);
+  // Profile-backed additive authority preserves historical work and lineage.
+  // Legacy provisioning still requires a verified transition drain.
+  if (profiles) readModelTransition(workspace, projection);
+  else if (!mainTopics) assertModelTransitionRetirable(workspace, projection);
 
   const gatewayCall = options.gatewayCall ?? defaultGatewayCall;
   const restartGateway = options.restartGateway ?? defaultRestartGateway;
@@ -418,7 +417,9 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
     const wasActive = activeAlready(currentProjection, options.domain, topic.chatId, topic.topicId)
       && JSON.stringify(currentQmdBinding) === JSON.stringify(nextResolver);
     // Do not reset the family epoch or overwrite pending model/quality lineage.
-    if (mainTopics) {
+    if (profiles) {
+      publishTopicProfileExtension(workspace,currentProjection,nextProjection,options.approvedBy ?? profiles.approvedBy);
+    } else if (mainTopics) {
       const transition = extendModelTransitionForMainTopics(workspace, currentProjection, nextProjection);
       if (transition) atomicWrite(join(workspace, "memory-state/memory-observation/model-transition.json"), transition);
       atomicWrite(memoryObservationProjectionPath(workspace), nextProjection);

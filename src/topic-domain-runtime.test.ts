@@ -5,6 +5,12 @@ import { tmpdir } from "node:os";
 import { ensureTopicDomainRuntime } from "./topic-domain-runtime.ts";
 import { sha256 } from "./memory-observation/ledger.ts";
 import { readModelTransition } from "./memory-observation/model-transition.ts";
+import {createExecutionProfile,sealProfiles,profileAnchors,legacyProfileSnapshots,readExecutionProfiles,defaultProfilePolicy,jobProfilePolicy,
+  rebindExecutionProfilesForPlugin,rebindExecutionProfilesForTopics} from "./memory-observation/execution-profiles.ts";
+import {publishTopicProfileExtension,resumeTopicProfileExtension} from "./memory-observation/topic-profile-extension.ts";
+import {planProfileSwitch} from "./memory-observation/execution-profile-control.ts";
+import {CONTEXTUAL_PROMPT_VERSION} from "./memory-observation/contextual-observation.ts";
+import {BATCH_SHADOW_PROMPT_VERSION} from "./memory-observation/batch-shadow-runner.ts";
 
 const DIGEST = `sha256:${"1".repeat(64)}` as const;
 let root = "";
@@ -117,20 +123,131 @@ afterEach(() => {
   if (root && root.startsWith(tmpdir()) && existsSync(root)) rmSync(root, { recursive: true, force: true });
 });
 
+function profileFixture() {
+  const f=fixture(),state=join(f.workspace,"memory-state/memory-observation"),path=join(state,"projection.json");
+  const projection=read(path),binding=projection.bindings[0];
+  const scope={workspaceId:"project",runtimeSessionKey:binding.runtimeSessionKey,scopeClass:binding.scopeClass,scopeId:binding.scopeId};
+  const quality={schema:"engram.memory-quality-rollout.v1",mode:"active",workspaceId:"project",pluginDigest:projection.pluginDigest,
+    baseEvaluationPolicyDigest:projection.evaluation.policyDigest,sourcePolicyDigest:projection.evaluation.batch.sourcePolicyDigest,
+    applyAfter:projection.consumers.dailyNote.applyAfter,exactScopes:[scope],preparedAt:projection.approvedAt,inventoryDigest:sha256("inventory")};
+  json(join(state,"quality-rollout.json"),{...quality,digest:sha256(quality)});
+  const old=structuredClone(projection);old.inference.model="openai/previous";old.evaluation.policyDigest=sha256("old-policy");
+  const transition={schema:"engram.memory-model-transition.v1",targetProjectionDigest:sha256(projection),previousProjection:old,previousQuality:null,
+    approvedBy:"operator",approvedAt:projection.approvedAt};
+  json(join(state,"model-transition.json"),{...transition,digest:sha256(transition)});
+  const snapshot=legacyProfileSnapshots(f.workspace,projection)[0]!;
+  const boundary={provider:"openai",baseUrl:"https://example.invalid/v1",api:"responses",runtime:"host-default"};
+  const base=createExecutionProfile(snapshot,boundary,"openai/gpt-6.1-terra","high",false);
+  const contextual=createExecutionProfile(snapshot,boundary,"openai/gpt-6.1-terra","high",true);
+  const profiles=sealProfiles({schema:"engram.memory-execution-profiles.v1",workspaceId:"project",anchors:profileAnchors(f.workspace,projection),
+    legacy:legacyProfileSnapshots(f.workspace,projection),legacyBoundaries:{"openai/test":boundary,"openai/previous":boundary},
+    approvedProviderBoundary:{provider:boundary.provider,baseUrl:boundary.baseUrl},approvedBoundaries:[boundary],
+    defaults:{base:base.profileId,contextual:contextual.profileId},revisions:[{profile:base,lifecycle:"active"},{profile:contextual,lifecycle:"active"}],
+    approvedBy:"operator",approvedAt:projection.approvedAt});
+  json(join(state,"execution-profiles.json"),profiles);
+  const after=structuredClone(projection);after.bindings.push({...binding,runtimeSessionKey:"agent:project:telegram:group:-1001:topic:2",
+    scopeId:"domain:project:project-new",topicDomain:{domain:"project-new",chatId:"-1001",topicId:"2"}});
+  return {...f,state,projection,profiles,scope,after,boundary};
+}
+
+test("topic authority rollout preserves pending job refs, lineage and isolated old profiles; repeat is idempotent",async()=>{
+  const f=profileFixture(),policy=defaultProfilePolicy(f.profiles,f.projection,f.scope);
+  const job:any={partition:{...f.scope,producerEpoch:"v1",policyDigest:policy.sourcePolicyDigest},profileRefs:policy.profileRefs,evaluationPolicyDigest:policy.evaluationPolicyDigest};
+  const registerCollection=async()=>({ok:true});
+  const o={workspace:f.workspace,domain:"project-new",chatId:"-1001",topicId:"2",approvedBy:"operator; source:test",gatewayCall:f.gatewayCall,restartGateway:f.restartGateway,registerCollection};
+  const result=await ensureTopicDomainRuntime(o);expect(result.status).toBe("active");
+  const projection=read(join(f.state,"projection.json")),saved=readExecutionProfiles(f.workspace,projection)!;
+  expect(saved.revisions.slice(0,2)).toEqual(f.profiles.revisions);
+  expect(saved.revisions).toHaveLength(4);expect(saved.topicAuthorityHistory).toHaveLength(1);
+  expect(jobProfilePolicy(saved,projection,job)).toEqual(policy);
+  const newScope={...f.scope,runtimeSessionKey:"agent:project:telegram:group:-1001:topic:2",scopeId:"domain:project:project-new"};
+  const next=defaultProfilePolicy(saved,projection,newScope);
+  expect(next.runner.requestedModel).toBe("openai/gpt-6.1-terra");expect(next.runner.thinking).toBe("high");
+  expect(()=>jobProfilePolicy(saved,projection,{...job,partition:{...job.partition,...newScope}})).toThrow("PROFILE_JOB_DENIED");
+  expect(readModelTransition(f.workspace,projection)!.previousProjection).toEqual(f.profiles.legacy[1]!.projection);
+  expect(saved.legacy[0]!.quality!.exactScopes).toHaveLength(2);
+  expect((await ensureTopicDomainRuntime(o)).status).toBe("already-active");
+  expect(readExecutionProfiles(f.workspace,projection)!.digest).toBe(saved.digest);
+});
+
+test("valid profile authority still requires an explicit operator before setup mutations",async()=>{
+  const f=profileFixture();
+  await expect(ensureTopicDomainRuntime({workspace:f.workspace,domain:"project-new",chatId:"-1001",topicId:"2",
+    gatewayCall:async()=>{throw Error("host must not run");},registerCollection:async()=>{throw Error("QMD must not run");}})).rejects.toThrow("PROFILE_TOPIC_OPERATOR_REQUIRED");
+  expect(readExecutionProfiles(f.workspace,f.projection)!.digest).toBe(f.profiles.digest);
+});
+
+for(const stage of ["after_projection","after_bridge","after_profiles"] as const)test(`topic authority publication resumes crash at ${stage} without migrating jobs`,()=>{
+  const f=profileFixture();
+  expect(()=>publishTopicProfileExtension(f.workspace,f.projection,f.after,"operator; source:test",{fault:s=>{if(s===stage)throw Error("injected");}})).toThrow("injected");
+  expect(existsSync(join(f.state,"topic-authority-pending.json"))).toBe(true);
+  expect(resumeTopicProfileExtension(f.workspace)).toBe(true);
+  expect(resumeTopicProfileExtension(f.workspace)).toBe(false);
+  const saved=readExecutionProfiles(f.workspace,f.after)!;
+  expect(saved.revisions.slice(0,2)).toEqual(f.profiles.revisions);expect(saved.revisions).toHaveLength(4);
+});
+
+test("authority journal refuses unrelated concurrent changes and sealed plans cannot hide model or owner changes",()=>{
+  const f=profileFixture();
+  expect(()=>publishTopicProfileExtension(f.workspace,f.projection,{...f.after,inference:{...f.after.inference,model:"openai/other"}},"operator")).toThrow();
+  expect(existsSync(join(f.state,"topic-authority-pending.json"))).toBe(false);
+  expect(()=>publishTopicProfileExtension(f.workspace,f.projection,f.after,"operator",{fault:()=>{throw Error("injected");}})).toThrow("injected");
+  json(join(f.state,"projection.json"),{...f.after,approvedBy:"unexpected writer"});
+  expect(()=>resumeTopicProfileExtension(f.workspace)).toThrow("PROFILE_TOPIC_CAS_CONFLICT");
+});
+
+test("a code-only plugin release after a topic addition preserves every historical profile",()=>{
+  const f=profileFixture();publishTopicProfileExtension(f.workspace,f.projection,f.after,"operator");
+  const before=readExecutionProfiles(f.workspace,f.after)!,afterLegacy=structuredClone(before.legacy);
+  afterLegacy[0]!.projection.pluginDigest=sha256("next-plugin");afterLegacy[0]!.quality!.pluginDigest=sha256("next-plugin");
+  const after=rebindExecutionProfilesForPlugin({before,beforeAnchors:before.anchors,beforeLegacy:before.legacy,
+    afterAnchors:{...before.anchors,projection:sha256(afterLegacy[0]!.projection),quality:sha256("next-quality"),transition:sha256("next-transition")},afterLegacy,
+    releaseAttestationDigest:sha256("release"),approvedBy:"operator",approvedAt:new Date().toISOString()});
+  expect(after.revisions).toEqual(before.revisions);expect(after.topicAuthorityHistory).toEqual(before.topicAuthorityHistory);
+  const nextLegacy=structuredClone(after.legacy),binding=nextLegacy[0]!.projection.bindings[0]!;
+  nextLegacy[0]!.projection.bindings.push({...binding,runtimeSessionKey:"agent:project:telegram:group:-1001:topic:3",scopeId:"domain:project:third",
+    topicDomain:{domain:"third",chatId:"-1001",topicId:"3"}});
+  nextLegacy[0]!.quality!.exactScopes.push({...f.scope,runtimeSessionKey:"agent:project:telegram:group:-1001:topic:3",scopeId:"domain:project:third"});
+  const next=rebindExecutionProfilesForTopics({before:after,beforeAnchors:after.anchors,beforeLegacy:after.legacy,
+    afterAnchors:{...after.anchors,projection:sha256(nextLegacy[0]!.projection)},afterLegacy:nextLegacy,approvedBy:"operator",approvedAt:new Date().toISOString()});
+  expect(next.revisions.slice(0,4)).toEqual(before.revisions);expect(next.topicAuthorityHistory).toHaveLength(2);
+});
+
+test("pre-existing plugin compatibility survives topic setup and a subsequent model switch",()=>{
+  const f=profileFixture(),current=structuredClone(f.projection);current.pluginDigest=sha256("released-plugin");
+  const quality=read(join(f.state,"quality-rollout.json"));delete quality.digest;quality.pluginDigest=current.pluginDigest;
+  const transition=read(join(f.state,"model-transition.json"));delete transition.digest;transition.targetProjectionDigest=sha256(current);
+  json(join(f.state,"projection.json"),current);json(join(f.state,"quality-rollout.json"),{...quality,digest:sha256(quality)});
+  json(join(f.state,"model-transition.json"),{...transition,digest:sha256(transition)});
+  const compatible=rebindExecutionProfilesForPlugin({before:f.profiles,beforeAnchors:f.profiles.anchors,beforeLegacy:f.profiles.legacy,
+    afterAnchors:profileAnchors(f.workspace,current),afterLegacy:legacyProfileSnapshots(f.workspace,current),
+    releaseAttestationDigest:sha256("release"),approvedBy:"operator",approvedAt:new Date().toISOString()});
+  json(join(f.state,"execution-profiles.json"),compatible);
+  const next={...f.after,pluginDigest:current.pluginDigest};publishTopicProfileExtension(f.workspace,current,next,"operator");
+  const saved=readExecutionProfiles(f.workspace,next)!;expect(saved.revisions.slice(0,2)).toEqual(f.profiles.revisions);
+  const at=new Date().toISOString(),model="openai/another-model";
+  const switchPlan=planProfileSwitch({workspace:f.workspace,workspaceId:"project",model,thinking:"high",boundary:f.boundary,approvedBy:"operator",approvedAt:at,
+    qualification:{schema:"engram.memory-model-qualification.v1",model,thinking:"high",boundaryDigest:sha256(f.boundary),promptVersion:CONTEXTUAL_PROMPT_VERSION,
+      basePromptVersion:BATCH_SHADOW_PROMPT_VERSION,checks:["negation","request-not-completion","actor-attribution","failure-not-success","untrusted-injection","base-contract"].map(id=>({id,passed:true})),
+      passed:true,latencyMs:1,requestedTokenBudget:8192,tokenBudgetEnforcement:"unavailable",thinkingReadback:"requested-only",completedAt:at}});
+  expect(switchPlan.after.topicAuthorityHistory).toEqual(saved.topicAuthorityHistory);
+  expect(switchPlan.after.revisions.slice(0,4)).toEqual(saved.revisions);
+});
+
 describe("topic-domain runtime", () => {
-  test("model-only execution profiles block a new scope before host, QMD or projection changes", async () => {
+  test("corrupt execution profiles block setup before host, QMD or projection changes", async () => {
     const f = fixture();
     const projectionPath = join(f.workspace, "memory-state/memory-observation/projection.json");
     const before = readFileSync(projectionPath, "utf8"), manifestBefore = readFileSync(f.globalManifestPath, "utf8");
     const profilePath = join(f.workspace, "memory-state/memory-observation/execution-profiles.json");
-    // Presence alone is a sufficient fail-closed guard; do not reinterpret or
-    // rewrite even an unknown/corrupt profile registry during topic provisioning.
+    // Unknown/corrupt registries are not a license to reconstruct authority.
     json(profilePath, { schema: "engram.memory-execution-profiles.v1", exactScopes: "pinned" });
     const profilesBefore = readFileSync(profilePath, "utf8");
     await expect(ensureTopicDomainRuntime({ workspace: f.workspace, domain: "project-new", chatId: "-1001", topicId: "2",
+      approvedBy:"operator + source",
       gatewayCall: async () => { throw Error("host mutation must not run"); },
       registerCollection: async () => { throw Error("QMD mutation must not run"); },
-    })).rejects.toThrow("TOPIC_EXECUTION_PROFILE_SCOPE_EXTENSION_REQUIRED");
+    })).rejects.toThrow("PROFILE_REGISTRY_IDENTITY_CHANGED");
     expect(readFileSync(projectionPath, "utf8")).toBe(before);
     expect(readFileSync(profilePath, "utf8")).toBe(profilesBefore);
     expect(readFileSync(f.globalManifestPath, "utf8")).toBe(manifestBefore);

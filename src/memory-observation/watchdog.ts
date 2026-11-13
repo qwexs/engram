@@ -6,6 +6,7 @@ import { renderDailyNoteEntry, validateDailyNoteObservation } from "./daily-note
 import { sha256 } from "./ledger.ts";
 import { groupDomainOf, isGroupProjectionSchema } from "./group-bindings.ts";
 import { readIndexHandoff, readIndexGeneration } from "../qmd/index-provenance.ts";
+import { persistedDailyEffectProof } from "./applied-observation-proof.ts";
 
 export type MemoryObservationFinding = { code: string; level: "error" | "warn" | "info"; message: string; path?: string; details?: unknown };
 /** Read-only reconciliation. Does not construct consumers, invoke inference, recover, or publish dirty state. */
@@ -56,7 +57,11 @@ export function auditMemoryObservation(workspace: string, options: { now?: Date;
     try { validateDailyNoteObservation(row.value as any); }
     catch { add("WD-MW-012", "error", "Persisted observation fails its schema/digest contract", row.path); }
     if (projection?.mode === "canary" && Date.parse(row.value.sourceCompletedAt) >= Date.parse(projection.consumers!.dailyNote.applyAfter)
-      && oldEnough(row) && !dailyIds.has(row.value.observationId)) add("WD-MW-013", "warn", "Canary observation has no daily-note queue record after publication grace", row.path);
+      && oldEnough(row) && !dailyIds.has(row.value.observationId)) {
+      if (persistedDailyEffectProof(workspace, row.value, now).verified)
+        add("WD-MW-026", "info", "Persisted daily/index effects verified without retained operational queue; no replay or source-debt closure", row.path);
+      else add("WD-MW-013", "warn", "Canary observation has no daily-note queue record after publication grace", row.path);
+    }
   }
   const observationMap = new Map(observations.map(row => [row.value.observationId, row]));
   const envelopeMap = new Map(envelopes.map(row => [row.value.traceId, row]));

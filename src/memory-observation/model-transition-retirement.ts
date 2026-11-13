@@ -8,6 +8,7 @@ import { acquireProcessLease } from "./process-lease.ts";
 import { qualityTransitionInventory } from "./quality-rollout.ts";
 import { memoryObservationBinding, type MemoryObservationProjectionV1 } from "./projection.ts";
 import { memoryWorkerHealth } from "./worker-health.ts";
+import { persistedDailyEffectProof } from "./applied-observation-proof.ts";
 
 const hash = (value: unknown) => sha256(value as JsonValue);
 const read = (path: string) => JSON.parse(readFileSync(path, "utf8"));
@@ -18,7 +19,16 @@ export function assertModelTransitionRetirable(workspace: string, current: Memor
   const transition = readModelTransition(workspace, current);
   if (!transition) return null;
   const inventory = qualityTransitionInventory(workspace);
-  if (inventory.evaluator.length || inventory.batches.length || inventory.consumer.length || inventory.unconsumed.length) {
+  // Operational queue retention is not the lifetime of immutable effects.
+  // Only this administrative drain preflight reconstructs already-applied
+  // daily/index proof. Source readability and the live Worker stay unchanged.
+  const receiptBacked = inventory.unconsumed.filter(row => {
+    try {
+      const observation = read(join(statePath(workspace), "v1/observations/batch", row.observationId.slice(7) + ".json"));
+      return hash(observation) === row.digest && persistedDailyEffectProof(workspace, observation).verified;
+    } catch { return false; }
+  }).map(row => row.observationId).sort();
+  if (inventory.evaluator.length || inventory.batches.length || inventory.consumer.length || inventory.unconsumed.some(row => !receiptBacked.includes(row.observationId))) {
     throw Error("MODEL_TRANSITION_DRAIN_REQUIRED");
   }
   // Inventory alone must not trust a forged/invalid done marker as completion.
@@ -48,7 +58,8 @@ export function assertModelTransitionRetirable(workspace: string, current: Memor
       throw Error("MODEL_TRANSITION_DOMAIN_RECEIPT_INVALID");
     }
   }
-  return { transition, inventoryDigest: inventory.inventoryDigest };
+  return { transition, inventoryDigest: receiptBacked.length ? hash({ inventoryDigest: inventory.inventoryDigest, receiptBackedConsumed: receiptBacked }) : inventory.inventoryDigest,
+    receiptBackedConsumed: receiptBacked };
 }
 
 function immutable(path: string, value: unknown): void {

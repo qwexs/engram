@@ -251,6 +251,15 @@ controls. Do not patch installed host/runtime files as a substitute.
 
 ## Verification and recovery boundaries
 
+The administrative model-transition drain preflight accepts an observation
+whose operational daily queue has expired only when `persistedDailyEffectProof`
+verifies its original receipt aliases, source/observation join, exact canonical
+note entry and applicable QMD handoff/generation. Applicable domain receipts
+and dirty proofs still have to drain separately. This reconstructs proof of an
+already-applied effect, not a queue or current evaluator permission; it neither
+replays the source nor closes source debt. Live queues and any missing or
+changed proof remain blocking. The Worker/plugin identity is unchanged.
+
 Tests: `batch-terminal-recovery.test.ts`, `quote-producer-migration.test.ts`,
 `expired-orphan-accounting.test.ts` and `code-only-plugin-rebind.test.ts` under
 `src/memory-observation/`. They exercise denial, crash/resume, exact source

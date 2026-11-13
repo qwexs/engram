@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **fix(memory): recognize receipt-backed daily effects during administrative model drain.**
+  A retained observation need not retain its expired operational queue. The
+  transition-retirement preflight verifies both immutable receipt aliases,
+  exact observation provenance, canonical note read-back and applicable index
+  handoff/generation before accepting that historical daily stage as drained.
+  Current queues, corrupt proof and missing domain effects still block. This
+  read-only repair does not replay sources, broaden policy readability, close
+  source debt, reconstruct queues or change the runtime plugin bundle. The
+  watchdog reports this verified historical effect separately from a missing
+  publication join.
+
 - **fix(domains): generate ownership-aware topic instructions and publish backfills locally.**
   Use explicit workspace-aware Engram commands and the registered exact
   `domain-*` / `topic-memory-*` collections. Preserve observer-owned capture,

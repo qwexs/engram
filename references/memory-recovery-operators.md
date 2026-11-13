@@ -23,8 +23,13 @@ only shadow compilation remains diagnostic. A prior failed batch is history,
 not something to rewrite after fixing its cause.
 
 `recoverTerminalBatch` in `batch-terminal-recovery.ts` handles the admitted
-failure classes `batch_provider_failure`, `batch_invalid_json` and
-`batch_invalid_assertion`. Use the existing
+failure classes `batch_provider_failure`, `batch_invalid_json`,
+`batch_invalid_assertion` and `batch_source_coverage`. Coverage retry is another
+bounded attempt, never permission to accept incomplete output. Profile-backed
+jobs must retain their exact executable revision; changed registries, revoked
+execution and missing profiles fail closed. Recovery pins the registry digest
+alongside source/job/projection proofs and never adopts the new default.
+Use the existing
 `scripts/memory-observation-recover-terminal.ts` entrypoint with `--workspace`,
 `--store-root`, `--job-id`, `--authorized-by`, `--authorized-at` and `--reason`.
 Planning is the default; `--apply` publishes the approved retry. Its separate

@@ -29,10 +29,11 @@ import { isAdmissionGapRecovered } from "./admission-gap-recovery.ts";
 import { RUNTIME_AUTHORITY } from "./runtime-authority.ts";
 import { compileBatchFrame } from "./batch-compiler.ts";
 import { memoryObservationBinding, memoryObservationCaptureOwner, resolveMemoryObservationProjection } from "./projection.ts";
+import {readExecutionProfiles,jobProfilePolicy,authorizeProfileOperation} from "./execution-profiles.ts";
 
 export const BATCH_TERMINAL_RECOVERY_SCHEMA = "engram.memory-batch-terminal-recovery.v1" as const;
 const BATCH_TERMINAL_RECOVERY_AUTHORIZATION_SCHEMA = "engram.memory-batch-terminal-recovery-authorization.v1" as const;
-const ALLOWED_FAILURES = new Set(["batch_provider_failure", "batch_invalid_json", "batch_invalid_assertion"]);
+const ALLOWED_FAILURES = new Set(["batch_provider_failure", "batch_invalid_json", "batch_invalid_assertion", "batch_source_coverage"]);
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 
 export type BatchTerminalRecoveryFaultPoint =
@@ -426,6 +427,8 @@ export function recoverTerminalBatch(options: {
   const workspaceId = readJson<any>(join(workspace, "engram.json")).workspace?.id;
   const projection = resolveMemoryObservationProjection({ workspace, workspaceId });
   const projectionDigest = valueDigest(projection);
+  const profiles = readExecutionProfiles(workspace, projection);
+  const profileAuthority = profiles ? {executionProfilesDigest:profiles.digest} : {};
   const sourcePaths = failure.traceIds.map(traceId => ({
     envelope: join(stateRoot, "envelopes", `${digestKey(traceId)}.json`),
     evidence: join(evidenceRoot, `${digestKey(traceId)}.json`),
@@ -462,13 +465,24 @@ export function recoverTerminalBatch(options: {
     checkStore();
     const currentProjection = resolveMemoryObservationProjection({ workspace, workspaceId });
     const binding = memoryObservationBinding(currentProjection, job.partition.runtimeSessionKey);
+    const currentProfiles = readExecutionProfiles(workspace,currentProjection);
+    if ((currentProfiles?.digest ?? null) !== (profiles?.digest ?? null)) fail("SCOPE_MISMATCH", "execution profiles changed since recovery preflight");
+    let evaluationMatches = currentProjection.evaluation?.policyDigest === job.evaluationPolicyDigest;
+    if (currentProfiles || job.profileRefs) {
+      try {
+        if (!currentProfiles) throw Error("profile registry missing");
+        const policy = jobProfilePolicy(currentProfiles,currentProjection,job);
+        authorizeProfileOperation(currentProfiles,currentProjection,policy,"execute");
+        evaluationMatches = true;
+      } catch { fail("SCOPE_MISMATCH", "failed job's exact immutable profile is not executable"); }
+    }
     if (readJson<any>(join(workspace, "engram.json")).workspace?.id !== workspaceId
       || valueDigest(currentProjection) !== projectionDigest || job.partition.workspaceId !== workspaceId
       || !binding || binding.scopeId !== job.partition.scopeId || binding.scopeClass !== job.partition.scopeClass
       || memoryObservationCaptureOwner(currentProjection, job.partition.runtimeSessionKey, now()) !== "observer"
       || currentProjection.evaluation?.mode !== "batch-cron"
       || currentProjection.evaluation.batch?.sourcePolicyDigest !== job.partition.policyDigest
-      || currentProjection.evaluation.policyDigest !== job.evaluationPolicyDigest) {
+      || !evaluationMatches) {
       fail("SCOPE_MISMATCH", "current observer binding or source/evaluation policy does not match the failed job");
     }
     const bindingFingerprint = valueDigest({ workspaceId, scopeClass: binding.scopeClass, scopeId: binding.scopeId,
@@ -552,7 +566,7 @@ export function recoverTerminalBatch(options: {
       const requeued = recoveredQueue(queue, options.authorizedAt);
       return {
         traceId,
-        sourceProofDigest: valueDigest({ envelope: readJson(join(stateRoot, "envelopes", `${traceKey}.json`)), job, projection }),
+        sourceProofDigest: valueDigest({ envelope: readJson(join(stateRoot, "envelopes", `${traceKey}.json`)), job, projection, ...profileAuthority }),
         evidenceDigest: valueDigest(evidence),
         evidenceExpiresAt: evidence.expiresAt,
         originalDigest: valueDigest(queue),
@@ -568,7 +582,7 @@ export function recoverTerminalBatch(options: {
     if (existsSync(authorizationPath) && !sameValue(readJson(authorizationPath), authorization)) fail("AUTHORIZATION_CONFLICT", "recovery authorization changed");
     for (const queueSnapshot of authorization.queues) {
       const envelope = readJson(join(stateRoot, "envelopes", `${digestKey(queueSnapshot.traceId)}.json`));
-      if (queueSnapshot.sourceProofDigest !== valueDigest({ envelope, job, projection })) {
+      if (queueSnapshot.sourceProofDigest !== valueDigest({ envelope, job, projection, ...profileAuthority })) {
         fail("SOURCE_MISMATCH", "source envelope, job or projection changed since recovery authorization");
       }
       const queuePath = join(queueRoot, `${digestKey(queueSnapshot.traceId)}.json`);

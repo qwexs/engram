@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BATCH_LIVE_FAILURE_SCHEMA, BATCH_LIVE_JOB_SCHEMA } from "./batch-live-worker.ts";
@@ -9,6 +9,7 @@ import {buildContextualObservation} from './contextual-observation.ts';
 import { deriveAdmissionCandidateId } from "./admission-store.ts";
 import { compileBatchFrame } from "./batch-compiler.ts";
 import { deriveSourceDigest, deriveTraceId, sha256, type JsonValue } from "./ledger.ts";
+import {createExecutionProfile,sealProfiles,profileAnchors,legacyProfileSnapshots} from "./execution-profiles.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -135,6 +136,40 @@ describe("bounded terminal batch recovery", () => {
 
   test("does not admit arbitrary failure codes", () => {
     expect(() => recoverTerminalBatch(recoveryInput(fixture("unknown_failure")))).toThrow(/not eligible/);
+  });
+
+  test("coverage failure retry preserves the exact failed job/profile and rejects revoked execution", () => {
+    const input=fixture("batch_source_coverage"),state=join(input.workspace,"memory-state/memory-observation"),batch=join(input.storeRoot,"memory-batch-live/v1");
+    const projection=JSON.parse(readFileSync(join(state,"projection.json"),"utf8"));
+    const boundary={provider:"openai",baseUrl:"https://example.invalid/v1",api:"responses",runtime:"host-default"};
+    const profile=createExecutionProfile({projection,quality:null},boundary,"openai/approved-model","high",false);
+    const registry=sealProfiles({schema:"engram.memory-execution-profiles.v1",workspaceId:"main",anchors:profileAnchors(input.workspace,projection),
+      legacy:legacyProfileSnapshots(input.workspace,projection),legacyBoundaries:{"openai/synthetic":boundary},approvedProviderBoundary:{provider:boundary.provider,baseUrl:boundary.baseUrl},
+      approvedBoundaries:[boundary],defaults:{base:profile.profileId,contextual:null},revisions:[{profile,lifecycle:"active"}],approvedBy:"operator",approvedAt:projection.approvedAt});
+    const registryPath=join(state,"execution-profiles.json");write(registryPath,registry);
+    const oldJobId=input.jobId,job=JSON.parse(readFileSync(join(batch,"jobs",oldJobId.slice(7)+".json"),"utf8"));
+    job.evaluationPolicyDigest=profile.template.evaluationPolicyDigest;
+    job.profileRefs={profileId:profile.profileId,authorityDigest:profile.authorityDigest,contractDigest:profile.contractDigest,executionDigest:profile.executionDigest};
+    job.jobId=sha256({schema:job.schema,partition:job.partition,evaluationPolicyDigest:job.evaluationPolicyDigest,bundleId:job.bundle.bundleId});
+    const failure=JSON.parse(readFileSync(join(batch,"failures",oldJobId.slice(7)+".json"),"utf8"));delete failure.failureId;failure.jobId=job.jobId;
+    const terminal={...failure,failureId:sha256(failure)};
+    for(const [kind,value] of [["jobs",job],["failures",terminal],["done",terminal]] as const){unlinkSync(join(batch,kind,oldJobId.slice(7)+".json"));write(join(batch,kind,job.jobId.slice(7)+".json"),value);}
+    const common=recoveryInput({...input,jobId:job.jobId}),jobPath=join(batch,"jobs",job.jobId.slice(7)+".json");
+    const originalJob=readFileSync(jobPath,"utf8"),originalProfiles=readFileSync(registryPath,"utf8");
+    expect(recoverTerminalBatch(common).status).toBe("planned");
+    const replacement=createExecutionProfile({projection,quality:null},boundary,"openai/another-model","high",false);
+    for(const lifecycle of ["drain","retired"] as const){
+      const {digest,...body}=registry;
+      write(registryPath,sealProfiles({...body,defaults:{base:replacement.profileId,contextual:null},revisions:[{profile,lifecycle},{profile:replacement,lifecycle:"active"}]}));
+      expect(()=>recoverTerminalBatch(common)).toThrow("exact immutable profile is not executable");
+    }
+    writeFileSync(registryPath,originalProfiles);
+    const corrupt=structuredClone(registry);corrupt.revisions[0]!.profile.executionDigest=sha256("forged");
+    const {digest,...corruptBody}=corrupt;write(registryPath,sealProfiles(corruptBody));expect(()=>recoverTerminalBatch(common)).toThrow();
+    writeFileSync(registryPath,originalProfiles);
+    const result=recoverTerminalBatch({...common,apply:true});expect(result.status).toBe("requeued");
+    expect(readFileSync(jobPath,"utf8")).toBe(originalJob);expect(readFileSync(registryPath,"utf8")).toBe(originalProfiles);
+    expect(JSON.parse(readFileSync(result.archivedFailureRef,"utf8")).errorCode).toBe("batch_source_coverage");
   });
 
   for (const faultAt of FAULT_POINTS) {

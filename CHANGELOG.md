@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **fix(memory): recover bounded coverage failures under their exact execution profile.**
+  Extend the existing explicit terminal-retry operator to rejected source
+  coverage outputs and immutable profile-backed jobs. Pin registry identity,
+  require executable revision/scope, retain all strict source/evidence/effect
+  checks and archive the original failure; never switch defaults or accept
+  missing coverage. Existing non-profile recovery journals remain compatible.
+
 - **fix(domains): honor an explicit absolute workspace in add-domain.**
   Do not silently provision the caller's CWD when the operator supplied
   `--workspace`; reject relative targets before writes. CWD-only invocations

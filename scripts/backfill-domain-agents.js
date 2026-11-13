@@ -17,7 +17,6 @@ import { parseArgs } from 'node:util';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tmpdir } from 'node:os';
 import { mkdtempSync, rmSync, renameSync } from 'node:fs';
 
 const { values: args } = parseArgs({
@@ -90,8 +89,7 @@ function renderTemplate(slug, topicBinding, kgEntity) {
   }
   const cfg = readEngramConfig();
   // AGENT_ID — суффикс без "agent-" префикса (например "<agent-id>" в нашем workspace).
-  // engram.json хранит полный "agent-<agent-id>"; template использует литерал "agent-"
-  // перед {{AGENT_ID}} чтобы собрать правильный QMD collection name.
+  // AGENT_ID используется для собственного daily-note пути, не для имени QMD.
   const agentIdRaw = cfg.agent || cfg.agentId || process.env.ENGRAM_AGENT_ID || 'agent-main';
   const agentId = agentIdRaw.replace(/^agent-/, '');
   const workspaceName = cfg.workspace?.name || process.env.ENGRAM_WORKSPACE_NAME || basename(WORKSPACE);
@@ -120,6 +118,8 @@ function renderTemplate(slug, topicBinding, kgEntity) {
     .replaceAll('{{CHAT_ID}}', topicBinding?.chatId || '')
     .replaceAll('{{TOPIC_ID}}', topicBinding?.topicId || '')
     .replaceAll('{{WORKSPACE}}', workspaceName)
+    .replaceAll('{{WORKSPACE_SHELL}}', "'" + WORKSPACE.replaceAll("'", "'\\''") + "'")
+    .replaceAll('{{DESCRIPTION}}', domains[slug]?.description || slug)
     .replaceAll('{{OPERATOR}}', operator)
     .replaceAll('{{QMD_INDEX}}', qmdIndex)
     .replaceAll('{{AGENT_ID}}', agentId)
@@ -127,8 +127,10 @@ function renderTemplate(slug, topicBinding, kgEntity) {
 }
 
 function atomicWrite(path, content) {
-  const tmpDir = mkdtempSync(join(tmpdir(), 'engram-backfill-'));
-  const tmpPath = join(tmpDir, 'agents.md');
+  // rename must stay on the destination filesystem (/tmp may be another mount).
+  // Keep the staging file outside QMD's *.md masks.
+  const tmpDir = mkdtempSync(join(dirname(path), '.engram-backfill-'));
+  const tmpPath = join(tmpDir, 'agents.tmp');
   try {
     writeFileSync(tmpPath, content);
     renameSync(tmpPath, path);

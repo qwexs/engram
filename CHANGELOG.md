@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **fix(domains): generate ownership-aware topic instructions and publish backfills locally.**
+  Use explicit workspace-aware Engram commands and the registered exact
+  `domain-*` / `topic-memory-*` collections. Preserve observer-owned capture,
+  foreground fallback, bootstrap delivery and topic isolation without legacy
+  heartbeat or direct KG instructions. Add-domain and backfill render the same
+  shell-quoted absolute workspace and domain description. Backfill stages next
+  to its destination, outside Markdown masks, so separate `/tmp` mounts cannot
+  break atomic rename; existing manual overrides remain protected by default.
+
 - **fix(memory/oll): preserve large Worker prompts and report partial nightly failure.**
   Transfer oversized tool-free model.run requests through stdin and the
   installed public Gateway SDK instead of exceeding Linux's per-argument

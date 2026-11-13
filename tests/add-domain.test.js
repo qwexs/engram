@@ -51,6 +51,45 @@ function readRegistry() {
 }
 
 describe("add-domain.js — ISS-9 A7 cadenceAdaptive default", () => {
+  test("topic instructions use exact collections, explicit workspace and ownership-aware capture", () => {
+    const result = runAddDomain(["--domain", "current-rules", "--type", "topic-thread", "--topic", "-1009999999:46", "--pending", "--description", "Topic role"]);
+    expect(result.exitCode).toBe(0);
+    const path = join(workspace, "memory/domains/current-rules/agents.md");
+    const text = readFileSync(path, "utf8");
+    expect(text).toContain(`engram --workspace '${workspace}' qmd query`);
+    expect(text).toContain("-c domain-current-rules -c topic-memory-current-rules");
+    expect(text).toContain(`--workspace '${workspace}' --session telegram-group--1009999999-topic-46`);
+    expect(text).toContain("observer-owned exact binding");
+    expect(text).toContain("foreground fallback");
+    expect(text).toContain("Topic role");
+    expect(text).not.toContain("openclaw-memory-agent-");
+    expect(text).not.toContain("{{");
+
+    // Backfill must preserve a deliberate local override unless --force is given.
+    require("node:fs").writeFileSync(path, "# local override\n");
+    const script = join(ENGRAM_DIR, "scripts/backfill-domain-agents.js");
+    const invoke = (args) => Bun.spawnSync(["bun", script, "--domain", "current-rules", ...args], {
+      cwd: workspace, stdout: "pipe", stderr: "pipe",
+      // Publication must not depend on /tmp or cross-filesystem rename.
+      env: {...process.env, TMPDIR: join(workspace, "unavailable-external-tmp")},
+    });
+    expect(invoke([]).exitCode).toBe(0);
+    expect(readFileSync(path, "utf8")).toBe("# local override\n");
+    expect(invoke(["--force"]).exitCode).toBe(0);
+    expect(readFileSync(path, "utf8")).toBe(text);
+  });
+
+  test("topic command workspace quoting survives spaces, apostrophes and shell expansion characters", () => {
+    rmSync(workspace, {recursive: true, force: true});
+    workspace = mkdtempSync(join(tmpdir(), "engram path's $literal-"));
+    expect(runAddDomain(["--domain", "quoted", "--type", "topic-thread", "--topic", "-1009999999:47", "--pending"]).exitCode).toBe(0);
+    const text = readFileSync(join(workspace, "memory/domains/quoted/agents.md"), "utf8");
+    const command = text.match(/^engram --workspace (.+) qmd query/m)[1];
+    const proc = Bun.spawnSync(["sh", "-c", `printf '%s' ${command}`], {stdout: "pipe", stderr: "pipe"});
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString()).toBe(workspace);
+  });
+
   test("non-pending topic creation fails before scaffold when Memory Worker is absent", () => {
     const { exitCode, stderr } = runAddDomain([
       "--domain", "must-be-complete",

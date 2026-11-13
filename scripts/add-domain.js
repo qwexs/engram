@@ -405,9 +405,8 @@ function readEngramConfig() {
 }
 const engramConfig = readEngramConfig();
 // AGENT_ID — суффикс без "agent-" префикса (например "<agent-id>" в нашем workspace).
-// engram.json хранит полный "agent-<agent-id>"; template использует литерал "agent-"
-// перед {{AGENT_ID}} чтобы собрать правильный QMD collection name
-// "openclaw-memory-agent-{agentId}-{sessionKey}".
+// engram.json хранит полный "agent-<agent-id>"; template использует литерал
+// "agent-" перед {{AGENT_ID}} только для собственного daily-note пути.
 const agentIdRaw = engramConfig.agent || engramConfig.agentId || process.env.ENGRAM_AGENT_ID || 'agent-main';
 const agentId = agentIdRaw.replace(/^agent-/, '');
 const workspaceName = engramConfig.workspace?.name || process.env.ENGRAM_WORKSPACE_NAME || basename(WORKSPACE);
@@ -434,6 +433,7 @@ const replacements = {
   DESCRIPTION: description,
   DATE: today,
   WORKSPACE: workspaceName,
+  WORKSPACE_SHELL: "'" + WORKSPACE.replaceAll("'", "'\\''") + "'",
   OPERATOR: operator,
   QMD_INDEX: qmdIndex,
   AGENT_ID: agentId,

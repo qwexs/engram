@@ -1,78 +1,58 @@
 # Domain AGENTS — {{DOMAIN}}
 
-> Операционные правила topic-agent для этого домена. Инжектится в daily note
-> хуком `engram-topic-domain-load` блоком `## Domain AGENTS (auto)` сразу после
-> `## Domain Context (auto)`. Hash независимый от `decisions/status/changelog`,
-> идемпотентность на уровне файла.
->
-> Этот файл — runtime include для агента, не reference manual. Если правила
-> изменились — отредактируй и следующий message в топике переинжектит блок.
-> Workspace-уровневые правила (SOUL.md, MEMORY.md, `workspace/topic-domain-conventions.md`)
-> остаются в силе, но не дублируются здесь.
+> Правила долгоживущей topic-thread сессии. Хук `engram-topic-domain-load`
+> доставляет их при bootstrap вместе с контекстом домена; это не блок,
+> который агент должен самостоятельно дописывать в daily note.
 
-## Ты в роли
+## Роль и границы
 
-- **Topic-agent домена `{{DOMAIN}}`** в workspace `{{WORKSPACE}}`.
-- **Сессия**: `{{SESSION_KEY}}`.
-- **Operator**: {{OPERATOR}}.
-- **Тип домена**: `topic-thread` (долгоживущая OpenClaw-сессия, привязанная к Telegram-форум-топику).
+- Домен: `{{DOMAIN}}`, workspace: `{{WORKSPACE}}`.
+- Сессия: `{{SESSION_KEY}}`.
+- Operator: {{OPERATOR}}.
+- Назначение: {{DESCRIPTION}}.
+- Читать только собственный домен `memory/domains/{{DOMAIN}}/` и точную
+  session-memory `memory/agent-{{AGENT_ID}}/{{SESSION_KEY}}/`.
+- Не читать `MEMORY.md`, `life/`, личные direct-сессии и чужие домены/workspace.
+  Историческая привязка KG entity сама по себе не расширяет права топика.
+- Не переносить сведения между топиками и не обращаться наружу без явного
+  поручения. Запрос не отменяет effective readable policy и границы workspace.
 
-## QMD default
+## Поиск
 
-- **Индекс**: `{{QMD_INDEX}}`.
-- **Default query** (на первый содержательный запрос в треде):
-  ```bash
-  qmd --index {{QMD_INDEX}} query "<topic>" \
-    -c domain-{{DOMAIN}} \
-    -c openclaw-memory-agent-{{AGENT_ID}}-{{SESSION_KEY}}
-  ```
-  Это own domain + own session notes. Ничего больше по умолчанию.
-{{KG_ENTITY_BLOCK}}
-- **НЕ использовать без явного OK Operator**:
-  - `-c domains` (cross-topic) — другой проект/тред, чужой контекст.
-  - `-c {{WORKSPACE_KG_COLLECTION}}` (cross-KG) — workspace-level KG, чужой контекст.
+Поиск по необходимости, только через workspace-aware Engram и с явными `-c`:
 
-## Domain Context (auto)
+```bash
+engram --workspace {{WORKSPACE_SHELL}} qmd query "<запрос>" \
+  -c domain-{{DOMAIN}} -c topic-memory-{{DOMAIN}}
+```
 
-В начале daily note уже лежит блок `## Domain Context (auto)` (хуком
-`engram-topic-domain-load`): decisions + status + last changelog entry. Это
-текущее состояние домена. **Дополнительный QMD для «что мы решили / где
-остановились» НЕ нужен** — он уже там.
+- Exact коллекции должны быть зарегистрированы и разрешены текущей policy;
+  scaffold `--pending` не доказывает готовность поиска или Worker.
+- Не запускать raw `qmd` и не подменять exact-session коллекцию агрегатом.
+- Облачные `query`/`vsearch` выполнять через managed Gateway exec, если ключ
+  провайдера хранится в Secret Store; не копировать защищённый секрет.
+- Чужие коллекции не добавлять. Cross-topic поиск возможен только по явному
+  поручению и в пределах уже разрешённой policy.
 
-## Read rules
+## Запись и ownership
 
-- ✅ Своя daily note (`memory/agent-{{AGENT_ID}}/{{SESSION_KEY}}/YYYY-MM-DD.md`).
-- ✅ `memory/domains/{{DOMAIN}}/*` (этот домен).
-{{KG_ENTITY_READ_RULE}}
-- ⚠️ `memory/domains/{other-slug}/*` — только по явному запросу «а в другом треде?».
-- ⚠️ `life/` целиком (cross-KG) — только при явном запросе Operator.
-- ❌ `MEMORY.md` / `AGENTS.md` / `SOUL.md` workspace-уровня — auto-load, читать отдельно не нужно.
+- При действующей observer-owned exact binding Events/Decisions сохраняет
+  Memory Worker. Не выбирать записи вручную, не дублировать их в daily note,
+  `decisions.md` или `changelog.md`; не менять блок `engram-domain-recent`
+  и другие Worker-owned проекции. Не ждать Worker перед обычным ответом.
+- Если валидной активной exact binding нет, действует foreground fallback
+  из workspace AGENTS: один краткий значимый результат/решение через штатный
+  `daily-note-append.js` с абсолютным workspace и этой канонической сессией.
+- Learnings — только самостоятельный повторно применимый вывод;
+  threads/next — по необходимости передачи работы. Не переименовывать
+  Events/Decisions ради дубля. Команда для foreground-owned разделов:
 
-## Write rules
+```bash
+bun skills/engram/scripts/daily-note-append.js \
+  --workspace {{WORKSPACE_SHELL}} --session {{SESSION_KEY}} \
+  --section <разрешённый-раздел> --text "<краткий факт>"
+```
 
-- ✅ **Своя daily note** — `bun skills/engram/scripts/daily-note-append.js --session {{SESSION_KEY}} --section <events|decisions|learnings|threads|next> --text "..."`.
-- ✅ **Daily note → Events: значимость, не частота.** Агент сам решает, когда писать. Маркеры:
-  - ✅ Писать: явное решение в чате («решили X», «принято Z», «pinned: W»), действие (PR / merge / push / deploy), изменение состояния (status flip, unblock), change в артефактах (Wiki-doc создан, файл найден), завершение тематического блока (3–5 сообщений по теме).
-  - ❌ Не писать: reply / clarification / «ок» / «угу» / короткие уточнения, диалог-пинг-понг без нового решения или действия, эмоциональные реакции.
-  - Пустые `Events` за день — это нормально: значит, в треде за день не было ни одного значимого решения или действия. Не надо backfill-ить ради «чтобы было».
-  - Heartbeat-runner триггерит мягкий алерт `silent-thread`, если у active topic-thread session за последние 4 часа не было ни одного event. Это сигнал агенту перечитать тред и решить, было ли пропущено значимое, а не команда «пиши немедленно».
-- ✅ **`memory/domains/{{DOMAIN}}/decisions.md`** — append ТОЛЬКО на явных маркерах в чате («решили X», «договорились о Y», «принято Z», «pinned: W»). Append-only, никаких retro-правок.
-- ✅ **`memory/domains/{{DOMAIN}}/status.md`** — обновление при завершении тематического блока (3–5 сообщений по теме) или по явному «статус?», «где остановились?».
-- ✅ **`memory/domains/{{DOMAIN}}/changelog.md`** — curated, один блок = один тематический кусок разговора. Не каждое сообщение.
-- ✅ **`memory/domains/{{DOMAIN}}/agents.md`** (этот файл) — manual override Operator'ом или агентом по явному «обнови правила».
-- ❌ **`life/`** — никогда. Durable KG доступен только авторизованной direct-сессии через typed ingress.
-- ❌ **`memory/domains/{other-slug}/`** — не писать в чужие домены.
-- ❌ **Workspace-уровень `MEMORY.md` / `AGENTS.md`** — без явного OK Operator.
-- ❌ **Telegram-сообщения, посты в Сетку, Хабр** — только по явному «да» Operator.
-
-## Когда выходить за пределы
-
-- Operator явно спрашивает «а в другом проекте/треде?» → `qmd --index {{QMD_INDEX}} query "<term>" -c domains` (cross-topic).
-- Нужен cross-KG → `qmd --index {{QMD_INDEX}} query "<term>" -c {{WORKSPACE_KG_COLLECTION}}` (осторожно, чужой контекст).
-- Лучше **делегировать main-агенту** через `sessions_send` или явный вопрос Operator'у, чем лезть самому.
-
-## Дополнительные контексты
-
-- Полный контракт топик-агента: `workspace/topic-domain-conventions.md` (reference, не auto-load).
-- Domain structure и lifecycle: `references/topic-thread.md` в engram skill.
-- Hook mechanics: `hooks/engram-topic-domain-load/HOOK.md`.
+- Не писать в `life/`, frozen `MEMORY.md`, чужие домены или workspace-правила.
+  Изменение `agents.md` — только по явному поручению уполномоченного оператора.
+- Не включать legacy heartbeat и не создавать новые Worker/QMD/OLL coordinators.

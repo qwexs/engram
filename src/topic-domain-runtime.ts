@@ -297,6 +297,15 @@ export async function ensureTopicDomainRuntime(options: TopicDomainRuntimeOption
     throw new Error("topic domain registry entry is missing or changed");
   }
   const projection = resolveMemoryObservationProjection({ workspace, workspaceId });
+  // Model-only execution profiles pin the complete projection authority and
+  // exact scope set. Changing the topic projection without a reviewed profile
+  // bridge would invalidate existing Worker execution after host/QMD mutations.
+  // No additive-scope bridge exists in this profile contract yet: fail before
+  // changing any shared configuration instead of publishing a broken contour.
+  if (existsSync(join(workspace, "memory-state/memory-observation/execution-profiles.json"))
+    && !activeAlready(projection, options.domain, topic.chatId, topic.topicId)) {
+    throw Error("TOPIC_EXECUTION_PROFILE_SCOPE_EXTENSION_REQUIRED");
+  }
   if (!(mainTopics ? ["engram.memory-observation-rollout.v3", "engram.memory-observation-rollout.v6"].includes(projection.schema) : projection.schema === "engram.memory-observation-rollout.v4")) {
     throw new Error(projection.schema === "engram.memory-observation-rollout.v5"
       ? "group-direct workspace does not support Telegram topics"

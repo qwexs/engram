@@ -118,6 +118,24 @@ afterEach(() => {
 });
 
 describe("topic-domain runtime", () => {
+  test("model-only execution profiles block a new scope before host, QMD or projection changes", async () => {
+    const f = fixture();
+    const projectionPath = join(f.workspace, "memory-state/memory-observation/projection.json");
+    const before = readFileSync(projectionPath, "utf8"), manifestBefore = readFileSync(f.globalManifestPath, "utf8");
+    const profilePath = join(f.workspace, "memory-state/memory-observation/execution-profiles.json");
+    // Presence alone is a sufficient fail-closed guard; do not reinterpret or
+    // rewrite even an unknown/corrupt profile registry during topic provisioning.
+    json(profilePath, { schema: "engram.memory-execution-profiles.v1", exactScopes: "pinned" });
+    const profilesBefore = readFileSync(profilePath, "utf8");
+    await expect(ensureTopicDomainRuntime({ workspace: f.workspace, domain: "project-new", chatId: "-1001", topicId: "2",
+      gatewayCall: async () => { throw Error("host mutation must not run"); },
+      registerCollection: async () => { throw Error("QMD mutation must not run"); },
+    })).rejects.toThrow("TOPIC_EXECUTION_PROFILE_SCOPE_EXTENSION_REQUIRED");
+    expect(readFileSync(projectionPath, "utf8")).toBe(before);
+    expect(readFileSync(profilePath, "utf8")).toBe(profilesBefore);
+    expect(readFileSync(f.globalManifestPath, "utf8")).toBe(manifestBefore);
+  });
+
   test("non-main topic creation archives a completed model migration and repeat stays readable", async () => {
     const f = fixture();
     const projectionPath = join(f.workspace, "memory-state/memory-observation/projection.json");

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **fix(domains): reject unbridged scope changes for model-only execution profiles.**
+  Topic setup now fails before host/QMD/projection mutations when a new exact
+  scope would invalidate the pinned execution-profile registry. The current
+  model-only profile contract has no additive-authority bridge; do not remove
+  profiles, rewrite old revisions or report scaffolds as working memory.
+
 - **fix(memory): recognize receipt-backed daily effects during administrative model drain.**
   A retained observation need not retain its expired operational queue. The
   transition-retirement preflight verifies both immutable receipt aliases,

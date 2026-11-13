@@ -51,6 +51,19 @@ function readRegistry() {
 }
 
 describe("add-domain.js — ISS-9 A7 cadenceAdaptive default", () => {
+  test("explicit absolute workspace is honored from an unrelated cwd; relative targets fail before writes", () => {
+    const foreign = mkdtempSync(join(tmpdir(), "engram-unrelated-caller-"));
+    try {
+      const run = target => Bun.spawnSync(["bun", ADD_DOMAIN, "--workspace", target, "--domain", "explicit-target", "--type", "topic-thread", "--topic", "-1009999999:49", "--pending"], {
+        cwd: foreign, env: {...process.env, ENGRAM_QMD: FAKE_QMD}, stdout: "pipe", stderr: "pipe",
+      });
+      expect(run("relative-target").exitCode).toBe(1);
+      expect(existsSync(join(foreign,"memory"))).toBe(false);
+      expect(run(workspace).exitCode).toBe(0);
+      expect(existsSync(join(workspace,"memory/domains/explicit-target/agents.md"))).toBe(true);
+      expect(existsSync(join(foreign,"memory"))).toBe(false);
+    } finally { rmSync(foreign,{recursive:true,force:true}); }
+  });
   test("topic instructions use exact collections, explicit workspace and ownership-aware capture", () => {
     const result = runAddDomain(["--domain", "current-rules", "--type", "topic-thread", "--topic", "-1009999999:46", "--pending", "--description", "Topic role"]);
     expect(result.exitCode).toBe(0);

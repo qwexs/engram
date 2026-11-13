@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **fix(domains): honor an explicit absolute workspace in add-domain.**
+  Do not silently provision the caller's CWD when the operator supplied
+  `--workspace`; reject relative targets before writes. CWD-only invocations
+  remain supported for compatibility.
+
 - **fix(domains): complete additive topic authority for model-only profiles.**
   Preserve immutable revisions, pending jobs, historical model lineage and
   selected model/thinking while publishing new exact-scope defaults. Validate

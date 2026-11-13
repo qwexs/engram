@@ -6,7 +6,7 @@
 import { parseArgs } from 'node:util';
 import { mkdirSync, readdirSync, existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { findLatestDailyNoteWithContent, parseMarkdownSections, buildAutoDerivedStatus } from './_lib/auto-derive-status.js';
-import { join, resolve, dirname, basename } from 'node:path';
+import { join, resolve, dirname, basename, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addQmdCollection } from './_lib/qmd-provision.js';
 import { ensureTopicDomainRuntime, hasActiveTopicMemoryWorker } from '../src/topic-domain-runtime.ts';
@@ -14,6 +14,7 @@ import { ensureTopicDomainRuntime, hasActiveTopicMemoryWorker } from '../src/top
 const { values: args } = parseArgs({
   options: {
     'domain': { type: 'string' },
+    'workspace': { type: 'string' },
     'description': { type: 'string', default: '' },
     'type': { type: 'string', default: 'dev-project' },
     'kg-entity': { type: 'string', default: '' },
@@ -45,6 +46,7 @@ Usage:
 
 Options:
   --domain <name>            Имя домена (латиница, дефисы)
+  --workspace <absolute>     Целевой workspace; по умолчанию текущий каталог.
   --description <text>       Описание домена
   --type <type>              Тип домена:
                                dev-project    — development project (default)
@@ -135,7 +137,11 @@ const createTelegramTopic = args['create-telegram-topic'];
 const telegramChatIdArg = args['telegram-chat-id'];
 const telegramIconColor = args['telegram-icon-color'];
 const pending = args.pending;
-const WORKSPACE = process.cwd();
+if (args.workspace && !isAbsolute(args.workspace)) {
+  console.error('❌ --workspace должен быть абсолютным путём.');
+  process.exit(1);
+}
+const WORKSPACE = args.workspace ? resolve(args.workspace) : process.cwd();
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = process.env.ENGRAM_SKILL_DIR || resolve(SCRIPT_DIR, '..');
 const TEMPLATES = join(SKILL_DIR, 'templates', 'domain');

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RegistrySnapshotV1, WorkspaceRegistryAdapter } from "../src/oll/contracts";
 import { discoverNightlyWorkspaces } from "../src/oll/nightly-discovery";
-import { buildNightlyContext, determineNightlyWindow, preflightNightlyContext } from "../src/oll/nightly-context";
+import { buildCandidateAwareNightlyContext, buildNightlyContext, determineNightlyWindow, preflightNightlyContext } from "../src/oll/nightly-context";
 import { sha256Digest } from "../src/oll/handoff-v2";
 
 const roots: string[] = [];
@@ -205,6 +205,41 @@ describe("PR 5 deterministic nightly context and preflight", () => {
       schema: "oll.nightly-preflight.v1", actionable: false, reasons: [],
       counts: { signals: 0, observations: 0, tensions: 0, rules: 0 }, score: 0,
     });
+  });
+
+  test("candidate duplicate checks use only active rules of the exact topic in a mixed batch", () => {
+    const snapshotAt = "2026-08-14T23:00:00.000Z";
+    const legacy = {
+      schema: "oll.nightly-context.v1" as const, workspaceId: "main", snapshotAt,
+      window: { mode: "daily" as const, timezone: "UTC", windowStart: null, windowEnd: snapshotAt },
+      priorEvaluationAt: null, signalRevisions: {}, signals: [], observations: [], tensions: [],
+      rules: [
+        { id: "general-rule", scope: { level: "domain", subject: "general" }, status: "active" },
+        { id: "design-rule", scope: { level: "domain", subject: "design" }, status: "active" },
+        { id: "project-rule", scope: { level: "workspace", subject: "main" }, status: "active" },
+        { id: "expired-rule", scope: { level: "domain", subject: "copy" }, status: "active", expiresAt: snapshotAt },
+        { id: "suspended-rule", scope: { level: "domain", subject: "copy" }, status: "suspended" },
+      ],
+      contextDigest: sha256Digest("legacy"),
+    };
+    const memoryCandidates = ["general", "design", "copy"].map((subject) => ({
+      candidateId: sha256Digest(subject),
+      revision: 1,
+      evidenceSetDigest: sha256Digest("evidence"),
+      semanticKey: sha256Digest("rule"),
+      effectiveScope: { level: "domain" as const, subject },
+      canonicalStatement: "Use a concise response.",
+      ranking: {
+        schema: "oll.memory-candidate-ranking.v1" as const, score: 80, baseScore: 70,
+        recencyBoost: 10, distinctRootBoost: 0, decayPenalty: 0, accessCount: 0,
+        decayTier: null, reasons: [], policyDigest: sha256Digest("policy"),
+      },
+    }));
+    const context = buildCandidateAwareNightlyContext({ legacy, candidateCompiler: null, memoryCandidates });
+    expect(Object.fromEntries(context.memoryCandidates.map((candidate) => [
+      candidate.effectiveScope.subject, candidate.topicRuleIds,
+    ]))).toEqual({ general: ["general-rule"], design: ["design-rule"], copy: [] });
+    expect(context.rules).toEqual(legacy.rules);
   });
 
   test("defense in depth keeps even a forged candidate-aware shadow context inert", () => {

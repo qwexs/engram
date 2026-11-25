@@ -274,6 +274,7 @@ export function buildRethinkProposalPromptV3(input: {
     "Behavioral sourceSignals retain their frozen authorization contract.",
     "Memory sourceCandidates are evidence only: any action citing one MUST be propose_rule. The deterministic applicator, not the model, decides immediate activation and notification from the frozen workspace mode.",
     "Every context candidate MUST receive exactly one consumed, ignored, or deferred disposition. consumed means cited by a proposal; ignored means not useful; deferred means genuinely awaiting more evidence.",
+    "For a domain memory candidate, compare only the rules identified by its topicRuleIds when checking for duplicates. An empty list means no active rule in that topic. Do not treat another topic or a workspace rule as a duplicate. If topicRuleIds is absent in an older snapshot, use only active rules with the exact same domain scope.",
     "Never broaden a candidate scope ceiling. Candidate evidence never authorizes activation, KG writes, external actions, source-code changes, or infrastructure changes.",
     ...(input.policyBoundaries || [
       "proposal-only: do not edit files except the exact handoff target",

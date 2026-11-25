@@ -54,6 +54,7 @@ export interface NightlyContextV2 {
     effectiveScope: CandidateScope;
     canonicalStatement: string;
     ranking: RankingSnapshotV1;
+    topicRuleIds?: string[];
   }>;
   observations: JsonObject[];
   tensions: JsonObject[];
@@ -173,7 +174,7 @@ export function buildNightlyContext(options: {
     .sort((a, b) => String(a.id).localeCompare(String(b.id)));
   const rules = records(join(workspace, "memory-state", "oll", "rules"))
     .filter((rule) => options.window.mode === "weekly" || ["active", "rejected", "suspended"].includes(rule.status))
-    .map(({ id, scope, rule, risk, status, revision, activatedAt, supersededBy, contentDigest }) => ({ id, scope, rule, risk, status, revision, activatedAt, supersededBy, contentDigest }))
+    .map(({ id, scope, rule, risk, status, revision, activatedAt, expiresAt, supersededBy, contentDigest }) => ({ id, scope, rule, risk, status, revision, activatedAt, ...(expiresAt ? { expiresAt } : {}), supersededBy, contentDigest }))
     .sort((a, b) => String(a.id).localeCompare(String(b.id)));
   const signalRevisions = Object.fromEntries(signals.map((signal) => [signal.id, signal.revision]));
   const base = {
@@ -197,7 +198,17 @@ export function buildCandidateAwareNightlyContext(options: {
   memoryCandidates: NightlyContextV2["memoryCandidates"];
 }): NightlyContextV2 {
   const { contextDigest: _legacyDigest, ...legacy } = options.legacy;
-  const candidates = [...options.memoryCandidates].sort((left, right) => left.candidateId.localeCompare(right.candidateId));
+  const candidates = options.memoryCandidates.map((candidate) => {
+    if (candidate.effectiveScope.level !== "domain") return candidate;
+    const topicRuleIds = legacy.rules
+      .filter((rule) => rule.scope?.level === "domain"
+        && rule.scope.subject === candidate.effectiveScope.subject
+        && rule.status === "active"
+        && (!rule.expiresAt || Date.parse(rule.expiresAt) > Date.parse(legacy.snapshotAt)))
+      .map((rule) => rule.id)
+      .sort();
+    return { ...candidate, topicRuleIds };
+  }).sort((left, right) => left.candidateId.localeCompare(right.candidateId));
   const base = {
     ...legacy,
     schema: "oll.nightly-context.v2" as const,

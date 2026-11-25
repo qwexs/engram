@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RegistrySnapshotV1, WorkspaceRegistryAdapter } from "../src/oll/contracts";
 import { discoverNightlyWorkspaces } from "../src/oll/nightly-discovery";
-import { buildCandidateAwareNightlyContext, buildNightlyContext, determineNightlyWindow, preflightNightlyContext } from "../src/oll/nightly-context";
+import { buildCandidateAwareNightlyContext, buildNightlyContext, determineNightlyWindow, frozenTopicRuleIdsByCandidate, preflightNightlyContext, validateLiveTopicDuplicate } from "../src/oll/nightly-context";
 import { sha256Digest } from "../src/oll/handoff-v2";
 
 const roots: string[] = [];
@@ -240,6 +240,21 @@ describe("PR 5 deterministic nightly context and preflight", () => {
       candidate.effectiveScope.subject, candidate.topicRuleIds,
     ]))).toEqual({ general: ["general-rule"], design: ["design-rule"], copy: [] });
     expect(context.rules).toEqual(legacy.rules);
+    // Old snapshots have no per-topic list, but are not permission to use sibling or global rules.
+    const old = { ...context, memoryCandidates };
+    const candidateId = sha256Digest("general");
+    expect(frozenTopicRuleIdsByCandidate(old)[candidateId]).toEqual(["general-rule"]);
+    expect(frozenTopicRuleIdsByCandidate(old)[sha256Digest("copy")]).toEqual([]);
+    const workspace = mkdtempSync(join(tmpdir(), "engram-rule-proof-"));
+    roots.push(workspace);
+    const path = join(workspace, "memory-state", "oll", "rules", "general-rule.json");
+    const rule = { ...legacy.rules[0], workspaceId: "main" };
+    write(path, rule);
+    expect(() => validateLiveTopicDuplicate(workspace, old, candidateId, "general-rule", snapshotAt)).not.toThrow();
+    for (const change of [{ status: "suspended" }, { expiresAt: snapshotAt }, { revision: 2 }, { scope: { level: "domain", subject: "design" } }]) {
+      write(path, { ...rule, ...change });
+      expect(() => validateLiveTopicDuplicate(workspace, old, candidateId, "general-rule", snapshotAt)).toThrow("no longer active");
+    }
   });
 
   test("defense in depth keeps even a forged candidate-aware shadow context inert", () => {

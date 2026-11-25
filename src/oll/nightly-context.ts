@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { canonicalizeJcs, Digest, sha256Digest } from "./handoff-v2";
 import type { MemoryCandidateReportV1 } from "./memory-candidates";
 import type { CandidateScope, RankingSnapshotV1 } from "./memory-candidate-contracts-v2";
@@ -192,6 +192,41 @@ export function buildNightlyContext(options: {
   return { ...base, contextDigest: sha256Digest(canonicalizeJcs(base)) };
 }
 
+function activeTopicRule(rule: JsonObject, topic: string, at: string): boolean {
+  return rule.scope?.level === "domain" && rule.scope.subject === topic
+    && rule.status === "active" && !rule.supersededBy
+    && (!rule.activatedAt || Date.parse(rule.activatedAt) <= Date.parse(at))
+    && (!rule.expiresAt || Date.parse(rule.expiresAt) > Date.parse(at));
+}
+
+/** Reconstruct from frozen rules when resuming a snapshot predating topicRuleIds. */
+export function frozenTopicRuleIdsByCandidate(context: NightlyContextV2): Record<string, string[]> {
+  const result: Record<string, string[]> = {};
+  for (const candidate of context.memoryCandidates) {
+    if (candidate.effectiveScope.level !== "domain") continue;
+    const active = context.rules.filter((rule) => activeTopicRule(rule, candidate.effectiveScope.subject, context.snapshotAt));
+    const allowed = candidate.topicRuleIds;
+    result[candidate.candidateId] = active.filter((rule) => !allowed || allowed.includes(rule.id)).map((rule) => rule.id);
+  }
+  return result;
+}
+
+/** A frozen match cannot dismiss a candidate if the covering rule has since changed. */
+export function validateLiveTopicDuplicate(workspace: string, context: NightlyContextV2, candidateId: Digest, ruleId: string, now: string): void {
+  const candidate = context.memoryCandidates.find((row) => row.candidateId === candidateId);
+  const frozen = context.rules.find((row) => row.id === ruleId);
+  if (candidate?.effectiveScope.level !== "domain" || !frozen || !activeTopicRule(frozen, candidate.effectiveScope.subject, context.snapshotAt)) {
+    throw new Error("duplicate rule is not active in the frozen candidate topic");
+  }
+  if (basename(ruleId) !== ruleId) throw new Error("invalid duplicate rule ID");
+  const path = join(workspace, "memory-state", "oll", "rules", ruleId + ".json");
+  const live = existsSync(path) ? readObject(path) : null;
+  if (!live || live.id !== ruleId || live.workspaceId !== context.workspaceId || !activeTopicRule(live, candidate.effectiveScope.subject, now)
+    || live.revision !== frozen.revision || live.rule !== frozen.rule) {
+    throw new Error("duplicate rule changed or is no longer active in the candidate topic");
+  }
+}
+
 export function buildCandidateAwareNightlyContext(options: {
   legacy: NightlyContextV1;
   candidateCompiler: NonNullable<NightlyContextV2["candidateCompiler"]>;
@@ -201,10 +236,7 @@ export function buildCandidateAwareNightlyContext(options: {
   const candidates = options.memoryCandidates.map((candidate) => {
     if (candidate.effectiveScope.level !== "domain") return candidate;
     const topicRuleIds = legacy.rules
-      .filter((rule) => rule.scope?.level === "domain"
-        && rule.scope.subject === candidate.effectiveScope.subject
-        && rule.status === "active"
-        && (!rule.expiresAt || Date.parse(rule.expiresAt) > Date.parse(legacy.snapshotAt)))
+      .filter((rule) => activeTopicRule(rule, candidate.effectiveScope.subject, legacy.snapshotAt))
       .map((rule) => rule.id)
       .sort();
     return { ...candidate, topicRuleIds };

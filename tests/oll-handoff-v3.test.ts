@@ -140,6 +140,24 @@ function handoff(env: ReturnType<typeof setup>, overrides: Record<string, unknow
 }
 
 describe("OLL rethink handoff v3", () => {
+  test("a domain duplicate requires structured proof from the exact topic; non-reusable evidence can still be ignored", () => {
+    const env = setup();
+    const candidateId = env.candidate.candidateId;
+    const local = randomUUID(), neighbor = randomUUID();
+    const expected = { ...env.expected, topicRuleIdsByCandidate: { [candidateId]: [local] } };
+    const parseIgnore = (fields: Partial<RethinkHandoffV3["candidateDispositions"][number]>) => {
+      const disposition = { candidateId, expectedRevision: 1, disposition: "ignored" as const, rationale: "Evaluation of evidence.", ...fields };
+      const body = { ...handoff(env), actions: [], candidateDispositions: [disposition] };
+      const value = { ...body, handoffDigest: computeHandoffDigestV3(body) };
+      return parseRethinkHandoffV3(JSON.stringify(value), expected, expected.expectedHandoffPath);
+    };
+    expect(() => parseIgnore({ rationale: "Уже покрыто правилом соседнего топика." })).toThrow("explicit ignoreReason");
+    expect(() => parseIgnore({ ignoreReason: "duplicate" })).toThrow("duplicateRuleId");
+    expect(() => parseIgnore({ ignoreReason: "duplicate", duplicateRuleId: neighbor })).toThrow("exact candidate topic");
+    expect(() => parseIgnore({ ignoreReason: "not_reusable", duplicateRuleId: local })).toThrow("requires ignoreReason duplicate");
+    expect(parseIgnore({ ignoreReason: "duplicate", duplicateRuleId: local }).candidateDispositions[0].duplicateRuleId).toBe(local);
+    expect(parseIgnore({ ignoreReason: "not_reusable" }).candidateDispositions[0].disposition).toBe("ignored");
+  });
   test("materializes candidate-only proposals as mandatory review and consumes the candidate exactly once", () => {
     const env = setup();
     write(env.expected.expectedHandoffPath, handoff(env));

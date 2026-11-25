@@ -31,11 +31,11 @@ import {
   candidateEffectPayloadDigest,
   candidateReservationId,
   candidateReviewOutcomeId,
-  scopeContains,
   validateCandidateApplyPlanV1,
   validateCandidateReviewOutcomeV1,
   type CandidateApplyPlanV1,
   type CandidatePlannedEffectV1,
+  type CandidateProjectionV1,
   type CandidateReservationV1,
   type CandidateReviewOutcomeV1,
   type CandidateScope,
@@ -289,7 +289,7 @@ function buildPlan(options: {
   if (!consumed.length) return null;
   const consumedIds = consumed.map((entry) => entry.candidateId).sort();
   const actions = options.handoff.actions.filter((action) => action.payload.sourceCandidates.length > 0);
-  invariant(actions.length === 1 && actions.every((action) => equalIds(action.payload.sourceCandidates, consumedIds)), "Phase 4 candidate applicator requires one candidate-derived action citing the exact consumed set");
+  invariant(equalIds(actions.flatMap((action) => action.payload.sourceCandidates), consumedIds), "candidate proposals must partition the exact consumed set");
   invariant(options.handoff.actions.every((action) => action.payload.sourceCandidates.length > 0), "isolated candidate applicator rejects mixed legacy actions");
   const candidateRevisions = Object.fromEntries(consumed.sort((a, b) => a.candidateId.localeCompare(b.candidateId)).map((entry) => [entry.candidateId, entry.expectedRevision]));
   const candidateScopes: Record<string, CandidateScope> = {};
@@ -301,7 +301,10 @@ function buildPlan(options: {
     evidenceDigests[candidateId] = projection.cluster.evidenceSetDigest;
   }
   const operationId = sha256Digest(canonicalizeJcs({ schema: "oll.memory-candidate-apply-operation.v1", handoffDigest: options.handoff.handoffDigest, candidateRevisions }));
-  const effects = actions.flatMap((action) => buildEffects(operationId, action, candidateRevisions, options.optimisticApply === true));
+  const effects = actions.flatMap((action) => {
+    const revisions = Object.fromEntries(action.payload.sourceCandidates.map((id) => [id, candidateRevisions[id]]));
+    return buildEffects(operationId, action, revisions, options.optimisticApply === true);
+  });
   const prePlan = {
     schema: MEMORY_CANDIDATE_APPLY_PLAN_V1_SCHEMA,
     planId: sha256Digest("candidate-plan-placeholder"),
@@ -335,9 +338,6 @@ function buildPlan(options: {
   const plan = { ...prePlan, planId, reservations } as CandidateApplyPlanV1;
   const context = { scopeRegistry: options.scopeRegistry, candidateScopes };
   validateCandidateApplyPlanV1(plan, context);
-  for (const effect of effects) for (const candidateId of Object.keys(candidateRevisions)) {
-    invariant(scopeContains(options.scopeRegistry, candidateScopes[candidateId], effect.effectiveScope), "candidate action scope exceeds candidate scope");
-  }
   return { plan, context };
 }
 
@@ -350,7 +350,9 @@ export type CandidateApplyFaultPoint =
   | "after_all_reservations"
   | "after_effect_publication"
   | "after_effect_commit"
-  | "after_review_pending";
+  | "after_review_pending"
+  | "after_rule_activation"
+  | "after_candidate_finalization";
 
 interface RuleProposalRecordV1 {
   schema: typeof RULE_PROPOSAL_SCHEMA;
@@ -450,6 +452,13 @@ function updatePlan(plan: CandidateApplyPlanV1, patch: Partial<CandidateApplyPla
   return { ...plan, ...patch, planId: plan.planId, updatedAt: now };
 }
 
+function appliedByPlan(projection: CandidateProjectionV1 | null, plan: CandidateApplyPlanV1, reservation: CandidateReservationV1): boolean {
+  return projection?.highestContiguousRevision === reservation.expectedRevision + 2
+    && projection.cluster.lifecycle.status === "evaluated"
+    && projection.cluster.lifecycle.reasonCode === "optimistic_apply"
+    && projection.cluster.lifecycle.correlationId === plan.operationId;
+}
+
 export function applyCandidateHandoffV3(options: {
   workspace: string;
   workspaceId: string;
@@ -458,7 +467,8 @@ export function applyCandidateHandoffV3(options: {
   now: string;
   optimisticApply?: boolean;
   stateRoot?: string;
-  notificationSession?: string;
+  notificationSession?: string; // Compatibility with single-proposal callers.
+  resolveNotificationSession?: (scope: CandidateScope) => string;
   liveRevalidate: (input: { plan: CandidateApplyPlanV1; candidateScopes: Readonly<Record<string, CandidateScope>> }) => void;
   faultInjector?: (point: CandidateApplyFaultPoint) => void;
 }): CandidateApplyPlanV1 | null {
@@ -467,6 +477,10 @@ export function applyCandidateHandoffV3(options: {
   if (!built) {
     for (const disposition of options.handoff.candidateDispositions) {
       const projection = readCandidateProjectionV1({ workspace: options.workspace, workspaceId: options.workspaceId, candidateId: disposition.candidateId });
+      const target = disposition.disposition === "ignored" ? "dismissed" : "deferred";
+      if (projection?.highestContiguousRevision === disposition.expectedRevision + 1
+        && projection.cluster.lifecycle.status === target
+        && projection.cluster.lifecycle.correlationId === options.handoff.handoffDigest) continue;
       invariant(projection?.highestContiguousRevision === disposition.expectedRevision
         && projection.cluster.lifecycle.status === "pending"
         && projection.reservation === null, "new candidate handoff requires exact pending disposition revisions");
@@ -486,15 +500,28 @@ export function applyCandidateHandoffV3(options: {
       && projection.cluster.lifecycle.status === "pending"
       && projection.reservation === null, "new candidate apply plan requires exact pending disposition revisions");
   }
+  if (existing?.status === "terminal") return existing;
+  const proposals = built.plan.effects.filter((effect) => effect.type === "rule_proposal");
+  const sessions = new Map<Digest, string>();
+  if (options.optimisticApply) {
+    invariant(options.stateRoot, "optimistic candidate apply requires stateRoot");
+    for (const proposal of proposals) {
+      const session = options.resolveNotificationSession?.(proposal.effectiveScope)
+        ?? (proposals.length === 1 ? options.notificationSession : undefined);
+      invariant(session, "optimistic candidate apply requires a notification session per proposal");
+      sessions.set(proposal.actionId, session);
+    }
+  }
   let plan = existing || appendPlan(root, built.plan, context);
-  if (plan.status === "terminal") return plan;
   invariant(!["quarantined", "cancelled"].includes(plan.status), `candidate apply plan is ${plan.status}`);
   options.faultInjector?.("after_plan_intent");
   if (plan.status === "intent_recorded") plan = appendPlan(root, updatePlan(plan, { status: "reserving", reasonCode: "reservation_acquired" }, options.now), context);
   let anyEffect = Object.values(plan.effectCommits).some((commit) => commit.status === "committed") || plan.effects.some((effect) => effectArtifactExists(root, effect));
+  const effectsAlreadyCommitted = Object.values(plan.effectCommits).every((commit) => commit.status === "committed");
   try {
     for (const [index, reservation] of plan.reservations.entries()) {
       const projection = readCandidateProjectionV1({ workspace: options.workspace, workspaceId: options.workspaceId, candidateId: reservation.candidateId });
+      if (effectsAlreadyCommitted && appliedByPlan(projection, plan, reservation)) continue;
       if (!(projection?.cluster.lifecycle.status === "review_pending" && projection.cluster.lifecycle.reservationOwner === plan.planId)) {
         reserveCandidateV1({
           workspace: options.workspace,
@@ -509,13 +536,13 @@ export function applyCandidateHandoffV3(options: {
       if (index === 0) options.faultInjector?.("after_first_reservation");
     }
     options.faultInjector?.("after_all_reservations");
-    const effectsAlreadyCommitted = Object.values(plan.effectCommits).every((commit) => commit.status === "committed");
     if (!effectsAlreadyCommitted) {
       invariant(typeof options.liveRevalidate === "function", "candidate pre-effect live revalidation is required");
       options.liveRevalidate({ plan, candidateScopes: context.candidateScopes });
     }
     for (const reservation of plan.reservations) {
       const projection = readCandidateProjectionV1({ workspace: options.workspace, workspaceId: options.workspaceId, candidateId: reservation.candidateId });
+      if (effectsAlreadyCommitted && appliedByPlan(projection, plan, reservation)) continue;
       const allowedStatus = effectsAlreadyCommitted ? ["reserved", "review_pending"] : ["reserved"];
       invariant(projection && allowedStatus.includes(projection.cluster.lifecycle.status)
         && projection.cluster.lifecycle.reservationOwner === plan.planId
@@ -534,53 +561,49 @@ export function applyCandidateHandoffV3(options: {
       }, options.now), context);
       options.faultInjector?.("after_effect_commit");
     }
-    const review = plan.effects.find((effect): effect is Extract<CandidatePlannedEffectV1, { type: "mandatory_review" }> => effect.type === "mandatory_review");
-    if (options.optimisticApply === true) {
-      invariant(!review && options.stateRoot && options.notificationSession, "optimistic candidate apply requires stateRoot and notificationSession");
-      const proposal = plan.effects.find((effect): effect is Extract<CandidatePlannedEffectV1, { type: "rule_proposal" }> => effect.type === "rule_proposal");
-      invariant(proposal && proposal.payload.reviewRequired === false, "optimistic candidate apply requires a no-review proposal");
-      const action = options.handoff.actions.find((entry) => entry.actionId === proposal.actionId)!;
-      const scope = proposal.effectiveScope.level === "self"
-        ? { level: "person" as const, subject: proposal.effectiveScope.subject }
-        : { level: proposal.effectiveScope.level, subject: proposal.effectiveScope.subject };
-      activateCandidateRuleOptimistically({
-        workspace: options.workspace,
-        stateRoot: options.stateRoot,
-        scope,
-        rule: proposal.payload.ruleText,
-        sourceCandidates: Object.keys(proposal.candidateRevisions),
-        expectedImprovement: action.payload.expectedImprovement || "Применять подтверждённый памятью рабочий паттерн последовательно.",
-        costOfInaction: action.payload.costOfInaction || "Повторение ранее выявленной ошибки или непоследовательности.",
-        rollbackRef: `candidate-plan:${plan.planId}`,
-        runId: options.handoff.runId,
-        actionId: proposal.actionId,
-        operationId: plan.operationId,
-        planId: plan.planId,
-        batchId: plan.batchId,
-        notificationSession: options.notificationSession,
-        now: options.now,
-      });
-      for (const reservation of plan.reservations) markCandidateOptimisticAppliedV1({
-        workspace: options.workspace,
-        workspaceId: options.workspaceId,
-        planId: plan.planId,
-        candidateId: reservation.candidateId,
-        expectedRevision: reservation.expectedRevision + 1,
-        operationId: plan.operationId,
-        now: options.now,
-      });
-    } else {
-      invariant(review, "candidate apply plan lacks mandatory review");
-      for (const reservation of plan.reservations) markCandidateReviewPendingV1({
-        workspace: options.workspace,
-        workspaceId: options.workspaceId,
-        planId: plan.planId,
-        candidateId: reservation.candidateId,
-        expectedRevision: reservation.expectedRevision + 1,
-        reviewId: review.payload.reviewId,
-        now: options.now,
-      });
-      options.faultInjector?.("after_review_pending");
+    for (const proposal of proposals) {
+      if (options.optimisticApply) {
+        const action = options.handoff.actions.find((entry) => entry.actionId === proposal.actionId)!;
+        const scope = proposal.effectiveScope.level === "self"
+          ? { level: "person" as const, subject: proposal.effectiveScope.subject }
+          : { level: proposal.effectiveScope.level, subject: proposal.effectiveScope.subject };
+        activateCandidateRuleOptimistically({
+          workspace: options.workspace,
+          stateRoot: options.stateRoot!,
+          scope,
+          rule: proposal.payload.ruleText,
+          sourceCandidates: Object.keys(proposal.candidateRevisions),
+          expectedImprovement: action.payload.expectedImprovement || "Применять подтверждённый памятью рабочий паттерн последовательно.",
+          costOfInaction: action.payload.costOfInaction || "Повторение ранее выявленной ошибки или непоследовательности.",
+          rollbackRef: `candidate-plan:${plan.planId}`,
+          runId: options.handoff.runId,
+          actionId: proposal.actionId,
+          operationId: plan.operationId,
+          planId: plan.planId,
+          batchId: plan.batchId,
+          notificationSession: sessions.get(proposal.actionId)!,
+          perRuleNotification: proposals.length > 1,
+          now: options.now,
+        });
+        options.faultInjector?.("after_rule_activation");
+        for (const [id, revision] of Object.entries(proposal.candidateRevisions)) {
+          markCandidateOptimisticAppliedV1({
+            workspace: options.workspace, workspaceId: options.workspaceId, planId: plan.planId,
+            candidateId: id as Digest, expectedRevision: revision + 1, operationId: plan.operationId, now: options.now,
+          });
+          options.faultInjector?.("after_candidate_finalization");
+        }
+      } else {
+        const review = plan.effects.find((effect) => effect.type === "mandatory_review" && effect.actionId === proposal.actionId);
+        invariant(review?.type === "mandatory_review", "candidate proposal lacks mandatory review");
+        for (const [id, revision] of Object.entries(proposal.candidateRevisions)) {
+          markCandidateReviewPendingV1({
+            workspace: options.workspace, workspaceId: options.workspaceId, planId: plan.planId,
+            candidateId: id as Digest, expectedRevision: revision + 1, reviewId: review.payload.reviewId, now: options.now,
+          });
+        }
+        options.faultInjector?.("after_review_pending");
+      }
     }
     for (const disposition of options.handoff.candidateDispositions.filter((entry) => entry.disposition !== "consumed")) dispositionCandidateV1({
       workspace: options.workspace, workspaceId: options.workspaceId, candidateId: disposition.candidateId,

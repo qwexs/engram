@@ -23,6 +23,7 @@ import {
   type CandidateSourcePolicyV2,
 } from "../src/oll/memory-candidate-contracts-v2";
 import {
+  dispositionCandidateV1,
   materializeCandidateReportV2,
   readCandidateProjectionV1,
   reserveCandidateV1,
@@ -167,6 +168,17 @@ function handoff(input: ReturnType<typeof fixture>): RethinkHandoffV3 {
   return { ...base, handoffDigest: computeHandoffDigestV3(base as RethinkHandoffV3) };
 }
 
+function separateRules(input: ReturnType<typeof fixture>): RethinkHandoffV3 {
+  const value = handoff(input);
+  const template = value.actions[0];
+  value.actions = template.payload.sourceCandidates.map((id, index) => {
+    const action = { ...template, payload: { ...template.payload, sourceCandidates: [id], rule: `Keep evidence for rule ${index + 1}.` } };
+    return { ...action, actionId: computeActionIdV3(value.evaluationId, index, action) };
+  });
+  value.handoffDigest = computeHandoffDigestV3(value);
+  return value;
+}
+
 function splitDispositionHandoff(input: ReturnType<typeof fixture>): RethinkHandoffV3 {
   const original = handoff(input);
   const candidateIds = Object.keys(input.context.candidateRevisions).sort() as Digest[];
@@ -202,6 +214,26 @@ const ACTOR: TrustedActorContext = {
   trusted: true, channel: "telegram", accountId: "default", actorId: "actor-1", contextKind: "direct",
 };
 const LIVE_REVALIDATE = () => {};
+
+test("disposition-only replay resumes partial dismissal by the same handoff without double-writing", () => {
+  const env = fixture();
+  const value = handoff(env);
+  value.actions = [];
+  for (const item of value.candidateDispositions) item.disposition = "ignored";
+  value.handoffDigest = computeHandoffDigestV3(value);
+  const options = { workspace: env.root, workspaceId: "main", handoff: value, scopeRegistry: env.scopeRegistry, now: NOW, liveRevalidate: LIVE_REVALIDATE };
+  const first = value.candidateDispositions[0];
+  dispositionCandidateV1({ ...options, candidateId: first.candidateId, expectedRevision: first.expectedRevision,
+    disposition: "ignored", correlationId: value.handoffDigest });
+  expect(applyCandidateHandoffV3(options)).toBeNull();
+  expect(applyCandidateHandoffV3(options)).toBeNull();
+  for (const item of value.candidateDispositions) {
+    expect(readCandidateProjectionV1({ ...options, candidateId: item.candidateId })?.highestContiguousRevision).toBe(item.expectedRevision + 1);
+  }
+  const changed = { ...value, createdAt: "2026-08-15T00:00:00Z" };
+  changed.handoffDigest = computeHandoffDigestV3(changed);
+  expect(() => applyCandidateHandoffV3({ ...options, handoff: changed })).toThrow("exact pending disposition revisions");
+});
 
 function pendingReview(root: string): any {
   const runtime = candidateRuntimePathsV1(root).root;
@@ -294,6 +326,127 @@ describe("OLL memory candidate Phase 4 runtime", () => {
     })!;
     expect(replay.planId).toBe(plan.planId);
     expect(readdirSync(rulesDirectory)).toHaveLength(1);
+  });
+
+  for (const crashPoint of ["after_rule_activation", "after_candidate_finalization"] as const) {
+    test(`recovers both independent rules exactly once after ${crashPoint}`, () => {
+      const input = fixture(2);
+      const value = separateRules(input);
+      const run = {
+        workspace: input.root, workspaceId: "main", handoff: value, scopeRegistry: input.scopeRegistry,
+        optimisticApply: true, stateRoot: join(input.root, "state-root"), now: NOW,
+        resolveNotificationSession: () => "telegram-direct-42", liveRevalidate: LIVE_REVALIDATE,
+      };
+      mkdirSync(run.stateRoot, { recursive: true });
+      writeJson(join(input.root, "engram.json"), { workspace: { id: "main" }, oll: { adaptation: { mode: "active" } } });
+      expect(() => applyCandidateHandoffV3({
+        ...run, faultInjector(point) { if (point === crashPoint) throw new CandidateApplySimulatedCrash("crash"); },
+      })).toThrow(CandidateApplySimulatedCrash);
+      expect(listPendingRuleActivationNotifications(run)).toHaveLength(1);
+
+      const plan = applyCandidateHandoffV3({ ...run, now: "2026-08-14T15:05:00Z" });
+      expect(plan?.status).toBe("terminal");
+      expect(applyCandidateHandoffV3(run)?.planId).toBe(plan?.planId);
+      const notices = listPendingRuleActivationNotifications(run);
+      expect(notices).toHaveLength(2);
+      const ruleRoot = join(input.root, "memory-state", "oll", "rules");
+      expect(readdirSync(ruleRoot)).toHaveLength(2);
+      for (const notice of notices) {
+        const rule = JSON.parse(readFileSync(join(ruleRoot, `${notice.items[0].ruleId}.json`), "utf8"));
+        expect(rule.revision).toBe(1);
+        expect(rule.sourceCandidates).toEqual(value.actions.find(a => a.actionId === rule.decision.actionId)?.payload.sourceCandidates);
+        const projection = readCandidateProjectionV1({ ...run, candidateId: rule.sourceCandidates[0] });
+        expect(projection?.cluster.lifecycle.status).toBe("evaluated");
+        expect(projection?.highestContiguousRevision).toBe(input.context.candidateRevisions[rule.sourceCandidates[0]] + 2);
+      }
+    });
+  }
+
+  test("recovers separate review assignments without claiming a sibling action's evidence", () => {
+    const input = fixture(2);
+    const value = separateRules(input);
+    const run = {
+      workspace: input.root, workspaceId: "main", handoff: value, scopeRegistry: input.scopeRegistry,
+      now: NOW, liveRevalidate: LIVE_REVALIDATE,
+    };
+    expect(() => applyCandidateHandoffV3({
+      ...run, faultInjector(point) { if (point === "after_review_pending") throw new CandidateApplySimulatedCrash("crash"); },
+    })).toThrow(CandidateApplySimulatedCrash);
+    const plan = applyCandidateHandoffV3(run)!;
+    expect(plan.status).toBe("terminal");
+    expect(plan.effects).toHaveLength(4);
+    for (const effect of plan.effects) {
+      if (effect.type !== "mandatory_review") continue;
+      const [id] = value.actions.find(a => a.actionId === effect.actionId)!.payload.sourceCandidates;
+      expect(Object.keys(effect.candidateRevisions)).toEqual([id]);
+      expect(readCandidateProjectionV1({ ...run, candidateId: id })?.cluster.lifecycle.correlationId).toBe(effect.payload.reviewId);
+    }
+  });
+
+  test("reverting one notification in a multi-rule plan leaves its sibling active and independently addressable", () => {
+    const input = fixture(2);
+    const run = {
+      workspace: input.root, workspaceId: "main", handoff: separateRules(input), scopeRegistry: input.scopeRegistry,
+      stateRoot: join(input.root, "state-root"), now: NOW, optimisticApply: true,
+      resolveNotificationSession: () => "telegram-direct-42", liveRevalidate: LIVE_REVALIDATE,
+    };
+    mkdirSync(run.stateRoot, { recursive: true });
+    writeJson(join(input.root, "engram.json"), { workspace: { id: "main" }, oll: { adaptation: { mode: "active" } } });
+    applyCandidateHandoffV3(run);
+    const notices = listPendingRuleActivationNotifications(run);
+    expect(notices).toHaveLength(2);
+    const messages = notices.map((notice, index) => acknowledgeRuleActivationNotification({
+      workspace: input.root, notificationId: notice.notificationId, messageId: String(201 + index), now: NOW,
+    }));
+    suspendRulesFromNotification({ ...run, replyMessageId: messages[0].messageId!, itemNumbers: [1] });
+    const states = notices.map(notice => JSON.parse(readFileSync(join(input.root, "memory-state", "oll", "rules", `${notice.items[0].ruleId}.json`), "utf8")).status);
+    expect(states).toEqual(["suspended", "active"]);
+    expect(inspectCandidateRollbackPlansV1(run)[0]).toMatchObject({ phase: "terminal", heldReservations: 0, pendingReviews: 0 });
+    expect(suspendRulesFromNotification({ ...run, replyMessageId: messages[1].messageId!, itemNumbers: [1] }).notification.notificationId).toBe(notices[1].notificationId);
+  });
+
+  test("rollback inventory keeps the second review pending after resolving the first of two independent reviews", () => {
+    const input = fixture(2);
+    const run = {
+      workspace: input.root, workspaceId: "main", handoff: separateRules(input), scopeRegistry: input.scopeRegistry,
+      now: NOW, liveRevalidate: LIVE_REVALIDATE,
+    };
+    applyCandidateHandoffV3(run);
+    const dir = join(candidateRuntimePathsV1(input.root).root, "reviews");
+    const reviews = readdirSync(dir).map(name => JSON.parse(readFileSync(join(dir, name, "00000001.json"), "utf8")));
+    expect(reviews).toHaveLength(2);
+    const actor = actorRegistry(input.root);
+    const resolveReview = (review: any) => reconcileCandidateReviewOutcomeV1({
+      ...run, actorRegistryPath: actor.path, actorContext: ACTOR,
+      outcome: outcome({ review, disposition: "approved", reasonCode: "review_approved", registryRevision: actor.loaded.registry.revision, registryDigest: actor.loaded.digest }),
+    });
+    expect(inspectCandidateRollbackPlansV1(run)[0]).toMatchObject({ phase: "review_pending", pendingReviews: 2 });
+    resolveReview(reviews[0]);
+    expect(inspectCandidateRollbackPlansV1(run)[0]).toMatchObject({ phase: "review_pending", pendingReviews: 1 });
+    const other = Object.keys(reviews[1].candidateRevisions)[0] as Digest;
+    expect(readCandidateProjectionV1({ ...run, candidateId: other })?.cluster.lifecycle.correlationId).toBe(reviews[1].reviewId);
+    expect(containCandidatePlansForRollbackV1(run)[0]).toMatchObject({ phase: "review_pending", pendingReviews: 1 });
+    resolveReview(reviews[1]);
+    expect(inspectCandidateRollbackPlansV1(run)[0]).toMatchObject({ phase: "terminal", pendingReviews: 0 });
+  });
+
+  test("rejects overlapping evidence or missing per-rule routes before reserving any candidates", () => {
+    const input = fixture(2);
+    const value = separateRules(input);
+    const run = {
+      workspace: input.root, workspaceId: "main", handoff: value, scopeRegistry: input.scopeRegistry,
+      now: NOW, optimisticApply: true, stateRoot: join(input.root, "state-root"), liveRevalidate: LIVE_REVALIDATE,
+    };
+    expect(() => applyCandidateHandoffV3({ ...run, notificationSession: "telegram-direct-42" })).toThrow("per proposal");
+    const second = value.actions[1];
+    second.payload.sourceCandidates.push(value.actions[0].payload.sourceCandidates[0]);
+    second.actionId = computeActionIdV3(value.evaluationId, 1, second);
+    value.handoffDigest = computeHandoffDigestV3(value);
+    expect(() => applyCandidateHandoffV3(run)).toThrow("partition");
+    expect(readdirSync(join(candidateRuntimePathsV1(input.root).root, "plans"))).toHaveLength(0);
+    for (const candidate of input.context.candidates) {
+      expect(readCandidateProjectionV1({ ...run, candidateId: candidate.candidateId })?.highestContiguousRevision).toBe(candidate.revision);
+    }
   });
 
   test("reserves the whole candidate set before publishing an effect and resumes the same WAL plan", () => {

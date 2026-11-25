@@ -6,7 +6,7 @@ import type { NightlyRuntimeAdapter, NightlySpawnRequestV1, WorkspaceRegistryAda
 import { applyRethinkHandoffFile, ApplicatorResult } from "./handoff-applicator";
 import { buildRethinkProposalPrompt, canonicalizeJcs, type ExpectedHandoffV2, sha256Digest } from "./handoff-v2";
 import { buildRethinkProposalPromptV3, parseRethinkHandoffV3, type ExpectedHandoffV3 } from "./handoff-v3";
-import { buildCandidateAwareNightlyContext, buildNightlyContext, determineNightlyWindow, type NightlyContext, type NightlyContextV2, preflightNightlyContext } from "./nightly-context";
+import { buildCandidateAwareNightlyContext, buildNightlyContext, determineNightlyWindow, frozenTopicRuleIdsByCandidate, type NightlyContext, type NightlyContextV2, preflightNightlyContext, validateLiveTopicDuplicate } from "./nightly-context";
 import { discoverNightlyWorkspaces, DiscoveredWorkspaceV1, FrozenRegistrySnapshotV1 } from "./nightly-discovery";
 import { NightlyBatchStateV1, NightlyLeaseV1, NightlyStateStore, nightlyBatchDirectory } from "./nightly-state-store";
 import { reconcileWorkspaceMemory, WorkspaceReconciliationResult } from "./reconciliation";
@@ -140,7 +140,7 @@ function handoffExpected(batch: NightlyBatchStateV1, context: NightlyContext): E
     signalRevisions: context.signalRevisions,
   };
   return context.schema === "oll.nightly-context.v2" && context.candidateCompiler?.mode === "materialize"
-    ? { ...base, candidateRevisions: context.candidateRevisions }
+    ? { ...base, candidateRevisions: context.candidateRevisions, topicRuleIdsByCandidate: frozenTopicRuleIdsByCandidate(context) }
     : base;
 }
 
@@ -667,6 +667,13 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
             const handoffPath = existsSync(expected.expectedHandoffPath) ? expected.expectedHandoffPath : appliedPath;
             if (!existsSync(handoffPath)) throw new Error("expected candidate handoff file is unavailable");
             const handoff = parseRethinkHandoffV3(readFileSync(handoffPath), expected, expected.expectedHandoffPath);
+            if (context.schema !== "oll.nightly-context.v2") throw new Error("candidate handoff requires a frozen candidate context");
+            for (const item of handoff.candidateDispositions) {
+              if (!item.duplicateRuleId) continue;
+              const projection = readCandidateProjectionV1({ workspace: workspace.workspacePath, workspaceId, candidateId: item.candidateId });
+              if (projection?.cluster.lifecycle.status === "dismissed" && projection.cluster.lifecycle.correlationId === handoff.handoffDigest) continue;
+              validateLiveTopicDuplicate(workspace.workspacePath, context, item.candidateId, item.duplicateRuleId, now());
+            }
             const candidateActions = handoff.actions.filter((action) => action.payload.sourceCandidates.length > 0);
             if (candidateActions.length === 0) {
               applyCandidateHandoffV3({
@@ -688,15 +695,6 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
               });
             } else {
               const optimisticApply = workspace.config?.oll?.adaptation?.mode === "active";
-              const candidateAction = candidateActions[0];
-              const notificationScope: CandidateScope | null = candidateAction.payload.scope.level === "person"
-                ? { level: "self", subject: candidateAction.payload.scope.subject }
-                : candidateAction.payload.scope.level === "company"
-                  ? null
-                  : { level: candidateAction.payload.scope.level, subject: candidateAction.payload.scope.subject };
-              const notificationSession = optimisticApply && notificationScope
-                ? resolveCandidateNotificationSession(notificationScope, candidatePolicy, scopeRegistry)
-                : undefined;
               const plan = applyCandidateHandoffV3({
                 workspace: workspace.workspacePath,
                 workspaceId,
@@ -705,7 +703,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
                 now: now(),
                 optimisticApply,
                 stateRoot: options.stateRoot,
-                notificationSession,
+                resolveNotificationSession: (scope) => resolveCandidateNotificationSession(scope, candidatePolicy, scopeRegistry),
                 liveRevalidate: ({ candidateScopes }) => {
                   const liveConfig = readObject<Record<string, any>>(join(workspace.workspacePath, "engram.json"));
                   const livePolicy = liveConfig?.oll?.candidateCompiler as CandidateSourcePolicyV2 | undefined;

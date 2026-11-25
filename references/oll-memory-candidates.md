@@ -43,8 +43,12 @@ activate, supersede, suspend, write KG, or perform an external action. In
 active adaptation mode the deterministic applicator promotes the proposal to
 an active, scoped rule and queues its rollback notification. In observe-only
 mode the legacy proposal + review path remains available for compatibility.
-Every candidate receives `consumed`, `ignored`, or `deferred`. A rejected
-proposal is forced back to `deferred` rather than silently consuming evidence.
+Every candidate receives `consumed`, `ignored`, or `deferred`. Ignoring a
+domain candidate requires an explicit reason: `not_reusable` for episodic
+evidence or `duplicate` with the ID of an active rule in that exact domain.
+The coordinator checks the cited rule against the snapshot and the live rule.
+A similar rule in a different topic, including General, does not count.
+A rejected proposal is forced back to `deferred` rather than silently consuming evidence.
 
 The compiler supports an optional exclusion-only lifecycle gate **before**
 quota and byte-budget selection, for bounded recovery diagnostics. It does not
@@ -80,12 +84,14 @@ Phase 4 adds an explicit candidate context builder, a handoff-v3 applicator,
 and the sole candidate-review reconciler. The nightly coordinator invokes this
 path only for a frozen, projection-consistent `materialize` config: it persists
 the compiler report and ledger, sends a bounded `oll.nightly-context.v2`, and
-accepts only `oll.rethink-handoff.v3`. The applicator records a whole-plan WAL,
-reserves the complete candidate set before publishing a proposal or review,
-In active adaptation mode it writes the canonical rule under
+accepts only `oll.rethink-handoff.v3`. The applicator records a whole-plan WAL
+and reserves all consumed candidates before publishing any proposal or review.
+One handoff may contain several independent rule proposals. Each consumed
+candidate belongs to exactly one proposal; each proposal has its own scope.
+In active adaptation mode the applicator writes each rule under
 `memory-state/oll/rules/<rule-uuid>.json` with status `active`, moves consumed
-candidates directly from `reserved` to `evaluated`, and creates a durable
-`oll.rule-activation-notification.v1` outbox record. The scheduler sends a
+candidates directly from `reserved` to `evaluated`, and creates a separate
+`oll.rule-activation-notification.v1` outbox record per rule. The scheduler sends a
 friendly numbered message to the exact source session and stores the returned
 message ID. A rollback command resolves that message plus item numbers and
 changes the corresponding rules to `suspended`; rules and audit history are

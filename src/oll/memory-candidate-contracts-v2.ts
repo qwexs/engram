@@ -1163,7 +1163,9 @@ export function validateCandidateApplyPlanV1(value: unknown, context: { scopeReg
   }
   const candidateScopeIds = Object.keys(context.candidateScopes).sort();
   invariant(canonicalizeJcs(candidateScopeIds) === canonicalizeJcs(Object.keys(row.candidateRevisions as Record<string, number>).sort()), "apply plan candidateScopes must exactly cover candidateRevisions");
+  const revisions = row.candidateRevisions as Record<string, number>;
   for (const effect of effects) {
+    invariant(Object.entries(effect.candidateRevisions).every(([id, revision]) => revisions[id] === revision), "effect cites a missing or mismatched candidate revision");
     invariant(Object.keys(effect.candidateRevisions).every((candidateId) => scopeContains(registry, context.candidateScopes[candidateId], effect.effectiveScope)), "apply plan actionScope exceeds a cited candidate scope");
   }
   const proposals = effects.filter((effect): effect is Extract<CandidatePlannedEffectV1, { type: "rule_proposal" }> => effect.type === "rule_proposal");
@@ -1202,7 +1204,8 @@ export function validateCandidateApplyPlanV1(value: unknown, context: { scopeReg
   const revisionIds = Object.keys(row.candidateRevisions as Record<string, number>).sort();
   const reservationIds = (row.reservations as CandidateReservationV1[]).map((entry) => entry.candidateId).sort();
   invariant(canonicalizeJcs(revisionIds) === canonicalizeJcs(reservationIds), "apply plan reservations must exactly cover candidateRevisions");
-  invariant(effects.every((effect) => canonicalizeJcs(Object.keys(effect.candidateRevisions).sort()) === canonicalizeJcs(revisionIds)), "apply plan effects must cite the exact candidate set");
+  const proposedIds = proposals.flatMap((proposal) => Object.keys(proposal.candidateRevisions)).sort();
+  invariant(canonicalizeJcs(proposedIds) === canonicalizeJcs(revisionIds), "rule proposals must partition the exact candidate set");
   invariant((row.reservations as CandidateReservationV1[]).every((reservation) => reservation.planId === row.planId), "apply plan reservation owner mismatch");
   const committedCount = Object.values(row.effectCommits as Record<string, CandidateEffectCommitV1>).filter((commit) => commit.status === "committed").length;
   if (row.status === "terminal") invariant(committedCount === effects.length, "terminal apply plan requires every effect committed");

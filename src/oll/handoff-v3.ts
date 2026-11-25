@@ -42,6 +42,8 @@ export interface CandidateDispositionV1 {
   candidateId: Digest;
   expectedRevision: number;
   disposition: "consumed" | "ignored" | "deferred";
+  ignoreReason?: "duplicate" | "not_reusable";
+  duplicateRuleId?: string;
   rationale: string;
 }
 
@@ -73,6 +75,7 @@ export interface ExpectedHandoffV3 {
   expectedHandoffPath: string;
   signalRevisions: Readonly<Record<string, number>>;
   candidateRevisions: Readonly<Record<string, number>>;
+  topicRuleIdsByCandidate?: Readonly<Record<string, readonly string[]>>;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -197,12 +200,30 @@ export function parseRethinkHandoffV3(raw: string | Uint8Array, expected: Expect
   if (!Array.isArray(row.candidateDispositions) || row.candidateDispositions.length > 50) fail("candidateDispositions is invalid");
   const dispositions: CandidateDispositionV1[] = row.candidateDispositions.map((value) => {
     const item = object(value, "candidate disposition");
-    keys(item, ["candidateId", "expectedRevision", "disposition", "rationale"]);
+    keys(item, ["candidateId", "expectedRevision", "disposition", "rationale"], ["ignoreReason", "duplicateRuleId"]);
     const candidateId = string(item.candidateId, "candidateId", 71, DIGEST_RE) as Digest;
     if (!["consumed", "ignored", "deferred"].includes(String(item.disposition))) fail("candidate disposition is invalid");
     const expectedRevision = integer(item.expectedRevision, "candidate expectedRevision");
     if (expected.candidateRevisions[candidateId] !== expectedRevision) fail(`candidate revision mismatch: ${candidateId}`);
-    return { candidateId, expectedRevision, disposition: item.disposition as CandidateDispositionV1["disposition"], rationale: string(item.rationale, "candidate rationale", 1000) };
+    const disposition: CandidateDispositionV1 = {
+      candidateId, expectedRevision, disposition: item.disposition as CandidateDispositionV1["disposition"],
+      rationale: string(item.rationale, "candidate rationale", 1000),
+    };
+    const topicRules = expected.topicRuleIdsByCandidate?.[candidateId];
+    if (item.ignoreReason !== undefined) {
+      if (item.disposition !== "ignored" || (item.ignoreReason !== "duplicate" && item.ignoreReason !== "not_reusable")) fail("invalid candidate ignoreReason");
+      disposition.ignoreReason = item.ignoreReason;
+    } else if (topicRules && item.disposition === "ignored") {
+      fail("ignoring a domain candidate requires an explicit ignoreReason");
+    }
+    if (item.ignoreReason === "duplicate") {
+      const ruleId = string(item.duplicateRuleId, "duplicateRuleId", 36, UUID_RE);
+      if (!topicRules?.includes(ruleId)) fail("duplicateRuleId must identify an active rule of the exact candidate topic in the frozen context");
+      disposition.duplicateRuleId = ruleId;
+    } else if (item.duplicateRuleId !== undefined) {
+      fail("duplicateRuleId requires ignoreReason duplicate");
+    }
+    return disposition;
   });
   const expectedIds = Object.keys(expected.candidateRevisions).sort();
   const actualIds = dispositions.map((item) => item.candidateId).sort();
@@ -222,7 +243,9 @@ export function parseRethinkHandoffV3(raw: string | Uint8Array, expected: Expect
     actions: row.actions.map((value, ordinal) => parseAction(value, evaluationId, ordinal, expected)),
     candidateDispositions: dispositions,
   };
-  const citedCandidates = new Set(handoff.actions.flatMap((action) => action.payload.sourceCandidates));
+  const cited = handoff.actions.flatMap((action) => action.payload.sourceCandidates);
+  const citedCandidates = new Set(cited);
+  if (cited.length !== citedCandidates.size) fail("a consumed candidate may be cited by only one action");
   for (const disposition of handoff.candidateDispositions) {
     if ((disposition.disposition === "consumed") !== citedCandidates.has(disposition.candidateId)) {
       fail("consumed candidate dispositions must exactly match candidates cited by actions");
@@ -275,6 +298,8 @@ export function buildRethinkProposalPromptV3(input: {
     "Memory sourceCandidates are evidence only: any action citing one MUST be propose_rule. The deterministic applicator, not the model, decides immediate activation and notification from the frozen workspace mode.",
     "Every context candidate MUST receive exactly one consumed, ignored, or deferred disposition. consumed means cited by a proposal; ignored means not useful; deferred means genuinely awaiting more evidence.",
     "For a domain memory candidate, compare only the rules identified by its topicRuleIds when checking for duplicates. An empty list means no active rule in that topic. Do not treat another topic or a workspace rule as a duplicate. If topicRuleIds is absent in an older snapshot, use only active rules with the exact same domain scope.",
+    'For an ignored domain candidate set ignoreReason="duplicate" and duplicateRuleId to the matching local rule UUID, or ignoreReason="not_reusable" only for evidence with no reusable instruction. When locally validating, set expected.topicRuleIdsByCandidate via frozenTopicRuleIdsByCandidate(context) from nightly-context.ts.',
+    "Return separate propose_rule actions for independent rules, including rules for different topics. Cite each consumed candidate in exactly one action; never merge different topics into a shared proposal.",
     "Never broaden a candidate scope ceiling. Candidate evidence never authorizes activation, KG writes, external actions, source-code changes, or infrastructure changes.",
     ...(input.policyBoundaries || [
       "proposal-only: do not edit files except the exact handoff target",

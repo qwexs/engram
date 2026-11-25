@@ -926,14 +926,16 @@ function ensureRuleActivationNotification(options: {
   planId: string;
   operationId: string;
   notificationSession: string;
+  perRuleNotification?: boolean;
   now: string;
 }): OptimisticRuleNotificationV1 {
   const targetSession = normalizeNotificationSession(options.notificationSession);
   if (!DIGEST_RE.test(options.planId) || !DIGEST_RE.test(options.operationId)) {
     throw new AdaptationStoreError("invalid_input", "planId and operationId must be sha256 digests");
   }
-  if (options.rule.status !== "active") throw new AdaptationStoreError("invalid_transition", "only an active rule may be announced");
-  const notificationId = deterministicUuid(`rule-notification:${options.rule.workspaceId}:${options.planId}`);
+  // Preserve the notification identity of existing single-rule plans on replay.
+  const suffix = options.perRuleNotification ? `:${options.rule.id}` : "";
+  const notificationId = deterministicUuid(`rule-notification:${options.rule.workspaceId}:${options.planId}${suffix}`);
   const notificationPath = join(options.paths.notifications, `${notificationId}.json`);
   if (existsSync(notificationPath)) {
     const current = readJson(notificationPath) as OptimisticRuleNotificationV1;
@@ -942,6 +944,7 @@ function ensureRuleActivationNotification(options: {
     }
     return current;
   }
+  if (options.rule.status !== "active") throw new AdaptationStoreError("invalid_transition", "only an active rule may be announced");
   mkdirSync(options.paths.notifications, { recursive: true });
   const items: OptimisticRuleNotificationV1["items"] = [{
     number: 1,
@@ -1004,6 +1007,7 @@ export function activateCandidateRuleOptimistically(options: {
   planId: string;
   batchId: string;
   notificationSession: string;
+  perRuleNotification?: boolean;
   now?: string;
 }): { rule: JsonObject; notification: OptimisticRuleNotificationV1; created: boolean } {
   const paths = storePaths(options.workspace);
@@ -1085,6 +1089,7 @@ export function activateCandidateRuleOptimistically(options: {
       planId: options.planId,
       operationId: options.operationId,
       notificationSession: targetSession,
+      perRuleNotification: options.perRuleNotification,
       now,
     });
     return { rule, notification, created };

@@ -440,6 +440,86 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
     expect(readdirSync(join(candidateRuntimePathsV1(env.workspaces.alpha).root, "rule-proposals"))).toEqual([]);
   });
 
+  test("one project night records new General and Design rules but not a proven local duplicate", async () => {
+    const env = environment([{ id: "alpha", actionable: false }]);
+    const workspace = env.workspaces.alpha;
+    const oll = join(workspace, "memory-state", "oll");
+    const read = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+    configureCandidateCompiler(workspace, "alpha", "materialize", { evidence: false });
+    const configPath = join(workspace, "engram.json");
+    const config = read(configPath);
+    const registry = config.oll.candidateScopeRegistry;
+    const policy = config.oll.candidateCompiler;
+    const topics = [
+      { subject: "general", session: "telegram-group--100123-topic-1", statements: ["Record meeting decisions.", "Publish the weekly schedule."] },
+      { subject: "design", session: "telegram-group--100123-topic-7", statements: ["Record meeting decisions."] },
+    ];
+    policy.daily = [];
+    registry.sourceAuthorities.daily = {};
+    for (const { subject, session, statements } of topics) {
+      const scope = { level: "domain", subject };
+      mkdirSync(join(workspace, "memory", "domains", subject), { recursive: true });
+      registry.domainToWorkspace[subject] = "alpha";
+      registry.sourceAuthorities.daily[session] = scope;
+      policy.daily.push({ session, sections: ["decisions"], scopeCeiling: scope });
+      const entries = statements.map((text, i) => `### 2026-08-11T00:3${i}:00Z — decision\n\n- ${text}\n`);
+      write(join(workspace, "memory", "agent-alpha", session, "2026-08-11.md"), ["# Daily", "## Decisions", ...entries].join("\n\n"));
+    }
+    registry.digest = candidateScopeRegistryDigestV1(registry);
+    config.oll.adaptation.mode = "active";
+    write(configPath, config);
+    const rolloutPath = join(oll, "rollout.json");
+    write(rolloutPath, { ...read(rolloutPath), targetMode: "active", status: "active" });
+    const compilerPath = join(oll, "candidate-rollout.json");
+    write(compilerPath, { ...read(compilerPath), scopeRegistryDigest: registry.digest, policyDigest: sha256Digest(canonicalizeJcs(policy)) });
+
+    const existingId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const existing = { schema: "oll.adaptation-rule.v1", workspaceId: "alpha", id: existingId, rule: topics[0].statements[0],
+      scope: { level: "domain", subject: "general" }, status: "active", risk: "low", revision: 1, activatedAt: NOW, expiresAt: null,
+      supersededBy: null, contentDigest: sha256Digest("original") };
+    write(join(oll, "rules", existingId + ".json"), existing);
+    const runtime = new FakeNightlyRuntime((request, current) => {
+      const context = read(request.contextSnapshotPath);
+      const actions: RethinkHandoffV3["actions"] = [];
+      const dispositions: RethinkHandoffV3["candidateDispositions"] = [];
+      expect(context.memoryCandidates).toHaveLength(3);
+      for (const candidate of context.memoryCandidates) {
+        const base = { candidateId: candidate.candidateId, expectedRevision: candidate.revision };
+        if (candidate.effectiveScope.subject === existing.scope.subject && candidate.canonicalStatement === existing.rule) {
+          expect(candidate.topicRuleIds).toContain(existingId);
+          dispositions.push({ ...base, disposition: "ignored", ignoreReason: "duplicate", duplicateRuleId: existingId, rationale: "Already active in General" });
+          continue;
+        }
+        const action = { type: "propose_rule" as const, payload: {
+          ruleId: null, rule: candidate.canonicalStatement, sourceSignals: [], sourceCandidates: [candidate.candidateId],
+          scope: candidate.effectiveScope, risk: "low" as const, rationale: "Explicit topic decision",
+          expectedImprovement: "Consistent delivery", costOfInaction: "Repeated omissions", rollbackRef: "suspend:generated",
+          expectedRuleRevision: null, policyVersion: 1 as const, reviewDisposition: "review_required" as const,
+          authorizationResult: { status: "review_required" as const, principalId: null, grantId: null, registryRevision: 1,
+            registryDigest: sha256Digest("fixture"), reason: "Candidate evidence only" },
+        } };
+        actions.push({ ...action, actionId: computeActionIdV3(request.evaluationId, actions.length, action) });
+        dispositions.push({ ...base, disposition: "consumed", rationale: "Proposed in its source topic" });
+      }
+      const handoff = { ...validEmptyHandoff(request), schema: "oll.rethink-handoff.v3" as const, actions, candidateDispositions: dispositions };
+      write(request.expectedHandoffPath, { ...handoff, handoffDigest: computeHandoffDigestV3(handoff) });
+      current.queueHandoff(request.expectedHandoffPath);
+    });
+    const result = await runNightlyCoordinator(coordinatorOptions(env, runtime));
+    expect(result).toMatchObject({ completed: ["alpha"], failed: [], spawned: 1 });
+    const rules = readdirSync(join(oll, "rules")).map(name => read(join(oll, "rules", name)));
+    expect(rules).toHaveLength(3);
+    expect(read(join(oll, "rules", existingId + ".json"))).toEqual(existing);
+    const outbox = join(oll, "notifications", "outbox");
+    const notifications = readdirSync(outbox).map(name => read(join(outbox, name)));
+    expect(notifications).toHaveLength(2);
+    for (const topic of topics) {
+      const rule = rules.find(rule => rule.scope.subject === topic.subject && rule.rule === topic.statements.at(-1));
+      expect(rule).toMatchObject({ status: "active", scope: { level: "domain", subject: topic.subject } });
+      expect(notifications.find(n => n.targetSession === topic.session)?.items.map((item: {ruleId: string}) => item.ruleId)).toEqual([rule.id]);
+    }
+  });
+
   test("materialize routes a signal-only v3 action through the adaptation applicator after candidate dispositions", async () => {
     const env = environment([{ id: "alpha" }]);
     configureCandidateCompiler(env.workspaces.alpha, "alpha", "materialize");

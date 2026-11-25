@@ -335,8 +335,13 @@ export function profileReadablePolicies(registry: ExecutionProfiles | null, proj
 export function configuredProviderBoundary(model: string): ProviderBoundary {
   const provider = model.split("/")[0]!;
   if (!/^[a-z0-9._-]+$/.test(provider)) throw Error("PROFILE_PROVIDER_INVALID");
-  const result = spawnSync("openclaw", ["config", "get", `models.providers.${provider}`, "--json"], { encoding: "utf8", timeout: 20000, maxBuffer: 1024 * 1024 });
-  if (result.status !== 0) throw Error("PROFILE_PROVIDER_READBACK_FAILED");
+  const result = spawnSync("openclaw", ["config", "get", `models.providers.${provider}`, "--json"], {
+    encoding: "utf8", timeout: 60_000, maxBuffer: 1024 * 1024,
+  });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    throw Error("PROFILE_PROVIDER_READBACK_TIMEOUT");
+  }
+  if (result.error || result.status !== 0) throw Error("PROFILE_PROVIDER_READBACK_FAILED");
   let config: any;
   try { config = JSON.parse(result.stdout); } catch { throw Error("PROFILE_PROVIDER_READBACK_FAILED"); }
   const entry = config.models?.find((m: any) => m.id === model.slice(provider.length + 1));

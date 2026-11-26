@@ -916,7 +916,7 @@ function notificationText(
 ): string {
   const numbered = items.map((item) => `> ${item.number}. ${notificationRuleText(item.ruleText, targetSession)}`).join("\n\n");
   const intro = notificationIntro(items, planId, recentIntros);
-  return `${intro}\n\n${numbered}\n\nПравила уже применены. Если хотите отменить, ответьте на это сообщение и укажите пункты, например: «Отменить 1» или «Отменить 1, 2».`;
+  return `${intro}\n\n${numbered}\n\nПравила уже применены. Если хотите отменить, ответьте на это сообщение и укажите пункты.`;
 }
 
 function ensureRuleActivationNotification(options: {

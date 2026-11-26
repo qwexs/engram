@@ -16,6 +16,8 @@ import {
   candidateScopeRegistryDigestV1,
   type CandidateScopeRegistryV1,
 } from "../src/oll/memory-candidate-contracts-v2";
+import { nightlyRunResult } from "../src/oll/nightly-run-result";
+import { acknowledgeRuleActivationNotification, listPendingRuleActivationNotifications } from "../src/oll/adaptation-store";
 import { FakeNightlyRuntime } from "./fixtures/oll-nightly/fake-runtime";
 
 const roots: string[] = [];
@@ -440,8 +442,8 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
     expect(readdirSync(join(candidateRuntimePathsV1(env.workspaces.alpha).root, "rule-proposals"))).toEqual([]);
   });
 
-  test("one project night records new General and Design rules but not a proven local duplicate", async () => {
-    const env = environment([{ id: "alpha", actionable: false }]);
+  test.each([false, true])("topic-local rules survive a partial night (neighbor timeout: %s)", async (partial) => {
+    const env = environment([{ id: "alpha", actionable: false }, ...(partial ? [{ id: "beta" }] : [])]);
     const workspace = env.workspaces.alpha;
     const oll = join(workspace, "memory-state", "oll");
     const read = (path: string) => JSON.parse(readFileSync(path, "utf8"));
@@ -451,7 +453,7 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
     const registry = config.oll.candidateScopeRegistry;
     const policy = config.oll.candidateCompiler;
     const topics = [
-      { subject: "general", session: "telegram-group--100123-topic-1", statements: ["Record meeting decisions.", "Publish the weekly schedule."] },
+      { subject: "general", session: "telegram-group--100123-topic-1", statements: partial ? ["Record meeting decisions."] : ["Record meeting decisions.", "Publish the weekly schedule."] },
       { subject: "design", session: "telegram-group--100123-topic-7", statements: ["Record meeting decisions."] },
     ];
     policy.daily = [];
@@ -479,10 +481,11 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
       supersededBy: null, contentDigest: sha256Digest("original") };
     write(join(oll, "rules", existingId + ".json"), existing);
     const runtime = new FakeNightlyRuntime((request, current) => {
+      if (request.workspaceId === "beta") return; // Accepted, but no handoff in either attempt.
       const context = read(request.contextSnapshotPath);
       const actions: RethinkHandoffV3["actions"] = [];
       const dispositions: RethinkHandoffV3["candidateDispositions"] = [];
-      expect(context.memoryCandidates).toHaveLength(3);
+      expect(context.memoryCandidates).toHaveLength(partial ? 2 : 3);
       for (const candidate of context.memoryCandidates) {
         const base = { candidateId: candidate.candidateId, expectedRevision: candidate.revision };
         if (candidate.effectiveScope.subject === existing.scope.subject && candidate.canonicalStatement === existing.rule) {
@@ -506,12 +509,21 @@ describe("PR 5 strict FIFO nightly coordinator", () => {
       current.queueHandoff(request.expectedHandoffPath);
     });
     const result = await runNightlyCoordinator(coordinatorOptions(env, runtime));
-    expect(result).toMatchObject({ completed: ["alpha"], failed: [], spawned: 1 });
+    expect(result).toMatchObject({ completed: ["alpha"], failed: partial ? ["beta"] : [], spawned: partial ? 3 : 1 });
     const rules = readdirSync(join(oll, "rules")).map(name => read(join(oll, "rules", name)));
-    expect(rules).toHaveLength(3);
+    expect(rules).toHaveLength(partial ? 2 : 3);
     expect(read(join(oll, "rules", existingId + ".json"))).toEqual(existing);
     const outbox = join(oll, "notifications", "outbox");
     const notifications = readdirSync(outbox).map(name => read(join(outbox, name)));
+    if (partial) {
+      expect(nightlyRunResult(result).exitCode).toBe(1);
+      expect(result.failureDetails).toEqual([{ workspaceId: "beta", reason: "handoff_timeout", attempt: 2, runId: expect.any(String) }]);
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0].targetSession).toBe(topics[1].session);
+      acknowledgeRuleActivationNotification({ workspace, notificationId: notifications[0].notificationId, messageId: "fixture-123" });
+      expect(listPendingRuleActivationNotifications({ workspace })).toHaveLength(0);
+      return;
+    }
     expect(notifications).toHaveLength(2);
     for (const topic of topics) {
       const rule = rules.find(rule => rule.scope.subject === topic.subject && rule.rule === topic.statements.at(-1));

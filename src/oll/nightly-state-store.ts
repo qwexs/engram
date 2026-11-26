@@ -43,6 +43,7 @@ export interface NightlyBatchStateV1 {
   activeHandoffPath: string | null;
   completed: string[];
   failed: string[];
+  failureDetails?: Array<{ workspaceId: string; attempt: number | null; runId: string | null; reason: string | null }>;
   startedAt: string;
   updatedAt: string;
 }

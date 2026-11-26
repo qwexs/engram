@@ -55,6 +55,7 @@ export interface NightlyCoordinatorReportV1 {
   status: string;
   completed: string[];
   failed: string[];
+  failureDetails?: NightlyBatchStateV1["failureDetails"];
   skipped: string[];
   processingOrder: string[];
   spawned: number;
@@ -221,10 +222,16 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       updatedAt: timestamp,
       revision: batch.revision,
     };
+    const prior = batch;
+    if (status === "failed" && prior.activeWorkspace) {
+      next.failureDetails = [...(prior.failureDetails ?? []), {
+        workspaceId: prior.activeWorkspace, attempt: prior.activeAttempt, runId: prior.activeRunId, reason: errorClass,
+      }];
+    }
     batch = store.writeBatch(next, batch.revision, lease);
     store.appendEvent(batch.batchId, {
-      workspaceId: batch.activeWorkspace,
-      runId: batch.activeRunId,
+      workspaceId: batch.activeWorkspace ?? prior.activeWorkspace,
+      runId: batch.activeRunId ?? prior.activeRunId,
       transition: status,
       errorClass,
       details: { ...details, batchRevision: batch.revision },
@@ -811,6 +818,7 @@ export async function runNightlyCoordinator(options: NightlyCoordinatorOptions):
       status: batch.status,
       completed: batch.completed,
       failed: batch.failed,
+      ...(batch.failureDetails ? { failureDetails: batch.failureDetails } : {}),
       skipped,
       processingOrder,
       spawned,

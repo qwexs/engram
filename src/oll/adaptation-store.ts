@@ -837,7 +837,10 @@ export interface OptimisticRuleNotificationV1 {
     ruleRevision: number;
     ruleText: string;
     status: "active" | "suspended";
+    operationId?: string;
   }>;
+  deliveryPrepared?: true;
+  sourceNotificationIds?: string[];
   messageText: string;
   createdAt: string;
   deliveredAt: string | null;
@@ -858,6 +861,7 @@ function notificationRuleText(ruleText: string, targetSession: string): string {
 }
 
 const NOTIFICATION_INTRO_HISTORY = 3;
+const TELEGRAM_MESSAGE_LIMIT = 4096;
 
 const NOTIFICATION_INTROS = [
   (count: number) => count === 1
@@ -896,14 +900,20 @@ function notificationIntro(items: OptimisticRuleNotificationV1["items"], planId:
   return NOTIFICATION_INTROS[start](items.length);
 }
 
-function recentNotificationIntros(paths: ReturnType<typeof storePaths>, targetSession: string): string[] {
+function readRuleActivationNotifications(paths: ReturnType<typeof storePaths>): OptimisticRuleNotificationV1[] {
   if (!existsSync(paths.notifications)) return [];
-  return readdirSync(paths.notifications)
+  const records = readdirSync(paths.notifications)
     .filter((name) => name.endsWith(".json"))
+    .sort()
     .map((name) => readJson(join(paths.notifications, name)) as OptimisticRuleNotificationV1)
-    .filter((record) => record.schema === "oll.rule-activation-notification.v1"
-      && record.targetSession === targetSession
-      && typeof record.messageText === "string")
+    .filter((record) => record.schema === "oll.rule-activation-notification.v1");
+  const groupedIds = new Set(records.flatMap((record) => record.sourceNotificationIds ?? []));
+  return records.filter((record) => !groupedIds.has(record.notificationId));
+}
+
+function recentNotificationIntros(records: OptimisticRuleNotificationV1[], targetSession: string): string[] {
+  return records
+    .filter((record) => record.targetSession === targetSession && typeof record.messageText === "string")
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.notificationId.localeCompare(left.notificationId))
     .map((record) => record.messageText.split("\n", 1)[0]);
 }
@@ -914,9 +924,14 @@ function notificationText(
   planId: string,
   recentIntros: string[],
 ): string {
-  const numbered = items.map((item) => `> ${item.number}. ${notificationRuleText(item.ruleText, targetSession)}`).join("\n\n");
+  // Keep the number literal in Telegram's Markdown renderer, not a list marker.
+  const numbered = items.map((item) => `> **${item.number}.** ${notificationRuleText(item.ruleText, targetSession)}`).join("\n\n");
   const intro = notificationIntro(items, planId, recentIntros);
-  return `${intro}\n\n${numbered}\n\nПравила уже применены. Если хотите отменить, ответьте на это сообщение и укажите пункты.`;
+  const message = `${intro}\n\n${numbered}\n\nПравила уже применены. Если хотите отменить, ответьте на это сообщение и укажите пункты.`;
+  if (items.length === 1 && message.length > TELEGRAM_MESSAGE_LIMIT) {
+    return `${numbered}\n\nДля отмены ответьте: «Отменить 1».`;
+  }
+  return message;
 }
 
 function ensureRuleActivationNotification(options: {
@@ -963,7 +978,7 @@ function ensureRuleActivationNotification(options: {
     targetSession,
     status: "pending",
     items,
-    messageText: notificationText(items, targetSession, options.planId, recentNotificationIntros(options.paths, targetSession)),
+    messageText: notificationText(items, targetSession, options.planId, recentNotificationIntros(readRuleActivationNotifications(options.paths), targetSession)),
     createdAt: options.now,
     deliveredAt: null,
     messageId: null,
@@ -1097,11 +1112,73 @@ export function activateCandidateRuleOptimistically(options: {
 }
 
 export function listPendingRuleActivationNotifications(options: { workspace: string }): OptimisticRuleNotificationV1[] {
+  return readRuleActivationNotifications(storePaths(options.workspace)).filter((record) => record.status === "pending");
+}
+
+export function prepareRuleActivationDeliveries(options: { workspace: string }): OptimisticRuleNotificationV1[] {
   const paths = storePaths(options.workspace);
   if (!existsSync(paths.notifications)) return [];
-  return readdirSync(paths.notifications).filter((name) => name.endsWith(".json")).sort().flatMap((name) => {
-    const record = readJson(join(paths.notifications, name)) as OptimisticRuleNotificationV1;
-    return record.schema === "oll.rule-activation-notification.v1" && record.status === "pending" ? [record] : [];
+  return withPathsLock(paths, () => {
+    const records = readRuleActivationNotifications(paths);
+    const batches = new Map<string, OptimisticRuleNotificationV1[]>();
+    const deliveries: OptimisticRuleNotificationV1[] = [];
+    for (const record of records) {
+      if (record.status !== "pending") continue;
+      if (record.deliveryPrepared) {
+        deliveries.push(record);
+        continue;
+      }
+      const key = JSON.stringify([record.workspaceId, record.batchId, record.targetSession]);
+      const batch = batches.get(key) ?? [];
+      batch.push(record);
+      batches.set(key, batch);
+    }
+    for (const batch of batches.values()) {
+      batch.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.notificationId.localeCompare(b.notificationId));
+      const head = batch[0];
+      const recentIntros = recentNotificationIntros(records, head.targetSession);
+      let sources: OptimisticRuleNotificationV1[] = [];
+      let items: OptimisticRuleNotificationV1["items"] = [];
+      let messageText = "";
+      const persist = () => {
+        const first = sources[0];
+        const sourceNotificationIds = sources.map((record) => record.notificationId);
+        const delivery: OptimisticRuleNotificationV1 = sources.length === 1
+          ? { ...first, deliveryPrepared: true }
+          : {
+            ...first,
+            notificationId: deterministicUuid(`rule-notification-delivery:${sourceNotificationIds.join(":")}`),
+            sourceNotificationIds,
+            deliveryPrepared: true,
+            items,
+            messageText,
+          };
+        // One atomic write freezes numbering and supersedes the source notices for delivery.
+        atomicWriteJson(join(paths.notifications, `${safeId(delivery.notificationId, "notificationId")}.json`), delivery);
+        deliveries.push(delivery);
+      };
+      for (const source of batch) {
+        const sourceItems = source.items.map((item) => ({ ...item, operationId: item.operationId ?? source.operationId }));
+        const nextItems = [...items, ...sourceItems]
+          .map((item, index) => ({ ...item, number: index + 1 }));
+        const nextMessage = notificationText(nextItems, head.targetSession, head.planId, recentIntros);
+        if (sources.length && nextMessage.length > TELEGRAM_MESSAGE_LIMIT) {
+          persist();
+          sources = [];
+          items = [];
+        }
+        sources.push(source);
+        if (sources.length === 1) {
+          items = sourceItems;
+          messageText = source.messageText;
+        } else {
+          items = nextItems;
+          messageText = nextMessage;
+        }
+      }
+      persist();
+    }
+    return deliveries.sort((a, b) => a.notificationId.localeCompare(b.notificationId));
   });
 }
 
@@ -1116,9 +1193,9 @@ export function acknowledgeRuleActivationNotification(options: {
   const messageId = normalizeText(options.messageId, 300, "messageId");
   const now = options.now || new Date().toISOString();
   return withStoreLock(paths.workspace, () => {
+    const current = readRuleActivationNotifications(paths).find((record) => record.notificationId === notificationId);
+    if (!current) throw new AdaptationStoreError("not_found", "notification not found");
     const path = join(paths.notifications, `${notificationId}.json`);
-    if (!existsSync(path)) throw new AdaptationStoreError("not_found", "notification not found");
-    const current = readJson(path) as OptimisticRuleNotificationV1;
     if (current.status !== "pending") {
       if (current.messageId === messageId) return current;
       throw new AdaptationStoreError("operation_conflict", "notification already acknowledged with another message");
@@ -1143,14 +1220,13 @@ export function suspendRulesFromNotification(options: {
   const numbers = [...new Set(options.itemNumbers)].sort((a, b) => a - b);
   if (!numbers.length || numbers.some((number) => !Number.isInteger(number) || number < 1)) throw new AdaptationStoreError("invalid_input", "itemNumbers must contain positive integers");
   return withStoreLock(paths.workspace, () => {
-    const records = existsSync(paths.notifications)
-      ? readdirSync(paths.notifications).filter((name) => name.endsWith(".json")).map((name) => ({ path: join(paths.notifications, name), record: readJson(join(paths.notifications, name)) as OptimisticRuleNotificationV1 }))
-      : [];
-    const matches = records.filter(({ record }) => options.notificationId
+    const records = readRuleActivationNotifications(paths);
+    const matches = records.filter((record) => options.notificationId
       ? record.notificationId === options.notificationId
       : Boolean(options.replyMessageId && record.messageId === options.replyMessageId));
     if (matches.length !== 1) throw new AdaptationStoreError(matches.length ? "ambiguous_projection" : "not_found", "notification reference did not resolve uniquely");
-    const { path, record } = matches[0];
+    const record = matches[0];
+    const path = join(paths.notifications, `${safeId(record.notificationId, "notificationId")}.json`);
     const selected = numbers.map((number) => {
       const item = record.items.find((entry) => entry.number === number);
       if (!item) throw new AdaptationStoreError("invalid_input", `notification has no item ${number}`);
@@ -1170,7 +1246,7 @@ export function suspendRulesFromNotification(options: {
         };
         next.contentDigest = contentDigestForRule(next);
         atomicWriteJson(rulePath, next);
-        writeAudit(paths, { workspaceId: rule.workspaceId, type: "rule_transition", artifactRef: `rules/${rule.id}.json`, from: "active", to: "suspended", revision: next.revision, operationId: record.operationId, actionId: rule.decision.actionId, createdAt: now });
+        writeAudit(paths, { workspaceId: rule.workspaceId, type: "rule_transition", artifactRef: `rules/${rule.id}.json`, from: "active", to: "suspended", revision: next.revision, operationId: item.operationId ?? record.operationId, actionId: rule.decision.actionId, createdAt: now });
         suspendedRuleIds.push(rule.id);
       } else if (rule.status !== "suspended") {
         throw new AdaptationStoreError("invalid_transition", `rule ${rule.id} cannot be suspended from ${rule.status}`);

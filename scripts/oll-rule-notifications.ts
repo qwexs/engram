@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import {
   acknowledgeRuleActivationNotification,
-  listPendingRuleActivationNotifications,
+  prepareRuleActivationDeliveries,
   suspendRulesFromNotification,
 } from "../src/oll/adaptation-store";
 
@@ -47,7 +47,7 @@ try {
   if (command === "pending") {
     const workspaces = values.workspace;
     if (!Array.isArray(workspaces) || workspaces.length === 0) throw new Error("at least one --workspace is required");
-    const deliveries = workspaces.flatMap((workspace) => listPendingRuleActivationNotifications({ workspace: resolve(workspace) }).map((notification) => ({
+    const deliveries = workspaces.flatMap((workspace) => prepareRuleActivationDeliveries({ workspace: resolve(workspace) }).map((notification) => ({
       workspace: resolve(workspace),
       notificationId: notification.notificationId,
       message: notification.messageText,

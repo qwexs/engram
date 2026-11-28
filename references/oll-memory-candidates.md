@@ -91,9 +91,11 @@ candidate belongs to exactly one proposal; each proposal has its own scope.
 In active adaptation mode the applicator writes each rule under
 `memory-state/oll/rules/<rule-uuid>.json` with status `active`, moves consumed
 candidates directly from `reserved` to `evaluated`, and creates a separate
-`oll.rule-activation-notification.v1` outbox record per rule. The scheduler sends a
-friendly numbered message to the exact source session and stores the returned
-message ID. A rollback command resolves that message plus item numbers and
+`oll.rule-activation-notification.v1` outbox record per rule. Before the scheduler
+sends, the outbox freezes one numbered delivery per workspace, nightly batch,
+and exact source session (split only if required by Telegram's message limit).
+The scheduler stores the returned message ID on the prepared delivery.
+A rollback command resolves that message plus item numbers and
 changes the corresponding rules to `suspended`; rules and audit history are
 never deleted. Existing proposal/review WALs continue through the legacy
 reconciler so interrupted older runs remain recoverable.

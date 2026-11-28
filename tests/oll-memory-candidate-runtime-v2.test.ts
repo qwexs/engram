@@ -8,6 +8,7 @@ import { sha256Digest, type Digest } from "../src/oll/handoff-v2";
 import {
   acknowledgeRuleActivationNotification,
   listPendingRuleActivationNotifications,
+  prepareRuleActivationDeliveries,
   suspendRulesFromNotification,
 } from "../src/oll/adaptation-store";
 import { compileMemoryCandidateReportV2 } from "../src/oll/memory-candidate-compiler-v2";
@@ -300,7 +301,7 @@ describe("OLL memory candidate Phase 4 runtime", () => {
     const [pending] = listPendingRuleActivationNotifications({ workspace: input.root });
     expect(pending.messageText).toMatch(/^⭐ /);
     expect(pending.messageText).not.toContain("Я самоулучшаюсь");
-    expect(pending.messageText).toContain("Отменить 1");
+    expect(pending.messageText).toContain("Если хотите отменить");
     const delivered = acknowledgeRuleActivationNotification({ workspace: input.root, notificationId: pending.notificationId, messageId: "telegram-message-42", now: NOW });
     expect(delivered.status).toBe("delivered");
     const reverted = suspendRulesFromNotification({
@@ -383,26 +384,29 @@ describe("OLL memory candidate Phase 4 runtime", () => {
     }
   });
 
-  test("reverting one notification in a multi-rule plan leaves its sibling active and independently addressable", () => {
+  test("reverting one item in a grouped notification leaves its sibling active and independently addressable", () => {
     const input = fixture(2);
     const run = {
       workspace: input.root, workspaceId: "main", handoff: separateRules(input), scopeRegistry: input.scopeRegistry,
       stateRoot: join(input.root, "state-root"), now: NOW, optimisticApply: true,
-      resolveNotificationSession: () => "telegram-direct-42", liveRevalidate: LIVE_REVALIDATE,
+      resolveNotificationSession: () => "telegram-group--100123-topic-7", liveRevalidate: LIVE_REVALIDATE,
     };
     mkdirSync(run.stateRoot, { recursive: true });
     writeJson(join(input.root, "engram.json"), { workspace: { id: "main" }, oll: { adaptation: { mode: "active" } } });
     applyCandidateHandoffV3(run);
-    const notices = listPendingRuleActivationNotifications(run);
-    expect(notices).toHaveLength(2);
-    const messages = notices.map((notice, index) => acknowledgeRuleActivationNotification({
-      workspace: input.root, notificationId: notice.notificationId, messageId: String(201 + index), now: NOW,
-    }));
-    suspendRulesFromNotification({ ...run, replyMessageId: messages[0].messageId!, itemNumbers: [1] });
-    const states = notices.map(notice => JSON.parse(readFileSync(join(input.root, "memory-state", "oll", "rules", `${notice.items[0].ruleId}.json`), "utf8")).status);
-    expect(states).toEqual(["suspended", "active"]);
+    const [delivery, ...remaining] = prepareRuleActivationDeliveries(run);
+    expect(remaining).toHaveLength(0);
+    expect(delivery.items.map(item => item.number)).toEqual([1, 2]);
+    expect(prepareRuleActivationDeliveries(run)).toEqual([delivery]);
+    acknowledgeRuleActivationNotification({ workspace: input.root, notificationId: delivery.notificationId, messageId: "201", now: NOW });
+    expect(prepareRuleActivationDeliveries(run)).toHaveLength(0);
+    const firstRollback = suspendRulesFromNotification({ ...run, replyMessageId: "201", itemNumbers: [2] });
+    expect(firstRollback.suspendedRuleIds).toEqual([delivery.items[1].ruleId]);
+    expect(firstRollback.notification.status).toBe("partially_reverted");
+    const states = delivery.items.map(item => JSON.parse(readFileSync(join(input.root, "memory-state", "oll", "rules", `${item.ruleId}.json`), "utf8")).status);
+    expect(states).toEqual(["active", "suspended"]);
     expect(inspectCandidateRollbackPlansV1(run)[0]).toMatchObject({ phase: "terminal", heldReservations: 0, pendingReviews: 0 });
-    expect(suspendRulesFromNotification({ ...run, replyMessageId: messages[1].messageId!, itemNumbers: [1] }).notification.notificationId).toBe(notices[1].notificationId);
+    expect(suspendRulesFromNotification({ ...run, replyMessageId: "201", itemNumbers: [1] }).notification.status).toBe("reverted");
   });
 
   test("rollback inventory keeps the second review pending after resolving the first of two independent reviews", () => {
